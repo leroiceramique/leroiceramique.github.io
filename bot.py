@@ -1,7 +1,6 @@
 import os
-import json
 import logging
-import base64
+import asyncio
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras
@@ -25,7 +24,6 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
-GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
 _raw_admin_ids = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS: list = [
@@ -382,7 +380,6 @@ STATE_REMOVE_QTY = "waiting_remove_qty"
 STATE_EDIT_PRODUCT = "waiting_edit_product"
 STATE_DELETE_PRODUCT = "waiting_delete_product"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
-STATE_RECEIPT_PHOTO = "waiting_receipt_photo"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -392,7 +389,6 @@ BTN_STOCK = "\U0001f4ca \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\
 BTN_LOG = "\U0001f4dc \u0633\u062c\u0644 \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a"
 BTN_EDIT = "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629"
 BTN_DELETE = "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629"
-BTN_RECEIPT = "\U0001f4f7 \u0648\u0635\u0644\u0629 \u0634\u062d\u0646"
 BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
 
 
@@ -472,7 +468,6 @@ def get_admin_keyboard():
         [
             [BTN_ADD, BTN_SEARCH],
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
-            [BTN_RECEIPT],
             [BTN_STOCK, BTN_LOG],
             [BTN_EDIT, BTN_DELETE],
             [BTN_CANCEL],
@@ -602,235 +597,6 @@ async def callback_add_handler(update, context):
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
-
-
-# ── Receipt / Shipping Invoice by AI ─────────────────
-
-RECEIPT_PROMPT = """\
-أنت مساعد مخزن. هذه صورة وصلة شحن أو فاتورة.
-
-مهمتك: استخرج كل السلع وعدد العلب (cartons/crt) من الصورة.
-
-IMPORTANT: أجب فقط بـ JSON بهذا التنسيق بالضبط، بدون أي نص آخر:
-{"items": [{"name": "اسم السلعة", "qty": 5}]}
-
-قواعد:
-- "name": اسم السلعة كما هو مكتوب
-- "qty": عدد العلب (إذا مكتوب كرتون/علب/صندوق/كرت أو carton/crt/box خذ الرقم)
-- إذا لم يوجد عدد، ضع 1
-- إذا الصورة لا تحتوي على سلع، أرجع {"items": []}
-- أجب بـ JSON فقط
-"""
-
-
-def _find_product_by_name(name):
-    """Find a product in DB by fuzzy name match (ILIKE)."""
-    results = search_products(name)
-    if results:
-        return results[0]
-    # Try individual words
-    words = name.split()
-    for w in words:
-        if len(w) < 2:
-            continue
-        results = search_products(w)
-        if results:
-            return results[0]
-    return None
-
-
-async def _analyze_receipt_image(image_bytes):
-    """Send image to Google Gemini 2.0 Flash (free) and extract items."""
-    import aiohttp
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY
-    )
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": RECEIPT_PROMPT},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-                ]
-            }
-        ],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000},
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=60),
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError("Gemini error " + str(resp.status) + ": " + body[:200])
-            data = await resp.json()
-    content = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    # Strip markdown code blocks if present
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-    if content.endswith("```"):
-        content = content[:-3]
-    content = content.strip()
-    return json.loads(content)
-
-
-async def handle_receipt_button(update, context):
-    """Admin pressed 📷 وصلة شحن — ask for photo."""
-    if not GEMINI_API_KEY:
-        await update.message.reply_text(
-            "\u274c \u0645\u064a\u0632\u0629 \u0648\u0635\u0644\u0629 \u0627\u0644\u0634\u062d\u0646 \u0645\u0639\u0637\u0644\u0629.\n\n"
-            "\u0644\u062a\u0641\u0639\u064a\u0644\u0647\u0627 \u0623\u0636\u0641 \u0641\u064a Render:\n"
-            "GEMINI_API_KEY = AIza...",
-            reply_markup=get_admin_keyboard(),
-        )
-        return
-    context.user_data["state"] = STATE_RECEIPT_PHOTO
-    await update.message.reply_text(
-        "\U0001f4f7 \u0623\u0631\u0633\u0644 \u0635\u0648\u0631\u0629 \u0648\u0635\u0644\u0629 \u0627\u0644\u0634\u062d\u0646:\n\n"
-        "\u0633\u064a\u062a\u0645 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0633\u0644\u0639 \u0648\u0627\u0644\u0639\u062f\u062f \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b \u062b\u0645 \u062a\u0623\u0643\u064a\u062f \u0642\u0628\u0644 \u0627\u0644\u062e\u0635\u0645.",
-        reply_markup=get_input_keyboard(),
-    )
-
-
-async def handle_receipt_photo(update, context):
-    """Process the uploaded receipt photo."""
-    state = context.user_data.get("state")
-    if state != STATE_RECEIPT_PHOTO:
-        # Not in receipt mode — ignore photo
-        return
-
-    chat_id = update.effective_chat.id
-
-    # Download photo
-    photo = update.message.photo[-1]
-    status_msg = await update.message.reply_text("\u23f3 \u062c\u0627\u0631\u064d \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0648\u0635\u0644\u0629...")
-
-    try:
-        file = await photo.get_file()
-        image_bytes = await file.download_as_bytearray()
-    except Exception as e:
-        await status_msg.edit_text("\u274c \u0641\u0634\u0644 \u062a\u062d\u0645\u064a\u0644 \u0627\u0644\u0635\u0648\u0631\u0629: " + str(e))
-        context.user_data.clear()
-        return
-
-    try:
-        result = await _analyze_receipt_image(bytes(image_bytes))
-    except Exception as e:
-        await status_msg.edit_text("\u274c \u0641\u0634\u0644\u062a \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0648\u0635\u0644\u0629: " + str(e))
-        context.user_data.clear()
-        return
-
-    items = result.get("items", [])
-    if not items:
-        await status_msg.edit_text(
-            "\u2753 \u0644\u0645 \u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0633\u0644\u0639 \u0641\u064a \u0627\u0644\u0648\u0635\u0644\u0629.\n"
-            "\u062a\u0623\u0643\u062f \u0623\u0646 \u0627\u0644\u0635\u0648\u0631\u0629 \u0648\u0627\u0636\u062d\u0629 \u0648\u0623\u0639\u062f \u0627\u0644\u0645\u062d\u0627\u0648\u0644\u0629.",
-            reply_markup=get_admin_keyboard(),
-        )
-        context.user_data.clear()
-        return
-
-    # Match items with DB products
-    matched = []
-    unmatched = []
-    for item in items:
-        product = _find_product_by_name(item["name"])
-        if product:
-            matched.append({
-                "product_id": product["id"],
-                "name": product["name"],
-                "qty": item["qty"],
-                "current_stock": product["quantity"],
-                "receipt_name": item["name"],
-            })
-        else:
-            unmatched.append({"name": item["name"], "qty": item["qty"]})
-
-    # Build confirmation message
-    lines = ["\U0001f4cb \u0646\u062a\u064a\u062c\u0629 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0648\u0635\u0644\u0629:\n"]
-    lines.append("\u2705 \u0633\u0644\u0639 \u0645\u0637\u0627\u0628\u0642\u0629 \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646:")
-    for m in matched:
-        lines.append(
-            "  \U0001f4e6 " + m["name"]
-            + " \u2014 \u062e\u0635\u0645 " + str(m["qty"]) + " crt"
-            + " (\u0627\u0644\u0645\u062a\u0648\u0641\u0631: " + str(m["current_stock"]) + " crt)"
-        )
-    if unmatched:
-        lines.append("")
-        lines.append("\u26a0\ufe0f \u0633\u0644\u0639 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f\u0629 \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646:")
-        for u in unmatched:
-            lines.append("  \u274c " + u["name"] + " \u2014 " + str(u["qty"]) + " crt")
-    lines.append("")
-    lines.append("\u26a0\ufe0f \u0633\u064a\u062a\u0645 \u062e\u0635\u0645 \u0627\u0644\u0643\u0645\u064a\u0627\u062a \u0645\u0646 \u0627\u0644\u0645\u062e\u0632\u0648\u0646!")
-
-    # Store data for callback
-    context.user_data["receipt_matched"] = matched
-    context.user_data["state"] = "waiting_receipt_confirm"
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("\u2705 \u062a\u0623\u0643\u064a\u062f \u062e\u0635\u0645", callback_data="receipt_confirm"),
-            InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="receipt_cancel"),
-        ],
-    ])
-    await status_msg.edit_text("\n".join(lines), reply_markup=keyboard)
-
-
-async def callback_receipt_handler(update, context):
-    """Handle confirm/cancel for receipt deduction."""
-    query = update.callback_query
-    await query.answer()
-    user_data = context.user_data
-    data = query.data
-
-    if data == "receipt_confirm":
-        matched = user_data.get("receipt_matched", [])
-        telegram_id = query.from_user.id
-        db_user = get_user(telegram_id)
-        if not db_user:
-            await query.edit_message_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.")
-            user_data.clear()
-            return
-
-        success_lines = ["\u2705 \u062a\u0645 \u062a\u062d\u062f\u064a\u062b \u0627\u0644\u0645\u062e\u0632\u0648\u0646:\n"]
-        fail_lines = []
-
-        for m in matched:
-            try:
-                updated = db_update_quantity(m["product_id"], m["qty"], "remove")
-                log_transaction(m["product_id"], "remove", m["qty"], db_user["id"])
-                success_lines.append(
-                    "  \u2714\ufe0f " + m["name"]
-                    + ": " + str(m["current_stock"]) + " \u2192 " + str(updated["quantity"]) + " crt"
-                )
-            except ValueError as e:
-                fail_lines.append("  \u274c " + m["name"] + ": " + str(e))
-            except Exception as e:
-                fail_lines.append("  \u274c " + m["name"] + ": " + str(e))
-
-        result_text = "\n".join(success_lines)
-        if fail_lines:
-            result_text += "\n\n\u26a0\ufe0f \u0623\u062e\u0637\u0627\u0621:\n" + "\n".join(fail_lines)
-
-        await query.edit_message_text(result_text)
-        await send_low_stock_alerts(context.bot)
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="\u2714\ufe0f",
-            reply_markup=get_admin_keyboard(),
-        )
-        user_data.clear()
-
-    elif data == "receipt_cancel":
-        await query.edit_message_text("\u274c \u062a\u0645 \u0625\u0644\u063a\u0627\u0621 \u0639\u0645\u0644\u064a\u0629 \u0627\u0644\u0648\u0635\u0644\u0629.")
-        user_data.clear()
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:",
-            reply_markup=get_admin_keyboard(),
-        )
 
 
 async def process_add_quantity(update, context, text, telegram_id):
@@ -1169,10 +935,6 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
             return
 
-        if text == BTN_RECEIPT:
-            await handle_receipt_button(update, context)
-            return
-
         # Unknown text without state
         await update.message.reply_text(
             "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:\n/add, /stock, /log, /search",
@@ -1287,8 +1049,6 @@ def build_application():
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
-    app.add_handler(CallbackQueryHandler(callback_receipt_handler, pattern="^receipt_"))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
     app.add_error_handler(error_handler)
     return app
@@ -1298,6 +1058,21 @@ def build_application():
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════
 
+async def _keep_alive(app):
+    """Background task: ping own health endpoint every 4 min to prevent Render sleep."""
+    import aiohttp
+    port = int(os.getenv("PORT", 10000))
+    url = "http://0.0.0.0:" + str(port) + "/health"
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    pass
+        except Exception:
+            pass
+        await asyncio.sleep(240)  # 4 minutes
+
+
 if __name__ == "__main__":
     init_db()
     init_pool()
@@ -1306,7 +1081,7 @@ if __name__ == "__main__":
     render_port = int(os.getenv("PORT", 0))
 
     if WEBHOOK_URL:
-        # Webhook mode
+        # Webhook mode (always instant response)
         port = render_port or 10000
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
@@ -1315,7 +1090,7 @@ if __name__ == "__main__":
         webhook_app = web.Application()
 
         async def health(request):
-            return web.Response(text='{"status":"ok"}', content_type='application/json')
+            return web.Response(text='{"status":"ok"}', content_type="application/json")
 
         webhook_app.router.add_get("/health", health)
         tg_app.run_webhook(
@@ -1324,20 +1099,25 @@ if __name__ == "__main__":
         )
 
     elif render_port:
-        # Polling + health server (for Render Web Service)
+        # Polling + health server + keep-alive (stays awake 24/7)
         from aiohttp import web
         health_app = web.Application()
 
         async def health(request):
-            return web.Response(text='{"status":"ok"}', content_type='application/json')
+            return web.Response(text='{"status":"ok"}', content_type="application/json")
 
         health_app.router.add_get("/health", health)
 
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
-            await tg_app.updater.start_polling(drop_pending_updates=True)
-            print("[BOT] Polling + health server on port " + str(render_port))
+            await tg_app.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+            )
+            # Start keep-alive background task
+            asyncio.create_task(_keep_alive(aio_app))
+            print("[BOT] Polling + health + keep-alive on port " + str(render_port))
 
         async def on_cleanup(aio_app):
             await tg_app.updater.stop()

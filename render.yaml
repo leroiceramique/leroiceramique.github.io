@@ -15,8 +15,6 @@ services:
         sync: false
       - key: WEBHOOK_URL
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
       - key: PORT
         value: "10000"
     healthCheckPath: /health
