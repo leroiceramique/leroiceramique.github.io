@@ -558,6 +558,30 @@ def get_transactions(limit=20, offset=0):
         release_connection(conn)
 
 
+
+def get_product_transactions(product_id, limit=15):
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    t.id, t.type, t.quantity, t.date,
+                    u.username AS operator_name
+                FROM transactions t
+                LEFT JOIN users u ON u.id = t.user_id
+                WHERE t.product_id = %s
+                ORDER BY t.date DESC
+                LIMIT %s
+            """, (product_id, limit))
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
 # ═══════════════════════════════════════════════════════════
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════
@@ -569,6 +593,8 @@ STATE_REMOVE_QTY = "waiting_remove_qty"
 STATE_EDIT_PRODUCT = "waiting_edit_product"
 STATE_DELETE_PRODUCT = "waiting_delete_product"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
+STATE_CUST_ADD_QTY = "waiting_cust_add_qty"
+STATE_CUST_REMOVE_QTY = "waiting_cust_remove_qty"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -913,15 +939,180 @@ async def process_search(update, context, text, admin_view=False):
             lines.append("")
         await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
     else:
-        lines = []
-        for p in results:
-            lines.append(format_product_customer(p))
-            lines.append("")
-        await update.message.reply_text("\n".join(lines))
+        if len(results) == 1:
+            p = results[0]
+            await _show_product_detail(update, context, p)
+        else:
+            header = "🔍 وجدت " + str(len(results)) + " منتجات:\n"
+            text_lines = [header]
+            buttons = []
+            for p in results:
+                qty = p["quantity"]
+                text_lines.append(
+                    str(p["id"]) + ". " + p["name"]
+                    + "\n   📦 " + str(qty) + " كرتون"
+                )
+                text_lines.append("")
+                label = p["name"]
+                if len(label) > 40:
+                    label = label[:37] + "..."
+                buttons.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
+            text_lines.append("👆 اختر المنتج المطلوب.")
+            await update.message.reply_text(
+                "\n".join(text_lines),
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
     context.user_data.clear()
 
 
 # ═══════════════════════════════════════════════════════════
+
+def _product_status_icon(product):
+    qty = product["quantity"]
+    min_stock = product["minimum_stock"]
+    if qty > min_stock:
+        return "🟢"
+    elif qty > 0:
+        return "🟡"
+    else:
+        return "🔴"
+
+async def _show_product_detail(update, context, product):
+    p = product
+    icon = _product_status_icon(p)
+    qty = p["quantity"]
+    text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " كرتون " + icon
+    pid = str(p["id"])
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+            InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
+        ],
+        [
+            InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
+        ],
+    ])
+    if hasattr(update, 'callback_query') and update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def callback_product_select_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    try:
+        product_id = int(data.split("_")[1])
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ خطأ في الاختيار.")
+        return
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+                row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+        if not row:
+            await query.edit_message_text("❌ المنتج غير موجود.")
+            return
+        await _show_product_detail(update, context, dict(row))
+    except Exception as e:
+        logging.error("[PSEL] Error: " + str(e))
+        try:
+            await query.edit_message_text("❌ حدث خطأ.")
+        except Exception:
+            pass
+
+
+async def callback_product_action_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    parts = data.split("_", 2)
+    if len(parts) != 3:
+        return
+    action = parts[1]
+    try:
+        product_id = int(parts[2])
+    except ValueError:
+        return
+    if action == "log":
+        try:
+            txns = get_product_transactions(product_id, limit=15)
+            conn = get_connection()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
+                    row = cur.fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                release_connection(conn)
+            product_name = dict(row)["name"] if row else "?"
+            if not txns:
+                text = "📜 لا توجد حركات مسجلة لـ\n" + product_name
+            else:
+                tx_lines = ["📜 آخر حركات - " + product_name + "\n"]
+                for tx in txns:
+                    icon = "📥" if tx["type"] == "add" else "📤"
+                    date_str = tx["date"].strftime("%m/%d %H:%M")
+                    op = tx.get("operator_name") or "مجهول"
+                    sign = "+" if tx["type"] == "add" else "-"
+                    tx_lines.append(
+                        icon + " " + sign + str(tx["quantity"]) + " crt | "
+                        + op + " | " + date_str
+                    )
+                text = "\n".join(tx_lines)
+            await query.edit_message_text(text)
+        except Exception as e:
+            logging.error("[PACT_LOG] Error: " + str(e))
+            try:
+                await query.edit_message_text("❌ خطأ في تحميل الحركة.")
+            except Exception:
+                pass
+        return
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT id, name, quantity FROM products WHERE id = %s", (product_id,))
+                row = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+        if not row:
+            await query.edit_message_text("❌ المنتج غير موجود.")
+            return
+        product = dict(row)
+        context.user_data["cust_product"] = product
+        if action == "add":
+            context.user_data["state"] = STATE_CUST_ADD_QTY
+            text = "📦 " + product["name"] + "\n\n" + "➕ إضافة علب\n\n" + "أرسل العدد (crt):"
+        else:
+            context.user_data["state"] = STATE_CUST_REMOVE_QTY
+            text = ("📦 " + product["name"]
+                + " (المتوفر: " + str(product["quantity"]) + " crt)\n\n"
+                + "➖ إخراج علب\n\n"
+                + "أرسل العدد (crt):")
+        await query.edit_message_text(text)
+    except Exception as e:
+        logging.error("[PACT] Error: " + str(e))
+        try:
+            await query.edit_message_text("❌ حدث خطأ.")
+        except Exception:
+            pass
 #  SHOW PRODUCTS LIST
 # ═══════════════════════════════════════════════════════════
 
@@ -1301,8 +1492,78 @@ async def handle_admin_message(update, context):
 
 async def handle_customer_message(update, context):
     text = update.message.text.strip()
+    state = context.user_data.get("state")
+    user = update.effective_user
+    if text == BTN_CANCEL:
+        context.user_data.clear()
+        await update.message.reply_text("❌ تم الإلغاء.")
+        return
+    if state == STATE_CUST_ADD_QTY:
+        qty = parse_crt_input(text)
+        if qty is None or qty <= 0:
+            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10")
+            return
+        product = context.user_data.get("cust_product")
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ. حاول البحث من جديد.")
+            return
+        try:
+            updated = db_update_quantity(product["id"], qty, "add")
+            log_transaction(product["id"], "add", qty, user.id)
+            icon = _product_status_icon(updated)
+            msg = "✅ تم الإضافة!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " كرتون " + icon
+            pid = str(updated["id"])
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+                    InlineKeyboardButton("➖ إخر27ج", callback_data="pact_rem_" + pid),
+                ],
+                [
+                    InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
+                ],
+            ])
+            context.user_data["cust_product"] = dict(updated)
+            await update.message.reply_text(msg, reply_markup=keyboard)
+        except ValueError as e:
+            await update.message.reply_text("❌ " + str(e))
+        except Exception as e:
+            await update.message.reply_text("❌ حدث خطأ: " + str(e))
+        return
+    if state == STATE_CUST_REMOVE_QTY:
+        qty = parse_crt_input(text)
+        if qty is None or qty <= 0:
+            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10")
+            return
+        product = context.user_data.get("cust_product")
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ. حاول البحث من جديد.")
+            return
+        try:
+            updated = db_update_quantity(product["id"], qty, "remove")
+            log_transaction(product["id"], "remove", qty, user.id)
+            icon = _product_status_icon(updated)
+            msg = "✅ تم الإخر27ج!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " كرتون " + icon
+            pid = str(updated["id"])
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+                    InlineKeyboardButton("➖ إخر27ج", callback_data="pact_rem_" + pid),
+                ],
+                [
+                    InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
+                ],
+            ])
+            context.user_data["cust_product"] = dict(updated)
+            await update.message.reply_text(msg, reply_markup=keyboard)
+        except ValueError as e:
+            await update.message.reply_text("❌ " + str(e))
+        except Exception as e:
+            await update.message.reply_text("❌ حدث خطأ: " + str(e))
+        return
     if not text:
-        await update.message.reply_text("\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u0625\u0630\u0627 \u0643\u0627\u0646\u062a \u0645\u062a\u0648\u0641\u0631\u0629.")
+        await update.message.reply_text("أرسل اسم السلعة لمعرفة إذا كانت متوفرة.")
         return
     await process_search(update, context, text, admin_view=False)
 
@@ -1369,6 +1630,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_"))
+    app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
+    app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
