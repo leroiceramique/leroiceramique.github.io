@@ -13,12 +13,11 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -41,11 +40,11 @@ ADMIN_IDS: list = [
 ]
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set. Add it in .env or Render environment variables.")
+    raise RuntimeError("BOT_TOKEN is not set.")
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set. Add it in .env or Render environment variables.")
+    raise RuntimeError("DATABASE_URL is not set.")
 if not ADMIN_IDS:
-    raise RuntimeError("ADMIN_IDS is not set. Add your Telegram ID in .env or Render environment variables.")
+    raise RuntimeError("ADMIN_IDS is not set.")
 
 # ═══════════════════════════════════════════════════════════
 #  DATABASE
@@ -258,7 +257,7 @@ def db_update_quantity(product_id, change, transaction_type):
                 cur.execute("SELECT quantity FROM products WHERE id = %s", (product_id,))
                 row = cur.fetchone()
                 if row and row["quantity"] < change:
-                    raise ValueError("الكمية المطلوبة (" + str(change) + ") أكبر من المتوفر (" + str(row['quantity']) + ")")
+                    raise ValueError("\u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629 (" + str(change) + ") \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0641\u0631 (" + str(row['quantity']) + ")")
                 new_qty_expr = "GREATEST(quantity - %s, 0)"
             else:
                 new_qty_expr = "quantity + %s"
@@ -381,6 +380,19 @@ STATE_EDIT_PRODUCT = "waiting_edit_product"
 STATE_DELETE_PRODUCT = "waiting_delete_product"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
 
+# Button labels (must match exactly)
+BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
+BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
+BTN_ADD_QTY = "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0643\u0645\u064a\u0629"
+BTN_REMOVE_QTY = "\u2796 \u0625\u062e\u0631\u0627\u062c \u0643\u0645\u064a\u0629"
+BTN_STOCK = "\U0001f4ca \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646"
+BTN_LOG = "\U0001f4dc \u0633\u062c\u0644 \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a"
+BTN_EDIT = "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629"
+BTN_DELETE = "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629"
+BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
+
+ALL_BUTTONS = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_STOCK, BTN_LOG, BTN_EDIT, BTN_DELETE, BTN_CANCEL]
+
 
 def format_product_admin(product):
     qty = product["quantity"]
@@ -389,10 +401,10 @@ def format_product_admin(product):
     location = product.get("location", "") or "-"
     return (
         "\U0001f4e6 " + product["name"] + "\n"
-        "   الكمية: " + str(qty) + "\n"
-        "   الحد الأدنى: " + str(min_stock) + "\n"
-        "   المكان: " + location + "\n"
-        "   الحالة: " + status_emoji
+        "   \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty) + "\n"
+        "   \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649: " + str(min_stock) + "\n"
+        "   \u0627\u0644\u0645\u0643\u0627\u0646: " + location + "\n"
+        "   \u0627\u0644\u062d\u0627\u0644\u0629: " + status_emoji
     )
 
 
@@ -400,11 +412,11 @@ def format_product_customer(product):
     qty = product["quantity"]
     min_stock = product["minimum_stock"]
     if qty > min_stock:
-        return "\U0001f4e6 " + product["name"] + "\n\U0001f7e2 متوفر"
+        return "\U0001f4e6 " + product["name"] + "\n\U0001f7e2 \u0645\u062a\u0648\u0641\u0631"
     elif qty > 0:
-        return "\U0001f4e6 " + product["name"] + "\n\U0001f7e1 كمية محدودة"
+        return "\U0001f4e6 " + product["name"] + "\n\U0001f7e1 \u0643\u0645\u064a\u0629 \u0645\u062d\u062f\u0648\u062f\u0629"
     else:
-        return "\U0001f4e6 " + product["name"] + "\n\U0001f534 غير متوفر حالياً"
+        return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
 
 
 async def send_low_stock_alerts(bot):
@@ -412,10 +424,10 @@ async def send_low_stock_alerts(bot):
         low_stock = get_low_stock_products()
         if not low_stock:
             return
-        alert_lines = ["\u26a0\ufe0f تنبيه: مخزون منخفض\n"]
+        alert_lines = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636\u0646"]
         for p in low_stock:
             alert_lines.append(
-                "  \u2022 " + p["name"] + " — الكمية: " + str(p["quantity"]) + " (الحد الأدنى: " + str(p["minimum_stock"]) + ")"
+                "  \u2022 " + p["name"] + " \u2014 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(p["quantity"]) + " (\u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649: " + str(p["minimum_stock"]) + ")"
             )
         alert_text = "\n".join(alert_lines)
         for admin_id in ADMIN_IDS:
@@ -452,29 +464,24 @@ def parse_qty_input(text):
 
 
 # ═══════════════════════════════════════════════════════════
-#  ADMIN KEYBOARD
+#  ADMIN KEYBOARD (ReplyKeyboard - appears at bottom of screen)
 # ═══════════════════════════════════════════════════════════
 
 def get_admin_keyboard():
     keyboard = [
-        [
-            InlineKeyboardButton("\U0001f4e6 إضافة سلعة", callback_data="admin_add"),
-            InlineKeyboardButton("\U0001f50d بحث", callback_data="admin_search"),
-        ],
-        [
-            InlineKeyboardButton("\u2795 إضافة كمية", callback_data="admin_add_qty"),
-            InlineKeyboardButton("\u2796 إخراج كمية", callback_data="admin_remove_qty"),
-        ],
-        [
-            InlineKeyboardButton("\U0001f4ca تقرير المخزون", callback_data="admin_stock"),
-            InlineKeyboardButton("\U0001f4dc سجل العمليات", callback_data="admin_log"),
-        ],
-        [
-            InlineKeyboardButton("\u270f\ufe0f تعديل سلعة", callback_data="admin_edit"),
-            InlineKeyboardButton("\U0001f5d1\ufe0f حذف سلعة", callback_data="admin_delete"),
-        ],
+        [BTN_ADD, BTN_SEARCH],
+        [BTN_ADD_QTY, BTN_REMOVE_QTY],
+        [BTN_STOCK, BTN_LOG],
+        [BTN_EDIT, BTN_DELETE],
+        [BTN_CANCEL],
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_input_keyboard():
+    """Simplified keyboard shown during multi-step input."""
+    keyboard = [[BTN_CANCEL]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -485,15 +492,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(telegram_id=user.id, username=user.username)
     if is_admin(user.id):
-        text = ("مرحباً " + (user.first_name or "") + "! \U0001f44b\n\n"
-                "أنت مدير النظام.\n"
-                "استخدم القائمة أدناه لإدارة المخزون.")
-        reply_markup = get_admin_keyboard()
-        await update.message.reply_text(text, reply_markup=reply_markup)
+        text = ("\u0645\u0631\u062d\u0628\u0627\u064b " + (user.first_name or "") + "! \U0001f44b\n\n"
+                "\u0623\u0646\u062a \u0645\u062f\u064a\u0631 \u0627\u0644\u0646\u0638\u0627\u0645.\n"
+                "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0644\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u062e\u0632\u0648\u0646.")
+        await update.message.reply_text(text, reply_markup=get_admin_keyboard())
     else:
-        text = ("مرحباً " + (user.first_name or "") + "! \U0001f44b\n\n"
-                "أرسل اسم السلعة لمعرفة إذا كانت متوفرة.\n"
-                "مثال: زيت 5 لتر")
+        text = ("\u0645\u0631\u062d\u0628\u0627\u064b " + (user.first_name or "") + "! \U0001f44b\n\n"
+                "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u0625\u0630\u0627 \u0643\u0627\u0646\u062a \u0645\u062a\u0648\u0641\u0631\u0629.\n"
+                "\u0645\u062b\u0627\u0644: \u0632\u064a\u062a 5 \u0644\u062a\u0631")
         await update.message.reply_text(text)
     context.user_data.clear()
 
@@ -502,23 +508,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_admin(user.id):
         text = (
-            "\U0001f4cb أوامر الإدارة:\n\n"
-            "/start - القائمة الرئيسية\n"
-            "/help - عرض هذا المساعد\n"
-            "/add - إضافة سلعة جديدة\n"
-            "/stock - تقرير المخزون الكامل\n"
-            "/log - سجل العمليات الأخيرة\n"
-            "/search - بحث في المخزون\n\n"
-            "\U0001f4a1 يمكنك أيضاً استخدام الأزرار أدناه."
+            "\U0001f4cb \u0623\u0648\u0627\u0645\u0631 \u0627\u0644\u0625\u062f\u0627\u0631\u0629:\n\n"
+            "/start - \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629\n"
+            "/help - \u0639\u0631\u0636 \u0647\u0630\u0627 \u0627\u0644\u0645\u0633\u0627\u0639\u062f\n"
+            "/add - \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629\n"
+            "/stock - \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0627\u0644\u0643\u0627\u0645\u0644\n"
+            "/log - \u0633\u062c\u0644 \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a \u0627\u0644\u0623\u062e\u064a\u0631\u0629\n"
+            "/search - \u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n"
+            "\U0001f4a1 \u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u064a\u0636\u0627\u064b."
         )
     else:
         text = (
-            "\U0001f4cb المساعدة:\n\n"
-            "أرسل اسم السلعة مباشرة لمعرفة توفرها.\n\n"
-            "مثال:\n"
-            "  زيت 5 لتر\n"
-            "  زيت\n"
-            "  حليب"
+            "\U0001f4cb \u0627\u0644\u0645\u0633\u0627\u0639\u062f\u0629:\n\n"
+            "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0645\u0628\u0627\u0634\u0631\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u062a\u0648\u0641\u0631\u0647\u0627.\n\n"
+            "\u0645\u062b\u0627\u0644:\n"
+            "  \u0632\u064a\u062a 5 \u0644\u062a\u0631\n"
+            "  \u0632\u064a\u062a\n"
+            "  \u062d\u0644\u064a\u0628"
         )
     await update.message.reply_text(text)
 
@@ -529,56 +535,57 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c هذا الأمر للمديرين فقط.")
+        await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     context.user_data["state"] = STATE_ADD_PRODUCT
     text = (
-        "\U0001f4e6 إضافة سلعة جديدة\n\n"
-        "أرسل البيانات بهذا التنسيق:\n"
-        "اسم السلعة, الكمية, المكان, الحد الأدنى\n\n"
-        "مثال:\n"
-        "زيت 5 لتر, 50, الرف A, 10\n\n"
-        "أو أرسل اسم السلعة فقط (الكمية = 0):\n"
-        "حليب"
+        "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629\n\n"
+        "\u0623\u0631\u0633\u0644 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a \u0628\u0647\u0630\u0627 \u0627\u0644\u062a\u0646\u0633\u064a\u0642:\n"
+        "\u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629, \u0627\u0644\u0645\u0643\u0627\u0646, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\n"
+        "\u0645\u062b\u0627\u0644:\n"
+        "\u0632\u064a\u062a 5 \u0644\u062a\u0631, 50, \u0627\u0644\u0631\u0641 A, 10\n\n"
+        "\u0623\u0648 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637 (\u0627\u0644\u0643\u0645\u064a\u0629 = 0):\n"
+        "\u062d\u0644\u064a\u0628"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, reply_markup=get_input_keyboard())
 
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c هذا الأمر للمديرين فقط.")
+        await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     await send_stock_report(context.bot, update.effective_chat.id)
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c هذا الأمر للمديرين فقط.")
+        await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     await send_transaction_log(context.bot, update.effective_chat.id)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c هذا الأمر للمديرين فقط.")
+        await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     context.user_data["state"] = STATE_SEARCH_ADMIN
     await update.message.reply_text(
-        "\U0001f50d ابحث في المخزون\n\n"
-        "أرسل اسم أو جزء من اسم السلعة:"
+        "\U0001f50d \u0627\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n"
+        "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
+        reply_markup=get_input_keyboard(),
     )
 
 
 # ═══════════════════════════════════════════════════════════
-#  REPORT SENDERS (reusable from commands and callbacks)
+#  REPORT SENDERS
 # ═══════════════════════════════════════════════════════════
 
 async def send_stock_report(bot, chat_id):
     products = get_all_products()
     if not products:
-        await bot.send_message(chat_id=chat_id, text="\U0001f4ed المخزون فارغ. لا توجد سلع بعد.")
+        await bot.send_message(chat_id=chat_id, text="\U0001f4ed \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0641\u0627\u0631\u063a. \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639 \u0628\u0639\u062f.")
         return
-    lines = ["\U0001f4ca تقرير المخزون (" + str(len(products)) + " سلعة)\n"]
+    lines = ["\U0001f4ca \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646 (" + str(len(products)) + " \u0633\u0644\u0639\u0629)\n"]
     for i, p in enumerate(products, 1):
         lines.append(str(i) + ". " + format_product_admin(p))
         lines.append("")
@@ -600,19 +607,18 @@ async def send_stock_report(bot, chat_id):
             chunks.append("\n".join(current))
         for chunk in chunks:
             await bot.send_message(chat_id=chat_id, text=chunk)
-    await bot.send_message(chat_id=chat_id, text="\U0001f519 العودة للقائمة:", reply_markup=get_admin_keyboard())
 
 
 async def send_transaction_log(bot, chat_id):
     transactions = get_transactions(limit=20)
     if not transactions:
-        await bot.send_message(chat_id=chat_id, text="\U0001f4ed لا توجد عمليات مسجلة بعد.")
+        await bot.send_message(chat_id=chat_id, text="\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0639\u0645\u0644\u064a\u0627\u062a \u0645\u0633\u062c\u0644\u0629 \u0628\u0639\u062f.")
         return
-    lines = ["\U0001f4dc آخر 20 عملية:\n"]
+    lines = ["\U0001f4dc \u0622\u062e\u0631 20 \u0639\u0645\u0644\u064a\u0629:\n"]
     for tx in transactions:
         type_emoji = "\U0001f4e5" if tx["type"] == "add" else "\U0001f4e4"
         date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
-        operator = tx.get("operator_name") or "مجهول"
+        operator = tx.get("operator_name") or "\u0645\u062c\u0647\u0648\u0644"
         sign = "+" if tx["type"] == "add" else "-"
         lines.append(
             type_emoji + " " + tx["product_name"] + " | "
@@ -620,7 +626,6 @@ async def send_transaction_log(bot, chat_id):
             + operator + " | " + date_str
         )
     await bot.send_message(chat_id=chat_id, text="\n".join(lines))
-    await bot.send_message(chat_id=chat_id, text="\U0001f519 العودة للقائمة:", reply_markup=get_admin_keyboard())
 
 
 # ═══════════════════════════════════════════════════════════
@@ -630,7 +635,7 @@ async def send_transaction_log(bot, chat_id):
 async def process_add_product(update, context, text, telegram_id):
     parsed = parse_add_input(text)
     if not parsed:
-        await update.message.reply_text("\u274c تنسيق خاطئ. حاول مرة أخرى.")
+        await update.message.reply_text("\u274c \u062a\u0646\u0633\u064a\u0642 \u062e\u0627\u0637\u0626. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.", reply_markup=get_input_keyboard())
         return
     try:
         product = db_add_product(
@@ -639,58 +644,58 @@ async def process_add_product(update, context, text, telegram_id):
             location=parsed["location"],
             minimum_stock=parsed["minimum_stock"],
         )
-        msg = "\u2705 تمت إضافة السلعة بنجاح!\n\n" + format_product_admin(product)
+        msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c حدث خطأ: " + str(e))
+        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 
 async def process_add_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
-        await update.message.reply_text("\u274c التنسيق: رقم_السلعة, الكمية\nمثال: 1, 25")
+        await update.message.reply_text("\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\u0645\u062b\u0627\u0644: 1, 25", reply_markup=get_input_keyboard())
         return
     product_id, qty = parsed
     db_user = get_user(telegram_id)
     if not db_user:
-        await update.message.reply_text("\u274c لم يتم العثور على حسابك.")
+        await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.", reply_markup=get_input_keyboard())
         return
     try:
         updated = db_update_quantity(product_id, qty, "add")
         log_transaction(product_id, "add", qty, db_user["id"])
         name = updated["name"]
-        msg = "\u2705 تمت إضافة " + str(qty) + " لـ " + name + "\n\n" + format_product_admin(updated)
+        msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 " + str(qty) + " \u0644\u0640 " + name + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e))
+        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c حدث خطأ: " + str(e))
+        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 
 async def process_remove_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
-        await update.message.reply_text("\u274c التنسيق: رقم_السلعة, الكمية\nمثال: 1, 10")
+        await update.message.reply_text("\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\u0645\u062b\u0627\u0644: 1, 10", reply_markup=get_input_keyboard())
         return
     product_id, qty = parsed
     db_user = get_user(telegram_id)
     if not db_user:
-        await update.message.reply_text("\u274c لم يتم العثور على حسابك.")
+        await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.", reply_markup=get_input_keyboard())
         return
     try:
         updated = db_update_quantity(product_id, qty, "remove")
         log_transaction(product_id, "remove", qty, db_user["id"])
         name = updated["name"]
-        msg = "\u2705 تم إخراج " + str(qty) + " من " + name + "\n\n" + format_product_admin(updated)
+        msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c " + str(qty) + " \u0645\u0646 " + name + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e))
+        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c حدث خطأ: " + str(e))
+        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 
@@ -698,9 +703,9 @@ async def process_edit_product(update, context, text, telegram_id):
     parts = [p.strip() for p in text.split(",")]
     if len(parts) < 2 or not parts[0].isdigit():
         await update.message.reply_text(
-            "\u274c التنسيق: رقم_السلعة, الاسم الجديد, المكان الجديد, الحد الأدنى\n"
-            "مثال: 1, زيت 5 لتر, الرف B, 15\n\n"
-            "(يمكنك ترك الحقول التي لا تريد تغييرها)"
+            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u0645\u0643\u0627\u0646 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n"
+            "\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631, \u0627\u0644\u0631\u0641 B, 15",
+            reply_markup=get_input_keyboard(),
         )
         return
     product_id = int(parts[0])
@@ -713,48 +718,47 @@ async def process_edit_product(update, context, text, telegram_id):
         kwargs["minimum_stock"] = int(parts[3])
     try:
         updated = db_update_product(product_id, **kwargs)
-        msg = "\u2705 تم تعديل السلعة بنجاح!\n\n" + format_product_admin(updated)
+        msg = "\u2705 \u062a\u0645 \u062a\u0639\u062f\u064a\u0644 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
     except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e))
+        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c حدث خطأ: " + str(e))
+        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 
 async def process_delete_product(update, context, text, telegram_id):
     text = text.strip()
     if not text.isdigit():
-        await update.message.reply_text("\u274c أرسل رقم السلعة فقط.\nمثال: 5")
+        await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637.\n\u0645\u062b\u0627\u0644: 5", reply_markup=get_input_keyboard())
         return
     product_id = int(text)
     try:
         deleted = db_delete_product(product_id)
         if deleted:
-            await update.message.reply_text("\u2705 تم حذف السلعة بنجاح.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("\u2705 \u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d.", reply_markup=get_admin_keyboard())
         else:
-            await update.message.reply_text("\u274c لم يتم العثور على السلعة.")
+            await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c حدث خطأ: " + str(e))
+        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 
 async def process_search(update, context, text, admin_view=False):
     if not text:
-        await update.message.reply_text("\u274c أرسل اسم أو جزء من اسم السلعة.")
+        await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
         return
     results = search_products(text)
     if not results:
-        await update.message.reply_text("\U0001f50d لم يتم العثور على نتائج لـ " + text)
+        await update.message.reply_text("\U0001f50d \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0646\u062a\u0627\u0626\u062c \u0644\u0640 " + text, reply_markup=get_input_keyboard())
         return
     if admin_view:
-        header = "\U0001f50d نتائج البحث عن " + text + " (" + str(len(results)) + " نتيجة):\n"
+        header = "\U0001f50d \u0646\u062a\u0627\u0626\u062c \u0627\u0644\u0628\u062d\u062b \u0639\u0646 " + text + " (" + str(len(results)) + " \u0646\u062a\u064a\u062c\u0629):\n"
         lines = [header]
         for p in results:
             lines.append("  #" + str(p["id"]) + " " + format_product_admin(p))
             lines.append("")
-        await update.message.reply_text("\n".join(lines))
-        await update.message.reply_text("\U0001f519 العودة للقائمة:", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
     else:
         lines = []
         for p in results:
@@ -762,6 +766,22 @@ async def process_search(update, context, text, admin_view=False):
             lines.append("")
         await update.message.reply_text("\n".join(lines))
     context.user_data.clear()
+
+
+# ═══════════════════════════════════════════════════════════
+#  SHOW PRODUCTS LIST (for add/remove qty)
+# ═══════════════════════════════════════════════════════════
+
+async def show_products_list(bot, chat_id, next_state, prompt_text):
+    products = search_products("")
+    if not products:
+        await bot.send_message(chat_id=chat_id, text="\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639. \u0623\u0636\u0641 \u0633\u0644\u0639\u0627\u064b \u0623\u0648\u0644\u0627\u064b.", reply_markup=get_admin_keyboard())
+        return
+    lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+    for p in products:
+        lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(p["quantity"]))
+    await bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    await bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=get_input_keyboard())
 
 
 # ═══════════════════════════════════════════════════════════
@@ -773,6 +793,96 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
     text = update.message.text.strip()
     user = update.effective_user
 
+    # Check if user pressed a menu button (not in a state)
+    if state is None:
+        if text == BTN_ADD:
+            context.user_data["state"] = STATE_ADD_PRODUCT
+            await update.message.reply_text(
+                "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629\n\n"
+                "\u0623\u0631\u0633\u0644 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a \u0628\u0647\u0630\u0627 \u0627\u0644\u062a\u0646\u0633\u064a\u0642:\n"
+                "\u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629, \u0627\u0644\u0645\u0643\u0627\u0646, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\n"
+                "\u0645\u062b\u0627\u0644:\n"
+                "\u0632\u064a\u062a 5 \u0644\u062a\u0631, 50, \u0627\u0644\u0631\u0641 A, 10\n\n"
+                "\u0623\u0648 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637 (\u0627\u0644\u0643\u0645\u064a\u0629 = 0):\n"
+                "\u062d\u0644\u064a\u0628",
+                reply_markup=get_input_keyboard(),
+            )
+            return
+
+        elif text == BTN_ADD_QTY:
+            await show_products_list(
+                context.bot, update.effective_chat.id, STATE_ADD_QTY,
+                "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0643\u0645\u064a\u0629\n\n\u0623\u0631\u0633\u0644:\n\u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\n\u0645\u062b\u0627\u0644:\n1, 25",
+            )
+            return
+
+        elif text == BTN_REMOVE_QTY:
+            await show_products_list(
+                context.bot, update.effective_chat.id, STATE_REMOVE_QTY,
+                "\u2796 \u0625\u062e\u0631\u0627\u062c \u0643\u0645\u064a\u0629\n\n\u0623\u0631\u0633\u0644:\n\u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\n\u0645\u062b\u0627\u0644:\n1, 10",
+            )
+            return
+
+        elif text == BTN_SEARCH:
+            context.user_data["state"] = STATE_SEARCH_ADMIN
+            await update.message.reply_text(
+                "\U0001f50d \u0627\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n"
+                "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
+                reply_markup=get_input_keyboard(),
+            )
+            return
+
+        elif text == BTN_STOCK:
+            await send_stock_report(context.bot, update.effective_chat.id)
+            return
+
+        elif text == BTN_LOG:
+            await send_transaction_log(context.bot, update.effective_chat.id)
+            return
+
+        elif text == BTN_EDIT:
+            products = search_products("")
+            if not products:
+                await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
+                return
+            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            for p in products:
+                lines.append("  #" + str(p["id"]) + " " + p["name"])
+            await update.message.reply_text("\n".join(lines))
+            context.user_data["state"] = STATE_EDIT_PRODUCT
+            await update.message.reply_text(
+                "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629\n\n"
+                "\u0623\u0631\u0633\u0644:\n"
+                "\u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u0645\u0643\u0627\u0646 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\n"
+                "\u0645\u062b\u0627\u0644:\n1, \u0632\u064a\u062a 5 \u0644\u062a\u0631, \u0627\u0644\u0631\u0641 B, 15",
+                reply_markup=get_input_keyboard(),
+            )
+            return
+
+        elif text == BTN_DELETE:
+            products = search_products("")
+            if not products:
+                await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
+                return
+            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            for p in products:
+                lines.append("  #" + str(p["id"]) + " " + p["name"])
+            await update.message.reply_text("\n".join(lines))
+            context.user_data["state"] = STATE_DELETE_PRODUCT
+            await update.message.reply_text(
+                "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629\n\n"
+                "\u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637:\n"
+                "\u0645\u062b\u0627\u0644: 5\n\n"
+                "\u26a0\ufe0f \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0648\u062c\u0645\u064a\u0639 \u0633\u062c\u0644\u0627\u062a\u0647\u0627 \u0646\u0647\u0627\u0626\u064a\u0627\u064b!",
+                reply_markup=get_input_keyboard(),
+            )
+            return
+
+        elif text == BTN_CANCEL:
+            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
+            return
+
+    # Process based on current state
     if state == STATE_ADD_PRODUCT:
         await process_add_product(update, context, text, user.id)
     elif state == STATE_ADD_QTY:
@@ -787,7 +897,7 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await process_search(update, context, text, admin_view=True)
     else:
         await update.message.reply_text(
-            "استخدم الأزرار أدناه أو الأوامر:\n/add, /stock, /log, /search",
+            "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:\n/add, /stock, /log, /search",
             reply_markup=get_admin_keyboard(),
         )
 
@@ -795,7 +905,7 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_customer_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text:
-        await update.message.reply_text("أرسل اسم السلعة لمعرفة إذا كانت متوفرة.")
+        await update.message.reply_text("\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u0625\u0630\u0627 \u0643\u0627\u0646\u062a \u0645\u062a\u0648\u0641\u0631\u0629.")
         return
     await process_search(update, context, text, admin_view=False)
 
@@ -803,126 +913,25 @@ async def handle_customer_message(update: Update, context: ContextTypes.DEFAULT_
 async def route_message(update, context):
     user = update.effective_user
     text = update.message.text.strip()
+
+    # Handle cancel command
     if text == "/cancel":
         context.user_data.clear()
         if is_admin(user.id):
-            await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
         else:
-            await update.message.reply_text("\u274c تم الإلغاء. أرسل اسم سلعة للبحث.")
+            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621. \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0633\u0644\u0639\u0629 \u0644\u0644\u0628\u062d\u062b.")
         return
+
+    # Auto-register
     register_user(telegram_id=user.id, username=user.username)
+
+    # Route based on role
     if is_admin(user.id):
         await handle_admin_message(update, context)
     else:
         await handle_customer_message(update, context)
 
-
-# ═══════════════════════════════════════════════════════════
-#  CALLBACK HANDLER (inline buttons)
-# ═══════════════════════════════════════════════════════════
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    chat_id = query.effective_chat.id
-    data = query.data
-
-    if data.startswith("admin_") and not is_admin(user_id):
-        await query.edit_message_text("\u274c ليس لديك صلاحية للوصول هنا.")
-        return
-
-    if data == "admin_add":
-        context.user_data["state"] = STATE_ADD_PRODUCT
-        await query.edit_message_text(
-            "\U0001f4e6 إضافة سلعة جديدة\n\n"
-            "أرسل البيانات بهذا التنسيق:\n"
-            "اسم السلعة, الكمية, المكان, الحد الأدنى\n\n"
-            "مثال:\n"
-            "زيت 5 لتر, 50, الرف A, 10\n\n"
-            "أو أرسل اسم السلعة فقط (الكمية = 0):\n"
-            "حليب"
-        )
-
-    elif data == "admin_add_qty":
-        products = search_products("")
-        if products:
-            lines = ["\U0001f4e6 قائمة السلع (أرسل: رقم_السلعة, الكمية)\n"]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " — الكمية: " + str(p["quantity"]))
-            await query.edit_message_text("\n".join(lines))
-        else:
-            await query.edit_message_text("\U0001f4ed لا توجد سلع. أضف سلعاً أولاً.")
-            return
-        context.user_data["state"] = STATE_ADD_QTY
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="\u2795 إضافة كمية\n\nأرسل:\nرقم_السلعة, الكمية\n\nمثال:\n1, 25",
-        )
-
-    elif data == "admin_remove_qty":
-        products = search_products("")
-        if products:
-            lines = ["\U0001f4e6 قائمة السلع (أرسل: رقم_السلعة, الكمية)\n"]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " — الكمية: " + str(p["quantity"]))
-            await query.edit_message_text("\n".join(lines))
-        else:
-            await query.edit_message_text("\U0001f4ed لا توجد سلع.")
-            return
-        context.user_data["state"] = STATE_REMOVE_QTY
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="\u2796 إخراج كمية\n\nأرسل:\nرقم_السلعة, الكمية\n\nمثال:\n1, 10",
-        )
-
-    elif data == "admin_search":
-        context.user_data["state"] = STATE_SEARCH_ADMIN
-        await query.edit_message_text(
-            "\U0001f50d ابحث في المخزون\n\nأرسل اسم أو جزء من اسم السلعة:"
-        )
-
-    elif data == "admin_stock":
-        await query.edit_message_text("\U0001f4ca جاري تحضير التقرير...")
-        await send_stock_report(context.bot, chat_id)
-
-    elif data == "admin_log":
-        await query.edit_message_text("\U0001f4dc جاري تحميل السجل...")
-        await send_transaction_log(context.bot, chat_id)
-
-    elif data == "admin_edit":
-        products = search_products("")
-        if products:
-            lines = ["\U0001f4e6 قائمة السلع\n"]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " — المكان: " + (p.get("location", "") or "-"))
-            await query.edit_message_text("\n".join(lines))
-        else:
-            await query.edit_message_text("\U0001f4ed لا توجد سلع.")
-            return
-        context.user_data["state"] = STATE_EDIT_PRODUCT
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="\u270f\ufe0f تعديل سلعة\n\nأرسل:\nرقم_السلعة, الاسم الجديد, المكان الجديد, الحد الأدنى\n\nمثال:\n1, زيت 5 لتر, الرف B, 15\n\nيمكنك تعديل حقل واحد أو أكثر.",
-        )
-
-    elif data == "admin_delete":
-        products = search_products("")
-        if products:
-            lines = ["\U0001f4e6 قائمة السلع\n"]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
-            await query.edit_message_text("\n".join(lines))
-        else:
-            await query.edit_message_text("\U0001f4ed لا توجد سلع.")
-            return
-        context.user_data["state"] = STATE_DELETE_PRODUCT
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="\U0001f5d1\ufe0f حذف سلعة\n\nأرسل رقم السلعة فقط:\nمثال: 5\n\n\u26a0\ufe0f سيتم حذف السلعة وجميع سجلاتها نهائياً!",
-        )
-    else:
-        await query.edit_message_text("\u274c زر غير معروف.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -935,7 +944,7 @@ async def error_handler(update, context):
     traceback.print_exc()
     if update and hasattr(update, 'effective_message') and update.effective_message:
         try:
-            await update.effective_message.reply_text("\u274c حدث خطأ غير متوقع. حاول مرة أخرى.")
+            await update.effective_message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623 \u063a\u064a\u0631 \u0645\u062a\u0648\u0642\u0639. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.")
         except Exception:
             pass
 
@@ -954,6 +963,7 @@ logger = logging.getLogger(__name__)
 def build_application():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", route_message))
@@ -962,10 +972,10 @@ def build_application():
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("search", search_command))
 
-    app.add_handler(CallbackQueryHandler(button_callback))
-
+    # Text messages (no more CallbackQueryHandler needed)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
 
+    # Error handler
     app.add_error_handler(error_handler)
 
     return app
@@ -976,14 +986,16 @@ def build_application():
 # ═══════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    import asyncio
+
     init_db()
     init_pool()
 
     app = build_application()
+    render_port = int(os.getenv("PORT", 0))
 
     if WEBHOOK_URL:
-        import os as _os
-        port = int(_os.getenv("PORT", 10000))
+        port = render_port or 10000
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
 
@@ -1006,6 +1018,32 @@ if __name__ == "__main__":
             drop_pending_updates=True,
             webhook_app=webhook_app,
         )
+    elif render_port:
+        # Render Web Service with polling: start health server + polling in background
+        from aiohttp import web
+
+        health_app = web.Application()
+
+        async def health_check(request):
+            return web.Response(text='{"status":"ok"}', content_type='application/json')
+
+        health_app.router.add_get('/health', health_check)
+
+        async def run_bot(app):
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling(drop_pending_updates=True)
+            print("[BOT] Polling started on Render with health server on port " + str(render_port))
+
+        async def stop_bot(app):
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+
+        health_app.on_startup.append(run_bot)
+        health_app.on_cleanup.append(stop_bot)
+
+        web.run_app(health_app, host="0.0.0.0", port=render_port)
     else:
         print("[BOT] Starting in polling mode...")
         app.run_polling(drop_pending_updates=True)
