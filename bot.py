@@ -385,7 +385,7 @@ def search_products(query):
             cur.execute("""
                 SELECT * FROM products
                 WHERE name ILIKE %s
-                ORDER BY name
+                ORDER BY LOWER(name)
             """, ("%" + query.strip() + "%",))
             rows = cur.fetchall()
         conn.commit()
@@ -499,7 +499,7 @@ def get_all_products():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM products ORDER BY name")
+            cur.execute("SELECT * FROM products ORDER BY LOWER(name)")
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
