@@ -27,6 +27,14 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
 
+# Email backup (optional — for daily auto-backup via email)
+SMTP_HOST = os.getenv("SMTP_HOST", "")         # e.g. smtp.gmail.com
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")       # sender email
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # app password
+BACKUP_EMAIL = os.getenv("BACKUP_EMAIL", "")     # recipient email
+
+
 _raw_admin_ids = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS: list = [
     int(uid.strip())
@@ -1411,6 +1419,103 @@ def build_application():
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════
+#  DAILY AUTO-BACKUP
+# ═══════════════════════════════════════════════════════════
+
+_last_backup_date = ""
+
+
+def _send_backup_email(backup_bytes, filename):
+    """Send backup file via email (SMTP). Returns True/False."""
+    if not SMTP_EMAIL or not SMTP_PASSWORD or not BACKUP_EMAIL:
+        return False
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SMTP_EMAIL
+        msg["To"] = BACKUP_EMAIL
+        msg["Subject"] = "💾 نسخة احتياطية - المخزن " + datetime.datetime.now().strftime("%Y-%m-%d")
+        body = (
+            "مرحبا،
+
+"
+            "هذا ملف النسخ الاحتياطي اليومي للمخزن.
+"
+            "احفظه في مكان آمن.
+
+"
+            "لإستيراع البيانات: أرسل هذا الملف للبوت في تيليغرام."
+        )
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        part = MIMEBase("application", "json")
+        part.set_payload(backup_bytes)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(part)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.sendmail(SMTP_EMAIL, BACKUP_EMAIL, msg.as_string())
+        logging.info("[BACKUP] Email sent to " + BACKUP_EMAIL)
+        return True
+    except Exception as e:
+        logging.error("[BACKUP] Email failed: " + str(e))
+        return False
+
+
+async def _daily_backup(bot):
+    """Generate backup and send to admins via Telegram + optional email."""
+    global _last_backup_date
+    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    if _last_backup_date == today:
+        return  # Already backed up today
+    _last_backup_date = today
+    try:
+        import io
+        from telegram import InputFile
+        backup = db_export_backup()
+        json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
+        file_bytes = json_str.encode("utf-8")
+        now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
+        filename = "backup_" + now_str + ".json"
+        caption = (
+            "💾 نسخة احتياطية تلقائية (" + now_str + ")
+"
+            "📄 السلع: " + str(len(backup["products"])) + "
+"
+            "📜 العمليات: " + str(len(backup["transactions"]))
+        )
+        # Send to all admins via Telegram
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_document(
+                    chat_id=admin_id,
+                    document=InputFile(io.BytesIO(file_bytes), filename=filename),
+                    caption=caption,
+                )
+            except Exception as e:
+                logging.error("[BACKUP] Telegram send failed for " + str(admin_id) + ": " + str(e))
+        # Send via email (optional)
+        _send_backup_email(file_bytes, filename)
+        logging.info("[BACKUP] Daily backup completed (" + today + ")")
+    except Exception as e:
+        logging.error("[BACKUP] Daily backup failed: " + str(e))
+
+
+async def _daily_backup_loop(bot):
+    """Background task: check every 60s if it's midnight Algeria time (UTC+1 = 23:00 UTC)."""
+    while True:
+        now = datetime.datetime.utcnow()
+        # Midnight Algeria = 23:00 UTC
+        if now.hour == 23 and now.minute == 0:
+            await _daily_backup(bot)
+        await asyncio.sleep(60)  # check every minute
+
 async def _keep_alive(app):
     """Background task: ping own health endpoint every 4 min to prevent Render sleep."""
     import aiohttp
@@ -1470,6 +1575,9 @@ if __name__ == "__main__":
             )
             # Start keep-alive background task
             asyncio.create_task(_keep_alive(aio_app))
+            # Start daily auto-backup (midnight Algeria time)
+            asyncio.create_task(_daily_backup_loop(tg_app.bot))
+            print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
 
         async def on_cleanup(aio_app):
