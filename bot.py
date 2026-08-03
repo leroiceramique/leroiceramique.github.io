@@ -3,6 +3,7 @@ import json
 import datetime
 import logging
 import asyncio
+import aiohttp
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras
@@ -1038,7 +1039,7 @@ async def backup_command(update, context):
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
         from telegram import InputFile
-        now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M")
         await update.message.reply_text("💾 جارٍ إعداد النسخة الاحتياطية...")
         await update.message.reply_document(
             document=InputFile(io.BytesIO(file_bytes), filename="backup_" + now_str + ".json"),
@@ -1318,6 +1319,11 @@ async def route_message(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def error_handler(update, context):
+    from telegram.error import Conflict
+    if isinstance(context.error, Conflict):
+        logging.warning("[BOT] Conflict detected - another instance running. Will recover automatically.")
+        return
+
     import traceback
     print("[ERROR] " + str(context.error))
     traceback.print_exc()
@@ -1400,7 +1406,7 @@ def _send_backup_email(backup_bytes, filename):
 
 async def _daily_backup(bot):
     global _last_backup_date
-    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     if _last_backup_date == today:
         return
     _last_backup_date = today
@@ -1410,7 +1416,7 @@ async def _daily_backup(bot):
         backup = db_export_backup()
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
-        now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M")
         filename = "backup_" + now_str + ".json"
         caption = ("\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 (" + now_str + ")\n"
                   + "\U0001f4c4 \u0627\u0644\u0633\u0644\u0639: " + str(len(backup["products"])) + "\n"
@@ -1431,24 +1437,26 @@ async def _daily_backup(bot):
 
 async def _daily_backup_loop(bot):
     while True:
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         if now.hour == 23 and now.minute == 0:
             await _daily_backup(bot)
         await asyncio.sleep(60)
 
 
 async def _keep_alive(app):
-    import aiohttp
+    """Self-ping to keep the Render service awake."""
     port = int(os.getenv("PORT", 10000))
-    url = "http://0.0.0.0:" + str(port) + "/health"
+    url = "http://0.0.0.0:" + str(port) + "/"
     while True:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                    pass
-        except Exception:
-            pass
+                    if r.status != 200:
+                        logging.warning("[KEEP-ALIVE] Health check returned " + str(r.status))
+        except Exception as e:
+            logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
         await asyncio.sleep(240)
+
 
 
 if __name__ == "__main__":
@@ -1466,6 +1474,7 @@ if __name__ == "__main__":
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
         webhook_app.router.add_get("/health", health)
+        webhook_app.router.add_get("/", health)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
             drop_pending_updates=True, webhook_app=webhook_app)
@@ -1475,6 +1484,7 @@ if __name__ == "__main__":
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
         health_app.router.add_get("/health", health)
+        health_app.router.add_get("/", health)
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()

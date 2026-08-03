@@ -17,7 +17,7 @@ services:
         sync: false
       - key: PORT
         value: "10000"
-      # Email backup (optional - uncomment to enable daily email backup)
+      # Email backup (optional - set these to enable daily email backup)
       - key: SMTP_HOST
         value: ""
       - key: SMTP_PORT
@@ -28,4 +28,4 @@ services:
         sync: false
       - key: BACKUP_EMAIL
         sync: false
-    healthCheckPath: /health
+    healthCheckPath: /
