@@ -5,12 +5,12 @@
 ## المميزات
 
 - **نظام صلاحيات مزدوج:** مديرون بصلاحيات كاملة + عملاء (محلات) ببحث فقط
-- **لوحة تحكم بالأزرار:** Inline Keyboard سهلة الاستخدام للمديرين
-- **بحث ذكي:** بحث بجزء من الاسم مع دعم العربية
+- **لوحة تحكم بالأزرار:** Reply Keyboard سهلة الاستخدام للمديرين
+- **بحث ذكي:** بحث بجزء من الاسم مع دعم العربية (ILIKE)
 - **تنبيهات تلقائية:** تنبيه المديرين عند وصول كمية سلعة للحد الأدنى
 - **سجل عمليات:** تتبع كامل لكل عملية إدخال وإخراج
 - **أمان:** لا تظهر الكميات للعملاء، فقط للمديرين
-- **يعمل 24/7:** استضافة مجانية على Render مع Webhook
+- **يعمل 24/7:** استضافة مجانية على Render مع Webhook أو Polling + Health Server
 
 ---
 
@@ -18,28 +18,10 @@
 
 ```
 telegram-inventory-bot/
-├── main.py              # نقطة الدخول الرئيسية
-├── config.py            # إعدادات التطبيق ومتغيرات البيئة
-├── database.py          # اتصال قاعدة البيانات وإنشاء الجداول
+├── bot.py              # الملف الرئيسي (كل الكود في ملف واحد)
 ├── requirements.txt     # مكتبات Python المطلوبة
-├── .env.example         # قالب متغيرات البيئة
-├── .gitignore           # ملفات Git المستثناة
 ├── render.yaml          # إعدادات النشر على Render
-├── README.md            # هذا الملف
-├── handlers/
-│   ├── __init__.py
-│   ├── common.py        # معالجات مشتركة (/start, /help, الأخطاء)
-│   ├── admin.py         # معالجات المدير (إضافة، تعديل، حذف...)
-│   ├── customer.py      # معالجات العملاء (بحث فقط)
-│   └── callbacks.py     # معالجات أزرار Inline Keyboard
-├── models/
-│   ├── __init__.py
-│   ├── user.py          # عمليات جدول المستخدمين
-│   ├── product.py       # عمليات جدول السلع
-│   └── transaction.py   # عمليات جدول العمليات
-└── utils/
-    ├── __init__.py
-    └── helpers.py       # دوال مساعدة (تنسيق، تنبيهات، تحليل)
+└── README.md            # هذا الملف
 ```
 
 ---
@@ -87,7 +69,7 @@ telegram-inventory-bot/
 3. احصل على **BOT_TOKEN**
 4. احصل على **Telegram ID** من [@userinfobot](https://t.me/userinfobot)
 
-### 2. إعداد Supabase
+### 2. إعداد قاعدة البيانات (Supabase)
 
 1. أنشئ حساباً مجانياً على [supabase.com](https://supabase.com)
 2. أنشئ مشروعاً جديداً
@@ -110,12 +92,14 @@ source venv/bin/activate  # Linux/Mac
 # تثبيت المكتبات
 pip install -r requirements.txt
 
-# إعداد متغيرات البيئة
-cp .env.example .env
-# عدّل .env وأضف قيمك الحقيقية
+# إعداد متغيرات البيئة - أنشئ ملف .env
+# BOT_TOKEN=your_bot_token
+# DATABASE_URL=postgresql://...
+# ADMIN_IDS=123456789
+# WEBHOOK_URL=  (اتركه فارغاً للتشغيل المحلي)
 
 # تشغيل البوت
-python main.py
+python bot.py
 ```
 
 ---
@@ -129,7 +113,7 @@ python main.py
 3. اربط مستودع GitHub الخاص بك
 4. عدّل الإعدادات:
    - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `python main.py`
+   - **Start Command:** `python bot.py`
    - **Runtime:** Python 3
 5. أضف متغيرات البيئة:
    - `BOT_TOKEN` = توكن البوت
@@ -227,6 +211,7 @@ python main.py
 | Render | استضافة البوت (مجاني) |
 | psycopg2 | موصل PostgreSQL |
 | python-dotenv | إدارة متغيرات البيئة |
+| aiohttp | خادم Webhook / Health |
 
 ---
 
