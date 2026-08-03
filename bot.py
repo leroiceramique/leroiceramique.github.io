@@ -1168,6 +1168,8 @@ async def users_command(update, context):
         msg_lines.append("  " + role_icon + " " + name)
     await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
 
+async def handle_admin_message(update, context):
+
 
 # ═══════════════════════════════════════════════════════════
 #  MESSAGE ROUTER
