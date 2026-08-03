@@ -27,6 +27,7 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
+RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
 
 # Email backup (optional — for daily auto-backup via email)
 SMTP_HOST = os.getenv("SMTP_HOST", "")         # e.g. smtp.gmail.com
@@ -66,9 +67,22 @@ def init_pool():
 
 
 def get_connection():
+    global _pool
     if _pool is None:
         init_pool()
-    return _pool.getconn()
+    try:
+        conn = _pool.getconn()
+        # Validate connection is still alive
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except Exception:
+        # Connection is dead, get a fresh one
+        try:
+            _pool.putconn(conn)
+        except Exception:
+            pass
+        return _pool.getconn()
 
 
 def release_connection(conn):
@@ -1444,18 +1458,26 @@ async def _daily_backup_loop(bot):
 
 
 async def _keep_alive(app):
-    """Self-ping to keep the Render service awake."""
-    port = int(os.getenv("PORT", 10000))
-    url = "http://0.0.0.0:" + str(port) + "/"
+    """Ping the external Render URL every 3 min to prevent spin-down."""
+    # Render auto-sets RENDER_EXTERNAL_URL (e.g. https://xxx.onrender.com)
+    external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
+    # Fallback for local testing
+    if not external_url:
+        port = int(os.getenv("PORT", 10000))
+        external_url = "http://127.0.0.1:" + str(port) + "/"
+    ping_url = external_url.rstrip("/") + "/"
+    logging.info("[KEEP-ALIVE] Pinging: " + ping_url + " every 3 min")
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                    if r.status != 200:
-                        logging.warning("[KEEP-ALIVE] Health check returned " + str(r.status))
+                async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    if r.status == 200:
+                        logging.debug("[KEEP-ALIVE] OK " + str(r.status))
+                    else:
+                        logging.warning("[KEEP-ALIVE] Status " + str(r.status))
         except Exception as e:
             logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
-        await asyncio.sleep(240)
+        await asyncio.sleep(180)
 
 
 
@@ -1479,7 +1501,6 @@ if __name__ == "__main__":
             webhook_path=webhook_path, url=url, port=port,
             drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
-        from aiohttp import web
         health_app = web.Application()
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
@@ -1488,7 +1509,7 @@ if __name__ == "__main__":
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
-            await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+            await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
