@@ -4,6 +4,7 @@ import datetime
 import logging
 import asyncio
 import aiohttp
+from aiohttp import web
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras
@@ -70,24 +71,44 @@ def get_connection():
     global _pool
     if _pool is None:
         init_pool()
-    try:
-        conn = _pool.getconn()
-        # Validate connection is still alive
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        return conn
-    except Exception:
-        # Connection is dead, get a fresh one
+    conn = None
+    for attempt in range(2):
         try:
-            _pool.putconn(conn)
+            conn = _pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return conn
         except Exception:
-            pass
-        return _pool.getconn()
+            # Connection is dead — close it properly
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    # All attempts failed — recreate the pool
+    logging.warning("[DB] All pool connections dead, recreating pool...")
+    try:
+        _pool.closeall()
+    except Exception:
+        pass
+    _pool = None
+    init_pool()
+    return _pool.getconn()
 
 
 def release_connection(conn):
+    if conn is None:
+        return
+    if conn.closed:
+        return
     if _pool:
-        _pool.putconn(conn)
+        try:
+            _pool.putconn(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 SCHEMA_SQL = """
@@ -276,7 +297,7 @@ def db_export_backup():
         conn.commit()
         return {
             "version": 2,
-            "date": _dt.datetime.utcnow().isoformat(),
+            "date": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             "products": products,
             "transactions": transactions,
             "users": users,
@@ -334,6 +355,7 @@ def db_import_backup(data):
     finally:
         release_connection(conn)
 
+# ═══════════════════════════════════════════════════════════
 #  PRODUCT FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
@@ -592,23 +614,21 @@ async def send_low_stock_alerts(bot):
         low_stock = get_low_stock_products()
         if not low_stock:
             return
-        lines = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636\u0646"]
+        lines = ["⚠️ تنبيه: مخزون منخفضن"]
         for p in low_stock:
             lines.append(
-                "  \u2022 " + p["name"]
-                + " \u2014 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(p["quantity"])
-                + " (\u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649: " + str(p["minimum_stock"]) + ")"
+                "  • " + p["name"]
+                + " — الكمية: " + str(p["quantity"])
+                + " (الحد الأدنى: " + str(p["minimum_stock"]) + ")"
             )
         text = "\n".join(lines)
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(chat_id=admin_id, text=text)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
+            except Exception as e:
+                logging.warning("[ALERT] Send failed for " + str(admin_id) + ": " + str(e))
+    except Exception as e:
+        logging.warning("[ALERT] Low stock check failed: " + str(e))
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "")
@@ -622,7 +642,10 @@ def parse_qty_input(text):
     if len(parts) != 2:
         return None
     try:
-        return int(parts[0]), int(parts[1])
+        pid, qty = int(parts[0]), int(parts[1])
+        if pid <= 0 or qty <= 0:
+            return None
+        return pid, qty
     except ValueError:
         return None
 
@@ -903,24 +926,6 @@ async def process_search(update, context, text, admin_view=False):
 # ═══════════════════════════════════════════════════════════
 
 
-async def show_products_list(bot, chat_id, next_state, prompt_text):
-    products = search_products("")
-    if not products:
-        await bot.send_message(chat_id=chat_id, text="\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639. \u0623\u0636\u0641 \u0633\u0644\u0639\u0627\u064b \u0623\u0648\u0644\u0627\u064b.", reply_markup=get_admin_keyboard())
-        return
-    lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
-    for p in products:
-        lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(p["quantity"]))
-    await bot.send_message(chat_id=chat_id, text="\n".join(lines))
-    context_ref = None  # Will be set by caller
-    await bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=get_input_keyboard())
-
-
-# ═══════════════════════════════════════════════════════════
-#  COMMANDS
-# ═══════════════════════════════════════════════════════════
-
-
 async def start_command(update, context):
     user = update.effective_user
     register_user(telegram_id=user.id, username=user.username)
@@ -1139,8 +1144,9 @@ async def users_command(update, context):
             cur.execute("SELECT * FROM users WHERE role IN ('admin', 'customer') ORDER BY role, created_at")
             approved = [dict(r) for r in cur.fetchall()]
         conn.commit()
-    except Exception:
+    except Exception as e:
         conn.rollback()
+        logging.error("[USERS] Failed to fetch approved users: " + str(e))
         approved = []
     finally:
         release_connection(conn)
@@ -1167,12 +1173,6 @@ async def users_command(update, context):
 #  MESSAGE ROUTER
 # ═══════════════════════════════════════════════════════════
 
-def _set_state_and_prompt(context, update, state, text, prompt):
-    context.user_data["state"] = state
-    return update.message.reply_text(text + "\n\n" + prompt, reply_markup=get_input_keyboard())
-
-
-async def handle_admin_message(update, context):
     state = context.user_data.get("state")
     text = update.message.text.strip()
     user = update.effective_user
@@ -1190,7 +1190,7 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_ADD_QTY:
-            products = search_products("")
+            products = get_all_products()
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639. \u0623\u0636\u0641 \u0633\u0644\u0639\u0627\u064b \u0623\u0648\u0644\u0627\u064b.", reply_markup=get_admin_keyboard())
                 return
@@ -1204,7 +1204,7 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_REMOVE_QTY:
-            products = search_products("")
+            products = get_all_products()
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
@@ -1224,7 +1224,7 @@ async def handle_admin_message(update, context):
             await send_transaction_log(bot, chat_id)
             return
         if text == BTN_EDIT:
-            products = search_products("")
+            products = get_all_products()
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
@@ -1240,7 +1240,7 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_DELETE:
-            products = search_products("")
+            products = get_all_products()
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
@@ -1379,7 +1379,6 @@ def build_application():
 #  DAILY AUTO-BACKUP
 # ═══════════════════════════════════════════════════════════
 
-_last_backup_date = ""
 
 
 def _send_backup_email(backup_bytes, filename):
@@ -1394,7 +1393,7 @@ def _send_backup_email(backup_bytes, filename):
         msg = MIMEMultipart()
         msg["From"] = SMTP_EMAIL
         msg["To"] = BACKUP_EMAIL
-        msg["Subject"] = "\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 - \u0627\u0644\u0645\u062e\u0632\u0646 " + datetime.datetime.now().strftime("%Y-%m-%d")
+        msg["Subject"] = "\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 - \u0627\u0644\u0645\u062e\u0632\u0646 " + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         body = ("\u0645\u0631\u062d\u0628\u0627\n"
                 + "\n"
                 + "\u0647\u0630\u0627 \u0645\u0644\u0641 \u0627\u0644\u0646\u0633\u062e \u0627\u0644\u0627\u062d\u062a\u064a\u0627\u0637\u064a \u0627\u0644\u064a\u0648\u0645\u064a \u0644\u0644\u0645\u062e\u0632\u0646.\n"
@@ -1419,10 +1418,7 @@ def _send_backup_email(backup_bytes, filename):
 
 
 async def _daily_backup(bot):
-    global _last_backup_date
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    if _last_backup_date == today:
-        return
     _last_backup_date = today
     try:
         import io
@@ -1450,34 +1446,38 @@ async def _daily_backup(bot):
 
 
 async def _daily_backup_loop(bot):
+    last_backup = ""
     while True:
         now = datetime.datetime.now(datetime.timezone.utc)
-        if now.hour == 23 and now.minute == 0:
+        today = now.strftime("%Y-%m-%d")
+        # 5-minute window (23:00-23:04 UTC = midnight Algeria)
+        if today != last_backup and 23 <= now.hour <= 23 and now.minute < 5:
             await _daily_backup(bot)
+            last_backup = today
         await asyncio.sleep(60)
 
 
 async def _keep_alive(app):
     """Ping the external Render URL every 3 min to prevent spin-down."""
-    # Render auto-sets RENDER_EXTERNAL_URL (e.g. https://xxx.onrender.com)
     external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
-    # Fallback for local testing
     if not external_url:
         port = int(os.getenv("PORT", 10000))
         external_url = "http://127.0.0.1:" + str(port) + "/"
     ping_url = external_url.rstrip("/") + "/"
-    logging.info("[KEEP-ALIVE] Pinging: " + ping_url + " every 3 min")
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    if r.status == 200:
-                        logging.debug("[KEEP-ALIVE] OK " + str(r.status))
-                    else:
+    logging.info("[KEEP-ALIVE] Target: " + ping_url)
+    # Reuse one session instead of creating new each time
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+    try:
+        while True:
+            try:
+                async with session.get(ping_url) as r:
+                    if r.status != 200:
                         logging.warning("[KEEP-ALIVE] Status " + str(r.status))
-        except Exception as e:
-            logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
-        await asyncio.sleep(180)
+            except Exception as e:
+                logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
+            await asyncio.sleep(180)
+    finally:
+        await session.close()
 
 
 
@@ -1491,7 +1491,6 @@ if __name__ == "__main__":
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
-        from aiohttp import web
         webhook_app = web.Application()
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
@@ -1520,7 +1519,7 @@ if __name__ == "__main__":
             await tg_app.shutdown()
         health_app.on_startup.append(on_startup)
         health_app.on_cleanup.append(on_cleanup)
-        web.run_app(health_app, host="0.0.0.0", port=render_port)
+        web.run_app(health_app, host="0.0.0.0", port=render_port, print=None, access_log=None)
     else:
         print("[BOT] Local polling mode")
         tg_app.run_polling(drop_pending_updates=True)
