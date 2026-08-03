@@ -36,6 +36,9 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")       # sender email
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # app password
 BACKUP_EMAIL = os.getenv("BACKUP_EMAIL", "")     # recipient email
+IMAP_HOST = os.getenv("IMAP_HOST", "")  # e.g. imap.gmail.com
+
+_last_backup_data = None  # keeps latest backup dict in memory
 
 
 _raw_admin_ids = os.getenv("ADMIN_IDS", "")
@@ -1239,28 +1242,26 @@ async def callback_approval_handler(update, context):
 # ── Backup Command ─────────────────────────────────────
 
 async def backup_command(update, context):
-    """Export all data as JSON file and send to admin."""
+    global _last_backup_data
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ للمديرين فقط.")
         return
     try:
         import io
+        from telegram import InputFile
         backup = db_export_backup()
+        _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
-        from telegram import InputFile
         now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M")
-        await update.message.reply_text("💾 جارٍ إعداد النسخة الاحتياطية...")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 استيراد هذه النسخة", callback_data="restore_last")],
+            [InlineKeyboardButton("✉️ استيراد من البريد", callback_data="restore_from_email")],
+        ])
         await update.message.reply_document(
             document=InputFile(io.BytesIO(file_bytes), filename="backup_" + now_str + ".json"),
-            caption=(
-                "💾 نسخة احتياطية كاملة\n"
-                "📄 السلع: " + str(len(backup["products"])) + "\n"
-                "📜 العمليات: " + str(len(backup["transactions"])) + "\n"
-                "👥 المستخدمين: " + str(len(backup["users"])) + "\n"
-                "💡 احفظ هذا الملف. \n"
-                "لإستيراد البيانات أرسله للبوت."
-            ),
+            caption="💾 نسخة احتياطية كاملة\n" + "📄 السلع: " + str(len(backup["products"])) + "\n" + "📜 العمليات: " + str(len(backup["transactions"])) + "\n" + "👥 المستخدمين: " + str(len(backup["users"])) + "\n" + "💡 حفظ الملف. لإستيراد البيانات أرسله للبوت.",
+            reply_markup=keyboard,
         )
     except Exception as e:
         await update.message.reply_text("❌ فشل النسخ الاحتياطي: " + str(e))
@@ -1321,6 +1322,96 @@ async def callback_restore_handler(update, context):
         await query.edit_message_text("\u274c \u062a\u0645 \u0625\u0644\u063a\u0627\u0621 \u0627\u0633\u062a\u064a\u0631\u0627\u062f \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a.")
         context.user_data.pop("restore_data", None)
 
+
+async def callback_restore_from_email_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("⏳ جارٍ البحث في البريد الإلكتروني...")
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, _fetch_latest_backup_from_email)
+    if not data:
+        try:
+            await query.edit_message_text("❌ لم يتم العثور على نسخة احتياطية في البريد.\n\nتأكد من:\n1. إعداد IMAP_HOST\n2. وجود نسخ مرسلة")
+        except Exception:
+            pass
+        return
+    if "products" not in data:
+        try:
+            await query.edit_message_text("❌ الملف غير صالح.")
+        except Exception:
+            pass
+        return
+    backup_date = data.get("date", "?")[:16]
+    prod_count = len(data.get("products", []))
+    tx_count = len(data.get("transactions", []))
+    context.user_data["email_restore_data"] = data
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ تأكيد", callback_data="email_restore_confirm"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="email_restore_cancel")],
+    ])
+    text = ("✉️ نسخة احتياطية من البريد:\n\n"
+            + "📅 التاريخ: " + backup_date + "\n"
+            + "📦 السلع: " + str(prod_count) + "\n"
+            + "📜 العمليات: " + str(tx_count) + "\n\n"
+            + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!")
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except Exception:
+        pass
+
+async def callback_restore_last_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not _last_backup_data:
+        await query.edit_message_text("❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
+        return
+    data = _last_backup_data
+    prod_count = len(data.get("products", []))
+    tx_count = len(data.get("transactions", []))
+    backup_date = data.get("date", "?")[:16]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ تأكيد استيراد", callback_data="last_restore_confirm"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="last_restore_cancel")],
+    ])
+    text = "💾 استيراد آخر نسخة احتياطية:\n\n" + "📅 التاريخ: " + backup_date + "\n" + "📦 السلع: " + str(prod_count) + "\n" + "📜 العمليات: " + str(tx_count) + "\n\n" + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!"
+    await query.edit_message_text(text, reply_markup=keyboard)
+
+
+async def callback_email_restore_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "email_restore_confirm":
+        restore_data = context.user_data.get("email_restore_data")
+        if not restore_data:
+            await query.edit_message_text("❌ لا يوجد بيانات.")
+            return
+        try:
+            result = db_import_backup(restore_data)
+            await query.edit_message_text(result)
+        except Exception as e:
+            await query.edit_message_text("❌ فشل الاستيراد: " + str(e))
+        context.user_data.pop("email_restore_data", None)
+    elif data == "email_restore_cancel":
+        await query.edit_message_text("❌ تم الإلغاء.")
+        context.user_data.pop("email_restore_data", None)
+
+async def callback_restore_last_confirm_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    global _last_backup_data
+    data = query.data
+    if data == "last_restore_confirm":
+        if not _last_backup_data:
+            await query.edit_message_text("❌ لا توجد نسخة.")
+            return
+        try:
+            result = db_import_backup(_last_backup_data)
+            await query.edit_message_text(result)
+        except Exception as e:
+            await query.edit_message_text("❌ فشل الاستيراد: " + str(e))
+    elif data == "last_restore_cancel":
+        await query.edit_message_text("❌ تم الإلغاء.")
 
 # ── Users Command ──
 
@@ -1517,7 +1608,7 @@ async def handle_customer_message(update, context):
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                    InlineKeyboardButton("➖ إخر27ج", callback_data="pact_rem_" + pid),
+                    InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
                 ],
                 [
                     InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
@@ -1544,12 +1635,12 @@ async def handle_customer_message(update, context):
             updated = db_update_quantity(product["id"], qty, "remove")
             log_transaction(product["id"], "remove", qty, user.id)
             icon = _product_status_icon(updated)
-            msg = "✅ تم الإخر27ج!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " كرتون " + icon
+            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " كرتون " + icon
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                    InlineKeyboardButton("➖ إخر27ج", callback_data="pact_rem_" + pid),
+                    InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
                 ],
                 [
                     InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
@@ -1630,6 +1721,10 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_"))
+    app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
+    app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
+    app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
+    app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
     app.add_handler(CommandHandler("backup", backup_command))
@@ -1645,6 +1740,47 @@ def build_application():
 # ═══════════════════════════════════════════════════════════
 
 
+
+def _fetch_latest_backup_from_email():
+    """Fetch latest backup JSON from email via IMAP. Returns dict or None."""
+    if not IMAP_HOST or not SMTP_EMAIL or not SMTP_PASSWORD:
+        return None
+    import imaplib
+    import email as email_lib
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST)
+        mail.login(SMTP_EMAIL, SMTP_PASSWORD)
+        mail.select("INBOX")
+        status, msg_ids = mail.search(None, '(SUBJECT "نسخة احتياطية")')
+        if status != "OK" or not msg_ids[0]:
+            mail.logout()
+            return None
+        id_list = msg_ids[0].split()
+        if not id_list:
+            mail.logout()
+            return None
+        latest_id = id_list[-1]
+        status, msg_data = mail.fetch(latest_id, "(RFC822)")
+        if status != "OK":
+            mail.logout()
+            return None
+        raw_email = msg_data[0][1]
+        msg = email_lib.message_from_bytes(raw_email)
+        json_data = None
+        for part in msg.walk():
+            cd = str(part.get("Content-Disposition", ""))
+            if "attachment" in cd:
+                fname = part.get_filename()
+                if fname and fname.endswith(".json"):
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        json_data = json.loads(payload.decode("utf-8"))
+                        break
+        mail.logout()
+        return json_data
+    except Exception as e:
+        logging.error("[IMAP] Failed to fetch backup: " + str(e))
+        return None
 
 def _send_backup_email(backup_bytes, filename):
     if not SMTP_EMAIL or not SMTP_PASSWORD or not BACKUP_EMAIL:
@@ -1683,29 +1819,20 @@ def _send_backup_email(backup_bytes, filename):
 
 
 async def _daily_backup(bot):
+    global _last_backup_data
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    _last_backup_date = today
     try:
-        import io
-        from telegram import InputFile
         backup = db_export_backup()
+        _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
         now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M")
         filename = "backup_" + now_str + ".json"
-        caption = ("\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 (" + now_str + ")\n"
-                  + "\U0001f4c4 \u0627\u0644\u0633\u0644\u0639: " + str(len(backup["products"])) + "\n"
-                  + "\U0001f4dc \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a: " + str(len(backup["transactions"])))
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_document(
-                    chat_id=admin_id,
-                    document=InputFile(io.BytesIO(file_bytes), filename=filename),
-                    caption=caption)
-            except Exception as e:
-                logging.error("[BACKUP] Telegram send failed for " + str(admin_id) + ": " + str(e))
-        _send_backup_email(file_bytes, filename)
-        logging.info("[BACKUP] Daily backup completed (" + today + ")")
+        sent = _send_backup_email(file_bytes, filename)
+        if sent:
+            logging.info("[BACKUP] Daily backup sent to email (" + today + ")")
+        else:
+            logging.warning("[BACKUP] Email not configured, backup saved in memory only")
     except Exception as e:
         logging.error("[BACKUP] Daily backup failed: " + str(e))
 

@@ -28,4 +28,7 @@ services:
         sync: false
       - key: BACKUP_EMAIL
         sync: false
+      # IMAP for importing backup from email
+      - key: IMAP_HOST
+        value: ""
     healthCheckPath: /
