@@ -4,11 +4,12 @@ import psycopg2
 import psycopg2.pool
 import psycopg2.extras
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -249,11 +250,11 @@ def db_update_quantity(product_id, change, transaction_type):
                 row = cur.fetchone()
                 if row and row["quantity"] < change:
                     raise ValueError(
-                        "\u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629 ("
+                        "\u0627\u0644\u0639\u062f\u062f \u0627\u0644\u0645\u0637\u0644\u0648\u0628 ("
                         + str(change)
-                        + ") \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0641\u0631 ("
+                        + " crt) \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0641\u0631 ("
                         + str(row["quantity"])
-                        + ")"
+                        + " crt)"
                     )
                 new_qty_expr = "GREATEST(quantity - %s, 0)"
             else:
@@ -371,8 +372,9 @@ def get_transactions(limit=20, offset=0):
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════
 
-STATE_ADD_PRODUCT = "waiting_add_product"
+STATE_ADD_NAME = "waiting_add_name"
 STATE_ADD_QTY = "waiting_add_qty"
+STATE_EXISTING_ADD_QTY = "waiting_existing_add_qty"
 STATE_REMOVE_QTY = "waiting_remove_qty"
 STATE_EDIT_PRODUCT = "waiting_edit_product"
 STATE_DELETE_PRODUCT = "waiting_delete_product"
@@ -398,13 +400,9 @@ def format_product_admin(product):
     qty = product["quantity"]
     min_stock = product["minimum_stock"]
     status = "\U0001f534" if qty <= min_stock else "\U0001f7e2"
-    loc = product.get("location", "") or "-"
     return (
         "\U0001f4e6 " + product["name"] + "\n"
-        "   \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty) + "\n"
-        "   \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649: " + str(min_stock) + "\n"
-        "   \u0627\u0644\u0645\u0643\u0627\u0646: " + loc + "\n"
-        "   \u0627\u0644\u062d\u0627\u0644\u0629: " + status
+        "   \u0627\u0644\u0639\u0644\u0628: " + str(qty) + " crt"
     )
 
 
@@ -441,18 +439,12 @@ async def send_low_stock_alerts(bot):
         pass
 
 
-def parse_add_input(text):
-    parts = [p.strip() for p in text.split(",")]
-    if not parts or not parts[0]:
-        return None
-    result = {"name": parts[0], "quantity": 0, "location": "", "minimum_stock": 5}
-    if len(parts) > 1 and parts[1].isdigit():
-        result["quantity"] = int(parts[1])
-    if len(parts) > 2 and parts[2]:
-        result["location"] = parts[2]
-    if len(parts) > 3 and parts[3].isdigit():
-        result["minimum_stock"] = int(parts[3])
-    return result
+def parse_crt_input(text):
+    """Parse quantity input: accepts '10', '10crt', '10 crt'."""
+    cleaned = text.strip().lower().replace(" ", "").replace("crt", "")
+    if cleaned.isdigit() and int(cleaned) >= 0:
+        return int(cleaned)
+    return None
 
 
 def parse_qty_input(text):
@@ -532,7 +524,7 @@ async def send_transaction_log(bot, chat_id):
         date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
         op = tx.get("operator_name") or "\u0645\u062c\u0647\u0648\u0644"
         sign = "+" if tx["type"] == "add" else "-"
-        lines.append(icon + " " + tx["product_name"] + " | " + sign + str(tx["quantity"]) + " | " + op + " | " + date_str)
+        lines.append(icon + " " + tx["product_name"] + " | " + sign + str(tx["quantity"]) + " crt | " + op + " | " + date_str)
     await bot.send_message(chat_id=chat_id, text="\n".join(lines))
 
 
@@ -541,31 +533,76 @@ async def send_transaction_log(bot, chat_id):
 # ═══════════════════════════════════════════════════════════
 
 
-async def process_add_product(update, context, text, telegram_id):
-    parsed = parse_add_input(text)
-    if not parsed:
-        await update.message.reply_text(
-            "\u274c \u062a\u0646\u0633\u064a\u0642 \u062e\u0627\u0637\u0626. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.",
-            reply_markup=get_input_keyboard(),
-        )
-        return
-    try:
-        product = db_add_product(
-            name=parsed["name"], quantity=parsed["quantity"],
-            location=parsed["location"], minimum_stock=parsed["minimum_stock"],
-        )
-        msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-    except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+# ── Add Product: Step-by-step ──────────────────────────
+
+async def ask_add_name(update, context):
+    """Step 1: Ask for product name."""
+    context.user_data["state"] = STATE_ADD_NAME
+    await update.message.reply_text(
+        "\U0001f4e6 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
+        reply_markup=get_input_keyboard(),
+    )
+
+
+async def ask_add_qty(update, context, product_name):
+    """Step 2: Ask for quantity (cartons)."""
+    context.user_data["state"] = STATE_ADD_QTY
+    context.user_data["add_name"] = product_name
+    await update.message.reply_text(
+        "\U0001f4e6 " + product_name + "\n\n"
+        "\U0001f4e6 \u0643\u0645 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628 (crt)?",
+        reply_markup=get_input_keyboard(),
+    )
+
+
+async def confirm_add_product(update, context, product_name, qty):
+    """Step 3: Show summary with inline confirm button."""
+    context.user_data["add_qty"] = qty
+    context.user_data["state"] = "waiting_add_confirm"
+    text = (
+        "\U0001f4cb \u062a\u0623\u0643\u064a\u062f \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629:\n\n"
+        "\U0001f4e6 \u0627\u0644\u0627\u0633\u0645: " + product_name + "\n"
+        "\U0001f4e6 \u0627\u0644\u0639\u0644\u0628: " + str(qty) + " crt"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("\u2705 \u062a\u0623\u0643\u064a\u062f", callback_data="add_confirm"),
+         InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="add_cancel")],
+    ])
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def callback_add_handler(update, context):
+    """Handle inline button press for add confirmation."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user_data = context.user_data
+
+    if data == "add_confirm":
+        name = user_data.get("add_name", "")
+        qty = user_data.get("add_qty", 0)
+        telegram_id = query.from_user.id
+        try:
+            product = db_add_product(name=name, quantity=qty)
+            msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
+            await query.edit_message_text(msg)
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
+        except Exception as e:
+            await query.edit_message_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e))
+        user_data.clear()
+
+    elif data == "add_cancel":
+        await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
+        user_data.clear()
+        await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
 
 
 async def process_add_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
         await update.message.reply_text(
-            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\u0645\u062b\u0627\u0644: 1, 25",
+            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\u0645\u062b\u0627\u0644: 1, 25",
             reply_markup=get_input_keyboard(),
         )
         return
@@ -577,7 +614,7 @@ async def process_add_quantity(update, context, text, telegram_id):
     try:
         updated = db_update_quantity(product_id, qty, "add")
         log_transaction(product_id, "add", qty, db_user["id"])
-        msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 " + str(qty) + " \u0644\u0640 " + updated["name"] + "\n\n" + format_product_admin(updated)
+        msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 " + str(qty) + " crt \u0644\u0640 " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -591,7 +628,7 @@ async def process_remove_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
         await update.message.reply_text(
-            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\u0645\u062b\u0627\u0644: 1, 10",
+            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\u0645\u062b\u0627\u0644: 1, 10",
             reply_markup=get_input_keyboard(),
         )
         return
@@ -603,7 +640,7 @@ async def process_remove_quantity(update, context, text, telegram_id):
     try:
         updated = db_update_quantity(product_id, qty, "remove")
         log_transaction(product_id, "remove", qty, db_user["id"])
-        msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c " + str(qty) + " \u0645\u0646 " + updated["name"] + "\n\n" + format_product_admin(updated)
+        msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c " + str(qty) + " crt \u0645\u0646 " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -617,7 +654,7 @@ async def process_edit_product(update, context, text, telegram_id):
     parts = [p.strip() for p in text.split(",")]
     if len(parts) < 2 or not parts[0].isdigit():
         await update.message.reply_text(
-            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u0645\u0643\u0627\u0646 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631, \u0627\u0644\u0631\u0641 B, 15",
+            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f\n\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631",
             reply_markup=get_input_keyboard(),
         )
         return
@@ -756,15 +793,7 @@ async def add_command(update, context):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
-    context.user_data["state"] = STATE_ADD_PRODUCT
-    await update.message.reply_text(
-        "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629\n\n"
-        "\u0623\u0631\u0633\u0644 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a \u0628\u0647\u0630\u0627 \u0627\u0644\u062a\u0646\u0633\u064a\u0642:\n"
-        "\u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629, \u0627\u0644\u0645\u0643\u0627\u0646, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\n"
-        "\u0645\u062b\u0627\u0644:\n\u0632\u064a\u062a 5 \u0644\u062a\u0631, 50, \u0627\u0644\u0631\u0641 A, 10\n\n"
-        "\u0623\u0648 \u0627\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637 (\u0627\u0644\u0643\u0645\u064a\u0629 = 0):\n\u062d\u0644\u064a\u0628",
-        reply_markup=get_input_keyboard(),
-    )
+    await ask_add_name(update, context)
 
 
 async def stock_command(update, context):
@@ -813,14 +842,7 @@ async def handle_admin_message(update, context):
     # No state: check button presses
     if state is None:
         if text == BTN_ADD:
-            context.user_data["state"] = STATE_ADD_PRODUCT
-            await update.message.reply_text(
-                "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629\n\n"
-                "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637, \u0623\u0648:\n"
-                "\u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629, \u0627\u0644\u0645\u0643\u0627\u0646, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\n"
-                "\u0645\u062b\u0627\u0644: \u062d\u0644\u064a\u0628\n\u0645\u062b\u0627\u0644: \u0632\u064a\u062a 5 \u0644\u062a\u0631, 50, \u0627\u0644\u0631\u0641 A, 10",
-                reply_markup=get_input_keyboard(),
-            )
+            await ask_add_name(update, context)
             return
 
         if text == BTN_SEARCH:
@@ -838,11 +860,11 @@ async def handle_admin_message(update, context):
                 return
             lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(p["quantity"]))
+                lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
             await update.message.reply_text("\n".join(lines))
-            context.user_data["state"] = STATE_ADD_QTY
+            context.user_data["state"] = STATE_EXISTING_ADD_QTY
             await update.message.reply_text(
-                "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0643\u0645\u064a\u0629\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\n\u0645\u062b\u0627\u0644: 1, 25",
+                "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0639\u0644\u0628\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\n\u0645\u062b\u0627\u0644: 1, 25",
                 reply_markup=get_input_keyboard(),
             )
             return
@@ -852,13 +874,13 @@ async def handle_admin_message(update, context):
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 \u0647\u0627\u064a \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(p["quantity"]))
+                lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
             await update.message.reply_text("\n".join(lines))
             context.user_data["state"] = STATE_REMOVE_QTY
             await update.message.reply_text(
-                "\u2796 \u0625\u062e\u0631\u0627\u062c \u0643\u0645\u064a\u0629\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0643\u0645\u064a\u0629\n\n\u0645\u062b\u0627\u0644: 1, 10",
+                "\u2796 \u0625\u062e\u0631\u0627\u062c \u0639\u0644\u0628\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\n\u0645\u062b\u0627\u0644: 1, 10",
                 reply_markup=get_input_keyboard(),
             )
             return
@@ -883,8 +905,8 @@ async def handle_admin_message(update, context):
             context.user_data["state"] = STATE_EDIT_PRODUCT
             await update.message.reply_text(
                 "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629\n\n"
-                "\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u0645\u0643\u0627\u0646 \u0627\u0644\u062c\u062f\u064a\u062f, \u0627\u0644\u062d\u062f \u0627\u0644\u0623\u062f\u0646\u0649\n\n"
-                "\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631, \u0627\u0644\u0631\u0641 B, 15",
+                "\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f\n\n"
+                "\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631",
                 reply_markup=get_input_keyboard(),
             )
             return
@@ -925,9 +947,26 @@ async def handle_admin_message(update, context):
         await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
         return
 
-    if state == STATE_ADD_PRODUCT:
-        await process_add_product(update, context, text, user.id)
+    if state == STATE_ADD_NAME:
+        product_name = text.strip()
+        if not product_name:
+            await update.message.reply_text(
+                "\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.",
+                reply_markup=get_input_keyboard(),
+            )
+            return
+        await ask_add_qty(update, context, product_name)
     elif state == STATE_ADD_QTY:
+        qty = parse_crt_input(text)
+        if qty is None:
+            await update.message.reply_text(
+                "\u274c \u0623\u0631\u0633\u0644 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628.\n\u0645\u062b\u0627\u0644: 10 \u0623\u0648 10crt",
+                reply_markup=get_input_keyboard(),
+            )
+            return
+        product_name = context.user_data.get("add_name", "")
+        await confirm_add_product(update, context, product_name, qty)
+    elif state == STATE_EXISTING_ADD_QTY:
         await process_add_quantity(update, context, text, user.id)
     elif state == STATE_REMOVE_QTY:
         await process_remove_quantity(update, context, text, user.id)
@@ -1008,6 +1047,7 @@ def build_application():
     app.add_handler(CommandHandler("stock", stock_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
     app.add_error_handler(error_handler)
     return app
