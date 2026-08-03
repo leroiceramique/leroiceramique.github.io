@@ -309,15 +309,10 @@ def db_import_backup(data):
                 tx_count += 1
 
         conn.commit()
-        return (
-            "✅ تم استيراع البيانات:
-"
-            "  المستخدمين: " + str(user_count) + "
-"
-            "  السلع: " + str(prod_count) + "
-"
-            "  العمليات: " + str(tx_count)
-        )
+        return ("✅ تم استيراد البيانات:\n"
+            "  المستخدمين: " + str(user_count) + "\n"
+            "  السلع: " + str(prod_count) + "\n"
+            "  العمليات: " + str(tx_count))
     except Exception as e:
         conn.rollback()
         raise
@@ -547,6 +542,8 @@ BTN_LOG = "\U0001f4dc \u0633\u062c\u0644 \u0627\u0644\u0639\u0645\u0644\u064a\u0
 BTN_EDIT = "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629"
 BTN_DELETE = "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629"
 BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
+BTN_USERS = "⚙️ المستخدمين"
+BTN_BACKUP = "💾 نسخ احتياطي"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -708,7 +705,7 @@ async def ask_add_qty(update, context, product_name):
     context.user_data["state"] = STATE_ADD_QTY
     context.user_data["add_name"] = product_name
     await update.message.reply_text(
-        "\U0001f4e6 " + product_name + "\n\n"
+        "\U0001f4e6 " + product_name + "\n"
         "\U0001f4e6 \u0643\u0645 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628 (crt)?",
         reply_markup=get_input_keyboard(),
     )
@@ -1001,18 +998,15 @@ async def callback_approval_handler(update, context):
         user = approve_user(target_id)
         if user:
             await query.edit_message_text(
-                "✅ تم تفعيل المستخدم:
-"
+                "\u2705 \u062a\u0645 \u062a\u0641\u0639\u064a\u0644 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:\n"
                 "👤 " + (user.get("username") or str(user["telegram_id"]))
             )
             try:
                 await context.bot.send_message(
                     chat_id=target_id,
-                    text="✅ تم تفعيل حسابك!
-"
-                    "الآن يمكنك البحث في المخزون.
-"
-                    "أرسل اسم السلعة لمعرفة توفرها.",
+                    text="\u2705 \u062a\u0645 \u062a\u0641\u0639\u064a\u0644 \u062d\u0633\u0627\u0628\u0643!\n"
+                    "\u0627\u0644\u0622\u0646 \u064a\u0645\u0643\u0646\u0643 \u0627\u0644\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646.\n"
+                    "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u062a\u0648\u0641\u0631\u0647\u0627.",
                 )
             except Exception:
                 pass
@@ -1049,17 +1043,12 @@ async def backup_command(update, context):
         await update.message.reply_document(
             document=InputFile(io.BytesIO(file_bytes), filename="backup_" + now_str + ".json"),
             caption=(
-                "💾 نسخة احتياطية كاملة
-"
-                "📄 السلع: " + str(len(backup["products"])) + "
-"
-                "📜 العمليات: " + str(len(backup["transactions"])) + "
-"
-                "👥 المستخدمين: " + str(len(backup["users"])) + "
-"
-                "
-💡 احفظ هذا الملف. "
-                "لإستيراع البيانات أرسله للبوت."
+                "💾 نسخة احتياطية كاملة\n"
+                "📄 السلع: " + str(len(backup["products"])) + "\n"
+                "📜 العمليات: " + str(len(backup["transactions"])) + "\n"
+                "👥 المستخدمين: " + str(len(backup["users"])) + "\n"
+                "💡 احفظ هذا الملف. \n"
+                "لإستيراد البيانات أرسله للبوت."
             ),
         )
     except Exception as e:
@@ -1084,55 +1073,49 @@ async def handle_backup_document(update, context):
             return
         context.user_data["restore_data"] = data
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚠️ تأكيد استيراع", callback_data="restore_confirm"),
+            [InlineKeyboardButton("⚠️ تأكيد استيراد", callback_data="restore_confirm"),
              InlineKeyboardButton("❌ إلغاء", callback_data="restore_cancel")],
         ])
         prod_count = len(data.get("products", []))
         tx_count = len(data.get("transactions", []))
         await update.message.reply_text(
-            "⚠️ تأكيد استيراع البيانات:
+            "⚠️ تأكيد استيراد البيانات:\n\n"
+            "📦 السلع: " + str(prod_count) + "\n"
+            "📜 العمليات: " + str(tx_count) + "\n\n"
 
-"
-            "📦 السلع: " + str(prod_count) + "
-"
-            "📜 العمليات: " + str(tx_count) + "
-
-"
-            "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!",
+            "\U0001f534 \u062a\u0646\u0628\u064a\u0647: \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a \u0627\u0644\u062d\u0627\u0644\u064a\u0629 \u0648\u0627\u0633\u062a\u0628\u062f\u0627\u0644\u0647\u0627!",
             reply_markup=keyboard,
         )
     except Exception as e:
-        await update.message.reply_text("❌ فشل قراءة الملف: " + str(e))
+        await update.message.reply_text("\u274c \u0641\u0634\u0644 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0645\u0644\u0641: " + str(e))
 
 
 async def callback_restore_handler(update, context):
-    """Handle confirm/cancel for data restore."""
     query = update.callback_query
     await query.answer()
     data = query.data
     if data == "restore_confirm":
         restore_data = context.user_data.get("restore_data")
         if not restore_data:
-            await query.edit_message_text("❌ لا يوجد بيانات للاستيراع.")
+            await query.edit_message_text("\u274c \u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u064a\u0627\u0646\u0627\u062a \u0644\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f.")
             return
         try:
             result = db_import_backup(restore_data)
             await query.edit_message_text(result)
             context.user_data.pop("restore_data", None)
         except Exception as e:
-            await query.edit_message_text("❌ فشل الاستيراع: " + str(e))
+            await query.edit_message_text("\u274c \u0641\u0634\u0644 \u0627\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f: " + str(e))
             context.user_data.pop("restore_data", None)
     elif data == "restore_cancel":
-        await query.edit_message_text("❌ تم إلغاء استيراع البيانات.")
+        await query.edit_message_text("\u274c \u062a\u0645 \u0625\u0644\u063a\u0627\u0621 \u0627\u0633\u062a\u064a\u0631\u0627\u062f \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a.")
         context.user_data.pop("restore_data", None)
 
 
-# ── Users Command ──────────────────────────────────────
+# ── Users Command ──
 
 async def users_command(update, context):
-    """Show pending users and all approved users."""
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ للمديرين فقط.")
+        await update.message.reply_text("\u274c \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     pending = get_pending_users()
     conn = get_connection()
@@ -1146,33 +1129,30 @@ async def users_command(update, context):
         approved = []
     finally:
         release_connection(conn)
-    lines = ["⚙️ إدارة المستخدمين
-"]
+    msg_lines = ["\u2699\ufe0f \u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645\u064a\u0646\n"]
     if pending:
-        lines.append("🔔 منتظرين الموافقة (" + str(len(pending)) + "):")
+        msg_lines.append("\U0001f514 \u0645\u0646\u062a\u0638\u0631\u064a\u0646 \u0627\u0644\u0645\u0648\u0627\u0641\u0642\u0629 (" + str(len(pending)) + "):")
         for u in pending:
             name = u.get("username") or str(u["telegram_id"])
             date_str = u["created_at"].strftime("%m/%d %H:%M")
-            lines.append("  • " + name + " (" + date_str + ")")
-        lines.append("")
+            msg_lines.append("  \u2022 " + name + " (" + date_str + ")")
+        msg_lines.append("")
     else:
-        lines.append("✅ لا يوجد طلبات معلقة.
-")
-    lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
+        msg_lines.append("\u2705 \u0644\u0627 \u064a\u0648\u062c\u062f \u0637\u0644\u0628\u0627\u062a \u0645\u0639\u0644\u0642\u0629.")
+    msg_lines.append("")
+    msg_lines.append("\u2705 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645\u0648\u0646 \u0627\u0644\u0645\u0641\u0639\u0644\u064a\u0646 (" + str(len(approved)) + "):")
     for u in approved:
-        role_icon = "👑" if u["role"] == "admin" else "👤"
+        role_icon = "\U0001f451" if u["role"] == "admin" else "\U0001f464"
         name = u.get("username") or str(u["telegram_id"])
-        lines.append("  " + role_icon + " " + name)
-    await update.message.reply_text("
-".join(lines), reply_markup=get_admin_keyboard())
+        msg_lines.append("  " + role_icon + " " + name)
+    await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
 
 
+# ═══════════════════════════════════════════════════════════
 #  MESSAGE ROUTER
 # ═══════════════════════════════════════════════════════════
 
-
 def _set_state_and_prompt(context, update, state, text, prompt):
-    """Helper to set state and send prompt with input keyboard."""
     context.user_data["state"] = state
     return update.message.reply_text(text + "\n\n" + prompt, reply_markup=get_input_keyboard())
 
@@ -1184,130 +1164,106 @@ async def handle_admin_message(update, context):
     chat_id = update.effective_chat.id
     bot = context.bot
 
-    # No state: check button presses
     if state is None:
         if text == BTN_ADD:
             await ask_add_name(update, context)
             return
-
         if text == BTN_SEARCH:
             context.user_data["state"] = STATE_SEARCH_ADMIN
             await update.message.reply_text(
                 "\U0001f50d \u0627\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
-                reply_markup=get_input_keyboard(),
-            )
+                reply_markup=get_input_keyboard())
             return
-
         if text == BTN_ADD_QTY:
             products = search_products("")
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639. \u0623\u0636\u0641 \u0633\u0644\u0639\u0627\u064b \u0623\u0648\u0644\u0627\u064b.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
-            await update.message.reply_text("\n".join(lines))
+                ls.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+            await update.message.reply_text("\n".join(ls))
             context.user_data["state"] = STATE_EXISTING_ADD_QTY
             await update.message.reply_text(
                 "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0639\u0644\u0628\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\n\u0645\u062b\u0627\u0644: 1, 25",
-                reply_markup=get_input_keyboard(),
-            )
+                reply_markup=get_input_keyboard())
             return
-
         if text == BTN_REMOVE_QTY:
             products = search_products("")
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
-            await update.message.reply_text("\n".join(lines))
+                ls.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+            await update.message.reply_text("\n".join(ls))
             context.user_data["state"] = STATE_REMOVE_QTY
             await update.message.reply_text(
                 "\u2796 \u0625\u062e\u0631\u0627\u062c \u0639\u0644\u0628\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\n\u0645\u062b\u0627\u0644: 1, 10",
-                reply_markup=get_input_keyboard(),
-            )
+                reply_markup=get_input_keyboard())
             return
-
         if text == BTN_STOCK:
             await send_stock_report(bot, chat_id)
             return
-
         if text == BTN_LOG:
             await send_transaction_log(bot, chat_id)
             return
-
         if text == BTN_EDIT:
             products = search_products("")
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
-            await update.message.reply_text("\n".join(lines))
+                ls.append("  #" + str(p["id"]) + " " + p["name"])
+            await update.message.reply_text("\n".join(ls))
             context.user_data["state"] = STATE_EDIT_PRODUCT
             await update.message.reply_text(
                 "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629\n\n"
-                "\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f\n\n"
-                "\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631",
-                reply_markup=get_input_keyboard(),
-            )
+                + "\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f\n\n"
+                + "\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631",
+                reply_markup=get_input_keyboard())
             return
-
         if text == BTN_DELETE:
             products = search_products("")
             if not products:
                 await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
-            await update.message.reply_text("\n".join(lines))
+                ls.append("  #" + str(p["id"]) + " " + p["name"])
+            await update.message.reply_text("\n".join(ls))
             context.user_data["state"] = STATE_DELETE_PRODUCT
             await update.message.reply_text(
                 "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629\n\n"
-                "\u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637:\n"
-                "\u0645\u062b\u0627\u0644: 5\n\n"
-                "\u26a0\ufe0f \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0648\u062c\u0645\u064a\u0639 \u0633\u062c\u0644\u0627\u062a\u0647\u0627 \u0646\u0647\u0627\u0626\u064a\u0627\u064b!",
-                reply_markup=get_input_keyboard(),
-            )
+                + "\u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637:\n"
+                + "\u0645\u062b\u0627\u0644: 5\n\n"
+                + "\u26a0\ufe0f \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0648\u062c\u0645\u064a\u0639 \u0633\u062c\u0644\u0627\u062a\u0647\u0627 \u0646\u0647\u0627\u0626\u064a\u0627\u064b!",
+                reply_markup=get_input_keyboard())
             return
-
         if text == BTN_CANCEL:
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
             return
-
-        # Unknown text without state
         await update.message.reply_text(
             "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:\n/add, /stock, /log, /search",
-            reply_markup=get_admin_keyboard(),
-        )
+            reply_markup=get_admin_keyboard())
         return
 
-    # In a state: process the input
+    # In a state
     if text == BTN_CANCEL:
         context.user_data.clear()
         await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
         return
-
     if state == STATE_ADD_NAME:
         product_name = text.strip()
         if not product_name:
-            await update.message.reply_text(
-                "\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.",
-                reply_markup=get_input_keyboard(),
-            )
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
             return
         await ask_add_qty(update, context, product_name)
     elif state == STATE_ADD_QTY:
         qty = parse_crt_input(text)
         if qty is None:
-            await update.message.reply_text(
-                "\u274c \u0623\u0631\u0633\u0644 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628.\n\u0645\u062b\u0627\u0644: 10 \u0623\u0648 10crt",
-                reply_markup=get_input_keyboard(),
-            )
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628.\n\u0645\u062b\u0627\u0644: 10 \u0623\u0648 10crt", reply_markup=get_input_keyboard())
             return
         product_name = context.user_data.get("add_name", "")
         await confirm_add_product(update, context, product_name, qty)
@@ -1323,10 +1279,7 @@ async def handle_admin_message(update, context):
         await process_search(update, context, text, admin_view=True)
     else:
         context.user_data.clear()
-        await update.message.reply_text(
-            "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.",
-            reply_markup=get_admin_keyboard(),
-        )
+        await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
 
 
 async def handle_customer_message(update, context):
@@ -1340,19 +1293,12 @@ async def handle_customer_message(update, context):
 async def route_message(update, context):
     user = update.effective_user
     text = update.message.text.strip()
-
-    # Block pending (unapproved) users from everything except /start and /cancel
     if not is_admin(user.id) and not is_approved(user.id):
         if text == "/cancel":
-            await update.message.reply_text("❌ تم الإلغاء.")
+            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         elif text != "/start":
-            await update.message.reply_text(
-                "⏳ حسابك قيد المراجعة.
-"
-                "يجب الانتظار حتى يفعلك المدير."
-            )
+            await update.message.reply_text("\u23f3 \u062d\u0633\u0627\u0628\u0643 \u0642\u064a\u062f \u0627\u0644\u0645\u0631\u0627\u062c\u0639\u0629.\n\u064a\u062c\u0628 \u0627\u0644\u0627\u0646\u062a\u0638\u0627\u0631 \u062d\u062a\u0649 \u064a\u0641\u0639\u0644\u0643 \u0627\u0644\u0645\u062f\u064a\u0631.")
         return
-
     if text == "/cancel":
         context.user_data.clear()
         if is_admin(user.id):
@@ -1360,9 +1306,7 @@ async def route_message(update, context):
         else:
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         return
-
     register_user(telegram_id=user.id, username=user.username)
-
     if is_admin(user.id):
         await handle_admin_message(update, context)
     else:
@@ -1372,7 +1316,6 @@ async def route_message(update, context):
 # ═══════════════════════════════════════════════════════════
 #  ERROR HANDLER
 # ═══════════════════════════════════════════════════════════
-
 
 async def error_handler(update, context):
     import traceback
@@ -1389,10 +1332,7 @@ async def error_handler(update, context):
 #  BUILD APP
 # ═══════════════════════════════════════════════════════════
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 
 def build_application():
@@ -1416,10 +1356,6 @@ def build_application():
 
 
 # ═══════════════════════════════════════════════════════════
-#  ENTRY POINT
-# ═══════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════
 #  DAILY AUTO-BACKUP
 # ═══════════════════════════════════════════════════════════
 
@@ -1427,7 +1363,6 @@ _last_backup_date = ""
 
 
 def _send_backup_email(backup_bytes, filename):
-    """Send backup file via email (SMTP). Returns True/False."""
     if not SMTP_EMAIL or not SMTP_PASSWORD or not BACKUP_EMAIL:
         return False
     import smtplib
@@ -1439,18 +1374,13 @@ def _send_backup_email(backup_bytes, filename):
         msg = MIMEMultipart()
         msg["From"] = SMTP_EMAIL
         msg["To"] = BACKUP_EMAIL
-        msg["Subject"] = "💾 نسخة احتياطية - المخزن " + datetime.datetime.now().strftime("%Y-%m-%d")
-        body = (
-            "مرحبا،
-
-"
-            "هذا ملف النسخ الاحتياطي اليومي للمخزن.
-"
-            "احفظه في مكان آمن.
-
-"
-            "لإستيراع البيانات: أرسل هذا الملف للبوت في تيليغرام."
-        )
+        msg["Subject"] = "\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 - \u0627\u0644\u0645\u062e\u0632\u0646 " + datetime.datetime.now().strftime("%Y-%m-%d")
+        body = ("\u0645\u0631\u062d\u0628\u0627\n"
+                + "\n"
+                + "\u0647\u0630\u0627 \u0645\u0644\u0641 \u0627\u0644\u0646\u0633\u062e \u0627\u0644\u0627\u062d\u062a\u064a\u0627\u0637\u064a \u0627\u0644\u064a\u0648\u0645\u064a \u0644\u0644\u0645\u062e\u0632\u0646.\n"
+                + "\u0627\u062d\u0641\u0638\u0647 \u0641\u064a \u0645\u0643\u0627\u0646 \u0622\u0645\u0646.\n"
+                + "\n"
+                + "\u0644\u0625\u0633\u062a\u064a\u0631\u0627\u062f \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a: \u0623\u0631\u0633\u0644 \u0647\u0630\u0627 \u0627\u0644\u0645\u0644\u0641 \u0644\u0644\u0628\u0648\u062a \u0641\u064a \u062a\u064a\u0644\u064a\u063a\u0631\u0627\u0645.")
         msg.attach(MIMEText(body, "plain", "utf-8"))
         part = MIMEBase("application", "json")
         part.set_payload(backup_bytes)
@@ -1469,11 +1399,10 @@ def _send_backup_email(backup_bytes, filename):
 
 
 async def _daily_backup(bot):
-    """Generate backup and send to admins via Telegram + optional email."""
     global _last_backup_date
     today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
     if _last_backup_date == today:
-        return  # Already backed up today
+        return
     _last_backup_date = today
     try:
         import io
@@ -1483,24 +1412,17 @@ async def _daily_backup(bot):
         file_bytes = json_str.encode("utf-8")
         now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
         filename = "backup_" + now_str + ".json"
-        caption = (
-            "💾 نسخة احتياطية تلقائية (" + now_str + ")
-"
-            "📄 السلع: " + str(len(backup["products"])) + "
-"
-            "📜 العمليات: " + str(len(backup["transactions"]))
-        )
-        # Send to all admins via Telegram
+        caption = ("\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 (" + now_str + ")\n"
+                  + "\U0001f4c4 \u0627\u0644\u0633\u0644\u0639: " + str(len(backup["products"])) + "\n"
+                  + "\U0001f4dc \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a: " + str(len(backup["transactions"])))
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_document(
                     chat_id=admin_id,
                     document=InputFile(io.BytesIO(file_bytes), filename=filename),
-                    caption=caption,
-                )
+                    caption=caption)
             except Exception as e:
                 logging.error("[BACKUP] Telegram send failed for " + str(admin_id) + ": " + str(e))
-        # Send via email (optional)
         _send_backup_email(file_bytes, filename)
         logging.info("[BACKUP] Daily backup completed (" + today + ")")
     except Exception as e:
@@ -1508,16 +1430,14 @@ async def _daily_backup(bot):
 
 
 async def _daily_backup_loop(bot):
-    """Background task: check every 60s if it's midnight Algeria time (UTC+1 = 23:00 UTC)."""
     while True:
         now = datetime.datetime.utcnow()
-        # Midnight Algeria = 23:00 UTC
         if now.hour == 23 and now.minute == 0:
             await _daily_backup(bot)
-        await asyncio.sleep(60)  # check every minute
+        await asyncio.sleep(60)
+
 
 async def _keep_alive(app):
-    """Background task: ping own health endpoint every 4 min to prevent Render sleep."""
     import aiohttp
     port = int(os.getenv("PORT", 10000))
     url = "http://0.0.0.0:" + str(port) + "/health"
@@ -1528,68 +1448,49 @@ async def _keep_alive(app):
                     pass
         except Exception:
             pass
-        await asyncio.sleep(240)  # 4 minutes
+        await asyncio.sleep(240)
 
 
 if __name__ == "__main__":
     init_db()
     init_pool()
-
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
-
     if WEBHOOK_URL:
-        # Webhook mode (always instant response)
         port = render_port or 10000
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
         from aiohttp import web
         webhook_app = web.Application()
-
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
-
         webhook_app.router.add_get("/health", health)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
-            drop_pending_updates=True, webhook_app=webhook_app,
-        )
-
+            drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
-        # Polling + health server + keep-alive (stays awake 24/7)
         from aiohttp import web
         health_app = web.Application()
-
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
-
         health_app.router.add_get("/health", health)
-
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
-            await tg_app.updater.start_polling(
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES,
-            )
-            # Start keep-alive background task
+            await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
             asyncio.create_task(_keep_alive(aio_app))
-            # Start daily auto-backup (midnight Algeria time)
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
-
         async def on_cleanup(aio_app):
             await tg_app.updater.stop()
             await tg_app.stop()
             await tg_app.shutdown()
-
         health_app.on_startup.append(on_startup)
         health_app.on_cleanup.append(on_cleanup)
         web.run_app(health_app, host="0.0.0.0", port=render_port)
-
     else:
-        # Local polling (no server)
         print("[BOT] Local polling mode")
         tg_app.run_polling(drop_pending_updates=True)
+

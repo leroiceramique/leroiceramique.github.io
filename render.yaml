@@ -17,15 +17,15 @@ services:
         sync: false
       - key: PORT
         value: "10000"
-      # Email backup (optional - for daily auto-backup via email)
-      # - key: SMTP_HOST
-      #   value: "smtp.gmail.com"
-      # - key: SMTP_PORT
-      #   value: "587"
-      # - key: SMTP_EMAIL
-      #   sync: false
-      # - key: SMTP_PASSWORD
-      #   sync: false
-      # - key: BACKUP_EMAIL
-      #   sync: false
+      # Email backup (optional - uncomment to enable daily email backup)
+      - key: SMTP_HOST
+        value: ""
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_EMAIL
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: BACKUP_EMAIL
+        sync: false
     healthCheckPath: /health
