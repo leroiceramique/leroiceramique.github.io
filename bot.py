@@ -1,4 +1,6 @@
 import os
+import json
+import datetime
 import logging
 import asyncio
 import psycopg2
@@ -70,7 +72,7 @@ CREATE TABLE IF NOT EXISTS users (
     id          SERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE NOT NULL,
     username    VARCHAR(255),
-    role        VARCHAR(20) NOT NULL DEFAULT 'customer' CHECK (role IN ('admin', 'customer')),
+    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -105,6 +107,16 @@ def init_db():
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            # Migration: add 'pending' role for existing databases
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                ALTER TABLE users ADD CONSTRAINT users_role_check
+                    CHECK (role IN ('admin', 'customer', 'pending'));
+                ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
+            """)
         conn.commit()
         print("[DB] Schema initialized successfully.")
     except Exception as e:
@@ -123,15 +135,16 @@ def register_user(telegram_id, username=None):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            role = "admin" if telegram_id in ADMIN_IDS else "customer"
+            role = "admin" if telegram_id in ADMIN_IDS else "pending"
             cur.execute("""
                 INSERT INTO users (telegram_id, username, role)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
-                    role = EXCLUDED.role,
                     active = TRUE
+                -- NEVER downgrade role on re-register
+                -- (admin stays admin, approved customer stays customer)
                 RETURNING id, telegram_id, username, role, active, created_at
             """, (telegram_id, username, role))
             user = cur.fetchone()
@@ -167,6 +180,142 @@ def is_admin(telegram_id):
 
 
 # ═══════════════════════════════════════════════════════════
+
+
+def is_approved(telegram_id):
+    """Check if user is approved (admin or customer, not pending)."""
+    if telegram_id in ADMIN_IDS:
+        return True
+    user = get_user(telegram_id)
+    return user is not None and user["role"] in ("admin", "customer")
+
+
+def get_pending_users():
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE role = 'pending' ORDER BY created_at DESC")
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def approve_user(telegram_id):
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'pending' RETURNING *",
+                (telegram_id,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def reject_user(telegram_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE telegram_id = %s AND role = 'pending'", (telegram_id,))
+            deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def db_export_backup():
+    """Export all data as a dict (products + transactions + users)."""
+    import datetime as _dt
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products ORDER BY id")
+            products = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM transactions ORDER BY id")
+            transactions = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT id, telegram_id, username, role, active, created_at FROM users ORDER BY id")
+            users = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return {
+            "version": 2,
+            "date": _dt.datetime.utcnow().isoformat(),
+            "products": products,
+            "transactions": transactions,
+            "users": users,
+        }
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def db_import_backup(data):
+    """Restore data from a backup dict. Returns summary string."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM transactions")
+            cur.execute("DELETE FROM products")
+            cur.execute("DELETE FROM users")
+            cur.execute("ALTER SEQUENCE products_id_seq RESTART WITH 1")
+            cur.execute("ALTER SEQUENCE transactions_id_seq RESTART WITH 1")
+            cur.execute("ALTER SEQUENCE users_id_seq RESTART WITH 1")
+
+            user_count = 0
+            for u in data.get("users", []):
+                cur.execute(
+                    "INSERT INTO users (telegram_id, username, role, active, created_at) VALUES (%s, %s, %s, %s, %s)",
+                    (u["telegram_id"], u.get("username"), u.get("role", "customer"),
+                     u.get("active", True), u.get("created_at")))
+                user_count += 1
+
+            prod_count = 0
+            for p in data.get("products", []):
+                cur.execute(
+                    "INSERT INTO products (name, quantity, location, minimum_stock, created_at) VALUES (%s, %s, %s, %s, %s)",
+                    (p["name"], p["quantity"], p.get("location", ""),
+                     p.get("minimum_stock", 5), p.get("created_at")))
+                prod_count += 1
+
+            tx_count = 0
+            for t in data.get("transactions", []):
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, date) VALUES (%s, %s, %s, %s, %s)",
+                    (t["product_id"], t["type"], t["quantity"], t.get("user_id"), t.get("date")))
+                tx_count += 1
+
+        conn.commit()
+        return (
+            "✅ تم استيراع البيانات:
+"
+            "  المستخدمين: " + str(user_count) + "
+"
+            "  السلع: " + str(prod_count) + "
+"
+            "  العمليات: " + str(tx_count)
+        )
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
 #  PRODUCT FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
@@ -470,6 +619,7 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_STOCK, BTN_LOG],
             [BTN_EDIT, BTN_DELETE],
+            [BTN_USERS, BTN_BACKUP],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -823,6 +973,192 @@ async def search_command(update, context):
 
 
 # ═══════════════════════════════════════════════════════════
+
+# ── Whitelist: Approval Handler ───────────────────────
+
+async def callback_approval_handler(update, context):
+    """Handle approve/reject for pending users."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "approve_123456" or "reject_123456"
+    parts = data.split("_", 1)
+    if len(parts) != 2:
+        return
+    action, tid_str = parts[0], parts[1]
+    if not tid_str.isdigit():
+        return
+    target_id = int(tid_str)
+
+    if action == "approve":
+        user = approve_user(target_id)
+        if user:
+            await query.edit_message_text(
+                "✅ تم تفعيل المستخدم:
+"
+                "👤 " + (user.get("username") or str(user["telegram_id"]))
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text="✅ تم تفعيل حسابك!
+"
+                    "الآن يمكنك البحث في المخزون.
+"
+                    "أرسل اسم السلعة لمعرفة توفرها.",
+                )
+            except Exception:
+                pass
+        else:
+            await query.edit_message_text("⚠️ المستخدم غير موجود أو مفعل بالفعل.")
+
+    elif action == "reject":
+        deleted = reject_user(target_id)
+        if deleted:
+            await query.edit_message_text("❌ تم رفض و حذف المستخدم.")
+            try:
+                await context.bot.send_message(chat_id=target_id, text="❌ تم رفض طلبك.")
+            except Exception:
+                pass
+        else:
+            await query.edit_message_text("⚠️ المستخدم غير موجود.")
+
+
+# ── Backup Command ─────────────────────────────────────
+
+async def backup_command(update, context):
+    """Export all data as JSON file and send to admin."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ للمديرين فقط.")
+        return
+    try:
+        import io
+        backup = db_export_backup()
+        json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
+        file_bytes = json_str.encode("utf-8")
+        from telegram import InputFile
+        now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
+        await update.message.reply_text("💾 جارٍ إعداد النسخة الاحتياطية...")
+        await update.message.reply_document(
+            document=InputFile(io.BytesIO(file_bytes), filename="backup_" + now_str + ".json"),
+            caption=(
+                "💾 نسخة احتياطية كاملة
+"
+                "📄 السلع: " + str(len(backup["products"])) + "
+"
+                "📜 العمليات: " + str(len(backup["transactions"])) + "
+"
+                "👥 المستخدمين: " + str(len(backup["users"])) + "
+"
+                "
+💡 احفظ هذا الملف. "
+                "لإستيراع البيانات أرسله للبوت."
+            ),
+        )
+    except Exception as e:
+        await update.message.reply_text("❌ فشل النسخ الاحتياطي: " + str(e))
+
+
+async def handle_backup_document(update, context):
+    """Admin sends a backup .json file to restore data."""
+    if not is_admin(update.effective_user.id):
+        return
+    if not update.message.document:
+        return
+    file_name = update.message.document.file_name or ""
+    if not file_name.endswith(".json"):
+        return
+    try:
+        file = await update.message.document.get_file()
+        raw = await file.download_as_bytearray()
+        data = json.loads(bytes(raw).decode("utf-8"))
+        if "products" not in data:
+            await update.message.reply_text("❌ ملف غير صالح.")
+            return
+        context.user_data["restore_data"] = data
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚠️ تأكيد استيراع", callback_data="restore_confirm"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="restore_cancel")],
+        ])
+        prod_count = len(data.get("products", []))
+        tx_count = len(data.get("transactions", []))
+        await update.message.reply_text(
+            "⚠️ تأكيد استيراع البيانات:
+
+"
+            "📦 السلع: " + str(prod_count) + "
+"
+            "📜 العمليات: " + str(tx_count) + "
+
+"
+            "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!",
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        await update.message.reply_text("❌ فشل قراءة الملف: " + str(e))
+
+
+async def callback_restore_handler(update, context):
+    """Handle confirm/cancel for data restore."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "restore_confirm":
+        restore_data = context.user_data.get("restore_data")
+        if not restore_data:
+            await query.edit_message_text("❌ لا يوجد بيانات للاستيراع.")
+            return
+        try:
+            result = db_import_backup(restore_data)
+            await query.edit_message_text(result)
+            context.user_data.pop("restore_data", None)
+        except Exception as e:
+            await query.edit_message_text("❌ فشل الاستيراع: " + str(e))
+            context.user_data.pop("restore_data", None)
+    elif data == "restore_cancel":
+        await query.edit_message_text("❌ تم إلغاء استيراع البيانات.")
+        context.user_data.pop("restore_data", None)
+
+
+# ── Users Command ──────────────────────────────────────
+
+async def users_command(update, context):
+    """Show pending users and all approved users."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ للمديرين فقط.")
+        return
+    pending = get_pending_users()
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE role IN ('admin', 'customer') ORDER BY role, created_at")
+            approved = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        approved = []
+    finally:
+        release_connection(conn)
+    lines = ["⚙️ إدارة المستخدمين
+"]
+    if pending:
+        lines.append("🔔 منتظرين الموافقة (" + str(len(pending)) + "):")
+        for u in pending:
+            name = u.get("username") or str(u["telegram_id"])
+            date_str = u["created_at"].strftime("%m/%d %H:%M")
+            lines.append("  • " + name + " (" + date_str + ")")
+        lines.append("")
+    else:
+        lines.append("✅ لا يوجد طلبات معلقة.
+")
+    lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
+    for u in approved:
+        role_icon = "👑" if u["role"] == "admin" else "👤"
+        name = u.get("username") or str(u["telegram_id"])
+        lines.append("  " + role_icon + " " + name)
+    await update.message.reply_text("
+".join(lines), reply_markup=get_admin_keyboard())
+
+
 #  MESSAGE ROUTER
 # ═══════════════════════════════════════════════════════════
 
@@ -997,6 +1333,18 @@ async def route_message(update, context):
     user = update.effective_user
     text = update.message.text.strip()
 
+    # Block pending (unapproved) users from everything except /start and /cancel
+    if not is_admin(user.id) and not is_approved(user.id):
+        if text == "/cancel":
+            await update.message.reply_text("❌ تم الإلغاء.")
+        elif text != "/start":
+            await update.message.reply_text(
+                "⏳ حسابك قيد المراجعة.
+"
+                "يجب الانتظار حتى يفعلك المدير."
+            )
+        return
+
     if text == "/cancel":
         context.user_data.clear()
         if is_admin(user.id):
@@ -1049,6 +1397,11 @@ def build_application():
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
+    app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_"))
+    app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
     app.add_error_handler(error_handler)
     return app
