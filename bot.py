@@ -780,6 +780,8 @@ STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
 STATE_ADD_TYPE = "waiting_add_type"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
+STATE_ADD_NAME_12060 = "waiting_add_name_12060"
+STATE_ADD_NAME_PLANTE = "waiting_add_name_plante"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -945,6 +947,8 @@ async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎨 موتيف (قطع pcs)", callback_data="addtype_motif")],
+        [InlineKeyboardButton("🎨 120/60 (قطع pcs)", callback_data="addtype_12060")],
+        [InlineKeyboardButton("🌿 plante (قطع pcs)", callback_data="addtype_plante")],
         [InlineKeyboardButton("📦 باقي السلع (كرتون crt)", callback_data="addtype_other")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="addtype_cancel")],
     ])
@@ -999,6 +1003,22 @@ async def callback_addtype_handler(update, context):
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 text="🎨 أرسل اسم السلعة (موتيف):",
+                reply_markup=get_input_keyboard(),
+            )
+        if data == "addtype_12060":
+            context.user_data["state"] = STATE_ADD_NAME_12060
+            await query.edit_message_text("🎨 120/60 (قطع pcs)\n\nأرسل اسم السلعة:")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="🎨 أرسل اسم السلعة (120/60):",
+                reply_markup=get_input_keyboard(),
+            )
+        elif data == "addtype_plante":
+            context.user_data["state"] = STATE_ADD_NAME_PLANTE
+            await query.edit_message_text("🌿 plante (قطع pcs)\n\nأرسل اسم السلعة:")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="🌿 أرسل اسم السلعة (plante):",
                 reply_markup=get_input_keyboard(),
             )
         elif data == "addtype_other":
@@ -1239,22 +1259,15 @@ async def _show_product_detail(update, context, product):
     pid = str(p["id"])
     user_id = update.effective_user.id if update.effective_user else 0
     admin_view = is_admin(user_id)
-    if admin_view:
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-            ],
-            [
-                InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
-            ],
-        ])
-    elif can_extract(user_id):
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➖ طلب إخراج", callback_data="req_ext_" + pid)],
-        ])
-    else:
-        keyboard = None
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+            InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
+        ],
+        [
+            InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
+        ],
+    ])
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
@@ -1306,9 +1319,6 @@ async def callback_product_action_handler(update, context):
     except ValueError:
         return
     user_id = update.effective_user.id if update.effective_user else 0
-    if action in ("add", "rem") and not is_admin(user_id):
-        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
-        return
     if action == "log":
         try:
             txns = get_product_transactions(product_id, limit=15)
@@ -1423,11 +1433,8 @@ async def start_command(update, context):
                 "⏳ مرحباً " + name + "! 👋\n\nحسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.",
             )
         else:
-            extract_msg = ""
-            if can_extract(user.id):
-                extract_msg = "\n\n🛑 لديك صلاحية طلب إخراج سلع."
             await update.message.reply_text(
-                "مرحباً " + name + "! 👋\n\nأرسل اسم السلعة لمعرفة توفرها.\nمثال: زيت 5 لتر" + extract_msg,
+                "مرحباً " + name + "! 👋\n\nأرسل اسم السلعة لمعرفة توفرها.\nمثال: زيت 5 لتر",
             )
     context.user_data.clear()
 
@@ -1727,7 +1734,7 @@ async def users_command(update, context):
         approved = []
     finally:
         release_connection(conn)
-    msg_lines = ["\⚙️ إدارة المستخدمينn"]
+    msg_lines = ["⚙️ إدارة المستخدمين\n"]
     if pending:
         msg_lines.append("🔔 منتظرين الموافقة (" + str(len(pending)) + "):")
         for u in pending:
@@ -1742,37 +1749,9 @@ async def users_command(update, context):
     for u in approved:
         role_icon = "👑" if u["role"] == "admin" else "👤"
         name = u.get("username") or str(u["telegram_id"])
-        ext_icon = "✅إخراج" if u.get("can_extract") else "❌إخراج"
-        msg_lines.append("  " + role_icon + " " + name + "  [" + ext_icon + "]")
-    # Build inline keyboard for extraction permission toggle
-    buttons = []
-    for u in approved:
-        if u["role"] == "admin":
-            continue
-        name = u.get("username") or str(u["telegram_id"])
-        if len(name) > 30:
-            name = name[:27] + "..."
-        if u.get("can_extract"):
-            btn_label = "🛑 " + name
-            btn_data = "ext_revoke_" + str(u["telegram_id"])
-        else:
-            btn_label = "✅ " + name
-            btn_data = "ext_grant_" + str(u["telegram_id"])
-        buttons.append([InlineKeyboardButton(btn_label, callback_data=btn_data)])
-    # Pending extraction requests button
-    try:
-        pending_ext = get_pending_extraction_requests()
-        if pending_ext:
-            buttons.append([InlineKeyboardButton(
-                "🔔 طلبات إخراج (" + str(len(pending_ext)) + ")",
-                callback_data="ext_pending_list"
-            )])
-    except Exception:
-        pass
-    reply_markup = get_admin_keyboard()
-    if buttons:
-        reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("\n".join(msg_lines), reply_markup=reply_markup)
+        msg_lines.append("  " + role_icon + " " + name)
+    await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
+
 async def handle_admin_message(update, context):
 
 
@@ -1871,6 +1850,22 @@ async def handle_admin_message(update, context):
             return
         if not product_name.lower().startswith("motif"):
             product_name = "motif " + product_name
+        await ask_add_qty(update, context, product_name, is_motif=True)
+    elif state == STATE_ADD_NAME_12060:
+        product_name = text.strip()
+        if not product_name:
+            await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
+            return
+        if not product_name.lower().startswith("120/60") and not product_name.lower().startswith("120x60"):
+            product_name = "120/60 " + product_name
+        await ask_add_qty(update, context, product_name, is_motif=True)
+    elif state == STATE_ADD_NAME_PLANTE:
+        product_name = text.strip()
+        if not product_name:
+            await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
+            return
+        if not product_name.lower().startswith("plante"):
+            product_name = "plante " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
     elif state == STATE_ADD_QTY:
         qty = parse_crt_input(text)
