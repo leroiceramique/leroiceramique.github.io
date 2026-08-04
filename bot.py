@@ -246,7 +246,51 @@ def release_connection(conn):
                 pass
 
 
-SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (n    id          SERIAL PRIMARY KEY,n    telegram_id BIGINT UNIQUE NOT NULL,n    username    VARCHAR(255),n    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),n    active      BOOLEAN NOT NULL DEFAULT TRUE,n    can_extract   BOOLEAN NOT NULL DEFAULT FALSE,n    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()n);nnCREATE TABLE IF NOT EXISTS products (n    id             SERIAL PRIMARY KEY,n    name           VARCHAR(500) NOT NULL,n    quantity       INTEGER NOT NULL DEFAULT 0,n    location       VARCHAR(255) DEFAULT '',n    minimum_stock  INTEGER NOT NULL DEFAULT 5,n    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()n);nnCREATE TABLE IF NOT EXISTS transactions (n    id         SERIAL PRIMARY KEY,n    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,n    type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),n    quantity   INTEGER NOT NULL,n    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,n    date       TIMESTAMPTZ NOT NULL DEFAULT NOW()n);nnCREATE INDEX IF NOT EXISTS idx_products_name ON products (name);nCREATE INDEX IF NOT EXISTS idx_transactions_product ON transactions (product_id);nCREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);nCREATE TABLE IF NOT EXISTS extraction_requests (n    id            SERIAL PRIMARY KEY,n    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,n    quantity      INTEGER NOT NULL,n    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,n    status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),n    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),n    processed_at  TIMESTAMPTZn);nnCREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);nCREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);n"""
+SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
+    id          SERIAL PRIMARY KEY,
+    telegram_id BIGINT UNIQUE NOT NULL,
+    username    VARCHAR(255),
+    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    can_extract   BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS products (
+    id             SERIAL PRIMARY KEY,
+    name           VARCHAR(500) NOT NULL,
+    quantity       INTEGER NOT NULL DEFAULT 0,
+    location       VARCHAR(255) DEFAULT '',
+    minimum_stock  INTEGER NOT NULL DEFAULT 5,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id         SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),
+    quantity   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    date       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_name ON products (name);
+CREATE INDEX IF NOT EXISTS idx_transactions_product ON transactions (product_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
+
+CREATE TABLE IF NOT EXISTS extraction_requests (
+    id            SERIAL PRIMARY KEY,
+    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    quantity      INTEGER NOT NULL,
+    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
+CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);
+"""
 
 
 def init_db():
@@ -255,13 +299,61 @@ def init_db():
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
             # Migration: add 'pending' role for existing databases
-            cur.execute("""\n                DO $$ BEGINn                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;n                EXCEPTION WHEN OTHERS THEN NULL;n                END $$;n                ALTER TABLE users ADD CONSTRAINT users_role_checkn                    CHECK (role IN ('admin', 'customer', 'pending'));n                ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';n                -- Migration: add can_extract columnn                DO $$ BEGINn                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;n                EXCEPTION WHEN OTHERS THEN NULL;n                END $$;n                -- Migration: create extraction_requests tablen                CREATE TABLE IF NOT EXISTS extraction_requests (n                    id            SERIAL PRIMARY KEY,n                    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,n                    quantity      INTEGER NOT NULL,n                    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,n                    status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),n                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),n                    processed_at  TIMESTAMPTZn                );n                CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);n            """)
+            cur.execute("""\n                DO $$ BEGIN
+                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                ALTER TABLE users ADD CONSTRAINT users_role_check
+                    CHECK (role IN ('admin', 'customer', 'pending'));
+                ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
+                -- Migration: add can_extract column
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                -- Migration: create extraction_requests table
+                CREATE TABLE IF NOT EXISTS extraction_requests (
+                    id            SERIAL PRIMARY KEY,
+                    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    quantity      INTEGER NOT NULL,
+                    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+                    status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    processed_at  TIMESTAMPTZ
+                );
+                CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
+            """)
         conn.commit()
         print("[DB] Schema initialized successfully.")
     except Exception as e:
         conn.rollback()
         print("[DB] Schema init failed: " + str(e))
         raise
+    finally:
+        release_connection(conn)
+
+
+def seed_sample_products():
+    """Insert sample products if they don't exist."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            samples = [
+                ("plante pcs", 0, "", 5),
+                ("120/60pcs", 0, "", 5),
+            ]
+            for name, qty, loc, min_stk in samples:
+                cur.execute(
+                    "INSERT INTO products (name, quantity, location, minimum_stock)"
+                    " VALUES (%s, %s, %s, %s)"
+                    " ON CONFLICT DO NOTHING",
+                    (name, qty, loc, min_stk),
+                )
+        conn.commit()
+        print("[DB] Sample products seeded.")
+    except Exception as e:
+        conn.rollback()
+        print("[DB] Sample seed failed: " + str(e))
     finally:
         release_connection(conn)
 
@@ -275,7 +367,16 @@ def register_user(telegram_id, username=None):
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             role = "admin" if telegram_id in ADMIN_IDS else "pending"
-            cur.execute("""\n                INSERT INTO users (telegram_id, username, role)n                VALUES (%s, %s, %s)n                ON CONFLICT (telegram_id)n                DO UPDATE SETn                    username = EXCLUDED.username,n                    active = TRUEn                -- NEVER downgrade role on re-registern                -- (admin stays admin, approved customer stays customer)n                RETURNING id, telegram_id, username, role, active, created_atn            """, (telegram_id, username, role))
+            cur.execute("""\n                INSERT INTO users (telegram_id, username, role)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    username = EXCLUDED.username,
+                    active = TRUE
+                -- NEVER downgrade role on re-register
+                -- (admin stays admin, approved customer stays customer)
+                RETURNING id, telegram_id, username, role, active, created_at
+            """, (telegram_id, username, role))
             user = cur.fetchone()
         conn.commit()
         return dict(user)
@@ -448,7 +549,10 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO products (name, quantity, location, minimum_stock)n                VALUES (%s, %s, %s, %s)n                RETURNING id, name, quantity, location, minimum_stock, created_atn            """, (name.strip(), quantity, location.strip(), minimum_stock))
+            cur.execute("""\n                INSERT INTO products (name, quantity, location, minimum_stock)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, name, quantity, location, minimum_stock, created_at
+            """, (name.strip(), quantity, location.strip(), minimum_stock))
             product = cur.fetchone()
         conn.commit()
         return dict(product)
@@ -463,7 +567,9 @@ def search_products(query):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECT * FROM productsn                WHERE name ILIKE %sn                ORDER BY LOWER(name)n            """, ("%" + query.strip() + "%",))
+            cur.execute("""\n                SELECT * FROM products
+                WHERE name ILIKE %s
+                ORDER BY LOWER(name)n            """, ("%" + query.strip() + "%",))
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
@@ -595,7 +701,10 @@ def log_transaction(product_id, transaction_type, quantity, user_id):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id)n                VALUES (%s, %s, %s, %s)n                RETURNING id, product_id, type, quantity, user_id, daten            """, (product_id, transaction_type, quantity, user_id))
+            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, product_id, type, quantity, user_id, date
+            """, (product_id, transaction_type, quantity, user_id))
             tx = cur.fetchone()
         conn.commit()
         return dict(tx)
@@ -610,7 +719,16 @@ def get_transactions(limit=20, offset=0):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECTn                    t.id, t.type, t.quantity, t.date,n                    p.name AS product_name,n                    u.username AS operator_namen                FROM transactions tn                JOIN products p ON p.id = t.product_idn                LEFT JOIN users u ON u.id = t.user_idn                ORDER BY t.date DESCn                LIMIT %s OFFSET %sn            """, (limit, offset))
+            cur.execute("""\n                SELECT
+                    t.id, t.type, t.quantity, t.date,
+                    p.name AS product_name,
+                    u.username AS operator_name
+                FROM transactions t
+                JOIN products p ON p.id = t.product_id
+                LEFT JOIN users u ON u.id = t.user_id
+                ORDER BY t.date DESC
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
@@ -626,7 +744,15 @@ def get_product_transactions(product_id, limit=15):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECTn                    t.id, t.type, t.quantity, t.date,n                    u.username AS operator_namen                FROM transactions tn                LEFT JOIN users u ON u.id = t.user_idn                WHERE t.product_id = %sn                ORDER BY t.date DESCn                LIMIT %sn            """, (product_id, limit))
+            cur.execute("""\n                SELECT
+                    t.id, t.type, t.quantity, t.date,
+                    u.username AS operator_name
+                FROM transactions t
+                LEFT JOIN users u ON u.id = t.user_id
+                WHERE t.product_id = %s
+                ORDER BY t.date DESC
+                LIMIT %s
+            """, (product_id, limit))
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
@@ -1884,9 +2010,9 @@ async def handle_customer_message(update, context):
             req = create_extraction_request(product["id"], qty, db_user["id"])
             unit_ar = _get_unit_ar(product["name"])
             msg = (
-                "\📨 تم إرسال طلب الإخراج!nn"
+                "\📨 تم إرسال طلب الإخراج!\n\n"
                 + "📦 " + product["name"] + "\n"
-                + "📦 الكمية: " + str(qty) + " " + unit_ar + "\nn"
+                + "📦 الكمية: " + str(qty) + " " + unit_ar + "\n\n"
                 + "⏳ بانتظار موافقة المدير."
             )
             await update.message.reply_text(msg)
@@ -1895,10 +2021,10 @@ async def handle_customer_message(update, context):
                     requester_name = user.first_name or user.username or str(user.id)
                     unit = _get_unit_code(product["name"])
                     admin_msg = (
-                        "\🔔 طلب إخراج جديد:nn"
+                        "\🔔 طلب إخراج جديد:\n\n"
                         + "👤 " + requester_name + "\n"
                         + "📦 " + product["name"] + "\n"
-                        + "📦 الكمية: " + str(qty) + " " + unit + "\nn"
+                        + "📦 الكمية: " + str(qty) + " " + unit + "\n\n"
                         + "موافقة على إلاخراج هذا الطلب؟"
                     )
                     kb = InlineKeyboardMarkup([
@@ -1964,7 +2090,7 @@ async def callback_extract_perm_handler(update, context):
             try:
                 await context.bot.send_message(
                     chat_id=tid,
-                    text="\🛑 تم منحك صلاحية طلب إخراج السلع.nابحث عن سلعة واضغط طلب إخراج.",
+                    text="\🛑 تم منحك صلاحية طلب إخراج السلع.\nابحث عن سلعة واضغط طلب إخراج.",
                 )
             except Exception as e:
                 logging.error("[EXTRACT] Notify user failed: " + str(e))
@@ -2115,7 +2241,7 @@ async def callback_extract_approve_handler(update, context):
                     unit_ar = _get_unit_ar(req_info["product_name"])
                     if action == "approve":
                         notify_text = (
-                            "\✅ تم الموافقة على طلبك!nn"
+                            "\✅ تم الموافقة على طلبك!\n\n"
                             + "📦 " + req_info["product_name"] + "\n"
                             + "📦 الكمية: " + str(req_info["quantity"]) + " " + unit_ar
                         )
@@ -2341,6 +2467,7 @@ async def _keep_alive(app):
 
 if __name__ == "__main__":
     init_db()
+    seed_sample_products()
     init_pool()
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
