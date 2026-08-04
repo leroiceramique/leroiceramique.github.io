@@ -22,6 +22,138 @@ from telegram.ext import (
 # ═══════════════════════════════════════════════════════════
 #  CONFIG
 # ═══════════════════════════════════════════════════════════
+#  EXTRACTION PERMISSION & REQUEST FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
+def can_extract(telegram_id):
+    """Check if user has extraction permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT can_extract FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return bool(row and row["can_extract"])
+    except Exception as e:
+        conn.rollback()
+        logging.error("[DB] can_extract check failed: " + str(e))
+        return False
+    finally:
+        release_connection(conn)
+
+
+def set_extract_permission(telegram_id, allowed):
+    """Grant or revoke extraction permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET can_extract = %s WHERE telegram_id = %s RETURNING id",
+                (allowed, telegram_id),
+            )
+            updated = cur.fetchone() is not None
+        conn.commit()
+        return updated
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def create_extraction_request(product_id, quantity, requester_id):
+    """Create a new extraction request (status: pending)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "INSERT INTO extraction_requests (product_id, quantity, requester_id, status) "
+                "VALUES (%s, %s, %s, 'pending') RETURNING *",
+                (product_id, quantity, requester_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row)
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def get_pending_extraction_requests():
+    """Get all pending extraction requests."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT er.*, p.name AS product_name, u.username, u.telegram_id AS requester_tid "
+                "FROM extraction_requests er "
+                "JOIN products p ON p.id = er.product_id "
+                "JOIN users u ON u.id = er.requester_id "
+                "WHERE er.status = 'pending' "
+                "ORDER BY er.created_at DESC"
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def process_extraction_request(request_id, approved, admin_id):
+    """Approve or reject an extraction request. Returns (success, message)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT er.*, p.name AS product_name, p.quantity AS current_qty "
+                "FROM extraction_requests er "
+                "JOIN products p ON p.id = er.product_id "
+                "WHERE er.id = %s AND er.status = 'pending' FOR UPDATE",
+                (request_id,),
+            )
+            req = cur.fetchone()
+            if not req:
+                return False, "الطلب غير موجود أو تم معالجته."
+            req = dict(req)
+            if approved:
+                if req["current_qty"] < req["quantity"]:
+                    return False, (
+                        "الكمية المطلوبة ("
+                        + str(req["quantity"]) + ") أكبر من المتوفر ("
+                        + str(req["current_qty"]) + ")."
+                    )
+                cur.execute(
+                    "UPDATE products SET quantity = %s WHERE id = %s",
+                    (req["current_qty"] - req["quantity"], req["product_id"]),
+                )
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
+                    (req["product_id"], req["quantity"], admin_id),
+                )
+            cur.execute(
+                "UPDATE extraction_requests SET status = %s, processed_at = NOW() WHERE id = %s",
+                ("approved" if approved else "rejected", request_id),
+            )
+        conn.commit()
+        pname = req["product_name"]
+        qty = req["quantity"]
+        if approved:
+            return True, "✅ تم الموافقة على إخراج " + str(qty) + " من " + pname
+        else:
+            return True, "❌ تم رفض طلب الإخراج."
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+# ═══════════════════════════════════════════════════════════
 
 load_dotenv()
 
@@ -114,39 +246,7 @@ def release_connection(conn):
                 pass
 
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-    id          SERIAL PRIMARY KEY,
-    telegram_id BIGINT UNIQUE NOT NULL,
-    username    VARCHAR(255),
-    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
-    active      BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS products (
-    id             SERIAL PRIMARY KEY,
-    name           VARCHAR(500) NOT NULL,
-    quantity       INTEGER NOT NULL DEFAULT 0,
-    location       VARCHAR(255) DEFAULT '',
-    minimum_stock  INTEGER NOT NULL DEFAULT 5,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-    id         SERIAL PRIMARY KEY,
-    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),
-    quantity   INTEGER NOT NULL,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
-    date       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_products_name ON products (name);
-CREATE INDEX IF NOT EXISTS idx_transactions_product ON transactions (product_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
-CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);
-"""
+SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (n    id          SERIAL PRIMARY KEY,n    telegram_id BIGINT UNIQUE NOT NULL,n    username    VARCHAR(255),n    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),n    active      BOOLEAN NOT NULL DEFAULT TRUE,n    can_extract   BOOLEAN NOT NULL DEFAULT FALSE,n    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()n);nnCREATE TABLE IF NOT EXISTS products (n    id             SERIAL PRIMARY KEY,n    name           VARCHAR(500) NOT NULL,n    quantity       INTEGER NOT NULL DEFAULT 0,n    location       VARCHAR(255) DEFAULT '',n    minimum_stock  INTEGER NOT NULL DEFAULT 5,n    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()n);nnCREATE TABLE IF NOT EXISTS transactions (n    id         SERIAL PRIMARY KEY,n    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,n    type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),n    quantity   INTEGER NOT NULL,n    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,n    date       TIMESTAMPTZ NOT NULL DEFAULT NOW()n);nnCREATE INDEX IF NOT EXISTS idx_products_name ON products (name);nCREATE INDEX IF NOT EXISTS idx_transactions_product ON transactions (product_id);nCREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);nCREATE TABLE IF NOT EXISTS extraction_requests (n    id            SERIAL PRIMARY KEY,n    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,n    quantity      INTEGER NOT NULL,n    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,n    status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),n    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),n    processed_at  TIMESTAMPTZn);nnCREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);nCREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);n"""
 
 
 def init_db():
@@ -155,15 +255,7 @@ def init_db():
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
             # Migration: add 'pending' role for existing databases
-            cur.execute("""
-                DO $$ BEGIN
-                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
-                EXCEPTION WHEN OTHERS THEN NULL;
-                END $$;
-                ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('admin', 'customer', 'pending'));
-                ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
-            """)
+            cur.execute("""\n                DO $$ BEGINn                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;n                EXCEPTION WHEN OTHERS THEN NULL;n                END $$;n                ALTER TABLE users ADD CONSTRAINT users_role_checkn                    CHECK (role IN ('admin', 'customer', 'pending'));n                ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';n                -- Migration: add can_extract columnn                DO $$ BEGINn                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;n                EXCEPTION WHEN OTHERS THEN NULL;n                END $$;n                -- Migration: create extraction_requests tablen                CREATE TABLE IF NOT EXISTS extraction_requests (n                    id            SERIAL PRIMARY KEY,n                    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,n                    quantity      INTEGER NOT NULL,n                    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,n                    status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),n                    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),n                    processed_at  TIMESTAMPTZn                );n                CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);n            """)
         conn.commit()
         print("[DB] Schema initialized successfully.")
     except Exception as e:
@@ -183,17 +275,7 @@ def register_user(telegram_id, username=None):
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             role = "admin" if telegram_id in ADMIN_IDS else "pending"
-            cur.execute("""
-                INSERT INTO users (telegram_id, username, role)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (telegram_id)
-                DO UPDATE SET
-                    username = EXCLUDED.username,
-                    active = TRUE
-                -- NEVER downgrade role on re-register
-                -- (admin stays admin, approved customer stays customer)
-                RETURNING id, telegram_id, username, role, active, created_at
-            """, (telegram_id, username, role))
+            cur.execute("""\n                INSERT INTO users (telegram_id, username, role)n                VALUES (%s, %s, %s)n                ON CONFLICT (telegram_id)n                DO UPDATE SETn                    username = EXCLUDED.username,n                    active = TRUEn                -- NEVER downgrade role on re-registern                -- (admin stays admin, approved customer stays customer)n                RETURNING id, telegram_id, username, role, active, created_atn            """, (telegram_id, username, role))
             user = cur.fetchone()
         conn.commit()
         return dict(user)
@@ -366,11 +448,7 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                INSERT INTO products (name, quantity, location, minimum_stock)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, name, quantity, location, minimum_stock, created_at
-            """, (name.strip(), quantity, location.strip(), minimum_stock))
+            cur.execute("""\n                INSERT INTO products (name, quantity, location, minimum_stock)n                VALUES (%s, %s, %s, %s)n                RETURNING id, name, quantity, location, minimum_stock, created_atn            """, (name.strip(), quantity, location.strip(), minimum_stock))
             product = cur.fetchone()
         conn.commit()
         return dict(product)
@@ -385,11 +463,7 @@ def search_products(query):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT * FROM products
-                WHERE name ILIKE %s
-                ORDER BY LOWER(name)
-            """, ("%" + query.strip() + "%",))
+            cur.execute("""\n                SELECT * FROM productsn                WHERE name ILIKE %sn                ORDER BY LOWER(name)n            """, ("%" + query.strip() + "%",))
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
@@ -521,11 +595,7 @@ def log_transaction(product_id, transaction_type, quantity, user_id):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                INSERT INTO transactions (product_id, type, quantity, user_id)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, product_id, type, quantity, user_id, date
-            """, (product_id, transaction_type, quantity, user_id))
+            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id)n                VALUES (%s, %s, %s, %s)n                RETURNING id, product_id, type, quantity, user_id, daten            """, (product_id, transaction_type, quantity, user_id))
             tx = cur.fetchone()
         conn.commit()
         return dict(tx)
@@ -540,17 +610,7 @@ def get_transactions(limit=20, offset=0):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT
-                    t.id, t.type, t.quantity, t.date,
-                    p.name AS product_name,
-                    u.username AS operator_name
-                FROM transactions t
-                JOIN products p ON p.id = t.product_id
-                LEFT JOIN users u ON u.id = t.user_id
-                ORDER BY t.date DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
+            cur.execute("""\n                SELECTn                    t.id, t.type, t.quantity, t.date,n                    p.name AS product_name,n                    u.username AS operator_namen                FROM transactions tn                JOIN products p ON p.id = t.product_idn                LEFT JOIN users u ON u.id = t.user_idn                ORDER BY t.date DESCn                LIMIT %s OFFSET %sn            """, (limit, offset))
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
@@ -566,16 +626,7 @@ def get_product_transactions(product_id, limit=15):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT
-                    t.id, t.type, t.quantity, t.date,
-                    u.username AS operator_name
-                FROM transactions t
-                LEFT JOIN users u ON u.id = t.user_id
-                WHERE t.product_id = %s
-                ORDER BY t.date DESC
-                LIMIT %s
-            """, (product_id, limit))
+            cur.execute("""\n                SELECTn                    t.id, t.type, t.quantity, t.date,n                    u.username AS operator_namen                FROM transactions tn                LEFT JOIN users u ON u.id = t.user_idn                WHERE t.product_id = %sn                ORDER BY t.date DESCn                LIMIT %sn            """, (product_id, limit))
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
@@ -1036,17 +1087,21 @@ def _product_status_icon(product):
     else:
         return "🔴"
 
+def _is_pcs_product(name):
+    """Check if product should use pcs unit."""
+    n = name.strip().lower()
+    return (n.startswith("motif") or n.startswith("plante")
+            or n.startswith("120/60") or n.startswith("120x60")
+            or n.startswith("120×60"))
+
+
 def _get_unit_code(product_name):
-    """Return unit code: 'pcs' for motif products, 'crt' for others."""
-    if product_name.strip().lower().startswith("motif"):
-        return "pcs"
-    return "crt"
+    """Return unit code: 'pcs' for motif/plante/120x60 products, 'crt' for others."""
+    return "pcs" if _is_pcs_product(product_name) else "crt"
 
 def _get_unit_ar(product_name):
     """Return Arabic unit label."""
-    if product_name.strip().lower().startswith("motif"):
-        return "قطعة"
-    return "كرتون"
+    return "قطعة" if _is_pcs_product(product_name) else "كرتون"
 
 async def _show_product_detail(update, context, product):
     p = product
@@ -1067,13 +1122,16 @@ async def _show_product_detail(update, context, product):
                 InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
             ],
         ])
+    elif can_extract(user_id):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➖ طلب إخراج", callback_data="req_ext_" + pid)],
+        ])
     else:
         keyboard = None
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
         await update.message.reply_text(text, reply_markup=keyboard)
-
 
 async def callback_product_select_handler(update, context):
     query = update.callback_query
@@ -1238,8 +1296,11 @@ async def start_command(update, context):
                 "⏳ مرحباً " + name + "! 👋\n\nحسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.",
             )
         else:
+            extract_msg = ""
+            if can_extract(user.id):
+                extract_msg = "\n\n🛑 لديك صلاحية طلب إخراج سلع."
             await update.message.reply_text(
-                "مرحباً " + name + "! 👋\n\nأرسل اسم السلعة لمعرفة إذا كانت متوفرة.\nمثال: زيت 5 لتر",
+                "مرحباً " + name + "! 👋\n\nأرسل اسم السلعة لمعرفة توفرها.\nمثال: زيت 5 لتر" + extract_msg,
             )
     context.user_data.clear()
 
@@ -1524,7 +1585,7 @@ async def callback_restore_last_confirm_handler(update, context):
 
 async def users_command(update, context):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
+        await update.message.reply_text("❌ للمديرين فقط.")
         return
     pending = get_pending_users()
     conn = get_connection()
@@ -1539,24 +1600,52 @@ async def users_command(update, context):
         approved = []
     finally:
         release_connection(conn)
-    msg_lines = ["\u2699\ufe0f \u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645\u064a\u0646\n"]
+    msg_lines = ["\⚙️ إدارة المستخدمينn"]
     if pending:
-        msg_lines.append("\U0001f514 \u0645\u0646\u062a\u0638\u0631\u064a\u0646 \u0627\u0644\u0645\u0648\u0627\u0641\u0642\u0629 (" + str(len(pending)) + "):")
+        msg_lines.append("🔔 منتظرين الموافقة (" + str(len(pending)) + "):")
         for u in pending:
             name = u.get("username") or str(u["telegram_id"])
             date_str = u["created_at"].strftime("%m/%d %H:%M")
-            msg_lines.append("  \u2022 " + name + " (" + date_str + ")")
+            msg_lines.append("  • " + name + " (" + date_str + ")")
         msg_lines.append("")
     else:
-        msg_lines.append("\u2705 \u0644\u0627 \u064a\u0648\u062c\u062f \u0637\u0644\u0628\u0627\u062a \u0645\u0639\u0644\u0642\u0629.")
+        msg_lines.append("✅ لا يوجد طلبات معلقة.")
     msg_lines.append("")
-    msg_lines.append("\u2705 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645\u0648\u0646 \u0627\u0644\u0645\u0641\u0639\u0644\u064a\u0646 (" + str(len(approved)) + "):")
+    msg_lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
     for u in approved:
-        role_icon = "\U0001f451" if u["role"] == "admin" else "\U0001f464"
+        role_icon = "👑" if u["role"] == "admin" else "👤"
         name = u.get("username") or str(u["telegram_id"])
-        msg_lines.append("  " + role_icon + " " + name)
-    await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
-
+        ext_icon = "✅إخراج" if u.get("can_extract") else "❌إخراج"
+        msg_lines.append("  " + role_icon + " " + name + "  [" + ext_icon + "]")
+    # Build inline keyboard for extraction permission toggle
+    buttons = []
+    for u in approved:
+        if u["role"] == "admin":
+            continue
+        name = u.get("username") or str(u["telegram_id"])
+        if len(name) > 30:
+            name = name[:27] + "..."
+        if u.get("can_extract"):
+            btn_label = "🛑 " + name
+            btn_data = "ext_revoke_" + str(u["telegram_id"])
+        else:
+            btn_label = "✅ " + name
+            btn_data = "ext_grant_" + str(u["telegram_id"])
+        buttons.append([InlineKeyboardButton(btn_label, callback_data=btn_data)])
+    # Pending extraction requests button
+    try:
+        pending_ext = get_pending_extraction_requests()
+        if pending_ext:
+            buttons.append([InlineKeyboardButton(
+                "🔔 طلبات إخراج (" + str(len(pending_ext)) + ")",
+                callback_data="ext_pending_list"
+            )])
+    except Exception:
+        pass
+    reply_markup = get_admin_keyboard()
+    if buttons:
+        reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("\n".join(msg_lines), reply_markup=reply_markup)
 async def handle_admin_message(update, context):
 
 
@@ -1772,11 +1861,63 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         await update.message.reply_text("❌ تم الإلغاء.")
         return
+    if state == "waiting_extract_qty":
+        product = context.user_data.get("cust_product")
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ.")
+            return
+        parsed = parse_crt_input(text)
+        if parsed is None:
+            unit = _get_unit_code(product["name"])
+            await update.message.reply_text("❌ أرسل عددا صحيحت.")
+            return
+        qty = parsed
+        if qty <= 0:
+            await update.message.reply_text("❌ الكمية يجب أن تكون أكبر من 0.")
+            return
+        db_user = get_user(user.id)
+        if not db_user:
+            await update.message.reply_text("❌ حسابك غير مسجل.")
+            return
+        try:
+            req = create_extraction_request(product["id"], qty, db_user["id"])
+            unit_ar = _get_unit_ar(product["name"])
+            msg = (
+                "\📨 تم إرسال طلب الإخراج!nn"
+                + "📦 " + product["name"] + "\n"
+                + "📦 الكمية: " + str(qty) + " " + unit_ar + "\nn"
+                + "⏳ بانتظار موافقة المدير."
+            )
+            await update.message.reply_text(msg)
+            for admin_id in ADMIN_IDS:
+                try:
+                    requester_name = user.first_name or user.username or str(user.id)
+                    unit = _get_unit_code(product["name"])
+                    admin_msg = (
+                        "\🔔 طلب إخراج جديد:nn"
+                        + "👤 " + requester_name + "\n"
+                        + "📦 " + product["name"] + "\n"
+                        + "📦 الكمية: " + str(qty) + " " + unit + "\nn"
+                        + "موافقة على إلاخراج هذا الطلب؟"
+                    )
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ موافقة", callback_data="ext_approve_" + str(req["id"])),
+                         InlineKeyboardButton("❌ رفض", callback_data="ext_reject_" + str(req["id"]))],
+                    ])
+                    await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=kb)
+                    logging.info("[EXTRACT] Request #" + str(req["id"]) + " sent to admin " + str(admin_id))
+                except Exception as e:
+                    logging.error("[EXTRACT] Notify admin failed: " + str(e))
+        except Exception as e:
+            logging.error("[EXTRACT] Request failed: " + str(e))
+            await update.message.reply_text("❌ حدث خطأ: " + str(e))
+        context.user_data.clear()
+        return
     if not text:
         await update.message.reply_text("أرسل اسم السلعة لمعرفة إذا كانت متوفرة.")
         return
     await process_search(update, context, text, admin_view=False)
-
 
 async def route_message(update, context):
     user = update.effective_user
@@ -1800,6 +1941,197 @@ async def route_message(update, context):
     else:
         await handle_customer_message(update, context)
 
+
+# ═══════════════════════════════════════════════════════════
+#  EXTRACTION PERMISSION & REQUEST HANDLERS
+# ═══════════════════════════════════════════════════════════
+
+async def callback_extract_perm_handler(update, context):
+    """Handle grant/revoke extraction permission from users list."""
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        return
+    data = query.data
+    try:
+        if data.startswith("ext_grant_"):
+            tid = int(data.split("_")[2])
+            set_extract_permission(tid, True)
+            db_u = get_user(tid)
+            uname = db_u.get("username") or str(tid) if db_u else str(tid)
+            await query.edit_message_text("✅ تم منح صلاحية الإخراج لـ " + uname)
+            try:
+                await context.bot.send_message(
+                    chat_id=tid,
+                    text="\🛑 تم منحك صلاحية طلب إخراج السلع.nابحث عن سلعة واضغط طلب إخراج.",
+                )
+            except Exception as e:
+                logging.error("[EXTRACT] Notify user failed: " + str(e))
+        elif data.startswith("ext_revoke_"):
+            tid = int(data.split("_")[2])
+            set_extract_permission(tid, False)
+            db_u = get_user(tid)
+            uname = db_u.get("username") or str(tid) if db_u else str(tid)
+            await query.edit_message_text("❌ تم سحب صلاحية الإخراج من " + uname)
+            try:
+                await context.bot.send_message(
+                    chat_id=tid,
+                    text="❌ تم سحب صلاحية طلب إخراج السلع.",
+                )
+            except Exception as e:
+                logging.error("[EXTRACT] Notify user failed: " + str(e))
+        elif data == "ext_pending_list":
+            await _show_pending_extractions(update, context)
+    except Exception as e:
+        logging.error("[EXTRACT_PERM] Error: " + str(e))
+        try:
+            await query.edit_message_text("❌ خطأ: " + str(e))
+        except Exception:
+            pass
+
+async def _show_pending_extractions(update, context):
+    """Show list of pending extraction requests."""
+    query = update.callback_query
+    try:
+        pending = get_pending_extraction_requests()
+    except Exception as e:
+        logging.error("[EXTRACT] Get pending failed: " + str(e))
+        await query.edit_message_text("❌ خطأ في تحميل الطلبات.")
+        return
+    if not pending:
+        await query.edit_message_text("✅ لا توجد طلبات إخراج معلقة.")
+        return
+    txt_lines = ["🔔 طلبات الإخراج المعلقة (" + str(len(pending)) + "):"]
+    buttons = []
+    for req in pending:
+        req_name = req.get("username") or str(req.get("requester_tid", "?"))
+        pname = req.get("product_name", "?")
+        unit = _get_unit_code(pname)
+        date_str = req["created_at"].strftime("%m/%d %H:%M")
+        txt_lines.append(
+            "👤 " + req_name
+            + " | 📦 " + pname
+            + " | " + str(req["quantity"]) + " " + unit
+            + " | " + date_str
+        )
+        label = req_name + ": " + pname + " (" + str(req["quantity"]) + " " + unit + ")"
+        if len(label) > 35:
+            label = label[:32] + "..."
+        buttons.append([
+            InlineKeyboardButton("✅ " + label, callback_data="ext_approve_" + str(req["id"])),
+            InlineKeyboardButton("❌", callback_data="ext_reject_" + str(req["id"])),
+        ])
+    txt_lines.append("")
+    txt_lines.append("✅ موافقة | ❌ رفض")
+    try:
+        await query.edit_message_text("\n".join(txt_lines), reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception as e:
+        logging.error("[EXTRACT] Edit failed: " + str(e))
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\n".join(txt_lines), reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
+
+async def callback_extract_request_handler(update, context):
+    """Handle member click on request extract button."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    if not can_extract(user_id):
+        await query.answer("❌ ليس لديك صلاحية الإخراج.", show_alert=True)
+        return
+    data = query.data
+    try:
+        product_id = int(data.split("_")[2])
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ خطأ في الاختيار.")
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, name, quantity FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    if not row:
+        await query.edit_message_text("❌ المنتج غير موجود.")
+        return
+    product = dict(row)
+    context.user_data["cust_product"] = product
+    context.user_data["state"] = "waiting_extract_qty"
+    unit = _get_unit_code(product["name"])
+    unit_ar = _get_unit_ar(product["name"])
+    text = (
+        "📦 " + product["name"]
+        + " (المتوفر: " + str(product["quantity"]) + " " + unit + ")"
+        + "\n➖ طلب إخراج " + unit_ar
+        + "\nأرسل العدد (" + unit + "):"
+    )
+    try:
+        await query.edit_message_text(text)
+    except Exception:
+        await context.bot.send_message(chat_id=query.message.chat_id, text=text)
+
+async def callback_extract_approve_handler(update, context):
+    """Handle admin approve/reject extraction request."""
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        return
+    data = query.data
+    parts = data.split("_")
+    action = parts[1]
+    try:
+        request_id = int(parts[2])
+    except (IndexError, ValueError):
+        return
+    admin_db = get_user(query.from_user.id)
+    admin_uid = admin_db["id"] if admin_db else 0
+    try:
+        success, msg = process_extraction_request(request_id, action == "approve", admin_uid)
+        await query.edit_message_text(msg)
+        if success:
+            try:
+                conn = get_connection()
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT er.requester_id, u.telegram_id, p.name AS product_name, er.quantity "
+                        "FROM extraction_requests er "
+                        "JOIN users u ON u.id = er.requester_id "
+                        "JOIN products p ON p.id = er.product_id "
+                        "WHERE er.id = %s",
+                        (request_id,),
+                    )
+                    req_info = cur.fetchone()
+                conn.commit()
+                release_connection(conn)
+                if req_info:
+                    unit_ar = _get_unit_ar(req_info["product_name"])
+                    if action == "approve":
+                        notify_text = (
+                            "\✅ تم الموافقة على طلبك!nn"
+                            + "📦 " + req_info["product_name"] + "\n"
+                            + "📦 الكمية: " + str(req_info["quantity"]) + " " + unit_ar
+                        )
+                    else:
+                        notify_text = "❌ تم رفض طلب الإخراج."
+                    await context.bot.send_message(chat_id=req_info["telegram_id"], text=notify_text)
+            except Exception as e:
+                logging.error("[EXTRACT] Notify requester failed: " + str(e))
+            if action == "approve":
+                await send_low_stock_alerts(context.bot)
+    except Exception as e:
+        logging.error("[EXTRACT_APPROVE] Error: " + str(e))
+        try:
+            await query.edit_message_text("❌ خطأ: " + str(e))
+        except Exception:
+            pass
 
 # ═══════════════════════════════════════════════════════════
 #  ERROR HANDLER
@@ -1855,6 +2187,12 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
+    app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
+    app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_revoke_"))
+    app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_pending_list$"))
+    app.add_handler(CallbackQueryHandler(callback_extract_request_handler, pattern="^req_ext_"))
+    app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
+    app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
