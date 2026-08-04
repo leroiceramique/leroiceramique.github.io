@@ -1190,7 +1190,7 @@ async def callback_product_action_handler(update, context):
                 + " (\u0627\u0644\u0645\u062a\u0648\u0641\u0631: " + str(product["quantity"]) + " " + unit + ")\n\n"
                 + "\u2796 \u0625\u062e\u0631\u0627\u062c " + unit_ar + "\n\n"
                 + "\u0623\u0631\u0633\u0644 \u0627\u0644\u0639\u062f\u062f (" + unit + "):")
-        context.user_data["pact_action"] = action  # store action type
+        context.user_data["pact_action"] = "remove" if action == "rem" else action
         context.user_data["state"] = "waiting_pact_qty"
         await query.edit_message_text(text)
     except Exception as e:
@@ -1717,6 +1717,8 @@ async def handle_admin_message(update, context):
     elif state == "waiting_pact_qty":
         product = context.user_data.get("cust_product")
         action = context.user_data.get("pact_action", "add")
+        if action not in ("add", "remove"):
+            action = "remove" if action == "rem" else "add"
         if not product:
             context.user_data.clear()
             await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
@@ -1808,16 +1810,12 @@ async def error_handler(update, context):
     if isinstance(context.error, Conflict):
         logging.warning("[BOT] Conflict detected - another instance running. Will recover automatically.")
         return
-
-    import traceback
-    print("[ERROR] " + str(context.error))
-    traceback.print_exc()
-    if update and hasattr(update, "effective_message") and update.effective_message:
-        try:
-            await update.effective_message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623. \u062d\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062e\u0631\u0649.")
-        except Exception:
-            pass
-
+    logging.error("[BOT ERROR] %s: %s", type(context.error).__name__, context.error, exc_info=True)
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text("❌ حدث خطأ حاول مرة أخرى.")
+    except Exception:
+        pass
 
 # ═══════════════════════════════════════════════════════════
 #  BUILD APP
