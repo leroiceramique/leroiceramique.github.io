@@ -988,15 +988,20 @@ async def _show_product_detail(update, context, product):
     qty = p["quantity"]
     text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " كرتون " + icon
     pid = str(p["id"])
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-            InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-        ],
-        [
-            InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
-        ],
-    ])
+    user_id = update.effective_user.id if update.effective_user else 0
+    admin_view = is_admin(user_id)
+    if admin_view:
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+                InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
+            ],
+            [
+                InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
+            ],
+        ])
+    else:
+        keyboard = None
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
@@ -1047,6 +1052,10 @@ async def callback_product_action_handler(update, context):
     try:
         product_id = int(parts[2])
     except ValueError:
+        return
+    user_id = update.effective_user.id if update.effective_user else 0
+    if action in ("add", "rem") and not is_admin(user_id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
         return
     if action == "log":
         try:
@@ -1140,8 +1149,9 @@ async def start_command(update, context):
                         chat_id=admin_id,
                         text="🔔 طلب انضمام جديد:\n\n👤 " + uname + "\n📧 " + str(user.id),
                         reply_markup=kb)
-                except Exception:
-                    pass
+                    logging.info("[JOIN] Notification sent to admin " + str(admin_id) + " for user " + str(user.id))
+                except Exception as notify_err:
+                    logging.error("[JOIN] Failed to notify admin " + str(admin_id) + ": " + str(notify_err))
     if is_admin(user.id):
         name = user.first_name or ""
         await update.message.reply_text(
@@ -1150,9 +1160,15 @@ async def start_command(update, context):
         )
     else:
         name = user.first_name or ""
-        await update.message.reply_text(
-            "\u0645\u0631\u062d\u0628\u0627\u064b " + name + "! \U0001f44b\n\n\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u0625\u0630\u0627 \u0643\u0627\u0646\u062a \u0645\u062a\u0648\u0641\u0631\u0629.\n\u0645\u062b\u0627\u0644: \u0632\u064a\u062a 5 \u0644\u062a\u0631",
-        )
+        db_user = get_user(user.id)
+        if db_user and db_user.get("role") == "pending":
+            await update.message.reply_text(
+                "⏳ مرحباً " + name + "! 👋\n\nحسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.",
+            )
+        else:
+            await update.message.reply_text(
+                "مرحباً " + name + "! 👋\n\nأرسل اسم السلعة لمعرفة إذا كانت متوفرة.\nمثال: زيت 5 لتر",
+            )
     context.user_data.clear()
 
 
@@ -1635,43 +1651,6 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("\n".join(txt), reply_markup=InlineKeyboardMarkup(btns))
         context.user_data["state"] = None
         return
-    elif state == STATE_CUST_ADD_QTY:
-        qty = parse_crt_input(text)
-        if qty is None or qty <= 0:
-            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10", reply_markup=get_input_keyboard())
-            return
-        product = context.user_data.get("cust_product")
-        if not product:
-            context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
-            return
-        try:
-            updated = db_update_quantity(product["id"], qty, "add")
-            db_user = get_user(user.id)
-            if db_user:
-                log_transaction(product["id"], "add", qty, db_user["id"])
-            icon = _product_status_icon(updated)
-            msg = "✅ تم الإضافة!\n\n" + updated["name"] + "\n📦 الكمية: " + str(updated["quantity"]) + " crt " + icon
-            pid = str(updated["id"])
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                 InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
-                [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
-                [InlineKeyboardButton("✅ القائمة الرئيسية", callback_data="admin_done")],
-            ])
-            context.user_data["cust_product"] = dict(updated)
-            await update.message.reply_text(msg, reply_markup=keyboard)
-            await send_low_stock_alerts(bot)
-        except ValueError as e:
-            await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
-        except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
-        return
-    elif state == STATE_CUST_REMOVE_QTY:
-        qty = parse_crt_input(text)
-        if qty is None or qty <= 0:
-            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10", reply_markup=get_input_keyboard())
-            return
         product = context.user_data.get("cust_product")
         if not product:
             context.user_data.clear()
@@ -1714,11 +1693,6 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         await update.message.reply_text("❌ تم الإلغاء.")
         return
-    if state == STATE_CUST_ADD_QTY:
-        qty = parse_crt_input(text)
-        if qty is None or qty <= 0:
-            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10")
-            return
         product = context.user_data.get("cust_product")
         if not product:
             context.user_data.clear()
@@ -1746,11 +1720,6 @@ async def handle_customer_message(update, context):
         except Exception as e:
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         return
-    if state == STATE_CUST_REMOVE_QTY:
-        qty = parse_crt_input(text)
-        if qty is None or qty <= 0:
-            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10")
-            return
         product = context.user_data.get("cust_product")
         if not product:
             context.user_data.clear()
