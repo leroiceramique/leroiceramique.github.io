@@ -1983,6 +1983,48 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         await update.message.reply_text("❌ تم الإلغاء.")
         return
+    if state == "waiting_pact_qty":
+        product = context.user_data.get("cust_product")
+        action = context.user_data.get("pact_action", "add")
+        if action not in ("add", "remove"):
+            action = "remove" if action == "rem" else "add"
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ.")
+            return
+        parsed = parse_crt_input(text)
+        if parsed is None:
+            unit = _get_unit_code(product["name"])
+            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit)
+            return
+        qty = parsed
+        try:
+            updated = db_update_quantity(product["id"], qty, action)
+            db_user = get_user(user.id)
+            if db_user:
+                log_transaction(product["id"], action, qty, db_user["id"])
+            icon = _product_status_icon(updated)
+            unit = _get_unit_code(updated["name"])
+            unit_ar = _get_unit_ar(updated["name"])
+            if action == "add":
+                msg = "\u2705 \u062a\u0645\u062a \u0627\u0644\u0625\u0636\u0627\u0641\u0629!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+            else:
+                msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+            pid = str(updated["id"])
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+                 InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
+                [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
+            ])
+            context.user_data["cust_product"] = dict(updated)
+            await update.message.reply_text(msg, reply_markup=keyboard)
+            await send_low_stock_alerts(context.bot)
+        except ValueError as e:
+            await update.message.reply_text("❌ " + str(e))
+        except Exception as e:
+            await update.message.reply_text("❌ حدث خطأ: " + str(e))
+        context.user_data.clear()
+        return
     if state == "waiting_extract_qty":
         product = context.user_data.get("cust_product")
         if not product:
