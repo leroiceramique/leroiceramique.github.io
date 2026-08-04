@@ -812,22 +812,37 @@ async def callback_addtype_handler(update, context):
     query = update.callback_query
     await query.answer()
     data = query.data
-    if data == "addtype_motif":
-        context.user_data["state"] = STATE_ADD_NAME_MOTIF
-        await query.edit_message_text(
-            "🎨 موتيف (قطع pcs)\n\nأرسل اسم السلعة:",
-            reply_markup=get_input_keyboard(),
-        )
-    elif data == "addtype_other":
-        context.user_data["state"] = STATE_ADD_NAME
-        await query.edit_message_text(
-            "📦 باقي السلع (كرتون crt)\n\nأرسل اسم السلعة:",
-            reply_markup=get_input_keyboard(),
-        )
-    elif data == "addtype_cancel":
-        await query.edit_message_text("❌ تم الإلغاء.")
+    try:
+        if data == "addtype_motif":
+            context.user_data["state"] = STATE_ADD_NAME_MOTIF
+            await query.edit_message_text(
+                "🎨 موتيف (قطع pcs)\n\nأرسل اسم السلعة:",
+            )
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="🎨 أرسل اسم السلعة (موتيف):",
+                reply_markup=get_input_keyboard(),
+            )
+        elif data == "addtype_other":
+            context.user_data["state"] = STATE_ADD_NAME
+            await query.edit_message_text(
+                "📦 باقي السلع (كرتون crt)\n\nأرسل اسم السلعة:",
+            )
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="📦 أرسل اسم السلعة (باقي السلع):",
+                reply_markup=get_input_keyboard(),
+            )
+        elif data == "addtype_cancel":
+            await query.edit_message_text("❌ تم الإلغاء.")
+            try:
+                await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error("[ADDTYPE] Error: " + str(e))
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+            await query.edit_message_text("❌ حدث خطأ: " + str(e))
         except Exception:
             pass
 
