@@ -648,7 +648,7 @@ async def send_low_stock_alerts(bot):
         low_stock = get_low_stock_products()
         if not low_stock:
             return
-        lines = ["⚠️ تنبيه: مخزون منخفضن"]
+        lines = ["⚠️ تنبيه: مخزون منخفض"]
         for p in low_stock:
             lines.append(
                 "  • " + p["name"]
@@ -796,8 +796,8 @@ async def confirm_add_product(update, context, product_name, qty, is_motif=False
     context.user_data["state"] = "waiting_add_confirm"
     unit = "pcs" if is_motif else "crt"
     text = (
-        "\U0001f4cb \u062a\u0623\u0643\u064a\u062f \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629:\\n\\n"
-        "\U0001f4e6 \u0627\u0644\u0627\u0633\u0645: " + product_name + "\\n"
+        "\U0001f4cb \u062a\u0623\u0643\u064a\u062f \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629:\n\n"
+        "\U0001f4e6 \u0627\u0644\u0627\u0633\u0645: " + product_name + "\n"
         "\U0001f4e6 \u0627\u0644\u0639\u062f\u062f: " + str(qty) + " " + unit
     )
     keyboard = InlineKeyboardMarkup([
@@ -1709,7 +1709,6 @@ async def handle_admin_message(update, context):
         parsed = parse_crt_input(text)
         if parsed is None:
             unit = _get_unit_code(product["name"])
-            unit = _get_unit_code(product["name"])
             await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_input_keyboard())
             return
         qty = parsed
@@ -1824,7 +1823,7 @@ async def callback_admin_done_handler(update, context):
 
 
 def build_application():
-    app = Application.builder().token(BOT_TOKEN).drop_pending_updates(True).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", route_message))
