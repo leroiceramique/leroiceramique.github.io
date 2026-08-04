@@ -1165,16 +1165,18 @@ async def callback_product_action_handler(update, context):
         product = dict(row)
         context.user_data["cust_product"] = product
         if action == "add":
-            context.user_data["state"] = STATE_CUST_ADD_QTY
             unit = _get_unit_code(product["name"])
             unit_ar = _get_unit_ar(product["name"])
-            text = "📦 " + product["name"] + "\n\n" + "➕ إضافة " + unit_ar + "\n\n" + "أرسل العدد (" + unit + "):"
+            text = "\U0001f4e6 " + product["name"] + "\n\n" + "\u2795 \u0625\u0636\u0627\u0641\u0629 " + unit_ar + "\n\n" + "\u0623\u0631\u0633\u0644 \u0627\u0644\u0639\u062f\u062f (" + unit + "):"
         else:
-            context.user_data["state"] = STATE_CUST_REMOVE_QTY
-            text = ("📦 " + product["name"]
-                + " (المتوفر: " + str(product["quantity"]) + " " + unit + ")\n\n"
-                + "➖ إخراج " + unit_ar + "\n\n"
-                + "أرسل العدد (" + unit + "):")
+            unit = _get_unit_code(product["name"])
+            unit_ar = _get_unit_ar(product["name"])
+            text = ("\U0001f4e6 " + product["name"]
+                + " (\u0627\u0644\u0645\u062a\u0648\u0641\u0631: " + str(product["quantity"]) + " " + unit + ")\n\n"
+                + "\u2796 \u0625\u062e\u0631\u0627\u062c " + unit_ar + "\n\n"
+                + "\u0623\u0631\u0633\u0644 \u0627\u0644\u0639\u062f\u062f (" + unit + "):")
+        context.user_data["pact_action"] = action  # store action type
+        context.user_data["state"] = "waiting_pact_qty"
         await query.edit_message_text(text)
     except Exception as e:
         logging.error("[PACT] Error: " + str(e))
@@ -1568,28 +1570,10 @@ async def handle_admin_message(update, context):
             msg = "➕ إضافة علب\n\nأرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
-            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
-            for p in products:
-                ls.append("  #" + str(p["id"]) + " " + p["name"] + " — " + str(p["quantity"]) + " " + _get_unit_code(p["name"]))
-            await update.message.reply_text("\n".join(ls))
-            context.user_data["state"] = STATE_EXISTING_ADD_QTY
-            await update.message.reply_text(
-                "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0639\u0644\u0628\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\n\u0645\u062b\u0627\u0644: 1, 25",
-                reply_markup=get_input_keyboard())
-            return
         if text == BTN_REMOVE_QTY:
             context.user_data["state"] = STATE_ADMIN_REM_SEL
             msg = "➖ إخراج علب\n\nأرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
-            return
-            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
-            for p in products:
-                ls.append("  #" + str(p["id"]) + " " + p["name"] + " — " + str(p["quantity"]) + " " + _get_unit_code(p["name"]))
-            await update.message.reply_text("\n".join(ls))
-            context.user_data["state"] = STATE_REMOVE_QTY
-            await update.message.reply_text(
-                "\u2796 \u0625\u062e\u0631\u0627\u062c \u0639\u0644\u0628\n\n\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0639\u062f\u062f\n\n\u0645\u062b\u0627\u0644: 1, 10",
-                reply_markup=get_input_keyboard())
             return
         if text == BTN_STOCK:
             await send_stock_report(bot, chat_id)
@@ -1715,24 +1699,38 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("\n".join(txt), reply_markup=InlineKeyboardMarkup(btns))
         context.user_data["state"] = None
         return
+    elif state == "waiting_pact_qty":
         product = context.user_data.get("cust_product")
+        action = context.user_data.get("pact_action", "add")
         if not product:
             context.user_data.clear()
             await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
             return
+        parsed = parse_crt_input(text)
+        if parsed is None:
+            unit = _get_unit_code(product["name"])
+            unit = _get_unit_code(product["name"])
+            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_input_keyboard())
+            return
+        qty = parsed
         try:
-            updated = db_update_quantity(product["id"], qty, "remove")
+            updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
             if db_user:
-                log_transaction(product["id"], "remove", qty, db_user["id"])
+                log_transaction(product["id"], action, qty, db_user["id"])
             icon = _product_status_icon(updated)
-            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n📦 الكمية: " + str(updated["quantity"]) + " " + _get_unit_code(updated["name"]) + " " + icon
+            unit = _get_unit_code(updated["name"])
+            unit_ar = _get_unit_ar(updated["name"])
+            if action == "add":
+                msg = "\u2705 \u062a\u0645\u062a \u0627\u0644\u0625\u0636\u0627\u0641\u0629!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+            else:
+                msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                 InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
-                [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
-                [InlineKeyboardButton("✅ القائمة الرئيسية", callback_data="admin_done")],
+                [InlineKeyboardButton("\u2795 \u0625\u0636\u0627\u0641\u0629", callback_data="pact_add_" + pid),
+                 InlineKeyboardButton("\u2796 \u0625\u062e\u0631\u0627\u062c", callback_data="pact_rem_" + pid)],
+                [InlineKeyboardButton("\U0001f4ca \u0627\u0644\u062d\u0631\u0643\u0629", callback_data="pact_log_" + pid)],
+                [InlineKeyboardButton("\u2705 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629", callback_data="admin_done")],
             ])
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
@@ -1742,6 +1740,7 @@ async def handle_admin_message(update, context):
         except Exception as e:
             await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
         return
+
     elif state == STATE_SEARCH_ADMIN:
         await process_search(update, context, text, admin_view=True)
     else:
@@ -1756,60 +1755,6 @@ async def handle_customer_message(update, context):
     if text == BTN_CANCEL:
         context.user_data.clear()
         await update.message.reply_text("❌ تم الإلغاء.")
-        return
-        product = context.user_data.get("cust_product")
-        if not product:
-            context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ. حاول البحث من جديد.")
-            return
-        try:
-            updated = db_update_quantity(product["id"], qty, "add")
-            log_transaction(product["id"], "add", qty, user.id)
-            icon = _product_status_icon(updated)
-            msg = "✅ تم الإضافة!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " " + _get_unit_ar(updated["name"]) + " " + icon
-            pid = str(updated["id"])
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                    InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-                ],
-                [
-                    InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
-                ],
-            ])
-            context.user_data["cust_product"] = dict(updated)
-            await update.message.reply_text(msg, reply_markup=keyboard)
-        except ValueError as e:
-            await update.message.reply_text("❌ " + str(e))
-        except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e))
-        return
-        product = context.user_data.get("cust_product")
-        if not product:
-            context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ. حاول البحث من جديد.")
-            return
-        try:
-            updated = db_update_quantity(product["id"], qty, "remove")
-            log_transaction(product["id"], "remove", qty, user.id)
-            icon = _product_status_icon(updated)
-            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " " + _get_unit_ar(updated["name"]) + " " + icon
-            pid = str(updated["id"])
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                    InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-                ],
-                [
-                    InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
-                ],
-            ])
-            context.user_data["cust_product"] = dict(updated)
-            await update.message.reply_text(msg, reply_markup=keyboard)
-        except ValueError as e:
-            await update.message.reply_text("❌ " + str(e))
-        except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e))
         return
     if not text:
         await update.message.reply_text("أرسل اسم السلعة لمعرفة إذا كانت متوفرة.")
