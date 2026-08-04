@@ -445,9 +445,9 @@ def db_update_quantity(product_id, change, transaction_type):
                     raise ValueError(
                         "\u0627\u0644\u0639\u062f\u062f \u0627\u0644\u0645\u0637\u0644\u0648\u0628 ("
                         + str(change)
-                        + " crt) \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0641\u0631 ("
+                        + ") أكبر من المتوفر ("
                         + str(row["quantity"])
-                        + " crt)"
+                        + ")"
                     )
                 new_qty_expr = "GREATEST(quantity - %s, 0)"
             else:
@@ -600,6 +600,8 @@ STATE_CUST_ADD_QTY = "waiting_cust_add_qty"
 STATE_CUST_REMOVE_QTY = "waiting_cust_remove_qty"
 STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
+STATE_ADD_TYPE = "waiting_add_type"
+STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -622,10 +624,11 @@ BTN_BACKUP = "💾 نسخ احتياطي"
 def format_product_admin(product):
     qty = product["quantity"]
     min_stock = product["minimum_stock"]
-    status = "\U0001f534" if qty <= min_stock else "\U0001f7e2"
+    status = "🔴" if qty <= min_stock else "🟢"
+    unit = _get_unit_code(product["name"])
     return (
         "\U0001f4e6 " + product["name"] + "\n"
-        "   \u0627\u0644\u0639\u0644\u0628: " + str(qty) + " crt"
+        "   \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty) + " " + unit
     )
 
 
@@ -662,7 +665,7 @@ async def send_low_stock_alerts(bot):
         logging.warning("[ALERT] Low stock check failed: " + str(e))
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
-    cleaned = text.strip().lower().replace(" ", "").replace("crt", "")
+    cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
     if cleaned.isdigit() and int(cleaned) >= 0:
         return int(cleaned)
     return None
@@ -749,7 +752,8 @@ async def send_transaction_log(bot, chat_id):
         date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
         op = tx.get("operator_name") or "\u0645\u062c\u0647\u0648\u0644"
         sign = "+" if tx["type"] == "add" else "-"
-        lines.append(icon + " " + tx["product_name"] + " | " + sign + str(tx["quantity"]) + " crt | " + op + " | " + date_str)
+        unit = _get_unit_code(tx["product_name"])
+        lines.append(icon + " " + tx["product_name"] + " | " + sign + str(tx["quantity"]) + " " + unit + " | " + op + " | " + date_str)
     await bot.send_message(chat_id=chat_id, text="\n".join(lines))
 
 
@@ -759,41 +763,73 @@ async def send_transaction_log(bot, chat_id):
 
 
 # ── Add Product: Step-by-step ──────────────────────────
-
 async def ask_add_name(update, context):
-    """Step 1: Ask for product name."""
-    context.user_data["state"] = STATE_ADD_NAME
+    """Step 1: Ask product type (motif or other)."""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎨 موتيف (قطع pcs)", callback_data="addtype_motif")],
+        [InlineKeyboardButton("📦 باقي السلع (كرتون crt)", callback_data="addtype_other")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="addtype_cancel")],
+    ])
     await update.message.reply_text(
-        "\U0001f4e6 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
-        reply_markup=get_input_keyboard(),
+        "📦 إضافة سلعة جديدة\n\nاختر نوع السلعة:",
+        reply_markup=keyboard,
     )
 
 
-async def ask_add_qty(update, context, product_name):
-    """Step 2: Ask for quantity (cartons)."""
+async def ask_add_qty(update, context, product_name, is_motif=False):
+    """Step 2: Ask for quantity."""
     context.user_data["state"] = STATE_ADD_QTY
     context.user_data["add_name"] = product_name
+    context.user_data["add_is_motif"] = is_motif
+    unit = "pcs" if is_motif else "crt"
     await update.message.reply_text(
         "\U0001f4e6 " + product_name + "\n"
-        "\U0001f4e6 \u0643\u0645 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628 (crt)?",
+        "\U0001f4e6 \u0643\u0645 \u0627\u0644\u0639\u062f\u062f (" + unit + ")?",
         reply_markup=get_input_keyboard(),
     )
 
 
-async def confirm_add_product(update, context, product_name, qty):
+async def confirm_add_product(update, context, product_name, qty, is_motif=False):
     """Step 3: Show summary with inline confirm button."""
     context.user_data["add_qty"] = qty
+    context.user_data["add_is_motif"] = is_motif
     context.user_data["state"] = "waiting_add_confirm"
+    unit = "pcs" if is_motif else "crt"
     text = (
-        "\U0001f4cb \u062a\u0623\u0643\u064a\u062f \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629:\n\n"
-        "\U0001f4e6 \u0627\u0644\u0627\u0633\u0645: " + product_name + "\n"
-        "\U0001f4e6 \u0627\u0644\u0639\u0644\u0628: " + str(qty) + " crt"
+        "\U0001f4cb \u062a\u0623\u0643\u064a\u062f \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629:\\n\\n"
+        "\U0001f4e6 \u0627\u0644\u0627\u0633\u0645: " + product_name + "\\n"
+        "\U0001f4e6 \u0627\u0644\u0639\u062f\u062f: " + str(qty) + " " + unit
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("\u2705 \u062a\u0623\u0643\u064a\u062f", callback_data="add_confirm"),
-         InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="add_cancel")],
+        [InlineKeyboardButton("✅ تأكيد", callback_data="add_confirm"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="add_cancel")],
     ])
     await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def callback_addtype_handler(update, context):
+    """Handle product type selection (motif vs other)."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "addtype_motif":
+        context.user_data["state"] = STATE_ADD_NAME_MOTIF
+        await query.edit_message_text(
+            "🎨 موتيف (قطع pcs)\n\nأرسل اسم السلعة:",
+            reply_markup=get_input_keyboard(),
+        )
+    elif data == "addtype_other":
+        context.user_data["state"] = STATE_ADD_NAME
+        await query.edit_message_text(
+            "📦 باقي السلع (كرتون crt)\n\nأرسل اسم السلعة:",
+            reply_markup=get_input_keyboard(),
+        )
+    elif data == "addtype_cancel":
+        await query.edit_message_text("❌ تم الإلغاء.")
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
 
 
 async def callback_add_handler(update, context):
@@ -839,7 +875,8 @@ async def process_add_quantity(update, context, text, telegram_id):
     try:
         updated = db_update_quantity(product_id, qty, "add")
         log_transaction(product_id, "add", qty, db_user["id"])
-        msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 " + str(qty) + " crt \u0644\u0640 " + updated["name"] + "\n\n" + format_product_admin(updated)
+        unit = _get_unit_code(updated["name"])
+        msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -865,7 +902,8 @@ async def process_remove_quantity(update, context, text, telegram_id):
     try:
         updated = db_update_quantity(product_id, qty, "remove")
         log_transaction(product_id, "remove", qty, db_user["id"])
-        msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c " + str(qty) + " crt \u0645\u0646 " + updated["name"] + "\n\n" + format_product_admin(updated)
+        unit = _get_unit_code(updated["name"])
+        msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -953,9 +991,10 @@ async def process_search(update, context, text, admin_view=False):
             buttons = []
             for p in results:
                 qty = p["quantity"]
+                unit_ar = _get_unit_ar(p["name"])
                 text_lines.append(
                     str(p["id"]) + ". " + p["name"]
-                    + "\n   📦 " + str(qty) + " كرتون"
+                    + "\n   \U0001f4e6 " + str(qty) + " " + unit_ar
                 )
                 text_lines.append("")
                 label = p["name"]
@@ -982,11 +1021,24 @@ def _product_status_icon(product):
     else:
         return "🔴"
 
+def _get_unit_code(product_name):
+    """Return unit code: 'pcs' for motif products, 'crt' for others."""
+    if product_name.strip().lower().startswith("motif"):
+        return "pcs"
+    return "crt"
+
+def _get_unit_ar(product_name):
+    """Return Arabic unit label."""
+    if product_name.strip().lower().startswith("motif"):
+        return "قطعة"
+    return "كرتون"
+
 async def _show_product_detail(update, context, product):
     p = product
     icon = _product_status_icon(p)
     qty = p["quantity"]
-    text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " كرتون " + icon
+    unit_ar = _get_unit_ar(p["name"])
+    text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " " + unit_ar + " " + icon
     pid = str(p["id"])
     user_id = update.effective_user.id if update.effective_user else 0
     admin_view = is_admin(user_id)
@@ -1081,8 +1133,9 @@ async def callback_product_action_handler(update, context):
                     date_str = tx["date"].strftime("%m/%d %H:%M")
                     op = tx.get("operator_name") or "مجهول"
                     sign = "+" if tx["type"] == "add" else "-"
+                    unit = _get_unit_code(product_name)
                     tx_lines.append(
-                        icon + " " + sign + str(tx["quantity"]) + " crt | "
+                        icon + " " + sign + str(tx["quantity"]) + " " + unit + " | "
                         + op + " | " + date_str
                     )
                 text = "\n".join(tx_lines)
@@ -1113,13 +1166,15 @@ async def callback_product_action_handler(update, context):
         context.user_data["cust_product"] = product
         if action == "add":
             context.user_data["state"] = STATE_CUST_ADD_QTY
-            text = "📦 " + product["name"] + "\n\n" + "➕ إضافة علب\n\n" + "أرسل العدد (crt):"
+            unit = _get_unit_code(product["name"])
+            unit_ar = _get_unit_ar(product["name"])
+            text = "📦 " + product["name"] + "\n\n" + "➕ إضافة " + unit_ar + "\n\n" + "أرسل العدد (" + unit + "):"
         else:
             context.user_data["state"] = STATE_CUST_REMOVE_QTY
             text = ("📦 " + product["name"]
-                + " (المتوفر: " + str(product["quantity"]) + " crt)\n\n"
-                + "➖ إخراج علب\n\n"
-                + "أرسل العدد (crt):")
+                + " (المتوفر: " + str(product["quantity"]) + " " + unit + ")\n\n"
+                + "➖ إخراج " + unit_ar + "\n\n"
+                + "أرسل العدد (" + unit + "):")
         await query.edit_message_text(text)
     except Exception as e:
         logging.error("[PACT] Error: " + str(e))
@@ -1515,7 +1570,7 @@ async def handle_admin_message(update, context):
             return
             ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                ls.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+                ls.append("  #" + str(p["id"]) + " " + p["name"] + " — " + str(p["quantity"]) + " " + _get_unit_code(p["name"]))
             await update.message.reply_text("\n".join(ls))
             context.user_data["state"] = STATE_EXISTING_ADD_QTY
             await update.message.reply_text(
@@ -1529,7 +1584,7 @@ async def handle_admin_message(update, context):
             return
             ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
-                ls.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+                ls.append("  #" + str(p["id"]) + " " + p["name"] + " — " + str(p["quantity"]) + " " + _get_unit_code(p["name"]))
             await update.message.reply_text("\n".join(ls))
             context.user_data["state"] = STATE_REMOVE_QTY
             await update.message.reply_text(
@@ -1593,14 +1648,23 @@ async def handle_admin_message(update, context):
         if not product_name:
             await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
             return
-        await ask_add_qty(update, context, product_name)
+        await ask_add_qty(update, context, product_name, is_motif=False)
+    elif state == STATE_ADD_NAME_MOTIF:
+        product_name = text.strip()
+        if not product_name:
+            await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
+            return
+        if not product_name.lower().startswith("motif"):
+            product_name = "motif " + product_name
+        await ask_add_qty(update, context, product_name, is_motif=True)
     elif state == STATE_ADD_QTY:
         qty = parse_crt_input(text)
         if qty is None:
             await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628.\n\u0645\u062b\u0627\u0644: 10 \u0623\u0648 10crt", reply_markup=get_input_keyboard())
             return
         product_name = context.user_data.get("add_name", "")
-        await confirm_add_product(update, context, product_name, qty)
+        is_motif = context.user_data.get("add_is_motif", False)
+        await confirm_add_product(update, context, product_name, qty, is_motif=is_motif)
     elif state == STATE_EXISTING_ADD_QTY:
         await process_add_quantity(update, context, text, user.id)
     elif state == STATE_REMOVE_QTY:
@@ -1621,7 +1685,7 @@ async def handle_admin_message(update, context):
             btns = []
             txt = [header]
             for p in results:
-                txt.append(str(p["id"]) + ". " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+                txt.append(str(p["id"]) + ". " + p["name"] + " — " + str(p["quantity"]) + " " + _get_unit_code(p["name"]))
                 label = p["name"]
                 if len(label) > 40:
                     label = label[:37] + "..."
@@ -1642,7 +1706,7 @@ async def handle_admin_message(update, context):
             btns = []
             txt = [header]
             for p in results:
-                txt.append(str(p["id"]) + ". " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+                txt.append(str(p["id"]) + ". " + p["name"] + " — " + str(p["quantity"]) + " " + _get_unit_code(p["name"]))
                 label = p["name"]
                 if len(label) > 40:
                     label = label[:37] + "..."
@@ -1662,7 +1726,7 @@ async def handle_admin_message(update, context):
             if db_user:
                 log_transaction(product["id"], "remove", qty, db_user["id"])
             icon = _product_status_icon(updated)
-            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n📦 الكمية: " + str(updated["quantity"]) + " crt " + icon
+            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n📦 الكمية: " + str(updated["quantity"]) + " " + _get_unit_code(updated["name"]) + " " + icon
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
@@ -1702,7 +1766,7 @@ async def handle_customer_message(update, context):
             updated = db_update_quantity(product["id"], qty, "add")
             log_transaction(product["id"], "add", qty, user.id)
             icon = _product_status_icon(updated)
-            msg = "✅ تم الإضافة!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " كرتون " + icon
+            msg = "✅ تم الإضافة!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " " + _get_unit_ar(updated["name"]) + " " + icon
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [
@@ -1729,7 +1793,7 @@ async def handle_customer_message(update, context):
             updated = db_update_quantity(product["id"], qty, "remove")
             log_transaction(product["id"], "remove", qty, user.id)
             icon = _product_status_icon(updated)
-            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " كرتون " + icon
+            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n" + "📦 الكمية: " + str(updated["quantity"]) + " " + _get_unit_ar(updated["name"]) + " " + icon
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [
@@ -1815,7 +1879,7 @@ async def callback_admin_done_handler(update, context):
 
 
 def build_application():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).drop_pending_updates(True).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", route_message))
@@ -1823,6 +1887,7 @@ def build_application():
     app.add_handler(CommandHandler("stock", stock_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_"))
@@ -2006,6 +2071,10 @@ if __name__ == "__main__":
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
+            try:
+                await tg_app.bot.delete_webhook(drop_pending_updates=True)
+            except Exception:
+                pass
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
