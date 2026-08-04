@@ -598,6 +598,8 @@ STATE_DELETE_PRODUCT = "waiting_delete_product"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
 STATE_CUST_ADD_QTY = "waiting_cust_add_qty"
 STATE_CUST_REMOVE_QTY = "waiting_cust_remove_qty"
+STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
+STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1123,6 +1125,23 @@ async def callback_product_action_handler(update, context):
 async def start_command(update, context):
     user = update.effective_user
     register_user(telegram_id=user.id, username=user.username)
+    # Notify admins about new pending user
+    if not is_admin(user.id):
+        db_user = get_user(user.id)
+        if db_user and db_user.get("role") == "pending":
+            uname = user.first_name or user.username or str(user.id)
+            for admin_id in ADMIN_IDS:
+                try:
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ تفعيل", callback_data="approve_" + str(user.id)),
+                         InlineKeyboardButton("❌ رفض", callback_data="reject_" + str(user.id))],
+                    ])
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text="🔔 طلب انضمام جديد:\n\n👤 " + uname + "\n📧 " + str(user.id),
+                        reply_markup=kb)
+                except Exception:
+                    pass
     if is_admin(user.id):
         name = user.first_name or ""
         await update.message.reply_text(
@@ -1474,10 +1493,10 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_ADD_QTY:
-            products = get_all_products()
-            if not products:
-                await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639. \u0623\u0636\u0641 \u0633\u0644\u0639\u0627\u064b \u0623\u0648\u0644\u0627\u064b.", reply_markup=get_admin_keyboard())
-                return
+            context.user_data["state"] = STATE_ADMIN_ADD_SEL
+            msg = "➕ إضافة علب\n\nأرسل اسم السلعة:"
+            await update.message.reply_text(msg, reply_markup=get_input_keyboard())
+            return
             ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
                 ls.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
@@ -1488,10 +1507,10 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_REMOVE_QTY:
-            products = get_all_products()
-            if not products:
-                await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
-                return
+            context.user_data["state"] = STATE_ADMIN_REM_SEL
+            msg = "➖ إخراج علب\n\nأرسل اسم السلعة:"
+            await update.message.reply_text(msg, reply_markup=get_input_keyboard())
+            return
             ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
             for p in products:
                 ls.append("  #" + str(p["id"]) + " " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
@@ -1574,6 +1593,112 @@ async def handle_admin_message(update, context):
         await process_edit_product(update, context, text, user.id)
     elif state == STATE_DELETE_PRODUCT:
         await process_delete_product(update, context, text, user.id)
+    elif state == STATE_ADMIN_ADD_SEL:
+        results = search_products(text)
+        if not results:
+            await update.message.reply_text("\U0001f50d \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0646\u062a\u0627\u0626\u062c.", reply_markup=get_input_keyboard())
+            return
+        if len(results) == 1:
+            await _show_product_detail(update, context, results[0])
+        else:
+            header = "\U0001f50d " + str(len(results)) + " \u0646\u062a\u064a\u062c\u0629:\n"
+            btns = []
+            txt = [header]
+            for p in results:
+                txt.append(str(p["id"]) + ". " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+                label = p["name"]
+                if len(label) > 40:
+                    label = label[:37] + "..."
+                btns.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
+            txt.append("\u2b06\ufe0f \u0627\u062e\u062a\u0631 \u0627\u0644\u0633\u0644\u0639\u0629.")
+            await update.message.reply_text("\n".join(txt), reply_markup=InlineKeyboardMarkup(btns))
+        context.user_data["state"] = None
+        return
+    elif state == STATE_ADMIN_REM_SEL:
+        results = search_products(text)
+        if not results:
+            await update.message.reply_text("\U0001f50d \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0646\u062a\u0627\u0626\u062c.", reply_markup=get_input_keyboard())
+            return
+        if len(results) == 1:
+            await _show_product_detail(update, context, results[0])
+        else:
+            header = "\U0001f50d " + str(len(results)) + " \u0646\u062a\u064a\u062c\u0629:\n"
+            btns = []
+            txt = [header]
+            for p in results:
+                txt.append(str(p["id"]) + ". " + p["name"] + " \u2014 " + str(p["quantity"]) + " crt")
+                label = p["name"]
+                if len(label) > 40:
+                    label = label[:37] + "..."
+                btns.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
+            txt.append("\u2b06\ufe0f \u0627\u062e\u062a\u0631 \u0627\u0644\u0633\u0644\u0639\u0629.")
+            await update.message.reply_text("\n".join(txt), reply_markup=InlineKeyboardMarkup(btns))
+        context.user_data["state"] = None
+        return
+    elif state == STATE_CUST_ADD_QTY:
+        qty = parse_crt_input(text)
+        if qty is None or qty <= 0:
+            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10", reply_markup=get_input_keyboard())
+            return
+        product = context.user_data.get("cust_product")
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
+            return
+        try:
+            updated = db_update_quantity(product["id"], qty, "add")
+            db_user = get_user(user.id)
+            if db_user:
+                log_transaction(product["id"], "add", qty, db_user["id"])
+            icon = _product_status_icon(updated)
+            msg = "✅ تم الإضافة!\n\n" + updated["name"] + "\n📦 الكمية: " + str(updated["quantity"]) + " crt " + icon
+            pid = str(updated["id"])
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+                 InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
+                [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
+                [InlineKeyboardButton("✅ القائمة الرئيسية", callback_data="admin_done")],
+            ])
+            context.user_data["cust_product"] = dict(updated)
+            await update.message.reply_text(msg, reply_markup=keyboard)
+            await send_low_stock_alerts(bot)
+        except ValueError as e:
+            await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+        except Exception as e:
+            await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+        return
+    elif state == STATE_CUST_REMOVE_QTY:
+        qty = parse_crt_input(text)
+        if qty is None or qty <= 0:
+            await update.message.reply_text("❌ أرسل عدد صحيح.\nمثال: 10", reply_markup=get_input_keyboard())
+            return
+        product = context.user_data.get("cust_product")
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
+            return
+        try:
+            updated = db_update_quantity(product["id"], qty, "remove")
+            db_user = get_user(user.id)
+            if db_user:
+                log_transaction(product["id"], "remove", qty, db_user["id"])
+            icon = _product_status_icon(updated)
+            msg = "✅ تم الإخراج!\n\n" + updated["name"] + "\n📦 الكمية: " + str(updated["quantity"]) + " crt " + icon
+            pid = str(updated["id"])
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
+                 InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
+                [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
+                [InlineKeyboardButton("✅ القائمة الرئيسية", callback_data="admin_done")],
+            ])
+            context.user_data["cust_product"] = dict(updated)
+            await update.message.reply_text(msg, reply_markup=keyboard)
+            await send_low_stock_alerts(bot)
+        except ValueError as e:
+            await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+        except Exception as e:
+            await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+        return
     elif state == STATE_SEARCH_ADMIN:
         await process_search(update, context, text, admin_view=True)
     else:
@@ -1709,6 +1834,17 @@ async def error_handler(update, context):
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 
+async def callback_admin_done_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    try:
+        await query.edit_message_text("✅ تم.")
+    except Exception:
+        pass
+    await context.bot.send_message(chat_id=query.message.chat_id, text="✅ القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+
+
 def build_application():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
@@ -1725,6 +1861,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
+    app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
     app.add_handler(CommandHandler("backup", backup_command))
