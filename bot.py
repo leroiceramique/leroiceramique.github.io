@@ -782,18 +782,18 @@ STATE_ADD_TYPE = "waiting_add_type"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
 STATE_ADD_NAME_PLANTE = "waiting_add_name_plante"
+STATE_ALERT_MSG = "waiting_alert_msg"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
 BTN_ADD_QTY = "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0643\u0645\u064a\u0629"
 BTN_REMOVE_QTY = "\u2796 \u0625\u062e\u0631\u0627\u062c \u0643\u0645\u064a\u0629"
-BTN_STOCK = "\U0001f4ca \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646"
-BTN_LOG = "\U0001f4dc \u0633\u062c\u0644 \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a"
 BTN_EDIT = "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629"
 BTN_DELETE = "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629"
 BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
 BTN_USERS = "⚙️ المستخدمين"
 BTN_BACKUP = "💾 نسخ احتياطي"
+BTN_ALERT = "🔔 تنبيه"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -874,9 +874,8 @@ def get_admin_keyboard():
         [
             [BTN_ADD, BTN_SEARCH],
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
-            [BTN_STOCK, BTN_LOG],
             [BTN_EDIT, BTN_DELETE],
-            [BTN_USERS, BTN_BACKUP],
+            [BTN_USERS, BTN_BACKUP, BTN_ALERT],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -887,62 +886,7 @@ def get_input_keyboard():
     return ReplyKeyboardMarkup([[BTN_CANCEL]], resize_keyboard=True)
 
 
-# ═══════════════════════════════════════════════════════════
-#  REPORTS
-# ═══════════════════════════════════════════════════════════
 
-
-async def send_stock_report(bot, chat_id):
-    products = get_all_products()
-    if not products:
-        await bot.send_message(chat_id=chat_id, text="\U0001f4ed \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0641\u0627\u0631\u063a. \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639 \u0628\u0639\u062f.")
-        return
-    lines = ["\U0001f4ca \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646 (" + str(len(products)) + " \u0633\u0644\u0639\u0629)\n"]
-    for i, p in enumerate(products, 1):
-        lines.append(str(i) + ". " + format_product_admin(p))
-        lines.append("")
-    full_text = "\n".join(lines)
-    if len(full_text) <= 4096:
-        await bot.send_message(chat_id=chat_id, text=full_text)
-    else:
-        chunks = []
-        current = []
-        current_len = 0
-        for line in lines:
-            if current_len + len(line) + 1 > 4000 and current:
-                chunks.append("\n".join(current))
-                current = []
-                current_len = 0
-            current.append(line)
-            current_len += len(line) + 1
-        if current:
-            chunks.append("\n".join(current))
-        for chunk in chunks:
-            await bot.send_message(chat_id=chat_id, text=chunk)
-
-
-async def send_transaction_log(bot, chat_id):
-    transactions = get_transactions(limit=20)
-    if not transactions:
-        await bot.send_message(chat_id=chat_id, text="\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0639\u0645\u0644\u064a\u0627\u062a \u0645\u0633\u062c\u0644\u0629 \u0628\u0639\u062f.")
-        return
-    lines = ["\U0001f4dc \u0622\u062e\u0631 20 \u0639\u0645\u0644\u064a\u0629:\n"]
-    for tx in transactions:
-        icon = "\U0001f4e5" if tx["type"] == "add" else "\U0001f4e4"
-        date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
-        op = tx.get("operator_name") or "\u0645\u062c\u0647\u0648\u0644"
-        sign = "+" if tx["type"] == "add" else "-"
-        unit = _get_unit_code(tx["product_name"])
-        lines.append(icon + " " + tx["product_name"] + " | " + sign + str(tx["quantity"]) + " " + unit + " | " + op + " | " + date_str)
-    await bot.send_message(chat_id=chat_id, text="\n".join(lines))
-
-
-# ═══════════════════════════════════════════════════════════
-#  STATE PROCESSORS
-# ═══════════════════════════════════════════════════════════
-
-
-# ── Add Product: Step-by-step ──────────────────────────
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
@@ -1129,29 +1073,26 @@ async def process_remove_quantity(update, context, text, telegram_id):
 async def process_edit_product(update, context, text, telegram_id):
     parts = [p.strip() for p in text.split(",")]
     if len(parts) < 2 or not parts[0].isdigit():
-        await update.message.reply_text(
-            "\u274c \u0627\u0644\u062a\u0646\u0633\u064a\u0642: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f\n\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631",
-            reply_markup=get_input_keyboard(),
-        )
+        err_msg = ("❌ التنسيق: رقم_السلعة, الاسم الجديد"
+            + chr(10) + chr(10)
+            + "مثال: 1, زيت 5 لتر")
+        await update.message.reply_text(err_msg, reply_markup=get_input_keyboard())
         return
     product_id = int(parts[0])
-    kwargs = {}
-    if len(parts) > 1 and parts[1]:
-        kwargs["name"] = parts[1]
-    if len(parts) > 2 and parts[2]:
-        kwargs["location"] = parts[2]
-    if len(parts) > 3 and parts[3].isdigit():
-        kwargs["minimum_stock"] = int(parts[3])
+    new_name = parts[1]
+    if not new_name:
+        await update.message.reply_text("❌ أرسل الاسم الجديد.", reply_markup=get_input_keyboard())
+        return
     try:
-        updated = db_update_product(product_id, **kwargs)
-        msg = "\u2705 \u062a\u0645 \u062a\u0639\u062f\u064a\u0644 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(updated)
+        updated = db_update_product(product_id, name=new_name)
+        msg = "✅ تم تعديل الاسم بنجاح!"
+        msg = msg + chr(10) + chr(10) + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
     except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
     context.user_data.clear()
-
 
 async def process_delete_product(update, context, text, telegram_id):
     text = text.strip()
@@ -1447,8 +1388,6 @@ async def help_command(update, context):
             "/start - \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629\n"
             "/help - \u0639\u0631\u0636 \u0647\u0630\u0627 \u0627\u0644\u0645\u0633\u0627\u0639\u062f\n"
             "/add - \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629\n"
-            "/stock - \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0627\u0644\u0643\u0627\u0645\u0644\n"
-            "/log - \u0633\u062c\u0644 \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a \u0627\u0644\u0623\u062e\u064a\u0631\u0629\n"
             "/search - \u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n"
             "\U0001f4a1 \u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u064a\u0636\u0627\u064b."
         )
@@ -1466,20 +1405,6 @@ async def add_command(update, context):
         await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     await ask_add_name(update, context)
-
-
-async def stock_command(update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
-        return
-    await send_stock_report(context.bot, update.effective_chat.id)
-
-
-async def log_command(update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
-        return
-    await send_transaction_log(context.bot, update.effective_chat.id)
 
 
 async def search_command(update, context):
@@ -1785,12 +1710,6 @@ async def handle_admin_message(update, context):
             msg = "➖ إخراج علب\n\nأرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
-        if text == BTN_STOCK:
-            await send_stock_report(bot, chat_id)
-            return
-        if text == BTN_LOG:
-            await send_transaction_log(bot, chat_id)
-            return
         if text == BTN_EDIT:
             products = get_all_products()
             if not products:
@@ -1824,11 +1743,18 @@ async def handle_admin_message(update, context):
                 + "\u26a0\ufe0f \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0648\u062c\u0645\u064a\u0639 \u0633\u062c\u0644\u0627\u062a\u0647\u0627 \u0646\u0647\u0627\u0626\u064a\u0627\u064b!",
                 reply_markup=get_input_keyboard())
             return
+        if text == BTN_ALERT:
+            context.user_data["state"] = STATE_ALERT_MSG
+            alert_prompt = ("🔔 أرسل نص التنبيه:"
+                + chr(10) + chr(10)
+                + "سيتم إرساله لجميع المستخدمين.")
+            await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
+            return
         if text == BTN_CANCEL:
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
             return
         await update.message.reply_text(
-            "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:\n/add, /stock, /log, /search",
+            "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:\n/add, /search",
             reply_markup=get_admin_keyboard())
         return
 
@@ -1970,6 +1896,39 @@ async def handle_admin_message(update, context):
 
     elif state == STATE_SEARCH_ADMIN:
         await process_search(update, context, text, admin_view=True)
+    elif state == STATE_ALERT_MSG:
+        alert_text = text.strip()
+        if not alert_text:
+            await update.message.reply_text("❌ أرسل نص التنبيه.", reply_markup=get_input_keyboard())
+            return
+        try:
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+                    users = [r[0] for r in cur.fetchall()]
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                release_connection(conn)
+            sent = 0
+            for uid in users:
+                try:
+                    alert_msg = "🔔 تنبيه من الإدارة:"
+                    alert_msg = alert_msg + chr(10) + chr(10) + alert_text
+                    await bot.send_message(chat_id=uid, text=alert_msg)
+                    sent += 1
+                except Exception as e:
+                    logging.warning("[ALERT] Failed for " + str(uid) + ": " + str(e))
+            result_msg = "✅ تم إرسال التنبيه لـ " + str(sent) + " مستخدم."
+            await update.message.reply_text(result_msg, reply_markup=get_admin_keyboard())
+        except Exception as e:
+            await update.message.reply_text("❌ خطأ: " + str(e), reply_markup=get_input_keyboard())
+        context.user_data.clear()
+        return
+    
     else:
         context.user_data.clear()
         await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
@@ -2337,8 +2296,6 @@ def build_application():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", route_message))
     app.add_handler(CommandHandler("add", add_command))
-    app.add_handler(CommandHandler("stock", stock_command))
-    app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
