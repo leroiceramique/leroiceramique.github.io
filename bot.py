@@ -1690,78 +1690,121 @@ async def handle_admin_message(update, context):
     chat_id = update.effective_chat.id
     bot = context.bot
 
-    if state is None:
+    # In a state - if user clicks an admin button, clear state first
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT]
+    if text in admin_buttons:
+        context.user_data.clear()
+        state = None
+
+    if not state:
         if text == BTN_ADD:
             await ask_add_name(update, context)
             return
         if text == BTN_SEARCH:
             context.user_data["state"] = STATE_SEARCH_ADMIN
             await update.message.reply_text(
-                "\U0001f50d \u0627\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
+                "\U0001f50d ابحث في المخزون" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:",
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_ADD_QTY:
             context.user_data["state"] = STATE_ADMIN_ADD_SEL
-            msg = "➕ إضافة علب\n\nأرسل اسم السلعة:"
+            msg = "➕ إضافة علب" + chr(10) + chr(10) + "أرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
         if text == BTN_REMOVE_QTY:
             context.user_data["state"] = STATE_ADMIN_REM_SEL
-            msg = "➖ إخراج علب\n\nأرسل اسم السلعة:"
+            msg = "➖ إخراج علب" + chr(10) + chr(10) + "أرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
         if text == BTN_EDIT:
             products = get_all_products()
             if not products:
-                await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
+                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
             for p in products:
-                ls.append("  #" + str(p["id"]) + " " + p["name"])
-            await update.message.reply_text("\n".join(ls))
+                lines.append("  #" + str(p["id"]) + " " + p["name"])
+            full = chr(10).join(lines)
+            if len(full) <= 4096:
+                await update.message.reply_text(full)
+            else:
+                chunks = []
+                cur = []
+                cur_len = 0
+                for ln in lines:
+                    if cur_len + len(ln) + 1 > 4000 and cur:
+                        chunks.append(chr(10).join(cur))
+                        cur = []
+                        cur_len = 0
+                    cur.append(ln)
+                    cur_len += len(ln) + 1
+                if cur:
+                    chunks.append(chr(10).join(cur))
+                for chunk in chunks:
+                    await update.message.reply_text(chunk)
             context.user_data["state"] = STATE_EDIT_PRODUCT
-            await update.message.reply_text(
-                "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629\n\n"
-                + "\u0623\u0631\u0633\u0644: \u0631\u0642\u0645_\u0627\u0644\u0633\u0644\u0639\u0629, \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062c\u062f\u064a\u062f\n\n"
-                + "\u0645\u062b\u0627\u0644: 1, \u0632\u064a\u062a 5 \u0644\u062a\u0631",
-                reply_markup=get_input_keyboard())
+            edit_prompt = ("\u270f\ufe0f تعديل سلعة" + chr(10) + chr(10)
+                + "أرسل: رقم_السلعة, الاسم الجديد" + chr(10) + chr(10)
+                + "مثال: 1, زيت 5 لتر")
+            await update.message.reply_text(edit_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_DELETE:
             products = get_all_products()
             if not products:
-                await update.message.reply_text("\U0001f4ed \u0644\u0627 \u062a\u0648\u062c\u062f \u0633\u0644\u0639.", reply_markup=get_admin_keyboard())
+                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            ls = ["\U0001f4e6 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0633\u0644\u0639\n"]
+            lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
             for p in products:
-                ls.append("  #" + str(p["id"]) + " " + p["name"])
-            await update.message.reply_text("\n".join(ls))
+                lines.append("  #" + str(p["id"]) + " " + p["name"])
+            full = chr(10).join(lines)
+            if len(full) <= 4096:
+                await update.message.reply_text(full)
+            else:
+                chunks = []
+                cur = []
+                cur_len = 0
+                for ln in lines:
+                    if cur_len + len(ln) + 1 > 4000 and cur:
+                        chunks.append(chr(10).join(cur))
+                        cur = []
+                        cur_len = 0
+                    cur.append(ln)
+                    cur_len += len(ln) + 1
+                if cur:
+                    chunks.append(chr(10).join(cur))
+                for chunk in chunks:
+                    await update.message.reply_text(chunk)
             context.user_data["state"] = STATE_DELETE_PRODUCT
-            await update.message.reply_text(
-                "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629\n\n"
-                + "\u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637:\n"
-                + "\u0645\u062b\u0627\u0644: 5\n\n"
-                + "\u26a0\ufe0f \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0648\u062c\u0645\u064a\u0639 \u0633\u062c\u0644\u0627\u062a\u0647\u0627 \u0646\u0647\u0627\u0626\u064a\u0627\u064b!",
-                reply_markup=get_input_keyboard())
+            del_prompt = ("\U0001f5d1\ufe0f حذف سلعة" + chr(10) + chr(10)
+                + "أرسل رقم السلعة فقط:" + chr(10)
+                + "مثال: 5" + chr(10) + chr(10)
+                + "\u26a0\ufe0f سيتم حذف السلعة وجميع سجلاتها نهائياً!")
+            await update.message.reply_text(del_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_ALERT:
             context.user_data["state"] = STATE_ALERT_MSG
-            alert_prompt = ("🔔 أرسل نص التنبيه:"
-                + chr(10) + chr(10)
+            alert_prompt = ("\U0001f514 أرسل نص التنبيه:" + chr(10) + chr(10)
                 + "سيتم إرساله لجميع المستخدمين.")
             await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
             return
+        if text == BTN_USERS:
+            await users_command(update, context)
+            return
+        if text == BTN_BACKUP:
+            await backup_command(update, context)
+            return
         if text == BTN_CANCEL:
-            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
             return
         await update.message.reply_text(
-            "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:\n/add, /search",
+            "استخدم الأزرار أدناه أو الأوامر:" + chr(10) + "/add, /search",
             reply_markup=get_admin_keyboard())
         return
 
-    # In a state
+    # State handlers
     if text == BTN_CANCEL:
         context.user_data.clear()
-        await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
         return
     if state == STATE_ADD_NAME:
         product_name = text.strip()
