@@ -619,15 +619,17 @@ def db_update_quantity(product_id, change, transaction_type):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if transaction_type == "remove" and change < 0:
                 change = abs(change)
+            # Always fetch old quantity
+            cur.execute("SELECT quantity FROM products WHERE id = %s", (product_id,))
+            old_row = cur.fetchone()
+            old_qty = old_row["quantity"] if old_row else 0
             if transaction_type == "remove":
-                cur.execute("SELECT quantity FROM products WHERE id = %s", (product_id,))
-                row = cur.fetchone()
-                if row and row["quantity"] < change:
+                if old_row and old_qty < change:
                     raise ValueError(
-                        "\u0627\u0644\u0639\u062f\u062f \u0627\u0644\u0645\u0637\u0644\u0648\u0628 ("
+                        "العدد المطلوب ("
                         + str(change)
                         + ") أكبر من المتوفر ("
-                        + str(row["quantity"])
+                        + str(old_qty)
                         + ")"
                     )
                 new_qty_expr = "GREATEST(quantity - %s, 0)"
@@ -640,8 +642,10 @@ def db_update_quantity(product_id, change, transaction_type):
                 (change, product_id),
             )
             product = cur.fetchone()
+        product = dict(product)
+        product["_old_qty"] = old_qty
         conn.commit()
-        return dict(product)
+        return product
     except Exception as e:
         conn.rollback()
         raise
@@ -828,21 +832,63 @@ async def send_low_stock_alerts(bot):
         low_stock = get_low_stock_products()
         if not low_stock:
             return
-        lines = ["⚠️ تنبيه: مخزون منخفض"]
+        lines = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
         for p in low_stock:
-            lines.append(
-                "  • " + p["name"]
-                + " — الكمية: " + str(p["quantity"])
-                + " (الحد الأدنى: " + str(p["minimum_stock"]) + ")"
-            )
-        text = "\n".join(lines)
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(chat_id=admin_id, text=text)
-            except Exception as e:
-                logging.warning("[ALERT] Send failed for " + str(admin_id) + ": " + str(e))
+            name = p["name"]
+            lower_name = name.lower().strip()
+            # Skip generic/empty names (plante pcs, 120/60pcs without specific model)
+            if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
+                continue
+            lines.append("  \u2022 " + name)
+        if len(lines) == 1:
+            return
+        text = chr(10).join(lines)
+        if len(text) > 4096:
+            chunks = []
+            cur = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
+            for ln in lines[1:]:
+                if len(chr(10).join(cur)) + len(chr(10) + ln) > 4000:
+                    chunks.append(chr(10).join(cur))
+                    cur = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636 (\u062a\u0627\u0628\u0639)"]
+                cur.append(ln)
+            if cur:
+                chunks.append(chr(10).join(cur))
+            for chunk in chunks:
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=chunk)
+                    except Exception as e:
+                        logging.warning("[ALERT] Send failed for " + str(admin_id) + ": " + str(e))
+        else:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=text)
+                except Exception as e:
+                    logging.warning("[ALERT] Send failed for " + str(admin_id) + ": " + str(e))
     except Exception as e:
         logging.warning("[ALERT] Low stock check failed: " + str(e))
+
+async def check_and_alert_single(bot, product, old_qty):
+    """Send individual alert if product just crossed low stock threshold."""
+    try:
+        name = product["name"]
+        lower_name = name.lower().strip()
+        if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
+            return
+        new_qty = product["quantity"]
+        min_stock = product.get("minimum_stock", 5)
+        if old_qty >= min_stock and new_qty < min_stock:
+            unit = _get_unit_ar(name)
+            header = "⚠️ تنبيه: مخزون منخفض"
+            msg = header + chr(10) + chr(10) + "📦 " + name + chr(10) + "الكمية: " + str(new_qty) + " " + unit
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=msg)
+                except Exception as e:
+                    logging.warning("[ALERT_SINGLE] Failed: " + str(e))
+    except Exception as e:
+        logging.warning("[ALERT_SINGLE] Error: " + str(e))
+
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
@@ -1035,6 +1081,7 @@ async def process_add_quantity(update, context, text, telegram_id):
         unit = _get_unit_code(updated["name"])
         msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
@@ -1061,6 +1108,7 @@ async def process_remove_quantity(update, context, text, telegram_id):
         log_transaction(product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
+        await check_and_alert_single(bot, updated, updated.get("_old_qty", 0))
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -1933,6 +1981,7 @@ async def handle_admin_message(update, context):
                 [InlineKeyboardButton("\U0001f4ca \u0627\u0644\u062d\u0631\u0643\u0629", callback_data="pact_log_" + pid)],
                 [InlineKeyboardButton("\u2705 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629", callback_data="admin_done")],
             ])
+            await check_and_alert_single(bot, updated, updated.get("_old_qty", 0))
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(bot)
@@ -2022,6 +2071,7 @@ async def handle_customer_message(update, context):
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
                  InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
                 [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
+            await check_and_alert_single(bot, updated, updated.get("_old_qty", 0))
             ])
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
@@ -2292,6 +2342,7 @@ async def callback_extract_approve_handler(update, context):
                         )
                     else:
                         notify_text = "❌ تم رفض طلب الإخراج."
+                    await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
                     await context.bot.send_message(chat_id=req_info["telegram_id"], text=notify_text)
             except Exception as e:
                 logging.error("[EXTRACT] Notify requester failed: " + str(e))
