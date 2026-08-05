@@ -187,7 +187,18 @@ if not DATABASE_URL:
 if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
-_previously_low_stock_ids = set()
+_previously_low_stock = {}  # {product_id: product_name}
+
+def _init_low_stock_ids():
+    """Populate _previously_low_stock with current low-stock product IDs on startup.
+    This prevents sending "new" alerts for products already low before restart."""
+    global _previously_low_stock
+    try:
+        low_stock = get_low_stock_products()
+        _previously_low_stock = {p["id"]: p["name"] for p in low_stock}
+        logging.info("[INIT] Low-stock tracking initialized with " + str(len(_previously_low_stock)) + " products")
+    except Exception as e:
+        logging.warning("[INIT] Failed to init low-stock IDs: " + str(e))
 
 # ═══════════════════════════════════════════════════════════
 #  DATABASE
@@ -800,6 +811,14 @@ BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
 BTN_USERS = "⚙️ المستخدمين"
 BTN_BACKUP = "💾 نسخ احتياطي"
 BTN_ALERT = "🔔 تنبيه"
+BTN_LOW_STOCK = "📊 المخزون المنخفض"
+
+# Customer buttons
+BTN_CUST_ALERT = "🔔 تنبيه المخزون"
+BTN_CUST_ADD = "➕ إضافة"
+BTN_CUST_REMOVE = "➖ إخراج"
+BTN_CUST_SEARCH = "🔍 بحث"
+BTN_CUST_CANCEL = "❌ إلغاء"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -829,79 +848,107 @@ def format_product_customer(product):
         return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
 
 
+async def _broadcast_to_all_users(bot, text):
+    """Send a message to all approved users (admin + customer)."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+                rows = cur.fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+        for row in rows:
+            uid = row[0]
+            try:
+                await bot.send_message(chat_id=uid, text=text)
+            except Exception as e:
+                logging.warning("[BROADCAST] Failed for " + str(uid) + ": " + str(e))
+    except Exception as e:
+        logging.warning("[BROADCAST] Error: " + str(e))
+
+
 async def send_low_stock_alerts(bot):
-    """Check low stock products. Send individual alerts for NEW low-stock items,
-    then send the full list as before."""
+    """Send individual alerts to ALL users when products enter or leave low-stock list."""
     try:
         low_stock = get_low_stock_products()
         if not low_stock:
-            return
-        skip_names = ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60")
+            current = {}
+        else:
+            current = {p["id"]: p["name"] for p in low_stock}
 
-        # Build list of valid (non-generic) low-stock products
+        # Products that ENTERED low stock (new)
+        new_ids = set(current.keys()) - set(_previously_low_stock.keys())
+        if new_ids:
+            for pid in new_ids:
+                name = current[pid]
+                msg = ("🔴 تنبيه: مخزون منخفض جديد"
+                    + chr(10) + chr(10)
+                    + "📦 " + name)
+                await _broadcast_to_all_users(bot, msg)
+
+        # Products that LEFT low stock (restocked)
+        left_ids = set(_previously_low_stock.keys()) - set(current.keys())
+        if left_ids:
+            for pid in left_ids:
+                name = _previously_low_stock[pid]
+                msg = ("✅ تنبيه: توفرت سلعة"
+                    + chr(10) + chr(10)
+                    + "📦 " + name)
+                await _broadcast_to_all_users(bot, msg)
+
+        # Update tracked dict
+        _previously_low_stock.clear()
+        _previously_low_stock.update(current)
+    except Exception as e:
+        logging.warning("[ALERT] Low stock check failed: " + str(e))
+
+
+async def send_low_stock_list(update=None, context=None, bot=None):
+    """Send full low-stock list. Works for admin or customer button."""
+    try:
+        low_stock = get_low_stock_products()
         valid_items = []
         for p in low_stock:
-            name = p["name"]
-            lower_name = name.lower().strip()
-            if lower_name in skip_names:
+            lower_name = p["name"].lower().strip()
+            if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
                 continue
             valid_items.append(p)
-
         if not valid_items:
+            msg = "✅ لا توجد سلع منخفضة المخزون."
+            if update:
+                await update.message.reply_text(msg)
             return
-
-        # --- Send individual alerts for NEW low-stock products ---
-        current_low_ids = set(p["id"] for p in valid_items)
-        new_low_ids = current_low_ids - _previously_low_stock_ids
-        if new_low_ids:
-            new_products = [p for p in valid_items if p["id"] in new_low_ids]
-            for p in new_products:
-                name = p["name"]
-                qty = p["quantity"]
-                msg = "\U0001f534 \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636 \u062c\u062f\u064a\u062f" + chr(10) + chr(10)
-                msg += "\U0001f4e6 " + name + chr(10)
-                msg += "\U0001f4cf \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty)
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await bot.send_message(chat_id=admin_id, text=msg)
-                    except Exception as e:
-                        logging.warning("[ALERT_NEW] Failed: " + str(e))
-
-        # Update the set of known low-stock product IDs
-        _previously_low_stock_ids.update(current_low_ids)
-
-        # --- Send full list as before ---
-        lines = ["\U000026a0\U0000fe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
+        txt_lines = ["⚠️ قائمة المخزون المنخفض"]
         for p in valid_items:
-            lines.append("  \u2022 " + p["name"])
-        text = chr(10).join(lines)
+            txt_lines.append("  • " + p["name"])
+        text = chr(10).join(txt_lines)
         if len(text) > 4096:
             chunks = []
-            cur = ["\U000026a0\U0000fe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
-            for ln in lines[1:]:
+            cur = ["⚠️ قائمة المخزون المنخفض"]
+            for ln in txt_lines[1:]:
                 if len(chr(10).join(cur)) + len(chr(10) + ln) > 4000:
                     chunks.append(chr(10).join(cur))
-                    cur = ["\U000026a0\U0000fe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636 (\u062a\u0627\u0628\u0639)"]
+                    cur = ["⚠️ مخزون منخفض (تابع)"]
                 cur.append(ln)
             if cur:
                 chunks.append(chr(10).join(cur))
             for chunk in chunks:
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await bot.send_message(chat_id=admin_id, text=chunk)
-                    except Exception as e:
-                        logging.warning("[ALERT] Send failed for " + str(admin_id) + ": " + str(e))
+                if update:
+                    await update.message.reply_text(chunk)
         else:
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(chat_id=admin_id, text=text)
-                except Exception as e:
-                    logging.warning("[ALERT] Send failed for " + str(admin_id) + ": " + str(e))
+            if update:
+                await update.message.reply_text(text)
     except Exception as e:
-        logging.warning("[ALERT] Low stock check failed: " + str(e))
+        logging.warning("[LOW_STOCK_LIST] Error: " + str(e))
+
 
 async def check_and_alert_single(bot, product, old_qty):
-    """Send individual alert if product just crossed low stock threshold."""
+    """Send individual alert to ALL users if product just crossed low stock threshold."""
     try:
         name = product["name"]
         lower_name = name.lower().strip()
@@ -911,15 +958,14 @@ async def check_and_alert_single(bot, product, old_qty):
         min_stock = product.get("minimum_stock", 5)
         if old_qty >= min_stock and new_qty < min_stock:
             unit = _get_unit_ar(name)
-            header = "⚠️ تنبيه: مخزون منخفض"
-            msg = header + chr(10) + chr(10) + "📦 " + name + chr(10) + "الكمية: " + str(new_qty) + " " + unit
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(chat_id=admin_id, text=msg)
-                except Exception as e:
-                    logging.warning("[ALERT_SINGLE] Failed: " + str(e))
+            msg = ("🔴 تنبيه: مخزون منخفض جديد"
+                + chr(10) + chr(10)
+                + "📦 " + name + chr(10)
+                + "📏 الكمية: " + str(new_qty) + " " + unit)
+            await _broadcast_to_all_users(bot, msg)
     except Exception as e:
         logging.warning("[ALERT_SINGLE] Error: " + str(e))
+
 
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
@@ -954,6 +1000,8 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
+            [BTN_LOW_STOCK],
+            [BTN_LOW_STOCK],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -965,6 +1013,18 @@ def get_input_keyboard():
 
 
 
+
+
+def get_customer_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_CUST_ALERT],
+            [BTN_CUST_ADD, BTN_CUST_REMOVE],
+            [BTN_CUST_SEARCH],
+            [BTN_CUST_CANCEL],
+        ],
+        resize_keyboard=True,
+    )
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
@@ -1460,7 +1520,8 @@ async def start_command(update, context):
             )
         else:
             await update.message.reply_text(
-                "مرحباً " + name + "! 👋\n\nأرسل اسم السلعة لمعرفة توفرها.\nمثال: زيت 5 لتر",
+                "مرحباً " + name + "! 👋" + chr(10) + chr(10) + "استخدم الأزرار أدناه.",
+                reply_markup=get_customer_keyboard(),
             )
     context.user_data.clear()
 
@@ -1776,7 +1837,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -1871,6 +1932,12 @@ async def handle_admin_message(update, context):
             alert_prompt = ("\U0001f514 أرسل نص التنبيه:" + chr(10) + chr(10)
                 + "سيتم إرساله لجميع المستخدمين.")
             await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
+            return
+        if text == BTN_LOW_STOCK:
+            await send_low_stock_list(update, context)
+            return
+        if text == BTN_LOW_STOCK:
+            await send_low_stock_list(update, context)
             return
         if text == BTN_USERS:
             await users_command(update, context)
@@ -2067,10 +2134,37 @@ async def handle_customer_message(update, context):
     text = update.message.text.strip()
     state = context.user_data.get("state")
     user = update.effective_user
-    if text == BTN_CANCEL:
+
+    # Handle customer buttons (clear state first)
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_CANCEL]
+    if text in cust_buttons:
         context.user_data.clear()
-        await update.message.reply_text("❌ تم الإلغاء.")
+        state = None
+
+        if text == BTN_CUST_CANCEL:
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            return
+
+        if text == BTN_CUST_ALERT:
+            await send_low_stock_list(update, context)
+            return
+
+        if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
+            context.user_data["state"] = "waiting_cust_search"
+            await update.message.reply_text("🔍 اكتب اسم السلعة:")
+            return
+
+    # State: waiting for product name from button
+    if state == "waiting_cust_search":
+        if text == BTN_CUST_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            return
+        await process_search(update, context, text, admin_view=False)
+        context.user_data.clear()
         return
+
+    # State: waiting_pact_qty
     if state == "waiting_pact_qty":
         product = context.user_data.get("cust_product")
         action = context.user_data.get("pact_action", "add")
@@ -2078,12 +2172,12 @@ async def handle_customer_message(update, context):
             action = "remove" if action == "rem" else "add"
         if not product:
             context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.")
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
             return
         parsed = parse_crt_input(text)
         if parsed is None:
             unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit)
+            await update.message.reply_text("❌ أرسل عددا صحيحا." + chr(10) + "مثال: 10 أو 10" + unit)
             return
         qty = parsed
         try:
@@ -2095,9 +2189,9 @@ async def handle_customer_message(update, context):
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
             if action == "add":
-                msg = "\u2705 \u062a\u0645\u062a \u0627\u0644\u0625\u0636\u0627\u0641\u0629!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+                msg = "✅ تمت الإضافة!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             else:
-                msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+                msg = "✅ تم إخراج!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
@@ -2114,16 +2208,17 @@ async def handle_customer_message(update, context):
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
         return
+
+    # State: waiting_extract_qty
     if state == "waiting_extract_qty":
         product = context.user_data.get("cust_product")
         if not product:
             context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.")
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
             return
         parsed = parse_crt_input(text)
         if parsed is None:
-            unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحت.")
+            await update.message.reply_text("❌ أرسل عددا صحيحا.")
             return
         qty = parsed
         if qty <= 0:
@@ -2136,30 +2231,18 @@ async def handle_customer_message(update, context):
         try:
             req = create_extraction_request(product["id"], qty, db_user["id"])
             unit_ar = _get_unit_ar(product["name"])
-            msg = (
-                "\📨 تم إرسال طلب الإخراج!\n\n"
-                + "📦 " + product["name"] + "\n"
-                + "📦 الكمية: " + str(qty) + " " + unit_ar + "\n\n"
-                + "⏳ بانتظار موافقة المدير."
-            )
+            msg = "📨 تم إرسال طلب الإخراج!" + chr(10) + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit_ar + chr(10) + chr(10) + "⏳ بانتظار موافقة المدير."
             await update.message.reply_text(msg)
             for admin_id in ADMIN_IDS:
                 try:
                     requester_name = user.first_name or user.username or str(user.id)
                     unit = _get_unit_code(product["name"])
-                    admin_msg = (
-                        "\🔔 طلب إخراج جديد:\n\n"
-                        + "👤 " + requester_name + "\n"
-                        + "📦 " + product["name"] + "\n"
-                        + "📦 الكمية: " + str(qty) + " " + unit + "\n\n"
-                        + "موافقة على إلاخراج هذا الطلب؟"
-                    )
+                    admin_msg = "🔔 طلب إخراج جديد:" + chr(10) + chr(10) + "👤 " + requester_name + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit + chr(10) + chr(10) + "موافقة على إلاخراج هذا الطلب؟"
                     kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ موافقة", callback_data="ext_approve_" + str(req["id"])),
                          InlineKeyboardButton("❌ رفض", callback_data="ext_reject_" + str(req["id"]))],
                     ])
                     await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=kb)
-                    logging.info("[EXTRACT] Request #" + str(req["id"]) + " sent to admin " + str(admin_id))
                 except Exception as e:
                     logging.error("[EXTRACT] Notify admin failed: " + str(e))
         except Exception as e:
@@ -2167,10 +2250,13 @@ async def handle_customer_message(update, context):
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
         return
+
+    # Default: treat as search query
     if not text:
         await update.message.reply_text("أرسل اسم السلعة لمعرفة إذا كانت متوفرة.")
         return
     await process_search(update, context, text, admin_view=False)
+
 
 async def route_message(update, context):
     user = update.effective_user
@@ -2595,6 +2681,7 @@ if __name__ == "__main__":
     init_db()
     seed_sample_products()
     init_pool()
+    _init_low_stock_ids()
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
