@@ -187,7 +187,7 @@ if not DATABASE_URL:
 if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
-_previously_low_stock = {}  # {product_id: product_name}
+_previously_low_stock = {}  # {product_id: product_dict}
 
 def _init_low_stock_ids():
     """Populate _previously_low_stock with current low-stock product IDs on startup.
@@ -195,7 +195,7 @@ def _init_low_stock_ids():
     global _previously_low_stock
     try:
         low_stock = get_low_stock_products()
-        _previously_low_stock = {p["id"]: p["name"] for p in low_stock}
+        _previously_low_stock = {p["id"]: p for p in low_stock}
         logging.info("[INIT] Low-stock tracking initialized with " + str(len(_previously_low_stock)) + " products")
     except Exception as e:
         logging.warning("[INIT] Failed to init low-stock IDs: " + str(e))
@@ -879,26 +879,40 @@ async def send_low_stock_alerts(bot):
         if not low_stock:
             current = {}
         else:
-            current = {p["id"]: p["name"] for p in low_stock}
+            current = {p["id"]: p for p in low_stock}
 
         # Products that ENTERED low stock (new)
         new_ids = set(current.keys()) - set(_previously_low_stock.keys())
         if new_ids:
             for pid in new_ids:
-                name = current[pid]
+                prod = current[pid]
+                name = prod["name"]
+                lower_name = name.lower().strip()
+                if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
+                    continue
+                qty = prod.get("quantity", "?")
+                unit = _get_unit_ar(name)
                 msg = ("🔴 تنبيه: مخزون منخفض جديد"
                     + chr(10) + chr(10)
-                    + "📦 " + name)
+                    + "📦 " + name + chr(10)
+                    + "📏 الكمية: " + str(qty) + " " + unit)
                 await _broadcast_to_all_users(bot, msg)
 
         # Products that LEFT low stock (restocked)
         left_ids = set(_previously_low_stock.keys()) - set(current.keys())
         if left_ids:
             for pid in left_ids:
-                name = _previously_low_stock[pid]
+                prod = _previously_low_stock[pid]
+                name = prod["name"]
+                lower_name = name.lower().strip()
+                if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
+                    continue
+                qty = prod.get("quantity", "?")
+                unit = _get_unit_ar(name)
                 msg = ("✅ تنبيه: توفرت سلعة"
                     + chr(10) + chr(10)
-                    + "📦 " + name)
+                    + "📦 " + name + chr(10)
+                    + "📏 الكمية: " + str(qty) + " " + unit)
                 await _broadcast_to_all_users(bot, msg)
 
         # Update tracked dict
@@ -947,26 +961,6 @@ async def send_low_stock_list(update=None, context=None, bot=None):
         logging.warning("[LOW_STOCK_LIST] Error: " + str(e))
 
 
-async def check_and_alert_single(bot, product, old_qty):
-    """Send individual alert to ALL users if product just crossed low stock threshold."""
-    try:
-        name = product["name"]
-        lower_name = name.lower().strip()
-        if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
-            return
-        new_qty = product["quantity"]
-        min_stock = product.get("minimum_stock", 5)
-        if old_qty >= min_stock and new_qty < min_stock:
-            unit = _get_unit_ar(name)
-            msg = ("🔴 تنبيه: مخزون منخفض جديد"
-                + chr(10) + chr(10)
-                + "📦 " + name + chr(10)
-                + "📏 الكمية: " + str(new_qty) + " " + unit)
-            await _broadcast_to_all_users(bot, msg)
-    except Exception as e:
-        logging.warning("[ALERT_SINGLE] Error: " + str(e))
-
-
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
@@ -1000,7 +994,6 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
-            [BTN_LOW_STOCK],
             [BTN_LOW_STOCK],
             [BTN_CANCEL],
         ],
@@ -1173,7 +1166,6 @@ async def process_add_quantity(update, context, text, telegram_id):
         unit = _get_unit_code(updated["name"])
         msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-        await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
@@ -1200,7 +1192,6 @@ async def process_remove_quantity(update, context, text, telegram_id):
         log_transaction(product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -2080,7 +2071,6 @@ async def handle_admin_message(update, context):
                 [InlineKeyboardButton("\U0001f4ca \u0627\u0644\u062d\u0631\u0643\u0629", callback_data="pact_log_" + pid)],
                 [InlineKeyboardButton("\u2705 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629", callback_data="admin_done")],
             ])
-            await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
@@ -2198,7 +2188,6 @@ async def handle_customer_message(update, context):
                  InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
                 [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
             ])
-            await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
@@ -2460,7 +2449,6 @@ async def callback_extract_approve_handler(update, context):
                         )
                     else:
                         notify_text = "❌ تم رفض طلب الإخراج."
-                    await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
                     await context.bot.send_message(chat_id=req_info["telegram_id"], text=notify_text)
             except Exception as e:
                 logging.error("[EXTRACT] Notify requester failed: " + str(e))
