@@ -1140,7 +1140,7 @@ async def process_remove_quantity(update, context, text, telegram_id):
         log_transaction(product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await check_and_alert_single(bot, updated, updated.get("_old_qty", 0))
+        await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
@@ -2013,10 +2013,10 @@ async def handle_admin_message(update, context):
                 [InlineKeyboardButton("\U0001f4ca \u0627\u0644\u062d\u0631\u0643\u0629", callback_data="pact_log_" + pid)],
                 [InlineKeyboardButton("\u2705 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629", callback_data="admin_done")],
             ])
-            await check_and_alert_single(bot, updated, updated.get("_old_qty", 0))
+            await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
-            await send_low_stock_alerts(bot)
+            await send_low_stock_alerts(context.bot)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -2047,7 +2047,7 @@ async def handle_admin_message(update, context):
                 try:
                     alert_msg = "🔔 تنبيه من الإدارة:"
                     alert_msg = alert_msg + chr(10) + chr(10) + alert_text
-                    await bot.send_message(chat_id=uid, text=alert_msg)
+                    await context.bot.send_message(chat_id=uid, text=alert_msg)
                     sent += 1
                 except Exception as e:
                     logging.warning("[ALERT] Failed for " + str(uid) + ": " + str(e))
@@ -2103,8 +2103,8 @@ async def handle_customer_message(update, context):
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
                  InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
                 [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
-            await check_and_alert_single(bot, updated, updated.get("_old_qty", 0))
             ])
+            await check_and_alert_single(context.bot, updated, updated.get("_old_qty", 0))
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
