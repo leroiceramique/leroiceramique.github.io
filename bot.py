@@ -187,6 +187,8 @@ if not DATABASE_URL:
 if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
+_previously_low_stock_ids = set()
+
 # ═══════════════════════════════════════════════════════════
 #  DATABASE
 # ═══════════════════════════════════════════════════════════
@@ -828,28 +830,58 @@ def format_product_customer(product):
 
 
 async def send_low_stock_alerts(bot):
+    """Check low stock products. Send individual alerts for NEW low-stock items,
+    then send the full list as before."""
     try:
         low_stock = get_low_stock_products()
         if not low_stock:
             return
-        lines = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
+        skip_names = ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60")
+
+        # Build list of valid (non-generic) low-stock products
+        valid_items = []
         for p in low_stock:
             name = p["name"]
             lower_name = name.lower().strip()
-            # Skip generic/empty names (plante pcs, 120/60pcs without specific model)
-            if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
+            if lower_name in skip_names:
                 continue
-            lines.append("  \u2022 " + name)
-        if len(lines) == 1:
+            valid_items.append(p)
+
+        if not valid_items:
             return
+
+        # --- Send individual alerts for NEW low-stock products ---
+        current_low_ids = set(p["id"] for p in valid_items)
+        new_low_ids = current_low_ids - _previously_low_stock_ids
+        if new_low_ids:
+            new_products = [p for p in valid_items if p["id"] in new_low_ids]
+            for p in new_products:
+                name = p["name"]
+                qty = p["quantity"]
+                msg = "\U0001f534 \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636 \u062c\u062f\u064a\u062f" + chr(10) + chr(10)
+                msg += "\U0001f4e6 " + name + chr(10)
+                msg += "\U0001f4cf \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty)
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=msg)
+                    except Exception as e:
+                        logging.warning("[ALERT_NEW] Failed: " + str(e))
+
+        # Update the set of known low-stock product IDs
+        _previously_low_stock_ids.update(current_low_ids)
+
+        # --- Send full list as before ---
+        lines = ["\U000026a0\U0000fe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
+        for p in valid_items:
+            lines.append("  \u2022 " + p["name"])
         text = chr(10).join(lines)
         if len(text) > 4096:
             chunks = []
-            cur = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
+            cur = ["\U000026a0\U0000fe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636"]
             for ln in lines[1:]:
                 if len(chr(10).join(cur)) + len(chr(10) + ln) > 4000:
                     chunks.append(chr(10).join(cur))
-                    cur = ["\u26a0\ufe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636 (\u062a\u0627\u0628\u0639)"]
+                    cur = ["\U000026a0\U0000fe0f \u062a\u0646\u0628\u064a\u0647: \u0645\u062e\u0632\u0648\u0646 \u0645\u0646\u062e\u0641\u0636 (\u062a\u0627\u0628\u0639)"]
                 cur.append(ln)
             if cur:
                 chunks.append(chr(10).join(cur))
