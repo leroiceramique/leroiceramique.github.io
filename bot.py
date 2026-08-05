@@ -1123,10 +1123,15 @@ async def process_search(update, context, text, admin_view=False):
         return
     results = search_products(text)
     if not results:
-        await update.message.reply_text(
-            "\U0001f50d \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0646\u062a\u0627\u0626\u062c \u0644\u0640 " + text,
-            reply_markup=get_input_keyboard(),
-        )
+        if admin_view:
+            msg = ("\U0001f50d لم يتم العثور على نتائج لـ " + text)
+        else:
+            msg = ("🔍 العنصر غير موجود." + chr(10) + chr(10)
+                + "يرجى التأكد من كتابة الاسم بشكل صحيح." + chr(10) + chr(10)
+                + "⚠️ السلع القديمة جداً غير مسجلة في النظام." + chr(10)
+                + "يرجى الاتصال بسمير للاستفسار.")
+        reply_kb = get_input_keyboard() if admin_view else None
+        await update.message.reply_text(msg, reply_markup=reply_kb)
         return
     if admin_view:
         header = "\U0001f50d \u0646\u062a\u0627\u0626\u062c \u0627\u0644\u0628\u062d\u062b \u0639\u0646 " + text + " (" + str(len(results)) + " \u0646\u062a\u064a\u062c\u0629):\n"
