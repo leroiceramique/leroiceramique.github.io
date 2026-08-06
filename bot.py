@@ -527,32 +527,41 @@ def db_import_backup(data):
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             cur.execute("DELETE FROM users")
-            cur.execute("ALTER SEQUENCE products_id_seq RESTART WITH 1")
-            cur.execute("ALTER SEQUENCE transactions_id_seq RESTART WITH 1")
-            cur.execute("ALTER SEQUENCE users_id_seq RESTART WITH 1")
 
+            # ── Import users with their ORIGINAL ids ──
             user_count = 0
             for u in data.get("users", []):
                 cur.execute(
-                    "INSERT INTO users (telegram_id, username, role, active, created_at) VALUES (%s, %s, %s, %s, %s)",
-                    (u["telegram_id"], u.get("username"), u.get("role", "customer"),
+                    "INSERT INTO users (id, telegram_id, username, role, active, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (u["id"], u["telegram_id"], u.get("username"), u.get("role", "customer"),
                      u.get("active", True), u.get("created_at")))
                 user_count += 1
+            if user_count > 0:
+                max_uid = max(u["id"] for u in data.get("users", []))
+                cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
 
+            # ── Import products with their ORIGINAL ids ──
             prod_count = 0
             for p in data.get("products", []):
                 cur.execute(
-                    "INSERT INTO products (name, quantity, location, minimum_stock, created_at) VALUES (%s, %s, %s, %s, %s)",
-                    (p["name"], p["quantity"], p.get("location", ""),
+                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (p["id"], p["name"], p["quantity"], p.get("location", ""),
                      p.get("minimum_stock", 5), p.get("created_at")))
                 prod_count += 1
+            if prod_count > 0:
+                max_pid = max(p["id"] for p in data.get("products", []))
+                cur.execute("SELECT setval('products_id_seq', %s)", (max_pid,))
 
+            # ── Import transactions (users & products already exist with correct ids) ──
             tx_count = 0
             for t in data.get("transactions", []):
                 cur.execute(
-                    "INSERT INTO transactions (product_id, type, quantity, user_id, date) VALUES (%s, %s, %s, %s, %s)",
-                    (t["product_id"], t["type"], t["quantity"], t.get("user_id"), t.get("date")))
+                    "INSERT INTO transactions (id, product_id, type, quantity, user_id, date) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (t["id"], t["product_id"], t["type"], t["quantity"], t.get("user_id"), t.get("date")))
                 tx_count += 1
+            if tx_count > 0:
+                max_tid = max(t["id"] for t in data.get("transactions", []))
+                cur.execute("SELECT setval('transactions_id_seq', %s)", (max_tid,))
 
         conn.commit()
         return ("✅ تم استيراد البيانات:\n"
