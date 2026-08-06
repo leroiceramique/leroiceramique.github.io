@@ -303,6 +303,11 @@ CREATE TABLE IF NOT EXISTS extraction_requests (
 
 CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);
+
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key         VARCHAR(100) PRIMARY KEY,
+    value       TEXT
+);
 """
 
 
@@ -335,6 +340,11 @@ def init_db():
                     processed_at  TIMESTAMPTZ
                 );
                 CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
+            -- Migration: create bot_settings table
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key         VARCHAR(100) PRIMARY KEY,
+                value       TEXT
+            );
             """)
         conn.commit()
         print("[DB] Schema initialized successfully.")
@@ -984,6 +994,150 @@ def parse_qty_input(text):
 
 # ═══════════════════════════════════════════════════════════
 #  KEYBOARDS
+
+# ═══════════════════════════════════════════════
+#  BOT SETTINGS HELPERS
+# ═══════════════════════════════════════════════
+
+
+def get_bot_setting(key, default=None):
+    """Get a bot setting value from bot_settings table."""
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM bot_settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+        conn.commit()
+        release_connection(conn)
+        if row:
+            return row[0]
+        return default
+    except Exception as e:
+        logging.warning("[SETTINGS] Get failed: " + str(e))
+        return default
+
+
+def set_bot_setting(key, value):
+    """Set a bot setting value."""
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_settings (key, value) VALUES (%s, %s)"
+                " ON CONFLICT (key) DO UPDATE SET value = %s",
+                (key, value, value))
+        conn.commit()
+        release_connection(conn)
+    except Exception as e:
+        logging.warning("[SETTINGS] Set failed: " + str(e))
+
+
+async def generate_weekly_report(bot):
+    """Generate and send the weekly inventory report."""
+    try:
+        conn = get_connection()
+        with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+            # Total products
+            cur.execute("SELECT COUNT(*) as cnt FROM products")
+            total = cur.fetchone()["cnt"]
+
+            # Total quantity
+            cur.execute("SELECT COALESCE(SUM(quantity), 0) as total_qty FROM products")
+            total_qty = cur.fetchone()["total_qty"]
+
+            # Low stock count
+            cur.execute("SELECT COUNT(*) as cnt FROM products WHERE quantity <= minimum_stock")
+            low_count = cur.fetchone()["cnt"]
+
+            # Top 5 highest quantity
+            cur.execute(
+                "SELECT name, quantity FROM products"
+                " WHERE quantity > 0"
+                " ORDER BY quantity DESC LIMIT 5")
+            top_products = cur.fetchall()
+
+            # Bottom 5 (lowest / zero)
+            cur.execute(
+                "SELECT name, quantity FROM products"
+                " ORDER BY quantity ASC LIMIT 5")
+            bottom_products = cur.fetchall()
+
+            # Transactions this week
+            cur.execute(
+                "SELECT COUNT(*) as cnt FROM transactions"
+                " WHERE date >= NOW() - INTERVAL \'7 days\'")
+            week_transactions = cur.fetchone()["cnt"]
+
+            # Adds vs removes this week
+            cur.execute(
+                "SELECT type, COUNT(*) as cnt FROM transactions"
+                " WHERE date >= NOW() - INTERVAL \'7 days\'"
+                " GROUP BY type")
+            type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
+            adds = type_counts.get("add", 0)
+            removes = type_counts.get("remove", 0)
+
+        release_connection(conn)
+
+        # Build report message
+        lines = []
+        lines.append("\U0001f4cb \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0627\u0644\u0623\u0633\u0628\u0648\u0639\u064a")
+        lines.append("\U0001f4c5 " + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"))
+        lines.append("")
+        lines.append("\U0001f4e6 \u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0646\u062a\u062c\u0627\u062a: " + str(total))
+        lines.append("\U0001f4cf \u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0643\u0645\u064a\u0627\u062a: " + str(total_qty))
+        lines.append("\U0001f534 \u0645\u0646\u062a\u062c\u0627\u062a \u0645\u0646\u062e\u0641\u0636\u0629: " + str(low_count))
+        lines.append("")
+        lines.append("\U0001f504 \u062d\u0631\u0643\u0629 \u0647\u0630\u0627 \u0627\u0644\u0623\u0633\u0628\u0648\u0639:")
+        lines.append("   \u2795 \u0625\u0636\u0627\u0641\u0629: " + str(adds) + " \u0639\u0645\u0644\u064a\u0629")
+        lines.append("   \u2796 \u0625\u062e\u0631\u0627\u062c: " + str(removes) + " \u0639\u0645\u0644\u064a\u0629")
+        lines.append("")
+
+        if top_products:
+            lines.append("\U0001f4c8 \u0623\u0643\u062b\u0631 5 \u0645\u0646\u062a\u062c\u0627\u062a \u0643\u0645\u064a\u0629:")
+            for p in top_products:
+                lines.append("   \U0001f4e6 " + p["name"] + " (" + str(p["quantity"]) + ")")
+            lines.append("")
+
+        if bottom_products:
+            lines.append("\U0001f4c9 \u0623\u0642\u0644 5 \u0645\u0646\u062a\u062c\u0627\u062a \u0643\u0645\u064a\u0629:")
+            for p in bottom_products:
+                icon = "\U0001f534" if p["quantity"] == 0 else "\U0001f7e1"
+                lines.append("   " + icon + " " + p["name"] + " (" + str(p["quantity"]) + ")")
+
+        report_text = chr(10).join(lines)
+
+        # Send to configured recipient
+        recipient_id = get_bot_setting("weekly_report_recipient")
+        if not recipient_id:
+            logging.warning("[WEEKLY] No recipient configured")
+            return
+
+        try:
+            await bot.send_message(chat_id=int(recipient_id), text=report_text)
+            logging.info("[WEEKLY] Report sent to " + str(recipient_id))
+        except Exception as e:
+            logging.error("[WEEKLY] Failed to send: " + str(e))
+
+    except Exception as e:
+        logging.error("[WEEKLY] Report generation failed: " + str(e))
+
+
+async def _weekly_report_loop(bot):
+    """Send weekly report every Sunday at 23:00 Algeria time (22:00 UTC)."""
+    last_report = ""
+    while True:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # Sunday = weekday 6, send at 22:00 UTC = 23:00 Algeria
+        today = now.strftime("%Y-%m-%d")
+        is_sunday = now.weekday() == 6
+        hour_ok = 22 <= now.hour < 23
+        enabled = get_bot_setting("weekly_report_enabled", "false") == "true"
+        if is_sunday and hour_ok and today != last_report and enabled:
+            await generate_weekly_report(bot)
+            last_report = today
+        await asyncio.sleep(60)
+
 # ═══════════════════════════════════════════════════════════
 
 
@@ -994,7 +1148,7 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
-            [BTN_LOW_STOCK],
+            [BTN_LOW_STOCK, BTN_WEEKLY_REPORT],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -1814,6 +1968,131 @@ async def users_command(update, context):
         msg_lines.append("  " + role_icon + " " + name)
     await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
 
+async def _handle_weekly_report_setup(update, context):
+    """Show weekly report settings with inline keyboard."""
+    enabled = get_bot_setting("weekly_report_enabled", "false") == "true"
+    recipient_id = get_bot_setting("weekly_report_recipient", "")
+    recipient_name = ""
+    if recipient_id:
+        try:
+            conn = get_connection()
+            with conn.cursor() as cur:
+                cur.execute("SELECT username FROM users WHERE telegram_id = %s", (int(recipient_id),))
+                row = cur.fetchone()
+            conn.commit()
+            release_connection(conn)
+            if row and row[0]:
+                recipient_name = row[0]
+            else:
+                recipient_name = str(recipient_id)
+        except Exception:
+            recipient_name = str(recipient_id)
+
+    status_icon = "\u2705" if enabled else "\u274c"
+    status_text = "مفعّل" if enabled else "معطّل"
+    recipient_text = recipient_name if recipient_name else "لم يتم الاختيار"
+
+    msg = (
+        "\U0001f4cb إعدادات التقرير الأسبوعي" + chr(10) + chr(10)
+        + "الحالة: " + status_icon + " " + status_text + chr(10)
+        + "المستلم: " + recipient_text
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "\u2705 تفعيل" if not enabled else "\u274c إيقاف",
+                callback_data="wr_toggle"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f4e5 اختيار المستلم", callback_data="wr_choose_recipient"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f4e4 إرسال تقرير الآن", callback_data="wr_send_now"),
+        ],
+    ])
+    await update.message.reply_text(msg, reply_markup=keyboard)
+
+
+async def callback_weekly_report_handler(update, context):
+    """Handle inline buttons for weekly report settings."""
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("\u274c للمديرين فقط.", show_alert=True)
+        return
+    data = query.data
+    try:
+        if data == "wr_toggle":
+            current = get_bot_setting("weekly_report_enabled", "false")
+            new_val = "false" if current == "true" else "true"
+            set_bot_setting("weekly_report_enabled", new_val)
+            status = "\u2705 مفعّل" if new_val == "true" else "\u274c معطّل"
+            await query.edit_message_text("\U0001f4cb التقرير الأسبوعي: " + status)
+        elif data == "wr_choose_recipient":
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT telegram_id, username, role FROM users"
+                        " WHERE role IN ('admin', 'customer') AND active = true"
+                        " ORDER BY role, username")
+                    users = cur.fetchall()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                release_connection(conn)
+            if not users:
+                await query.edit_message_text("\u274c لا يوجد مستخدمين.")
+                return
+            buttons = []
+            for u in users:
+                uid = u[0]
+                uname = u[1] or str(uid)
+                role = u[2]
+                label = uname + " (" + role + ")"
+                buttons.append([InlineKeyboardButton(label, callback_data="wr_set_" + str(uid))])
+            buttons.append([InlineKeyboardButton("\u274c رجوع", callback_data="wr_back")])
+            kb = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text("\U0001f4e5 اختر مستلم التقرير:", reply_markup=kb)
+        elif data.startswith("wr_set_"):
+            tid = int(data.split("_")[-1])
+            set_bot_setting("weekly_report_recipient", str(tid))
+            # Get name
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT username FROM users WHERE telegram_id = %s", (tid,))
+                    row = cur.fetchone()
+                conn.commit()
+                release_connection(conn)
+                name = row[0] if row and row[0] else str(tid)
+            except Exception:
+                release_connection(conn)
+                name = str(tid)
+            msg = "\u2705 تم تعيين " + name + " كمستلم للتقرير الأسبوعي."
+            await query.edit_message_text(msg)
+        elif data == "wr_send_now":
+            await query.edit_message_text("\U0001f4e4 جارٍ إرسال التقرير...")
+            await generate_weekly_report(context.bot)
+            await query.edit_message_text("\u2705 تم إرسال التقرير الأسبوعي.")
+        elif data == "wr_back":
+            await query.edit_message_text("\u2705 تم.")
+            try:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="\U0001f4e6 القائمة الرئيسية:",
+                    reply_markup=get_admin_keyboard())
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error("[WEEKLY_REPORT] Error: " + str(e))
+        try:
+            await query.edit_message_text("\u274c خطأ: " + str(e))
+        except Exception:
+            pass
+
 async def handle_admin_message(update, context):
 
 
@@ -1828,7 +2107,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_WEEKLY_REPORT]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -1927,8 +2206,8 @@ async def handle_admin_message(update, context):
         if text == BTN_LOW_STOCK:
             await send_low_stock_list(update, context)
             return
-        if text == BTN_LOW_STOCK:
-            await send_low_stock_list(update, context)
+        if text == BTN_WEEKLY_REPORT:
+            await _handle_weekly_report_setup(update, context)
             return
         if text == BTN_USERS:
             await users_command(update, context)
@@ -2511,6 +2790,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
+    app.add_handler(CallbackQueryHandler(callback_weekly_report_handler, pattern="^wr_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
@@ -2701,6 +2981,8 @@ if __name__ == "__main__":
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
+            asyncio.create_task(_weekly_report_loop(tg_app.bot))
+            print("[BOT] Weekly report scheduler enabled")
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
