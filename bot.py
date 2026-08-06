@@ -823,14 +823,14 @@ BTN_USERS = "⚙️ المستخدمين"
 BTN_BACKUP = "💾 نسخ احتياطي"
 BTN_ALERT = "🔔 تنبيه"
 BTN_LOW_STOCK = "📊 المخزون المنخفض"
-BTN_WEEKLY_REPORT = "📅 تقرير أسبوعي"
+BTN_MOVEMENTS = "📋 الحركة"
 
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
 BTN_CUST_REMOVE = "➖ إخراج"
 BTN_CUST_SEARCH = "🔍 بحث"
-BTN_CUST_MOVEMENTS = "📋 حركة اليوم"
+BTN_CUST_MOVEMENTS = "📋 الحركة"
 BTN_CUST_CANCEL = "❌ إلغاء"
 
 
@@ -1149,86 +1149,6 @@ async def _weekly_report_loop(bot):
 # ═══════════════════════════════════════════════════════════
 
 
-async def show_today_movements(update, context, admin_view=True):
-    """Show today's add/remove transactions for all users."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                    "u.username AS user_name "
-                    "FROM transactions t "
-                    "JOIN products p ON p.id = t.product_id "
-                    "LEFT JOIN users u ON u.id = t.user_id "
-                    "WHERE t.date >= CURRENT_DATE "
-                    "ORDER BY t.date DESC")
-                rows = cur.fetchall()
-        finally:
-            release_connection(conn)
-
-        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
-
-        if not rows:
-            await update.message.reply_text(
-                "📋 حركة اليوم: لا توجد عمليات حتى الآن.",
-                reply_markup=kb)
-            return
-
-        lines = ["📋 حركة اليوم (" + str(len(rows)) + " عملية):", ""]
-        for r in rows:
-            if r["tx_type"] == "add":
-                icon = "➕"
-                action = "إضافة"
-            else:
-                icon = "➖"
-                action = "إخراج"
-            time_str = r["date"].strftime("%H:%M")
-            user = r.get("user_name") or "مجهول"
-            prod = str(r["product_name"] or "")
-            qty = r["quantity"]
-            unit = _get_unit_code(prod)
-            lines.append(icon + " " + action + " " + str(qty) + " " + unit + " — " + prod)
-            lines.append("   ⏰ " + time_str + " | 👤 " + str(user))
-            lines.append("")
-
-        # Summary
-        add_count = sum(1 for r in rows if r["tx_type"] == "add")
-        rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-        add_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "add")
-        rem_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "remove")
-        lines.append("──────────")
-        lines.append("➕ إجمالي الإضافة: " + str(add_count) + " عملية (" + str(add_qty) + " وحدة)")
-        lines.append("➖ إجمالي الإخراج: " + str(rem_count) + " عملية (" + str(rem_qty) + " وحدة)")
-
-        text = chr(10).join(lines)
-        if len(text) <= 4096:
-            await update.message.reply_text(text, reply_markup=kb)
-        else:
-            # Split into chunks
-            chunks = []
-            current = []
-            cur_len = 0
-            for line in lines:
-                line_len = len(line) + 1
-                if cur_len + line_len > 4000 and current:
-                    chunks.append(chr(10).join(current))
-                    current = []
-                    cur_len = 0
-                current.append(line)
-                cur_len += line_len
-            if current:
-                chunks.append(chr(10).join(current))
-            for chunk in chunks:
-                await update.message.reply_text(chunk)
-            await update.message.reply_text("📦 القائمة الرئيسية:", reply_markup=kb)
-
-    except Exception as e:
-        logging.error("[MOVEMENTS] Error: " + str(e))
-        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
-        await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
-
-
 def get_admin_keyboard():
     return ReplyKeyboardMarkup(
         [
@@ -1236,7 +1156,7 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
-            [BTN_LOW_STOCK, BTN_WEEKLY_REPORT],
+            [BTN_LOW_STOCK, BTN_MOVEMENTS],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -1256,6 +1176,7 @@ def get_customer_keyboard():
             [BTN_CUST_ALERT],
             [BTN_CUST_ADD, BTN_CUST_REMOVE],
             [BTN_CUST_SEARCH],
+            [BTN_CUST_MOVEMENTS],
             [BTN_CUST_CANCEL],
         ],
         resize_keyboard=True,
@@ -1585,14 +1506,109 @@ async def _show_product_detail(update, context, product):
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
-        [
-            InlineKeyboardButton("📊 عرض الحركة", callback_data="pact_log_" + pid),
-        ],
     ])
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
         await update.message.reply_text(text, reply_markup=keyboard)
+
+
+def _build_movements_text(rows):
+    """Build formatted movements text from transaction rows."""
+    if not rows:
+        return None
+    lines = ["📋 حركة اليوم (" + str(len(rows)) + " عملية):", ""]
+    for r in rows:
+        r = dict(r)
+        if r["tx_type"] == "add":
+            icon = "➕"
+            action = "إضافة"
+        else:
+            icon = "➖"
+            action = "إخراج"
+        time_str = r["date"].strftime("%H:%M")
+        user = str(r.get("user_name") or "مجهول")
+        prod = str(r["product_name"] or "")
+        qty = r["quantity"]
+        unit = _get_unit_code(prod)
+        lines.append(icon + " " + action + " " + str(qty) + " " + unit + " — " + prod)
+        lines.append("   ⏰ " + time_str + " | 👤 " + user)
+        lines.append("")
+
+    add_count = sum(1 for r in rows if r["tx_type"] == "add")
+    rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
+    add_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "add")
+    rem_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "remove")
+    lines.append("──────────")
+    lines.append("➕ إجمالي الإضافة: " + str(add_count) + " عملية (" + str(add_qty) + " وحدة)")
+    lines.append("➖ إجمالي الإخراج: " + str(rem_count) + " عملية (" + str(rem_qty) + " وحدة)")
+    return chr(10).join(lines)
+
+
+def _fetch_today_movements():
+    """Fetch today's movements from DB."""
+    conn = get_connection()
+    try:
+        with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
+                "u.username AS user_name "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "WHERE t.date >= CURRENT_DATE "
+                "ORDER BY t.date DESC")
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+async def _show_all_movements(update, context, admin_view=True):
+    """Show ALL movements for today - visible to ALL users. Called from keyboard button."""
+    try:
+        rows = _fetch_today_movements()
+        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+
+        if not rows:
+            await update.message.reply_text(
+                "📋 حركة اليوم: لا توجد عمليات حتى الآن.",
+                reply_markup=kb)
+            return
+
+        text = _build_movements_text(rows)
+        if len(text) <= 4096:
+            await update.message.reply_text(text, reply_markup=kb)
+        else:
+            chunks = []
+            current = []
+            cur_len = 0
+            for line in text.split(chr(10)):
+                line_len = len(line) + 1
+                if cur_len + line_len > 3900 and current:
+                    chunks.append(chr(10).join(current))
+                    current = []
+                    cur_len = 0
+                current.append(line)
+                cur_len += line_len
+            if current:
+                chunks.append(chr(10).join(current))
+            await update.message.reply_text(chunks[0])
+            for chunk in chunks[1:]:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=chunk)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="📦 القائمة الرئيسية:", reply_markup=kb)
+
+    except Exception as e:
+        logging.error("[ALL_MOVEMENTS] Error: " + str(e))
+        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+        await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
+
 
 async def callback_product_select_handler(update, context):
     query = update.callback_query
@@ -2080,147 +2096,6 @@ async def users_command(update, context):
         msg_lines.append("  " + role_icon + " " + name)
     await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
 
-async def _handle_weekly_report_setup(update, context):
-    """Show weekly report settings with inline keyboard."""
-    enabled = get_bot_setting("weekly_report_enabled", "false") == "true"
-    recipient_id = get_bot_setting("weekly_report_recipient", "")
-    recipient_name = ""
-    if recipient_id:
-        try:
-            conn = get_connection()
-            with conn.cursor() as cur:
-                cur.execute("SELECT username FROM users WHERE telegram_id = %s", (int(recipient_id),))
-                row = cur.fetchone()
-            conn.commit()
-            release_connection(conn)
-            if row and row[0]:
-                recipient_name = row[0]
-            else:
-                recipient_name = str(recipient_id)
-        except Exception:
-            recipient_name = str(recipient_id)
-
-    status_icon = "\u2705" if enabled else "\u274c"
-    status_text = "مفعّل" if enabled else "معطّل"
-    recipient_text = recipient_name if recipient_name else "لم يتم الاختيار"
-
-    msg = (
-        "\U0001f4cb إعدادات التقرير الأسبوعي" + chr(10) + chr(10)
-        + "الحالة: " + status_icon + " " + status_text + chr(10)
-        + "المستلم: " + recipient_text
-    )
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "\u2705 تفعيل" if not enabled else "\u274c إيقاف",
-                callback_data="wr_toggle"),
-        ],
-        [
-            InlineKeyboardButton("\U0001f4e5 اختيار المستلم", callback_data="wr_choose_recipient"),
-        ],
-        [
-            InlineKeyboardButton("\U0001f4e4 إرسال تقرير الآن", callback_data="wr_send_now"),
-        ],
-    ])
-    await update.message.reply_text(msg, reply_markup=keyboard)
-
-
-async def callback_weekly_report_handler(update, context):
-    """Handle inline buttons for weekly report settings."""
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        await query.answer("\u274c للمديرين فقط.", show_alert=True)
-        return
-    data = query.data
-    try:
-        if data == "wr_toggle":
-            current = get_bot_setting("weekly_report_enabled", "false")
-            new_val = "false" if current == "true" else "true"
-            set_bot_setting("weekly_report_enabled", new_val)
-            status = "\u2705 مفعّل" if new_val == "true" else "\u274c معطّل"
-            await query.edit_message_text("\U0001f4cb التقرير الأسبوعي: " + status)
-        elif data == "wr_choose_recipient":
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT telegram_id, username, role FROM users"
-                        " WHERE role IN ('admin', 'customer') AND active = true"
-                        " ORDER BY role, username")
-                    users = cur.fetchall()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
-            if not users:
-                await query.edit_message_text("\u274c لا يوجد مستخدمين.")
-                return
-            buttons = []
-            for u in users:
-                uid = u[0]
-                uname = u[1] or str(uid)
-                role = u[2]
-                label = uname + " (" + role + ")"
-                buttons.append([InlineKeyboardButton(label, callback_data="wr_set_" + str(uid))])
-            buttons.append([InlineKeyboardButton("\u274c رجوع", callback_data="wr_back")])
-            kb = InlineKeyboardMarkup(buttons)
-            await query.edit_message_text("\U0001f4e5 اختر مستلم التقرير:", reply_markup=kb)
-        elif data.startswith("wr_set_"):
-            tid = int(data.split("_")[-1])
-            set_bot_setting("weekly_report_recipient", str(tid))
-            # Get name
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT username FROM users WHERE telegram_id = %s", (tid,))
-                    row = cur.fetchone()
-                conn.commit()
-                release_connection(conn)
-                name = row[0] if row and row[0] else str(tid)
-            except Exception:
-                release_connection(conn)
-                name = str(tid)
-            msg = "\u2705 تم تعيين " + name + " كمستلم للتقرير الأسبوعي."
-            await query.edit_message_text(msg)
-        elif data == "wr_send_now":
-            recipient_id = get_bot_setting("weekly_report_recipient", "")
-            if not recipient_id:
-                await query.edit_message_text(
-                    "\u274c لم تختار مستلم بعد." + chr(10) + chr(10)
-                    + "اضغط على \u00abالتقرير الأسبوعي\u00bb ثم \u00abاختيار المستلم\u00bb.")
-                return
-            await query.edit_message_text("\U0001f4e4 جارٍ إعداد التقرير...")
-            report = await generate_weekly_report(context.bot)
-            if report:
-                await query.edit_message_text(
-                    "\u2705 تم إرسال التقرير الأسبوعي بنجاح." + chr(10) + chr(10)
-                    + "\U0001f3e0 نسخة من التقرير:")
-                try:
-                    await context.bot.send_message(chat_id=query.message.chat_id, text=report)
-                except Exception:
-                    pass
-            else:
-                await query.edit_message_text(
-                    "\u274c فشل إعداد التقرير. حاول مرة أخرى.")
-        elif data == "wr_back":
-            await query.edit_message_text("\u2705 تم.")
-            try:
-                await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text="\U0001f4e6 القائمة الرئيسية:",
-                    reply_markup=get_admin_keyboard())
-            except Exception:
-                pass
-    except Exception as e:
-        logging.error("[WEEKLY_REPORT] Error: " + str(e))
-        try:
-            await query.edit_message_text("\u274c خطأ: " + str(e))
-        except Exception:
-            pass
-
 async def handle_admin_message(update, context):
 
 
@@ -2235,7 +2110,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_WEEKLY_REPORT]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -2334,9 +2209,10 @@ async def handle_admin_message(update, context):
         if text == BTN_LOW_STOCK:
             await send_low_stock_list(update, context)
             return
-        if text == BTN_WEEKLY_REPORT:
-            await _handle_weekly_report_setup(update, context)
+        if text == BTN_MOVEMENTS:
+            await _show_all_movements(update, context, admin_view=True)
             return
+
         if text == BTN_USERS:
             await users_command(update, context)
             return
@@ -2533,7 +2409,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_CANCEL]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -2549,6 +2425,10 @@ async def handle_customer_message(update, context):
         if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
             context.user_data["state"] = "waiting_cust_search"
             await update.message.reply_text("🔍 اكتب اسم السلعة:")
+            return
+
+        if text == BTN_CUST_MOVEMENTS:
+            await _show_all_movements(update, context, admin_view=False)
             return
 
     # State: waiting for product name from button
@@ -2593,7 +2473,6 @@ async def handle_customer_message(update, context):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
                  InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
-                [InlineKeyboardButton("📊 الحركة", callback_data="pact_log_" + pid)],
             ])
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
@@ -2919,7 +2798,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
-    app.add_handler(CallbackQueryHandler(callback_weekly_report_handler, pattern="^wr_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
