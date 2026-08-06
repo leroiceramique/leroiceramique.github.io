@@ -1073,10 +1073,10 @@ async def generate_weekly_report(bot):
 
                 # Adds vs removes this week
                 cur.execute(
-                    "SELECT type, COUNT(*) as cnt FROM transactions"
+                    "SELECT type AS tx_type, COUNT(*) as cnt FROM transactions"
                     " WHERE date >= NOW() - INTERVAL '7 days'"
                     " GROUP BY type")
-                type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
+                type_counts = {r["tx_type"]: r["cnt"] for r in cur.fetchall()}
                 adds = type_counts.get("add", 0)
                 removes = type_counts.get("remove", 0)
         finally:
@@ -1155,7 +1155,7 @@ async def show_today_movements(update, context, admin_view=True):
         try:
             with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
-                    "SELECT t.type, t.quantity, t.date, p.name AS product_name, "
+                    "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
                     "u.username AS user_name "
                     "FROM transactions t "
                     "JOIN products p ON p.id = t.product_id "
@@ -1176,7 +1176,7 @@ async def show_today_movements(update, context, admin_view=True):
 
         lines = ["📋 حركة اليوم (" + str(len(rows)) + " عملية):", ""]
         for r in rows:
-            if r["type"] == "add":
+            if r["tx_type"] == "add":
                 icon = "➕"
                 action = "إضافة"
             else:
@@ -1192,10 +1192,10 @@ async def show_today_movements(update, context, admin_view=True):
             lines.append("")
 
         # Summary
-        add_count = sum(1 for r in rows if r["type"] == "add")
-        rem_count = sum(1 for r in rows if r["type"] == "remove")
-        add_qty = sum(r["quantity"] for r in rows if r["type"] == "add")
-        rem_qty = sum(r["quantity"] for r in rows if r["type"] == "remove")
+        add_count = sum(1 for r in rows if r["tx_type"] == "add")
+        rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
+        add_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "add")
+        rem_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "remove")
         lines.append("──────────")
         lines.append("➕ إجمالي الإضافة: " + str(add_count) + " عملية (" + str(add_qty) + " وحدة)")
         lines.append("➖ إجمالي الإخراج: " + str(rem_count) + " عملية (" + str(rem_qty) + " وحدة)")
