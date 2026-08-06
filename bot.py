@@ -829,6 +829,7 @@ BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
 BTN_CUST_REMOVE = "➖ إخراج"
 BTN_CUST_SEARCH = "🔍 بحث"
+BTN_CUST_MOVEMENTS = "📋 حركة اليوم"
 BTN_CUST_CANCEL = "❌ إلغاء"
 
 
@@ -1034,51 +1035,52 @@ def set_bot_setting(key, value):
 
 
 async def generate_weekly_report(bot):
-    """Generate and send the weekly inventory report."""
+    """Generate and send the weekly inventory report. Returns report text."""
     try:
         conn = get_connection()
-        with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
-            # Total products
-            cur.execute("SELECT COUNT(*) as cnt FROM products")
-            total = cur.fetchone()["cnt"]
+        try:
+            with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+                # Total products
+                cur.execute("SELECT COUNT(*) as cnt FROM products")
+                total = cur.fetchone()["cnt"]
 
-            # Total quantity
-            cur.execute("SELECT COALESCE(SUM(quantity), 0) as total_qty FROM products")
-            total_qty = cur.fetchone()["total_qty"]
+                # Total quantity
+                cur.execute("SELECT COALESCE(SUM(quantity), 0) as total_qty FROM products")
+                total_qty = cur.fetchone()["total_qty"]
 
-            # Low stock count
-            cur.execute("SELECT COUNT(*) as cnt FROM products WHERE quantity <= minimum_stock")
-            low_count = cur.fetchone()["cnt"]
+                # Low stock count
+                cur.execute("SELECT COUNT(*) as cnt FROM products WHERE quantity <= minimum_stock")
+                low_count = cur.fetchone()["cnt"]
 
-            # Top 5 highest quantity
-            cur.execute(
-                "SELECT name, quantity FROM products"
-                " WHERE quantity > 0"
-                " ORDER BY quantity DESC LIMIT 5")
-            top_products = cur.fetchall()
+                # Top 5 highest quantity
+                cur.execute(
+                    "SELECT name, quantity FROM products"
+                    " WHERE quantity > 0"
+                    " ORDER BY quantity DESC LIMIT 5")
+                top_products = cur.fetchall()
 
-            # Bottom 5 (lowest / zero)
-            cur.execute(
-                "SELECT name, quantity FROM products"
-                " ORDER BY quantity ASC LIMIT 5")
-            bottom_products = cur.fetchall()
+                # Bottom 5 (lowest / zero)
+                cur.execute(
+                    "SELECT name, quantity FROM products"
+                    " ORDER BY quantity ASC LIMIT 5")
+                bottom_products = cur.fetchall()
 
-            # Transactions this week
-            cur.execute(
-                "SELECT COUNT(*) as cnt FROM transactions"
-                " WHERE date >= NOW() - INTERVAL \'7 days\'")
-            week_transactions = cur.fetchone()["cnt"]
+                # Transactions this week
+                cur.execute(
+                    "SELECT COUNT(*) as cnt FROM transactions"
+                    " WHERE date >= NOW() - INTERVAL '7 days'")
+                week_transactions = cur.fetchone()["cnt"]
 
-            # Adds vs removes this week
-            cur.execute(
-                "SELECT type, COUNT(*) as cnt FROM transactions"
-                " WHERE date >= NOW() - INTERVAL \'7 days\'"
-                " GROUP BY type")
-            type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
-            adds = type_counts.get("add", 0)
-            removes = type_counts.get("remove", 0)
-
-        release_connection(conn)
+                # Adds vs removes this week
+                cur.execute(
+                    "SELECT type, COUNT(*) as cnt FROM transactions"
+                    " WHERE date >= NOW() - INTERVAL '7 days'"
+                    " GROUP BY type")
+                type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
+                adds = type_counts.get("add", 0)
+                removes = type_counts.get("remove", 0)
+        finally:
+            release_connection(conn)
 
         # Build report message
         lines = []
@@ -1113,7 +1115,7 @@ async def generate_weekly_report(bot):
         recipient_id = get_bot_setting("weekly_report_recipient")
         if not recipient_id:
             logging.warning("[WEEKLY] No recipient configured")
-            return
+            return report_text
 
         try:
             await bot.send_message(chat_id=int(recipient_id), text=report_text)
@@ -1121,8 +1123,11 @@ async def generate_weekly_report(bot):
         except Exception as e:
             logging.error("[WEEKLY] Failed to send: " + str(e))
 
+        return report_text
+
     except Exception as e:
         logging.error("[WEEKLY] Report generation failed: " + str(e))
+        return None
 
 
 async def _weekly_report_loop(bot):
@@ -1143,6 +1148,86 @@ async def _weekly_report_loop(bot):
 # ═══════════════════════════════════════════════════════════
 
 
+async def show_today_movements(update, context, admin_view=True):
+    """Show today's add/remove transactions for all users."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT t.type, t.quantity, t.date, p.name AS product_name, "
+                    "u.username AS user_name "
+                    "FROM transactions t "
+                    "JOIN products p ON p.id = t.product_id "
+                    "LEFT JOIN users u ON u.id = t.user_id "
+                    "WHERE t.date >= CURRENT_DATE "
+                    "ORDER BY t.date DESC")
+                rows = cur.fetchall()
+        finally:
+            release_connection(conn)
+
+        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+
+        if not rows:
+            await update.message.reply_text(
+                "📋 حركة اليوم: لا توجد عمليات حتى الآن.",
+                reply_markup=kb)
+            return
+
+        lines = ["📋 حركة اليوم (" + str(len(rows)) + " عملية):", ""]
+        for r in rows:
+            if r["type"] == "add":
+                icon = "➕"
+                action = "إضافة"
+            else:
+                icon = "➖"
+                action = "إخراج"
+            time_str = r["date"].strftime("%H:%M")
+            user = r.get("user_name") or "مجهول"
+            prod = r["product_name"]
+            qty = r["quantity"]
+            unit = _get_unit_code(prod)
+            lines.append(icon + " " + action + " " + str(qty) + " " + unit + " — " + prod)
+            lines.append("   ⏰ " + time_str + " | 👤 " + user)
+            lines.append("")
+
+        # Summary
+        add_count = sum(1 for r in rows if r["type"] == "add")
+        rem_count = sum(1 for r in rows if r["type"] == "remove")
+        add_qty = sum(r["quantity"] for r in rows if r["type"] == "add")
+        rem_qty = sum(r["quantity"] for r in rows if r["type"] == "remove")
+        lines.append("──────────")
+        lines.append("➕ إجمالي الإضافة: " + str(add_count) + " عملية (" + str(add_qty) + " وحدة)")
+        lines.append("➖ إجمالي الإخراج: " + str(rem_count) + " عملية (" + str(rem_qty) + " وحدة)")
+
+        text = chr(10).join(lines)
+        if len(text) <= 4096:
+            await update.message.reply_text(text, reply_markup=kb)
+        else:
+            # Split into chunks
+            chunks = []
+            current = []
+            cur_len = 0
+            for line in lines:
+                line_len = len(line) + 1
+                if cur_len + line_len > 4000 and current:
+                    chunks.append(chr(10).join(current))
+                    current = []
+                    cur_len = 0
+                current.append(line)
+                cur_len += line_len
+            if current:
+                chunks.append(chr(10).join(current))
+            for chunk in chunks:
+                await update.message.reply_text(chunk)
+            await update.message.reply_text("📦 القائمة الرئيسية:", reply_markup=kb)
+
+    except Exception as e:
+        logging.error("[MOVEMENTS] Error: " + str(e))
+        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+        await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
+
+
 def get_admin_keyboard():
     return ReplyKeyboardMarkup(
         [
@@ -1151,6 +1236,7 @@ def get_admin_keyboard():
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_WEEKLY_REPORT],
+            [BTN_CUST_MOVEMENTS],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -1170,6 +1256,7 @@ def get_customer_keyboard():
             [BTN_CUST_ALERT],
             [BTN_CUST_ADD, BTN_CUST_REMOVE],
             [BTN_CUST_SEARCH],
+            [BTN_CUST_MOVEMENTS],
             [BTN_CUST_CANCEL],
         ],
         resize_keyboard=True,
@@ -1834,21 +1921,27 @@ async def callback_restore_handler(update, context):
         try:
             result = db_import_backup(restore_data)
             await query.edit_message_text(result)
-            context.user_data.pop("restore_data", None)
         except Exception as e:
             await query.edit_message_text("\u274c \u0641\u0634\u0644 \u0627\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f: " + str(e))
-            context.user_data.pop("restore_data", None)
+        context.user_data.pop("restore_data", None)
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
     elif data == "restore_cancel":
         await query.edit_message_text("\u274c \u062a\u0645 \u0625\u0644\u063a\u0627\u0621 \u0627\u0633\u062a\u064a\u0631\u0627\u062f \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a.")
         context.user_data.pop("restore_data", None)
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
 
 
 async def callback_restore_from_email_handler(update, context):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("⏳ جارٍ البحث في البريد الإلكتروني...")
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, _fetch_latest_backup_from_email)
+    data = await asyncio.get_running_loop().run_in_executor(None, _fetch_latest_backup_from_email)
     if not data:
         try:
             await query.edit_message_text("❌ لم يتم العثور على نسخة احتياطية في البريد.\n\nتأكد من:\n1. إعداد IMAP_HOST\n2. وجود نسخ مرسلة")
@@ -1912,9 +2005,17 @@ async def callback_email_restore_handler(update, context):
         except Exception as e:
             await query.edit_message_text("❌ فشل الاستيراد: " + str(e))
         context.user_data.pop("email_restore_data", None)
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
     elif data == "email_restore_cancel":
         await query.edit_message_text("❌ تم الإلغاء.")
         context.user_data.pop("email_restore_data", None)
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
 
 async def callback_restore_last_confirm_handler(update, context):
     query = update.callback_query
@@ -1930,8 +2031,16 @@ async def callback_restore_last_confirm_handler(update, context):
             await query.edit_message_text(result)
         except Exception as e:
             await query.edit_message_text("❌ فشل الاستيراد: " + str(e))
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
     elif data == "last_restore_cancel":
         await query.edit_message_text("❌ تم الإلغاء.")
+        try:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+        except Exception:
+            pass
 
 # ── Users Command ──
 
@@ -2076,9 +2185,25 @@ async def callback_weekly_report_handler(update, context):
             msg = "\u2705 تم تعيين " + name + " كمستلم للتقرير الأسبوعي."
             await query.edit_message_text(msg)
         elif data == "wr_send_now":
-            await query.edit_message_text("\U0001f4e4 جارٍ إرسال التقرير...")
-            await generate_weekly_report(context.bot)
-            await query.edit_message_text("\u2705 تم إرسال التقرير الأسبوعي.")
+            recipient_id = get_bot_setting("weekly_report_recipient", "")
+            if not recipient_id:
+                await query.edit_message_text(
+                    "\u274c لم تختار مستلم بعد." + chr(10) + chr(10)
+                    + "اضغط على \u00abالتقرير الأسبوعي\u00bb ثم \u00abاختيار المستلم\u00bb.")
+                return
+            await query.edit_message_text("\U0001f4e4 جارٍ إعداد التقرير...")
+            report = await generate_weekly_report(context.bot)
+            if report:
+                await query.edit_message_text(
+                    "\u2705 تم إرسال التقرير الأسبوعي بنجاح." + chr(10) + chr(10)
+                    + "\U0001f3e0 نسخة من التقرير:")
+                try:
+                    await context.bot.send_message(chat_id=query.message.chat_id, text=report)
+                except Exception:
+                    pass
+            else:
+                await query.edit_message_text(
+                    "\u274c فشل إعداد التقرير. حاول مرة أخرى.")
         elif data == "wr_back":
             await query.edit_message_text("\u2705 تم.")
             try:
@@ -2109,7 +2234,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_WEEKLY_REPORT]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_WEEKLY_REPORT, BTN_CUST_MOVEMENTS]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -2210,6 +2335,9 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_WEEKLY_REPORT:
             await _handle_weekly_report_setup(update, context)
+            return
+        if text == BTN_CUST_MOVEMENTS:
+            await show_today_movements(update, context, admin_view=True)
             return
         if text == BTN_USERS:
             await users_command(update, context)
@@ -2407,7 +2535,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_CANCEL]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -2418,6 +2546,10 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_ALERT:
             await send_low_stock_list(update, context)
+            return
+
+        if text == BTN_CUST_MOVEMENTS:
+            await show_today_movements(update, context, admin_view=False)
             return
 
         if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
@@ -2786,11 +2918,12 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
-    app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_"))
+    # Restore handlers - specific patterns first, then generic
+    app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
-    app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
+    app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_weekly_report_handler, pattern="^wr_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
