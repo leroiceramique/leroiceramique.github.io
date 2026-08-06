@@ -2940,21 +2940,32 @@ async def _daily_backup_loop(bot):
 
 
 async def _keep_alive(app):
-    """Ping the external Render URL every 3 min to prevent spin-down."""
+    """Ping the external Render URL + Neon DB every 3 min to prevent spin-down."""
     external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
     if not external_url:
         port = int(os.getenv("PORT", 10000))
         external_url = "http://127.0.0.1:" + str(port) + "/"
     ping_url = external_url.rstrip("/") + "/"
-    logging.info("[KEEP-ALIVE] Target: " + ping_url)
+    logging.info("[KEEP-ALIVE] Target: " + ping_url + " + Neon DB ping")
     # Reuse one session instead of creating new each time
     session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
     try:
         while True:
             try:
+                # Ping Render health endpoint
                 async with session.get(ping_url) as r:
                     if r.status != 200:
-                        logging.warning("[KEEP-ALIVE] Status " + str(r.status))
+                        logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
+                # Ping Neon database to prevent auto-suspend (cold start)
+                try:
+                    conn = get_connection()
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT 1")
+                    finally:
+                        release_connection(conn)
+                except Exception as db_err:
+                    logging.warning("[KEEP-ALIVE] DB ping failed: " + str(db_err))
             except Exception as e:
                 logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
             await asyncio.sleep(180)
