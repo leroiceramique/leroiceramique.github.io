@@ -772,8 +772,9 @@ def get_product_transactions(product_id, limit=15):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECT
-                    t.id, t.type, t.quantity, t.date,
+            cur.execute("""
+                SELECT
+                    t.id, t.type AS tx_type, t.quantity, t.date,
                     u.username AS operator_name
                 FROM transactions t
                 LEFT JOIN users u ON u.id = t.user_id
@@ -1236,7 +1237,6 @@ def get_admin_keyboard():
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_WEEKLY_REPORT],
-            [BTN_CUST_MOVEMENTS],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -1256,7 +1256,6 @@ def get_customer_keyboard():
             [BTN_CUST_ALERT],
             [BTN_CUST_ADD, BTN_CUST_REMOVE],
             [BTN_CUST_SEARCH],
-            [BTN_CUST_MOVEMENTS],
             [BTN_CUST_CANCEL],
         ],
         resize_keyboard=True,
@@ -1661,10 +1660,10 @@ async def callback_product_action_handler(update, context):
             else:
                 tx_lines = ["📜 آخر حركات - " + product_name + "\n"]
                 for tx in txns:
-                    icon = "📥" if tx["type"] == "add" else "📤"
+                    icon = "📥" if tx["tx_type"] == "add" else "📤"
                     date_str = tx["date"].strftime("%m/%d %H:%M")
                     op = tx.get("operator_name") or "مجهول"
-                    sign = "+" if tx["type"] == "add" else "-"
+                    sign = "+" if tx["tx_type"] == "add" else "-"
                     unit = _get_unit_code(product_name)
                     tx_lines.append(
                         icon + " " + sign + str(tx["quantity"]) + " " + unit + " | "
@@ -2236,7 +2235,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_WEEKLY_REPORT, BTN_CUST_MOVEMENTS]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_WEEKLY_REPORT]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -2337,9 +2336,6 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_WEEKLY_REPORT:
             await _handle_weekly_report_setup(update, context)
-            return
-        if text == BTN_CUST_MOVEMENTS:
-            await show_today_movements(update, context, admin_view=True)
             return
         if text == BTN_USERS:
             await users_command(update, context)
@@ -2537,7 +2533,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_CANCEL]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -2548,10 +2544,6 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_ALERT:
             await send_low_stock_list(update, context)
-            return
-
-        if text == BTN_CUST_MOVEMENTS:
-            await show_today_movements(update, context, admin_view=False)
             return
 
         if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
