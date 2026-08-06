@@ -10,6 +10,7 @@ import psycopg2.pool
 import psycopg2.extras
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1514,10 +1515,10 @@ async def _show_product_detail(update, context, product):
 
 
 def _build_movements_text(rows):
-    """Build formatted movements text from transaction rows."""
+    """Build formatted movements text from transaction rows. Usernames are clickable Telegram links."""
     if not rows:
         return None
-    lines = ["📋 حركة اليوم (" + str(len(rows)) + " عملية):", ""]
+    lines = ["📋 حركة اليوم (" + str(len(rows)) + "):", ""]
     for r in rows:
         r = dict(r)
         if r["tx_type"] == "add":
@@ -1527,21 +1528,21 @@ def _build_movements_text(rows):
             icon = "➖"
             action = "إخراج"
         time_str = r["date"].strftime("%H:%M")
-        user = str(r.get("user_name") or "مجهول")
         prod = str(r["product_name"] or "")
         qty = r["quantity"]
         unit = _get_unit_code(prod)
-        lines.append(icon + " " + action + " " + str(qty) + " " + unit + " — " + prod)
-        lines.append("   ⏰ " + time_str + " | 👤 " + user)
-        lines.append("")
+        # Build clickable user link
+        user_tid = r.get("user_tid")
+        user_name = str(r.get("user_name") or "مجهول")
+        if user_tid and user_name != "مجهول":
+            user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
+        else:
+            user_link = user_name
+        lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str)
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    add_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "add")
-    rem_qty = sum(r["quantity"] for r in rows if r["tx_type"] == "remove")
-    lines.append("──────────")
-    lines.append("➕ إجمالي الإضافة: " + str(add_count) + " عملية (" + str(add_qty) + " وحدة)")
-    lines.append("➖ إجمالي الإخراج: " + str(rem_count) + " عملية (" + str(rem_qty) + " وحدة)")
+    lines.append(chr(10) + "➕ " + str(add_count) + " إضافة  |  ➖ " + str(rem_count) + " إخراج")
     return chr(10).join(lines)
 
 
@@ -1552,7 +1553,7 @@ def _fetch_today_movements():
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                "u.username AS user_name "
+                "u.username AS user_name, u.telegram_id AS user_tid "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -1583,7 +1584,7 @@ async def _show_all_movements(update, context, admin_view=True):
 
         text = _build_movements_text(rows)
         if len(text) <= 4096:
-            await update.message.reply_text(text, reply_markup=kb)
+            await update.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         else:
             chunks = []
             current = []
@@ -1598,9 +1599,9 @@ async def _show_all_movements(update, context, admin_view=True):
                 cur_len += line_len
             if current:
                 chunks.append(chr(10).join(current))
-            await update.message.reply_text(chunks[0])
+            await update.message.reply_text(chunks[0], parse_mode=ParseMode.HTML)
             for chunk in chunks[1:]:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=chunk)
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=chunk, parse_mode=ParseMode.HTML)
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="📦 القائمة الرئيسية:", reply_markup=kb)
