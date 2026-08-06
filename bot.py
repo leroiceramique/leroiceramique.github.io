@@ -1965,22 +1965,27 @@ async def callback_restore_handler(update, context):
             pass
 
 
+async def _safe_edit(query, text, reply_markup=None):
+    """Edit message safely — works for both text messages and document captions."""
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    except Exception:
+        try:
+            await query.edit_message_caption(text, reply_markup=reply_markup)
+        except Exception:
+            pass
+
+
 async def callback_restore_from_email_handler(update, context):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("⏳ جارٍ البحث في البريد الإلكتروني...")
+    await _safe_edit(query, "⏳ جارٍ البحث في البريد الإلكتروني...")
     data = await asyncio.get_running_loop().run_in_executor(None, _fetch_latest_backup_from_email)
     if not data:
-        try:
-            await query.edit_message_text("❌ لم يتم العثور على نسخة احتياطية في البريد.\n\nتأكد من:\n1. إعداد IMAP_HOST\n2. وجود نسخ مرسلة")
-        except Exception:
-            pass
+        await _safe_edit(query, "❌ لم يتم العثور على نسخة احتياطية في البريد.\n\nتأكد من:\n1. إعداد IMAP_HOST\n2. وجود نسخ مرسلة")
         return
     if "products" not in data:
-        try:
-            await query.edit_message_text("❌ الملف غير صالح.")
-        except Exception:
-            pass
+        await _safe_edit(query, "❌ الملف غير صالح.")
         return
     backup_date = data.get("date", "?")[:16]
     prod_count = len(data.get("products", []))
@@ -1995,16 +2000,13 @@ async def callback_restore_from_email_handler(update, context):
             + "📦 السلع: " + str(prod_count) + "\n"
             + "📜 العمليات: " + str(tx_count) + "\n\n"
             + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!")
-    try:
-        await query.edit_message_text(text, reply_markup=keyboard)
-    except Exception:
-        pass
+    await _safe_edit(query, text, reply_markup=keyboard)
 
 async def callback_restore_last_handler(update, context):
     query = update.callback_query
     await query.answer()
     if not _last_backup_data:
-        await query.edit_message_text("❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
+        await _safe_edit(query, "❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
         return
     data = _last_backup_data
     prod_count = len(data.get("products", []))
@@ -2015,7 +2017,7 @@ async def callback_restore_last_handler(update, context):
          InlineKeyboardButton("❌ إلغاء", callback_data="last_restore_cancel")],
     ])
     text = "💾 استيراد آخر نسخة احتياطية:\n\n" + "📅 التاريخ: " + backup_date + "\n" + "📦 السلع: " + str(prod_count) + "\n" + "📜 العمليات: " + str(tx_count) + "\n\n" + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!"
-    await query.edit_message_text(text, reply_markup=keyboard)
+    await _safe_edit(query, text, reply_markup=keyboard)
 
 
 async def callback_email_restore_handler(update, context):
@@ -2025,20 +2027,20 @@ async def callback_email_restore_handler(update, context):
     if data == "email_restore_confirm":
         restore_data = context.user_data.get("email_restore_data")
         if not restore_data:
-            await query.edit_message_text("❌ لا يوجد بيانات.")
+            await _safe_edit(query, "❌ لا يوجد بيانات.")
             return
         try:
             result = db_import_backup(restore_data)
-            await query.edit_message_text(result)
+            await _safe_edit(query, result)
         except Exception as e:
-            await query.edit_message_text("❌ فشل الاستيراد: " + str(e))
+            await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
         context.user_data.pop("email_restore_data", None)
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
         except Exception:
             pass
     elif data == "email_restore_cancel":
-        await query.edit_message_text("❌ تم الإلغاء.")
+        await _safe_edit(query, "❌ تم الإلغاء.")
         context.user_data.pop("email_restore_data", None)
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
@@ -2052,19 +2054,19 @@ async def callback_restore_last_confirm_handler(update, context):
     data = query.data
     if data == "last_restore_confirm":
         if not _last_backup_data:
-            await query.edit_message_text("❌ لا توجد نسخة.")
+            await _safe_edit(query, "❌ لا توجد نسخة.")
             return
         try:
             result = db_import_backup(_last_backup_data)
-            await query.edit_message_text(result)
+            await _safe_edit(query, result)
         except Exception as e:
-            await query.edit_message_text("❌ فشل الاستيراد: " + str(e))
+            await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
         except Exception:
             pass
     elif data == "last_restore_cancel":
-        await query.edit_message_text("❌ تم الإلغاء.")
+        await _safe_edit(query, "❌ تم الإلغاء.")
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
         except Exception:
