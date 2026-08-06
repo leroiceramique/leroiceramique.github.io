@@ -1546,10 +1546,10 @@ def _build_movements_text(rows):
 
 
 def _fetch_today_movements():
-    """Fetch today's movements from DB."""
+    """Fetch today's movements from DB. Uses regular cursor to avoid RealDictCursor + 'type' column conflict."""
     conn = get_connection()
     try:
-        with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
                 "u.username AS user_name "
@@ -1558,9 +1558,10 @@ def _fetch_today_movements():
                 "LEFT JOIN users u ON u.id = t.user_id "
                 "WHERE t.date >= CURRENT_DATE "
                 "ORDER BY t.date DESC")
-            rows = cur.fetchall()
+            col_names = [desc[0] for desc in cur.description]
+            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.commit()
-        return [dict(r) for r in rows]
+        return rows
     except Exception as e:
         conn.rollback()
         raise
