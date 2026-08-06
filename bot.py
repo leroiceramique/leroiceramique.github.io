@@ -1100,14 +1100,14 @@ async def generate_weekly_report(bot):
         if top_products:
             lines.append("\U0001f4c8 \u0623\u0643\u062b\u0631 5 \u0645\u0646\u062a\u062c\u0627\u062a \u0643\u0645\u064a\u0629:")
             for p in top_products:
-                lines.append("   \U0001f4e6 " + p["name"] + " (" + str(p["quantity"]) + ")")
+                lines.append("   \U0001f4e6 " + str(p["name"] or "") + " (" + str(p["quantity"]) + ")")
             lines.append("")
 
         if bottom_products:
             lines.append("\U0001f4c9 \u0623\u0642\u0644 5 \u0645\u0646\u062a\u062c\u0627\u062a \u0643\u0645\u064a\u0629:")
             for p in bottom_products:
                 icon = "\U0001f534" if p["quantity"] == 0 else "\U0001f7e1"
-                lines.append("   " + icon + " " + p["name"] + " (" + str(p["quantity"]) + ")")
+                lines.append("   " + icon + " " + str(p["name"] or "") + " (" + str(p["quantity"]) + ")")
 
         report_text = chr(10).join(lines)
 
@@ -1184,11 +1184,11 @@ async def show_today_movements(update, context, admin_view=True):
                 action = "إخراج"
             time_str = r["date"].strftime("%H:%M")
             user = r.get("user_name") or "مجهول"
-            prod = r["product_name"]
+            prod = str(r["product_name"] or "")
             qty = r["quantity"]
             unit = _get_unit_code(prod)
             lines.append(icon + " " + action + " " + str(qty) + " " + unit + " — " + prod)
-            lines.append("   ⏰ " + time_str + " | 👤 " + user)
+            lines.append("   ⏰ " + time_str + " | 👤 " + str(user))
             lines.append("")
 
         # Summary
@@ -1556,6 +1556,8 @@ def _product_status_icon(product):
 
 def _is_pcs_product(name):
     """Check if product should use pcs unit."""
+    if not name or not isinstance(name, str):
+        return False
     n = name.strip().lower()
     return (n.startswith("motif") or n.startswith("plante")
             or n.startswith("120/60") or n.startswith("120x60")
