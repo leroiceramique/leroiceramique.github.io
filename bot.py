@@ -266,6 +266,7 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     id          SERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE NOT NULL,
     username    VARCHAR(255),
+    first_name  VARCHAR(255),
     role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     can_extract   BOOLEAN NOT NULL DEFAULT FALSE,
@@ -332,6 +333,11 @@ def init_db():
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                -- Migration: add first_name column for auto-update display names
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(255);
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: create extraction_requests table
                 CREATE TABLE IF NOT EXISTS extraction_requests (
                     id            SERIAL PRIMARY KEY,
@@ -388,27 +394,49 @@ def seed_sample_products():
 #  USER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
-def register_user(telegram_id, username=None):
+def register_user(telegram_id, username=None, first_name=None):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             role = "admin" if telegram_id in ADMIN_IDS else "pending"
-            cur.execute("""\n                INSERT INTO users (telegram_id, username, role)
-                VALUES (%s, %s, %s)
+            cur.execute("""\n                INSERT INTO users (telegram_id, username, first_name, role)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
                     active = TRUE
                 -- NEVER downgrade role on re-register
                 -- (admin stays admin, approved customer stays customer)
-                RETURNING id, telegram_id, username, role, active, created_at
-            """, (telegram_id, username, role))
+                RETURNING id, telegram_id, username, first_name, role, active, created_at
+            """, (telegram_id, username, first_name, role))
             user = cur.fetchone()
         conn.commit()
         return dict(user)
     except Exception as e:
         conn.rollback()
         raise
+    finally:
+        release_connection(conn)
+
+
+def sync_user_info(user):
+    """تحديث اسم المستخدم تلقائياً عند أي تفاعل.
+    يُنشئ السجل إذا لم يكن موجود، أو يُحدّث username و first_name إذا تغيرت."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""\n                INSERT INTO users (telegram_id, username, first_name, role)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    active = TRUE
+                """, (user.id, user.username, user.first_name, "admin" if user.id in ADMIN_IDS else "pending"))
+        conn.commit()
+    except Exception:
+        conn.rollback()
     finally:
         release_connection(conn)
 
@@ -921,7 +949,6 @@ BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
 BTN_USERS = "⚙️ المستخدمين"
 BTN_BACKUP = "💾 نسخ احتياطي"
 BTN_ALERT = "🔔 تنبيه"
-BTN_NOTIFY_SUMMARY = "📤 ملخص تنبيه"
 BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 
@@ -1323,7 +1350,7 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
-            [BTN_NOTIFY_SUMMARY, BTN_LOW_STOCK, BTN_MOVEMENTS],
+            [BTN_LOW_STOCK, BTN_MOVEMENTS],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -1904,7 +1931,7 @@ async def callback_product_action_handler(update, context):
 
 async def start_command(update, context):
     user = update.effective_user
-    register_user(telegram_id=user.id, username=user.username)
+    sync_user_info(user)
     # Notify admins about new pending user
     if not is_admin(user.id):
         db_user = get_user(user.id)
@@ -1926,20 +1953,23 @@ async def start_command(update, context):
     if is_admin(user.id):
         name = user.first_name or ""
         await update.message.reply_text(
-            "\u0645\u0631\u062d\u0628\u0627\u064b " + name + "! \U0001f44b\n\n\u0623\u0646\u062a \u0645\u062f\u064a\u0631 \u0627\u0644\u0646\u0638\u0627\u0645.\n\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0644\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u062e\u0632\u0648\u0646.",
+            "\U0001f44b \u0645\u0631\u062d\u0628\u0627\u064b <b>" + name + "</b>\n\n\U0001f3e2 \u0623\u0646\u062a \u0645\u062f\u064a\u0631 \u0627\u0644\u0646\u0638\u0627\u0645.\n\U0001f4cb \u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0644\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u062e\u0632\u0648\u0646.\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\u26a1 \u062a\u0645 \u0627\u0644\u062a\u0637\u0648\u064a\u0631 \u0628\u0648\u0627\u0633\u0637\u0629 <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
             reply_markup=get_admin_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
     else:
         name = user.first_name or ""
         db_user = get_user(user.id)
         if db_user and db_user.get("role") == "pending":
             await update.message.reply_text(
-                "⏳ مرحباً " + name + "! 👋\n\nحسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.",
+                "👋 مرحباً <b>" + name + "</b>\n\n⏳ حسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
+                parse_mode=ParseMode.HTML,
             )
         else:
             await update.message.reply_text(
-                "مرحباً " + name + "! 👋" + chr(10) + chr(10) + "استخدم الأزرار أدناه.",
+                "👋 مرحباً <b>" + name + "</b>\n\n⌛ بحث عن المنتجات المتاحة\n📁 استخدم الأزرار أدناه.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
                 reply_markup=get_customer_keyboard(),
+                parse_mode=ParseMode.HTML,
             )
     context.user_data.clear()
 
@@ -2176,284 +2206,29 @@ async def callback_restore_last_handler(update, context):
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
-def _get_today_add_transactions(user_id):
-    """Get today's 'add' transactions for a specific user, with product info."""
-    today = datetime.datetime.now(datetime.timezone.utc).date()
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT t.id, t.product_id, t.quantity, t.date,
-                       p.name AS product_name, p.quantity AS current_qty
-                FROM transactions t
-                JOIN products p ON p.id = t.product_id
-                WHERE t.type = 'add'
-                  AND t.user_id = %s
-                  AND t.date >= %s
-                ORDER BY t.date DESC
-            """, (user_id, today))
-            rows = cur.fetchall()
-        conn.commit()
-        return [dict(r) for r in rows]
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-async def _build_summary_message(transactions, reason, actor_user):
-    """Build a summary notification message from a list of today's add transactions."""
-    if reason == "return":
-        header = "↩️ إرجاع سلع من الزبائن"
-    else:
-        header = "🚚 وصول بضاعة جديدة من الشاحنة"
-    lines = [header, ""]
-    for tx in transactions:
-        name = tx["product_name"]
-        unit_ar = _get_unit_ar(name)
-        current_qty = tx.get("current_qty", "?")
-        lines.append("📦 " + name)
-        lines.append("   ➕ " + str(tx["quantity"]) + " " + unit_ar + "  |  📊 المخزون: " + str(current_qty) + " " + unit_ar)
-    lines.append("")
-    lines.append("📊 المجموع: " + str(len(transactions)) + " سلع")
-    if actor_user:
-        actor_name = actor_user.get("username") or "مجهول"
-        actor_link = "<a href=\"tg://user?id=" + str(actor_user["telegram_id"]) + "\">" + actor_name + "</a>"
-    else:
-        actor_link = "النظام"
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
-    lines.append("👤 بواسطة: " + actor_link)
-    lines.append("🕐 " + now)
-    return chr(10).join(lines)
-
-
-async def _show_notify_summary(update, context):
-    """Show today's add summary and let admin choose how to send it."""
-    user = update.effective_user
-    db_user = get_user(user.id)
-    if not db_user:
-        await update.message.reply_text("❌ حسابك غير مسجل.")
-        return
-    transactions = _get_today_add_transactions(db_user["id"])
-    if not transactions:
-        await update.message.reply_text("📭 لا توجد إضافات اليوم لإرسال تنبيه.", reply_markup=get_admin_keyboard())
-        return
-    # Build preview of the summary
-    preview_lines = ["📋 ملخص إضافات اليوم:", ""]
-    for tx in transactions:
-        name = tx["product_name"]
-        unit_ar = _get_unit_ar(name)
-        preview_lines.append("📦 " + name + " — +" + str(tx["quantity"]) + " " + unit_ar)
-    preview_lines.append("")
-    preview_lines.append("📊 المجموع: " + str(len(transactions)) + " سلع")
-    preview_lines.append("")
-    preview_lines.append("اختر نوع التنبيه:")
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚚 تنبيه عام - شاحنة", callback_data="nsum_truck"),
-         InlineKeyboardButton("↩️ تنبيه عام - إرجاع", callback_data="nsum_return")],
-        [InlineKeyboardButton("📤 إرسال لمستخدمين محددين", callback_data="nsum_select_users")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="nsum_cancel")],
-    ])
-    # Store transactions in user_data for callback use
-    context.user_data["pending_summary_txns"] = transactions
-    context.user_data["pending_summary_user"] = db_user
-    await update.message.reply_text(chr(10).join(preview_lines), reply_markup=kb)
-
-
-async def callback_notify_summary_handler(update, context):
-    """Handle notification summary actions: broadcast truck/return, select users, cancel."""
+async def callback_add_notify_handler(update, context):
+    """Handle the 'reason for add' choice: truck or customer return."""
     query = update.callback_query
     await query.answer()
-    data = query.data
-    transactions = context.user_data.get("pending_summary_txns")
-    actor = context.user_data.get("pending_summary_user")
-    if not transactions or not actor:
-        await query.edit_message_text("❌ انتهت صلاحية الملخص.")
+    data = query.data  # "addnotify_truck" or "addnotify_return"
+    reason = "truck" if data == "addnotify_truck" else "return"
+    pending = context.user_data.get("pending_add_notify")
+    if not pending:
+        await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
+        context.user_data.clear()
         return
-
-    if data == "nsum_cancel":
-        await query.edit_message_text("✅ تم الإلغاء.")
-        context.user_data.pop("pending_summary_txns", None)
-        context.user_data.pop("pending_summary_user", None)
-        return
-
-    if data == "nsum_truck" or data == "nsum_return":
-        reason = "truck" if data == "nsum_truck" else "return"
-        msg = await _build_summary_message(transactions, reason, actor)
-        # Broadcast to all users except actor
-        try:
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
-                    rows = cur.fetchall()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
-            sent = 0
-            for row in rows:
-                uid = row[0]
-                if actor and uid == actor["telegram_id"]:
-                    continue
-                try:
-                    await context.bot.send_message(chat_id=uid, text=msg, parse_mode=ParseMode.HTML)
-                    sent += 1
-                except Exception as e:
-                    logging.warning("[SUMMARY-NOTIFY] Failed for " + str(uid) + ": " + str(e))
-            if reason == "truck":
-                confirm = "🚚 تم إرسال تنبيه الشاحنة لـ " + str(sent) + " مستخدم ✅"
-            else:
-                confirm = "↩️ تم إرسال تنبيه الإرجاع لـ " + str(sent) + " مستخدم ✅"
-            await query.edit_message_text(confirm)
-        except Exception as e:
-            logging.warning("[SUMMARY-NOTIFY] Error: " + str(e))
-            await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
-        context.user_data.pop("pending_summary_txns", None)
-        context.user_data.pop("pending_summary_user", None)
-        return
-
-    if data == "nsum_select_users":
-        # Show user list for targeted notification
-        try:
-            conn = get_connection()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT id, telegram_id, username, role FROM users WHERE role IN ('admin', 'customer')")
-                    users = cur.fetchall()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
-            actor_tid = actor["telegram_id"] if actor else 0
-            other_users = [u for u in users if u["telegram_id"] != actor_tid]
-            if not other_users:
-                await query.edit_message_text("❌ لا يوجد مستخدمين آخرين لإرسال التنبيه.")
-                context.user_data.pop("pending_summary_txns", None)
-                context.user_data.pop("pending_summary_user", None)
-                return
-            btns = []
-            for u in other_users:
-                display = u.get("username") or ("user_" + str(u["telegram_id"]))
-                role_icon = "👑" if u["role"] == "admin" else "👤"
-                label = role_icon + " " + display
-                btns.append([InlineKeyboardButton(label, callback_data="nsumuser_" + str(u["telegram_id"]) + "_choose")])
-            btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="nsum_back")])
-            user_list_text = ("📤 اختر المستخدمين لإرسال الملخص:" + chr(10) + chr(10)
-                            + "📊 " + str(len(transactions)) + " سلع مضافة اليوم" + chr(10) + chr(10)
-                            + "اضغط على المستخدم لتحديد نوع التنبيه:" + chr(10)
-                            + "🚚 شاحنة  |  ↩️ إرجاع")
-            await query.edit_message_text(user_list_text, reply_markup=InlineKeyboardMarkup(btns))
-        except Exception as e:
-            logging.error("[SUMMARY-SELECT] Error: " + str(e))
-            await query.edit_message_text("❌ حدث خطأ في تحميل المستخدمين.")
-        return
-
-    if data == "nsum_back":
-        # Go back to summary dashboard
-        preview_lines = ["📋 ملخص إضافات اليوم:", ""]
-        for tx in transactions:
-            name = tx["product_name"]
-            unit_ar = _get_unit_ar(name)
-            preview_lines.append("📦 " + name + " — +" + str(tx["quantity"]) + " " + unit_ar)
-        preview_lines.append("")
-        preview_lines.append("📊 المجموع: " + str(len(transactions)) + " سلع")
-        preview_lines.append("")
-        preview_lines.append("اختر نوع التنبيه:")
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚚 تنبيه عام - شاحنة", callback_data="nsum_truck"),
-             InlineKeyboardButton("↩️ تنبيه عام - إرجاع", callback_data="nsum_return")],
-            [InlineKeyboardButton("📤 إرسال لمستخدمين محددين", callback_data="nsum_select_users")],
-            [InlineKeyboardButton("❌ إلغاء", callback_data="nsum_cancel")],
-        ])
-        await query.edit_message_text(chr(10).join(preview_lines), reply_markup=kb)
-        return
-
-
-async def callback_notify_summary_user_handler(update, context):
-    """Handle sending summary to a specific user: choose reason or send directly.
-    callback_data: nsumuser_{tid}_choose | nsumuser_{tid}_truck | nsumuser_{tid}_return"""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    parts = data.split("_", 2)
-    if len(parts) < 3:
-        return
-    target_tid = int(parts[1])
-    action = parts[2]
-    transactions = context.user_data.get("pending_summary_txns")
-    actor = context.user_data.get("pending_summary_user")
-    if not transactions or not actor:
-        await query.edit_message_text("❌ انتهت صلاحية الملخص.")
-        return
-
-    if action == "choose":
-        # Show truck/return choice for this specific user
-        try:
-            conn = get_connection()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT username FROM users WHERE telegram_id = %s", (target_tid,))
-                    row = cur.fetchone()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
-            target_name = dict(row)["username"] if row else ("user_" + str(target_tid))
-        except Exception:
-            target_name = "user_" + str(target_tid)
-        choose_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚚 شاحنة", callback_data="nsumuser_" + str(target_tid) + "_truck"),
-             InlineKeyboardButton("↩️ إرجاع", callback_data="nsumuser_" + str(target_tid) + "_return")],
-            [InlineKeyboardButton("🔙 رجوع لقائمة المستخدمين", callback_data="nsum_select_users")],
-        ])
-        choose_text = ("📤 إرسال ملخص لـ " + target_name + chr(10) + chr(10)
-                      + "📊 " + str(len(transactions)) + " سلع مضافة اليوم" + chr(10) + chr(10)
-                      + "اختر سبب التنبيه:")
-        await query.edit_message_text(choose_text, reply_markup=choose_kb)
-        return
-
-    # action is "truck" or "return" — send the summary
-    reason = action
-    msg = await _build_summary_message(transactions, reason, actor)
-    try:
-        await context.bot.send_message(chat_id=target_tid, text=msg, parse_mode=ParseMode.HTML)
-        try:
-            conn = get_connection()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT username FROM users WHERE telegram_id = %s", (target_tid,))
-                    row = cur.fetchone()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
-            target_name = dict(row)["username"] if row else ("user_" + str(target_tid))
-        except Exception:
-            target_name = "user_" + str(target_tid)
-        if reason == "truck":
-            confirm = "🚚 تم إرسال ملخص الشاحنة لـ " + target_name + " ✅"
-        else:
-            confirm = "↩️ تم إرسال ملخص الإرجاع لـ " + target_name + " ✅"
-        back_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 إرسال لمستخدم آخر", callback_data="nsum_select_users")],
-            [InlineKeyboardButton("✅ إنهاء", callback_data="nsum_cancel")],
-        ])
-        await query.edit_message_text(confirm, reply_markup=back_kb)
-    except Exception as e:
-        logging.warning("[SUMMARY-USER-SEND] Failed for " + str(target_tid) + ": " + str(e))
-        await query.edit_message_text("❌ فشل إرسال التنبيه للمستخدم.")
-    return
+    product = pending["product"]
+    qty = pending["qty"]
+    actor = pending["user"]
+    # Broadcast the notification with the chosen reason
+    await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+    # Confirm to the user
+    if reason == "truck":
+        confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+    else:
+        confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+    await query.edit_message_text(confirm)
+    context.user_data.pop("pending_add_notify", None)
 
 
 async def callback_email_restore_handler(update, context):
@@ -2559,7 +2334,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_NOTIFY_SUMMARY, BTN_LOW_STOCK, BTN_MOVEMENTS]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -2654,9 +2429,6 @@ async def handle_admin_message(update, context):
             alert_prompt = ("\U0001f514 أرسل نص التنبيه:" + chr(10) + chr(10)
                 + "سيتم إرساله لجميع المستخدمين.")
             await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
-            return
-        if text == BTN_NOTIFY_SUMMARY:
-            await _show_notify_summary(update, context)
             return
         if text == BTN_LOW_STOCK:
             await send_low_stock_list(update, context)
@@ -2809,6 +2581,14 @@ async def handle_admin_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
+            # After add: ask reason for notification
+            if action == "add" and db_user:
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0628\u0636\u0627\u0639\u0629 \u0645\u0646 \u0627\u0644\u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0633\u0644\u0639\u0629 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
+                ])
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -2929,6 +2709,15 @@ async def handle_customer_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
+            # After add: ask reason for notification
+            if action == "add" and db_user:
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚚 وصول بضاعة من الشاحنة", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("↩️ إرجاع سلعة من زبون", callback_data="addnotify_return")],
+                ])
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
+                return  # Don't clear user_data yet — callback needs pending_add_notify
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
@@ -3001,7 +2790,7 @@ async def route_message(update, context):
         else:
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         return
-    register_user(telegram_id=user.id, username=user.username)
+    register_user(telegram_id=user.id, username=user.username, first_name=user.first_name)
     if is_admin(user.id):
         await handle_admin_message(update, context)
     else:
@@ -3235,6 +3024,17 @@ async def callback_admin_done_handler(update, context):
 
 def build_application():
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # ── Middleware: تحديث بيانات المستخدم تلقائياً عند أي تفاعل ──
+    async def auto_sync_user(update, context):
+        user = update.effective_user
+        if user:
+            sync_user_info(user)
+
+    # يشغل sync_user_info قبل أي handler آخر
+    app.add_handler(MessageHandler(filters.ALL, auto_sync_user), group=-1)
+    app.add_handler(CallbackQueryHandler(auto_sync_user, block=False), group=-1)
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", route_message))
@@ -3245,8 +3045,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
-    app.add_handler(CallbackQueryHandler(callback_notify_summary_handler, pattern="^nsum_"))
-    app.add_handler(CallbackQueryHandler(callback_notify_summary_user_handler, pattern="^nsumuser_"))
+    app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
