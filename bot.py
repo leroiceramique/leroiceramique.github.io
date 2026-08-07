@@ -1,8 +1,10 @@
 import os
+import re
 import json
 import datetime
 import logging
 import asyncio
+import unicodedata
 import aiohttp
 from aiohttp import web
 import psycopg2
@@ -596,22 +598,109 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
         release_connection(conn)
 
 
+def _normalize_text(text):
+    """Normalize text for fuzzy matching: strip accents, lowercase, remove extra spaces."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    # Remove diacritical marks (accents)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower().strip()
+    # Replace multiple spaces with single
+    text = re.sub(r"\s+", " ", text)
+    # Normalize slashes: 60/60 -> 60x60
+    text = text.replace("/", "x")
+    text = text.replace("×", "x")
+    return text
+
+
+def _levenshtein_distance(s1, s2):
+    """Calculate Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
+
+
+def _fuzzy_score(name, query_tokens):
+    """Score how well a product name matches the query tokens.
+    Returns a score (higher = better match)."""
+    norm_name = _normalize_text(name)
+    name_words = set(norm_name.split())
+    score = 0
+    # Exact substring match in normalized name (strongest signal)
+    norm_query = " ".join(query_tokens)
+    if norm_query in norm_name:
+        score += 100
+    # Each token that appears exactly as a word
+    for token in query_tokens:
+        if token in name_words:
+            score += 30
+        elif token in norm_name:
+            score += 15
+        else:
+            # Fuzzy: check Levenshtein distance for each word in name
+            for word in name_words:
+                dist = _levenshtein_distance(token, word)
+                max_len = max(len(token), len(word), 1)
+                similarity = 1 - (dist / max_len)
+                if similarity >= 0.6:
+                    score += int(similarity * 20)
+                    break
+    return score
+
+
 def search_products(query):
+    """Smart search: fuzzy matching with typo tolerance, normalized text,
+    slash/x interchangeability, and accent handling."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECT * FROM products
-                WHERE name ILIKE %s
-                ORDER BY LOWER(name)
-            """, ("%" + query.strip() + "%",))
-            rows = cur.fetchall()
+            # Fetch all products (fuzzy matching needs full scan)
+            cur.execute("SELECT * FROM products ORDER BY id")
+            all_rows = cur.fetchall()
         conn.commit()
-        return [dict(r) for r in rows]
+        all_products = [dict(r) for r in all_rows]
     except Exception as e:
         conn.rollback()
         raise
     finally:
         release_connection(conn)
+    if not query or not query.strip():
+        return []
+    query_tokens = _normalize_text(query).split()
+    if not query_tokens:
+        return []
+    # Score every product
+    scored = []
+    for p in all_products:
+        s = _fuzzy_score(p["name"], query_tokens)
+        if s > 0:
+            scored.append((s, p))
+    # Sort by score descending, then by id ascending
+    scored.sort(key=lambda x: (-x[0], x[1]["id"]))
+    # Determine the best score to filter low-quality matches
+    if scored:
+        best_score = scored[0][0]
+        # Keep results that are at least 50% of the best score (minimum 15)
+        threshold = max(15, best_score * 0.5)
+        scored = [(s, p) for s, p in scored if s >= threshold]
+    # If the query is very short (1-2 chars), only return very good matches
+    if len(query.strip()) <= 2:
+        scored = [(s, p) for s, p in scored if s >= 30]
+    # Limit to top 50 results max
+    scored = scored[:50]
+    return [p for s, p in scored]
 
 
 def db_update_product(product_id, name=None, location=None, minimum_stock=None):
@@ -1431,9 +1520,8 @@ async def process_search(update, context, text, admin_view=False):
             msg = ("\U0001f50d لم يتم العثور على نتائج لـ " + text)
         else:
             msg = ("🔍 العنصر غير موجود." + chr(10) + chr(10)
-                + "يرجى التأكد من كتابة الاسم بشكل صحيح." + chr(10) + chr(10)
-                + "⚠️ السلع القديمة جداً غير مسجلة في النظام." + chr(10)
-                + "يرجى الاتصال بسمير للاستفسار.")
+                + "💡 البحث الذكي يفهم الأخطاء الإملائية ويعامل / و × بشكل متساوٍ." + chr(10)
+                + "جرّب البحث بكلمة واحدة أقصر (مثلاً: ceram أو 60x60 أو اسم المصنع).")
         reply_kb = get_input_keyboard() if admin_view else None
         await update.message.reply_text(msg, reply_markup=reply_kb)
         return
@@ -2135,7 +2223,7 @@ async def handle_admin_message(update, context):
         if text == BTN_SEARCH:
             context.user_data["state"] = STATE_SEARCH_ADMIN
             await update.message.reply_text(
-                "\U0001f50d ابحث في المخزون" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:",
+                "🔍 البحث الذكي" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:" + chr(10) + chr(10) + "💡 يفهم الأخطاء الإملائية" + chr(10) + "🔤 / و × متساويان (60/60 = 60x60)" + chr(10) + "🏭 ابحث بالمصنع أو المقاس",
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_ADD_QTY:
