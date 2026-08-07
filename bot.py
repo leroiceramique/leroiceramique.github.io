@@ -984,6 +984,58 @@ async def _broadcast_to_all_users(bot, text):
         logging.warning("[BROADCAST] Error: " + str(e))
 
 
+async def _broadcast_add_notification(bot, product, qty, actor_user):
+    """Broadcast an automatic notification when stock is added.
+    Sends to all users EXCEPT the person who added the stock."""
+    name = product["name"]
+    unit_ar = _get_unit_ar(name)
+    new_qty = product["quantity"]
+
+    # Build actor info
+    if actor_user:
+        actor_name = actor_user.get("username") or "مجهول"
+        actor_link = "<a href=\"tg://user?id=" + str(actor_user["telegram_id"]) + "\">" + actor_name + "</a>"
+    else:
+        actor_link = "النظام"
+
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
+    msg = ("🚚 وصول بضاعة جديدة"
+        + chr(10) + chr(10)
+        + "📦 " + name
+        + chr(10)
+        + "➕ الكمية المضافة: " + str(qty) + " " + unit_ar
+        + chr(10)
+        + "📊 المخزون الحالي: " + str(new_qty) + " " + unit_ar
+        + chr(10)
+        + "👤 بواسطة: " + actor_link
+        + chr(10)
+        + "🕐 " + now)
+
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+                rows = cur.fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_connection(conn)
+        for row in rows:
+            uid = row[0]
+            # Don't notify the person who added the stock
+            if actor_user and uid == actor_user["telegram_id"]:
+                continue
+            try:
+                await bot.send_message(chat_id=uid, text=msg, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logging.warning("[ADD-NOTIFY] Failed for " + str(uid) + ": " + str(e))
+    except Exception as e:
+        logging.warning("[ADD-NOTIFY] Error: " + str(e))
+
+
 async def send_low_stock_alerts(bot):
     """Send individual alerts to ALL users when products enter or leave low-stock list."""
     try:
@@ -2458,6 +2510,9 @@ async def handle_admin_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
+            # Auto-broadcast add notification to all other users
+            if action == "add" and db_user:
+                await _broadcast_add_notification(context.bot, dict(updated), qty, db_user)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -2578,6 +2633,9 @@ async def handle_customer_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
+            # Auto-broadcast add notification to all other users
+            if action == "add" and db_user:
+                await _broadcast_add_notification(context.bot, dict(updated), qty, db_user)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
