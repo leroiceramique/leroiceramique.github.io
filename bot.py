@@ -984,8 +984,9 @@ async def _broadcast_to_all_users(bot, text):
         logging.warning("[BROADCAST] Error: " + str(e))
 
 
-async def _broadcast_add_notification(bot, product, qty, actor_user):
+async def _broadcast_add_notification(bot, product, qty, actor_user, reason="truck"):
     """Broadcast an automatic notification when stock is added.
+    reason: 'truck' for truck delivery, 'return' for customer return.
     Sends to all users EXCEPT the person who added the stock."""
     name = product["name"]
     unit_ar = _get_unit_ar(name)
@@ -999,17 +1000,31 @@ async def _broadcast_add_notification(bot, product, qty, actor_user):
         actor_link = "النظام"
 
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
-    msg = ("🚚 وصول بضاعة جديدة"
-        + chr(10) + chr(10)
-        + "📦 " + name
-        + chr(10)
-        + "➕ الكمية المضافة: " + str(qty) + " " + unit_ar
-        + chr(10)
-        + "📊 المخزون الحالي: " + str(new_qty) + " " + unit_ar
-        + chr(10)
-        + "👤 بواسطة: " + actor_link
-        + chr(10)
-        + "🕐 " + now)
+
+    if reason == "return":
+        msg = ("↩️ إرجاع سلعة من زبون"
+            + chr(10) + chr(10)
+            + "📦 " + name
+            + chr(10)
+            + "➕ الكمية المرجوعة: " + str(qty) + " " + unit_ar
+            + chr(10)
+            + "📊 المخزون الحالي: " + str(new_qty) + " " + unit_ar
+            + chr(10)
+            + "👤 بواسطة: " + actor_link
+            + chr(10)
+            + "🕐 " + now)
+    else:
+        msg = ("🚚 وصول بضاعة جديدة من الشاحنة"
+            + chr(10) + chr(10)
+            + "📦 " + name
+            + chr(10)
+            + "➕ الكمية المضافة: " + str(qty) + " " + unit_ar
+            + chr(10)
+            + "📊 المخزون الحالي: " + str(new_qty) + " " + unit_ar
+            + chr(10)
+            + "👤 بواسطة: " + actor_link
+            + chr(10)
+            + "🕐 " + now)
 
     try:
         conn = get_connection()
@@ -2160,6 +2175,31 @@ async def callback_restore_last_handler(update, context):
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
+async def callback_add_notify_handler(update, context):
+    """Handle the 'reason for add' choice: truck or customer return."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "addnotify_truck" or "addnotify_return"
+    reason = "truck" if data == "addnotify_truck" else "return"
+    pending = context.user_data.get("pending_add_notify")
+    if not pending:
+        await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
+        context.user_data.clear()
+        return
+    product = pending["product"]
+    qty = pending["qty"]
+    actor = pending["user"]
+    # Broadcast the notification with the chosen reason
+    await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+    # Confirm to the user
+    if reason == "truck":
+        confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+    else:
+        confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+    await query.edit_message_text(confirm)
+    context.user_data.pop("pending_add_notify", None)
+
+
 async def callback_email_restore_handler(update, context):
     query = update.callback_query
     await query.answer()
@@ -2510,9 +2550,14 @@ async def handle_admin_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
-            # Auto-broadcast add notification to all other users
+            # After add: ask reason for notification
             if action == "add" and db_user:
-                await _broadcast_add_notification(context.bot, dict(updated), qty, db_user)
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0628\u0636\u0627\u0639\u0629 \u0645\u0646 \u0627\u0644\u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0633\u0644\u0639\u0629 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
+                ])
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -2633,9 +2678,15 @@ async def handle_customer_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
-            # Auto-broadcast add notification to all other users
+            # After add: ask reason for notification
             if action == "add" and db_user:
-                await _broadcast_add_notification(context.bot, dict(updated), qty, db_user)
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚚 وصول بضاعة من الشاحنة", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("↩️ إرجاع سلعة من زبون", callback_data="addnotify_return")],
+                ])
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
+                return  # Don't clear user_data yet — callback needs pending_add_notify
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
@@ -2952,6 +3003,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
+    app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
