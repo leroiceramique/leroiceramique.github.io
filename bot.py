@@ -3065,6 +3065,15 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         return
 
+    # State: waiting_receipt - المستخدم في حالة انتظار إرسال صورة وصل
+    if state == "waiting_receipt":
+        await update.message.reply_text(
+            "📷 يرجى إرسال صورة الوصل فقط.\n"
+            "أو اضغط ❌ إلغاء للرجوع.",
+            reply_markup=get_input_keyboard(),
+        )
+        return
+
     # State: waiting_pact_qty
     if state == "waiting_pact_qty":
         product = context.user_data.get("cust_product")
@@ -3531,7 +3540,7 @@ async def _show_admin_incoming_orders(update, context):
 
 
 async def _show_customer_orders(update, context):
-    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمستخدم."""
+    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمستخدم مع أزرار إرسال وصل."""
     user = update.effective_user
     db_user = get_user(user.id)
     if not db_user:
@@ -3543,6 +3552,7 @@ async def _show_customer_orders(update, context):
         return
 
     lines = ["📋 طلباتك (" + str(len(orders)) + ")\n"]
+    buttons = []
     for o in orders:
         created = o["created_at"].strftime("%H:%M %d/%m") if o.get("created_at") else ""
         status_txt = "⏳ قيد التوريد" if o["status"] == "pending" else "🔧 جاري التجهيز"
@@ -3553,8 +3563,102 @@ async def _show_customer_orders(update, context):
             "  |  " + status_txt +
             "  |  ⏰ " + created
         )
-    lines.append("\n📡 سيتم إشعارك تلقائياً بأي تحديث.")
-    await update.message.reply_text("\n".join(lines), reply_markup=get_customer_keyboard())
+        # زر إرسال صورة الوصل لكل طلب
+        buttons.append([InlineKeyboardButton(
+            "📷 إرسال وصل #" + str(o["id"]) + " - " + o["product_name"][:20],
+            callback_data="send_receipt_" + str(o["id"])
+        )])
+    lines.append("\n📷 اضغط على زر إرسال الوصل لإرفاق صورة وصل مع الطلب.")
+    lines.append("📡 سيتم إشعارك تلقائياً بأي تحديث.")
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def callback_send_receipt_handler(update, context):
+    """معالجة زر إرسال صورة الوصل - يضع state لإنتظار الصورة."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    order_id = int(data.replace("send_receipt_", ""))
+    context.user_data["state"] = "waiting_receipt"
+    context.user_data["receipt_order_id"] = order_id
+    await query.edit_message_text(
+        "📷 أرسل صورة الوصل الآن\n\n"
+        "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
+        "أرسل الصورة وسنقوم بتوجيهها للمدير.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def handle_receipt_photo(update, context):
+    """معالجة صورة الوصل - توجيهها للمديرين مع معلومات الطلب."""
+    user = update.effective_user
+    state = context.user_data.get("state")
+    order_id = context.user_data.get("receipt_order_id")
+    # يعمل فقط إذا كان المستخدم في حالة انتظار إرسال وصل
+    if state != "waiting_receipt" or not order_id:
+        # ليس في حالة إرسال وصل - تجاهل الصورة
+        return
+
+    # جلب بيانات الطلب
+    conn = get_connection()
+    order = None
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM incoming_orders WHERE id = %s", (order_id,))
+            order = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        release_connection(conn)
+
+    if not order:
+        await update.message.reply_text("❌ الطلب غير موجود.", reply_markup=get_customer_keyboard())
+        context.user_data.clear()
+        return
+
+    # جلب الصورة الأكبر من الرسالة
+    photo = update.message.photo
+    if not photo:
+        await update.message.reply_text("❌ لم يتم العثور على صورة.", reply_markup=get_customer_keyboard())
+        context.user_data.clear()
+        return
+    # photo هو قائمة مرتبة بالأصغر للأكبر، نأخذ الأكبر
+    file_id = photo[-1].file_id
+
+    req_name = user.first_name or user.username or str(user.id)
+    caption = (
+        "📷 صورة وصل للطلب #" + str(order_id) + "\n\n"
+        "👤 من: <b>" + req_name + "</b>\n"
+        "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
+        "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>"
+    )
+
+    # إرسال الصورة لكل المديرين
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_photo(
+                chat_id=admin_id,
+                photo=file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
+
+    await update.message.reply_text(
+        "✅ تم إرسال صورة الوصل بنجاح!\n\n"
+        "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
+        "📦 السلعة: <b>" + order["product_name"] + "</b>\n\n"
+        "📱 تم توجيه الصورة للمدير.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_customer_keyboard(),
+    )
+    logging.info("[RECEIPT] Photo sent for order #" + str(order_id) + " by user " + str(user.id))
+    context.user_data.clear()
 
 
 async def callback_incoming_order_handler(update, context):
@@ -3735,10 +3839,12 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_receive_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
+    app.add_handler(CallbackQueryHandler(callback_send_receipt_handler, pattern="^send_receipt_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
     app.add_error_handler(error_handler)
     return app
