@@ -228,6 +228,7 @@ def get_connection():
             conn = _pool.getconn()
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
+                cur.execute("SET TIME ZONE 'Africa/Algiers'")
             return conn
         except Exception:
             # Connection is dead — close it properly
@@ -244,7 +245,10 @@ def get_connection():
         pass
     _pool = None
     init_pool()
-    return _pool.getconn()
+    conn = _pool.getconn()
+    with conn.cursor() as cur:
+        cur.execute("SET TIME ZONE 'Africa/Algiers'")
+    return conn
 
 
 def release_connection(conn):
@@ -707,7 +711,7 @@ def db_export_backup():
         conn.commit()
         return {
             "version": 2,
-            "date": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
             "products": products,
             "transactions": transactions,
             "users": users,
@@ -1485,7 +1489,7 @@ async def _weekly_report_loop(bot):
     """Send weekly report every Sunday at 23:00 Algeria time (22:00 UTC)."""
     last_report = ""
     while True:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
         # Sunday = weekday 6, send at 22:00 UTC = 23:00 Algeria
         today = now.strftime("%Y-%m-%d")
         is_sunday = now.weekday() == 6
@@ -2406,7 +2410,7 @@ async def backup_command(update, context):
         _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
-        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M")
+        now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 استيراد هذه النسخة", callback_data="restore_last")],
             [InlineKeyboardButton("✉️ استيراد من البريد", callback_data="restore_from_email")],
@@ -3848,7 +3852,7 @@ def _send_backup_email(backup_bytes, filename):
         msg = MIMEMultipart()
         msg["From"] = SMTP_EMAIL
         msg["To"] = BACKUP_EMAIL
-        msg["Subject"] = "\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 - \u0627\u0644\u0645\u062e\u0632\u0646 " + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        msg["Subject"] = "\U0001f4be \u0646\u0633\u062e\u0629 \u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 - \u0627\u0644\u0645\u062e\u0632\u0646 " + datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
         body = ("\u0645\u0631\u062d\u0628\u0627\n"
                 + "\n"
                 + "\u0647\u0630\u0627 \u0645\u0644\u0641 \u0627\u0644\u0646\u0633\u062e \u0627\u0644\u0627\u062d\u062a\u064a\u0627\u0637\u064a \u0627\u0644\u064a\u0648\u0645\u064a \u0644\u0644\u0645\u062e\u0632\u0646.\n"
@@ -3874,13 +3878,13 @@ def _send_backup_email(backup_bytes, filename):
 
 async def _daily_backup(bot):
     global _last_backup_data
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
     try:
         backup = db_export_backup()
         _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
-        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M")
+        now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         filename = "backup_" + now_str + ".json"
         sent = _send_backup_email(file_bytes, filename)
         if sent:
@@ -3894,7 +3898,7 @@ async def _daily_backup(bot):
 async def _daily_backup_loop(bot):
     last_backup = ""
     while True:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
         today = now.strftime("%Y-%m-%d")
         # 5-minute window (23:00-23:04 UTC = midnight Algeria)
         if today != last_backup and 23 <= now.hour <= 23 and now.minute < 5:
