@@ -3693,7 +3693,13 @@ async def callback_incoming_order_handler(update, context):
         order_id = int(data.split("_")[-1])
         order = complete_incoming_order(order_id)
         if not order:
-            await query.edit_message_text("❌ الطلب غير موجود.")
+            try:
+                await query.edit_message_caption(caption="❌ الطلب غير موجود.")
+            except Exception:
+                try:
+                    await query.edit_message_text("❌ الطلب غير موجود.")
+                except Exception:
+                    pass
             return
 
         tg_id = _get_telegram_id(order["requester_id"])
@@ -3710,11 +3716,23 @@ async def callback_incoming_order_handler(update, context):
             except Exception:
                 pass
 
-        await query.edit_message_text(
-            "✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
-            "📦 " + order["product_name"] +
-            "\n\n📱 تم إشعار صاحب الطلب."
-        )
+        # Edit caption (photo) or text depending on message type
+        try:
+            await query.edit_message_caption(
+                caption="✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
+                "📦 " + order["product_name"] +
+                "\n\n📱 تم إشعار صاحب الطلب.",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            try:
+                await query.edit_message_text(
+                    "✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
+                    "📦 " + order["product_name"] +
+                    "\n\n📱 تم إشعار صاحب الطلب."
+                )
+            except Exception:
+                pass
         logging.info("[INCOMING] Ready order #" + str(order_id))
         return
 
@@ -3749,16 +3767,32 @@ async def callback_incoming_order_handler(update, context):
                 pass
 
         if order:
-            await query.edit_message_text(
-                "⏳ الطلب #" + str(order_id) + " ليس جاهزاً بعد.\n"
-                "📦 " + dict(order).get("product_name", "") +
-                "\n\n📱 تم إشعار المستخدم."
-            )
+            try:
+                await query.edit_message_caption(
+                    caption="⏳ الطلب #" + str(order_id) + " ليس جاهزاً بعد.\n"
+                    "📦 " + dict(order).get("product_name", "") +
+                    "\n\n📱 تم إشعار المستخدم.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        "⏳ الطلب #" + str(order_id) + " ليس جاهزاً بعد.\n"
+                        "📦 " + dict(order).get("product_name", "") +
+                        "\n\n📱 تم إشعار المستخدم."
+                    )
+                except Exception:
+                    pass
         else:
-            await query.edit_message_text("❌ الطلب غير موجود.")
+            try:
+                await query.edit_message_caption(caption="❌ الطلب غير موجود.")
+            except Exception:
+                try:
+                    await query.edit_message_text("❌ الطلب غير موجود.")
+                except Exception:
+                    pass
         logging.info("[INCOMING] Not ready - order #" + str(order_id))
         return
-
 
 def _get_telegram_id(user_db_id):
     """جلب telegram_id من user_db_id."""
