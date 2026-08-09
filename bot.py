@@ -1135,7 +1135,27 @@ def format_product_customer(product):
 
 
 async def _broadcast_update_notification(update, context):
-    """إرسال إشعار تحديث لكل المستخدمين مع زر /start."""
+    """طلب وصف التحديث من المدير ثم بثه للمستخدمين."""
+    context.user_data["state"] = "waiting_update_msg"
+    await update.message.reply_text(
+        "📢 <b>إشعار تحديث</b>\n\n"
+        "أرسل وصف التحديث:\n"
+        "مثال:\n"
+        "✅ تم إضافة زر إرسال صورة الوصل في طلباتي\n\n"
+        "أو أرسل /cancel للإلغاء.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_input_keyboard(),
+    )
+
+
+async def _send_update_broadcast(update, context):
+    """بث رسالة التحديث المخصصة لكل المستخدمين."""
+    user = update.effective_user
+    text = update.message.text
+    state = context.user_data.get("state")
+    if state != "waiting_update_msg":
+        return
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -1150,24 +1170,24 @@ async def _broadcast_update_notification(update, context):
 
     if not rows:
         await update.message.reply_text("📭 لا يوجد مستخدمين مفعلين.", reply_markup=get_admin_keyboard())
+        context.user_data.clear()
         return
 
-    text = (
-        "🆕 <b>تم تحديث البوت!</b>\n\n"
-        "تم إضافة ميزات جديدة.\n"
-        "اضغط /start للاستفادة من التحديثات.\n\n"
+    broadcast_text = (
+        "🆕 <b>تحديث جديد!</b>\n\n"
+        + text + "\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 اضغط هنا للتحديث", callback_data="go_start")]
+        [InlineKeyboardButton("🔄 تحديث الواجهة", callback_data="go_start")]
     ])
     sent = 0
     for row in rows:
         uid = row[0]
         try:
             await context.bot.send_message(
-                chat_id=uid, text=text,
+                chat_id=uid, text=broadcast_text,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML,
             )
@@ -1179,7 +1199,8 @@ async def _broadcast_update_notification(update, context):
         parse_mode=ParseMode.HTML,
         reply_markup=get_admin_keyboard(),
     )
-    logging.info("[UPDATE] Broadcast sent to " + str(sent) + " users")
+    logging.info("[UPDATE] Broadcast sent to " + str(sent) + " users: " + text[:80])
+    context.user_data.clear()
 
 
 async def _broadcast_to_all_users(bot, text):
@@ -2946,6 +2967,14 @@ async def handle_admin_message(update, context):
         except Exception as e:
             await update.message.reply_text("❌ خطأ: " + str(e), reply_markup=get_input_keyboard())
         context.user_data.clear()
+        return
+
+    elif state == "waiting_update_msg":
+        update_text = text.strip()
+        if not update_text:
+            await update.message.reply_text("❌ أرسل وصف التحديث.", reply_markup=get_input_keyboard())
+            return
+        await _send_update_broadcast(update, context)
         return
     
     else:
