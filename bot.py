@@ -436,7 +436,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             END $$;
             -- Seed: add invoice update notification
             INSERT INTO bot_updates (description) VALUES
-            ('✅ تم إضافة نظام الفواتير' || chr(10) || chr(10) || '🧾 زر جديد: إنشاء فاتورة' || chr(10) || '💰 يمكن للمدير إنشاء فاتورة بعد البعد' || chr(10) || '📎 توليد PDF احترافي تلقائياً' || chr(10) || '📨 إشعار تلقائي للعامل المختار')
+            ('✅ تم إضافة نظام الفواتير' || chr(10) || chr(10) || '🧾 زر جديد: إنشاء فاتورة' || chr(10) || '💰 يمكن للمدير إنشاء فاتورة عن بُعد' || chr(10) || '📎 توليد PDF احترافي تلقائياً' || chr(10) || '📨 إشعار تلقائي للعامل المختار')
             ON CONFLICT DO NOTHING;
             """)
         conn.commit()
@@ -2753,7 +2753,8 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, pric
     msg += "📝 أرسل اسم المنتج التالي" + chr(10)
     msg += "أو اضغط 📋 مراجعة الفاتورة"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 مراجعة الفاتورة", callback_data="invoice_review")],
+        [InlineKeyboardButton("📋 مراجعة الفاتورة", callback_data="invoice_review"),
+         InlineKeyboardButton("🗑 حذف آخر عنصر", callback_data="invoice_remove_last")],
     ])
     context.user_data["state"] = STATE_INVOICE_PRODUCT
     await update.message.reply_text(msg, reply_markup=keyboard)
@@ -2899,7 +2900,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         header = [
             Paragraph("المنتج", body_style),
             Paragraph("الكمية", body_style),
-            Paragraph("سعر الوحدة", body_style),
+            Paragraph("سعر الكرتون/العلبة", body_style),
             Paragraph("المجموع", body_style),
         ]
         table_data = [header]
@@ -3068,6 +3069,88 @@ async def callback_invoice_handler(update, context):
             reply_markup=get_admin_keyboard()
         )
 
+    elif data == "invoice_back_customer":
+        context.user_data["state"] = STATE_INVOICE_CUSTOMER
+        context.user_data.pop("invoice_customer", None)
+        try:
+            await query.edit_message_text(
+                "\U0001f9fe \u0625\u0646\u0634\u0627\u0621 \u0641\u0627\u062a\u0648\u0631\u0629" + chr(10) + chr(10)
+                + "\U0001f464 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646 \u0623\u0648 \u0631\u0642\u0645 \u0647\u0627\u062a\u0641\u0647:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="\U0001f464 \u0623\u0639\u062f \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646:")
+
+    elif data == "invoice_back_product":
+        context.user_data["state"] = STATE_INVOICE_PRODUCT
+        context.user_data.pop("invoice_tmp_product", None)
+        context.user_data.pop("invoice_tmp_pid", None)
+        try:
+            await query.edit_message_text(
+                "\U0001f4e6 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c:" + chr(10) + chr(10)
+                + "\U0001f50d \u0627\u0643\u062a\u0628 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0644\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646" + chr(10)
+                + "\U0001f4cb \u0623\u0648 \u0627\u0643\u062a\u0628 \u0627\u0644\u0633\u0644\u0639\u0629 \u0645\u0628\u0627\u0634\u0631\u0629 \u0625\u0630\u0627 \u0644\u0645 \u062a\u0643\u0646 \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_customer"),
+                     InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="\U0001f4e6 \u0623\u0639\u062f \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c:")
+
+    elif data == "invoice_back_qty":
+        context.user_data["state"] = STATE_INVOICE_QTY
+        context.user_data.pop("invoice_tmp_qty", None)
+        product_name = context.user_data.get("invoice_tmp_product", "\u0627\u0644\u0645\u0646\u062a\u062c")
+        try:
+            await query.edit_message_text(
+                "\U0001f4e6 " + product_name + chr(10) + chr(10)
+                + "\U0001f522 \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="\U0001f522 \u0623\u0639\u062f \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629:")
+
+    elif data == "invoice_remove_last":
+        items = context.user_data.get("invoice_items", [])
+        if items:
+            removed = items.pop()
+            context.user_data["invoice_items"] = items
+            msg = "\U0001f5d1 \u062a\u0645 \u062d\u0630\u0641: " + removed["product_name"] + " \u00d7 " + str(removed["quantity"])
+            if items:
+                total = sum(i["subtotal"] for i in items)
+                msg += chr(10) + chr(10) + "\U0001f4cb \u0627\u0644\u0639\u0646\u0627\u0635\u0631 \u0627\u0644\u0645\u062a\u0628\u0642\u064a\u0629 (" + str(len(items)) + "):" + chr(10)
+                for i, item in enumerate(items, 1):
+                    msg += "  " + str(i) + ". " + item["product_name"] + " \u00d7 " + str(item["quantity"]) + chr(10)
+                msg += chr(10) + "\U0001f4b0 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a: " + _fmt_price(total) + " \u062f.\u062c" + chr(10)
+                msg += chr(10) + "\U0001f4dd \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c \u0627\u0644\u062a\u0627\u0644\u064a"
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f4cb \u0645\u0631\u0627\u062c\u0639\u0629 \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629", callback_data="invoice_review"),
+                     InlineKeyboardButton("\U0001f5d1 \u062d\u0630\u0641 \u0622\u062e\u0631 \u0639\u0646\u0635\u0631", callback_data="invoice_remove_last")],
+                ])
+            else:
+                msg += chr(10) + chr(10) + "\U0001f4dd \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c:"
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ])
+            try:
+                await query.edit_message_text(msg, reply_markup=keyboard)
+            except Exception:
+                await context.bot.send_message(chat_id=query.message.chat_id, text=msg, reply_markup=keyboard)
+        else:
+            try:
+                await query.edit_message_text("\u274c \u0644\u0627 \u062a\u0648\u062c\u062f \u0639\u0646\u0627\u0635\u0631 \u0644\u0644\u062d\u0630\u0641.")
+            except Exception:
+                pass
+
     elif data.startswith("inv_worker_"):
         parts = data.split("_")
         worker_id = int(parts[2])
@@ -3220,7 +3303,9 @@ async def handle_admin_message(update, context):
             await update.message.reply_text(
                 "\U0001f9fe \u0625\u0646\u0634\u0627\u0621 \u0641\u0627\u062a\u0648\u0631\u0629" + chr(10) + chr(10)
                 + "\U0001f464 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646 \u0623\u0648 \u0631\u0642\u0645 \u0647\u0627\u062a\u0641\u0647:",
-                reply_markup=get_input_keyboard())
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
             return
         if text == BTN_INCOMING or text.startswith(BTN_INCOMING):
             await _show_admin_incoming_orders(update, context)
@@ -3255,10 +3340,13 @@ async def handle_admin_message(update, context):
         context.user_data["invoice_customer"] = customer_name
         context.user_data["state"] = STATE_INVOICE_PRODUCT
         await update.message.reply_text(
-            "\U0001f4e6 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c:" + chr(10) + chr(10)
-            + "\U0001f50d \u0627\u0643\u062a\u0628 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0644\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646" + chr(10)
-            + "\U0001f4cb \u0623\u0648 \u0627\u0643\u062a\u0628 \u0627\u0644\u0633\u0644\u0639\u0629 \u0645\u0628\u0627\u0634\u0631\u0629 \u0625\u0630\u0627 \u0644\u0645 \u062a\u0643\u0646 \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646",
-            reply_markup=get_input_keyboard())
+            "\U0001f4e6 أرسل اسم المنتج:" + chr(10) + chr(10)
+            + "\U0001f50d اكتب اسم السلعة للبحث في المخزون" + chr(10)
+            + "\U0001f4cb أو اكتب السلعة مباشرة إذا لم تكن في المخزون",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_customer"),
+                 InlineKeyboardButton("\u274c إلغاء", callback_data="invoice_cancel")]
+            ]))
         return
 
     if state == STATE_INVOICE_PRODUCT:
@@ -3284,7 +3372,10 @@ async def handle_admin_message(update, context):
         await update.message.reply_text(
             "\U0001f4e6 " + (found["name"] if found else product_name) + chr(10) + chr(10)
             + "\U0001f522 \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629:",
-            reply_markup=get_input_keyboard())
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_product"),
+                 InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+            ]))
         return
 
     if state == STATE_INVOICE_QTY:
@@ -3293,7 +3384,7 @@ async def handle_admin_message(update, context):
             if qty <= 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0635\u062d\u064a\u062d (\u0639\u062f\u062f \u0635\u062d\u064a\u062d).", reply_markup=get_input_keyboard())
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0635\u062d\u064a\u062d (\u0639\u062f\u062f \u0635\u062d\u064a\u062d).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_product"), InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]]))
             return
         product_name = context.user_data.get("invoice_tmp_product", "")
         product_id = context.user_data.get("invoice_tmp_pid")
@@ -3308,8 +3399,8 @@ async def handle_admin_message(update, context):
                         if prod["quantity"] < qty:
                             await update.message.reply_text(
                                 "\u26a0\ufe0f \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629 (" + str(qty) + ") \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0641\u0631 (" + str(prod["quantity"]) + ")!" + chr(10)
-                                + "\u0623\u0639\u062f \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0623\u0648 \u0627\u0636\u063a\u0637 \u0625\u0644\u063a\u0627\u0621.",
-                                reply_markup=get_input_keyboard())
+                                + "\u0623\u0639\u062f \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0623\u0648 \u0627\u0636\u063a\u0637 \u062a\u0631\u0627\u062c\u0639.",
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_product"), InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]]))
                             return
                         context.user_data["invoice_tmp_price"] = float(prod["selling_price"]) if prod["selling_price"] else 0
             except Exception:
@@ -3322,9 +3413,12 @@ async def handle_admin_message(update, context):
         if tmp_price == 0:
             context.user_data["state"] = STATE_INVOICE_PRICE
             await update.message.reply_text(
-                "\U0001f4b0 \u0623\u0631\u0633\u0644 \u0633\u0639\u0631 \u0627\u0644\u0648\u062d\u062f\u0629 (" + chr(10)
-                + "\u0644\u0644\u0645\u0646\u062a\u062c: " + product_name,
-                reply_markup=get_input_keyboard())
+                "\U0001f4b0 \u0623\u0631\u0633\u0644 \u0633\u0639\u0631 \u0627\u0644\u0643\u0631\u062a\u0648\u0646 / \u0627\u0644\u0639\u0644\u0628\u0629:" + chr(10) + chr(10)
+                + "\U0001f4e6 \u0627\u0644\u0645\u0646\u062a\u062c: " + product_name,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_qty"),
+                     InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
             return
         # Price already known, add item directly
         await _invoice_add_item(update, context, product_id, product_name, qty, tmp_price)
@@ -3336,7 +3430,7 @@ async def handle_admin_message(update, context):
             if price < 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0633\u0639\u0631 \u0635\u062d\u064a\u062d.", reply_markup=get_input_keyboard())
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0633\u0639\u0631 \u0635\u062d\u064a\u062d \u0644\u0644\u0643\u0631\u062a\u0648\u0646/\u0627\u0644\u0639\u0644\u0628\u0629.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_qty"), InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]]))
             return
         product_id = context.user_data.get("invoice_tmp_pid")
         product_name = context.user_data.get("invoice_tmp_product", "")
@@ -4299,6 +4393,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_back_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_remove_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
