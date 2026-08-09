@@ -308,6 +308,18 @@ CREATE TABLE IF NOT EXISTS extraction_requests (
 CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);
 
+CREATE TABLE IF NOT EXISTS incoming_orders (
+    id             SERIAL PRIMARY KEY,
+    requester_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    product_name   VARCHAR(500) NOT NULL,
+    quantity       INTEGER NOT NULL DEFAULT 1,
+    status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_incoming_orders_status ON incoming_orders (status);
+
 CREATE TABLE IF NOT EXISTS bot_settings (
     key         VARCHAR(100) PRIMARY KEY,
     value       TEXT
@@ -472,6 +484,109 @@ def is_approved(telegram_id):
         return True
     user = get_user(telegram_id)
     return user is not None and user["role"] in ("admin", "customer")
+
+
+# ═══════════════════════════════════════════════════════════
+#  INCOMING ORDERS (طلبات التوريد)
+# ═══════════════════════════════════════════════════════════
+
+def create_incoming_order(requester_id, product_name, quantity):
+    """إنشاء طلب توريد جديد من صاحب المحل."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                INSERT INTO incoming_orders (requester_id, product_name, quantity)
+                VALUES (%s, %s, %s)
+                RETURNING id, requester_id, product_name, quantity, status, created_at
+                """, (requester_id, product_name, quantity))
+            order = cur.fetchone()
+        conn.commit()
+        return dict(order)
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def get_pending_incoming_orders():
+    """جلب كل طلبات التوريد المعلّقة."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                SELECT io.*, u.first_name, u.username, u.telegram_id
+                FROM incoming_orders io
+                LEFT JOIN users u ON u.id = io.requester_id
+                WHERE io.status = 'pending'
+                ORDER BY io.created_at ASC
+                """)
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def get_user_pending_orders(user_db_id):
+    """جلب طلبات التوريد المعلّقة لمستخدم محدد."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                SELECT * FROM incoming_orders
+                WHERE requester_id = %s AND status = 'pending'
+                ORDER BY created_at ASC
+                """, (user_db_id,))
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def complete_incoming_order(order_id):
+    """تحديث طلب توريد إلى 'مكتمل'."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                UPDATE incoming_orders
+                SET status = 'completed', completed_at = NOW()
+                WHERE id = %s AND status = 'pending'
+                RETURNING *
+                """, (order_id,))
+            order = cur.fetchone()
+        conn.commit()
+        return dict(order) if order else None
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def complete_all_pending_orders():
+    """تحديث كل طلبات التوريد المعلّقة إلى 'مكتمل'."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                UPDATE incoming_orders
+                SET status = 'completed', completed_at = NOW()
+                WHERE status = 'pending'
+                RETURNING *
+                """)
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
 
 
 def get_pending_users():
@@ -951,6 +1066,7 @@ BTN_BACKUP = "💾 نسخ احتياطي"
 BTN_ALERT = "🔔 تنبيه"
 BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
+BTN_INCOMING = "🚚 طلبات التوريد"
 
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
@@ -959,6 +1075,8 @@ BTN_CUST_REMOVE = "➖ إخراج"
 BTN_CUST_SEARCH = "🔍 بحث"
 BTN_CUST_MOVEMENTS = "📋 الحركة"
 BTN_CUST_CANCEL = "❌ إلغاء"
+BTN_CUST_ORDER = "📦 طلب توريد"
+BTN_CUST_MY_ORDERS = "📋 طلباتي"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1350,7 +1468,7 @@ def get_admin_keyboard():
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [BTN_USERS, BTN_BACKUP, BTN_ALERT],
-            [BTN_LOW_STOCK, BTN_MOVEMENTS],
+            [BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -1367,6 +1485,8 @@ def get_input_keyboard():
 def get_customer_keyboard():
     return ReplyKeyboardMarkup(
         [
+            [BTN_CUST_ORDER],
+            [BTN_CUST_MY_ORDERS],
             [BTN_CUST_ALERT],
             [BTN_CUST_ADD, BTN_CUST_REMOVE],
             [BTN_CUST_SEARCH],
@@ -2060,6 +2180,66 @@ async def callback_approval_handler(update, context):
             await query.edit_message_text("⚠️ المستخدم غير موجود.")
 
 
+async def callback_promote_handler(update, context):
+    """ترقية مستخدم إلى مدير أو إزالة صلاحية الإدارة."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "promote_123456" or "demote_123456"
+    parts = data.split("_", 1)
+    if len(parts) != 2:
+        return
+    action, tid_str = parts[0], parts[1]
+    if not tid_str.isdigit():
+        return
+    target_id = int(tid_str)
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if action == "promote":
+                cur.execute("UPDATE users SET role = 'admin' WHERE telegram_id = %s AND role = 'customer' RETURNING *", (target_id,))
+                user = cur.fetchone()
+            elif action == "demote":
+                cur.execute("UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'admin' AND telegram_id NOT IN %s RETURNING *",
+                    (target_id, tuple(ADMIN_IDS)))
+                user = cur.fetchone()
+            else:
+                return
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        user = None
+    finally:
+        release_connection(conn)
+
+    if user:
+        user = dict(user)
+        name = user.get("first_name") or user.get("username") or str(user["telegram_id"])
+        if action == "promote":
+            await query.edit_message_text("👑 تم ترقية <b>" + name + "</b> إلى مدير!", parse_mode=ParseMode.HTML)
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text="👑 تم ترقيتك إلى مدير!\nالآن يمكنك إدارة المخزون.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        else:
+            await query.edit_message_text("👤 تم إزالة صلاحية الإدارة من <b>" + name + "</b>.", parse_mode=ParseMode.HTML)
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text="👤 تم إزالة صلاحية الإدارة من حسابك.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        logging.info("[USERS] " + action + " user " + str(target_id))
+    else:
+        await query.edit_message_text("⚠️ لم يتم تطبيق التغيير.")
+
+
 # ── Backup Command ─────────────────────────────────────
 
 async def backup_command(update, context):
@@ -2302,11 +2482,36 @@ async def users_command(update, context):
         approved = []
     finally:
         release_connection(conn)
+
+    # أزرار الموافقة/الرفض للمعلّقين
+    buttons = []
+    if pending:
+        for u in pending:
+            name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
+            date_str = u["created_at"].strftime("%m/%d %H:%M") if u.get("created_at") else ""
+            buttons.append([
+                InlineKeyboardButton("✅ " + name + " (" + date_str + ")", callback_data="approve_" + str(u["telegram_id"])),
+                InlineKeyboardButton("❌", callback_data="reject_" + str(u["telegram_id"])),
+            ])
+
+    # أزرار الترقية/الإزالة للمفعلين
+    promote_buttons = []
+    for u in approved:
+        name = (u.get("first_name") or u.get("username") or str(u["telegram_id"]))[:18]
+        if u["role"] == "customer":
+            promote_buttons.append([InlineKeyboardButton(
+                "👑 ترقية: " + name, callback_data="promote_" + str(u["telegram_id"])
+            )])
+        elif u["role"] == "admin" and u["telegram_id"] not in ADMIN_IDS:
+            promote_buttons.append([InlineKeyboardButton(
+                "👤 إزالة إدارة: " + name, callback_data="demote_" + str(u["telegram_id"])
+            )])
+
     msg_lines = ["⚙️ إدارة المستخدمين\n"]
     if pending:
         msg_lines.append("🔔 منتظرين الموافقة (" + str(len(pending)) + "):")
         for u in pending:
-            name = u.get("username") or str(u["telegram_id"])
+            name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
             date_str = u["created_at"].strftime("%m/%d %H:%M")
             msg_lines.append("  • " + name + " (" + date_str + ")")
         msg_lines.append("")
@@ -2316,9 +2521,15 @@ async def users_command(update, context):
     msg_lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
     for u in approved:
         role_icon = "👑" if u["role"] == "admin" else "👤"
-        name = u.get("username") or str(u["telegram_id"])
+        name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
         msg_lines.append("  " + role_icon + " " + name)
-    await update.message.reply_text("\n".join(msg_lines), reply_markup=get_admin_keyboard())
+
+    # أزرار الترقية أسفل الرسالة
+    if promote_buttons:
+        buttons.extend(promote_buttons)
+
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_text("\n".join(msg_lines), reply_markup=markup)
 
 async def handle_admin_message(update, context):
 
@@ -2334,7 +2545,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING]
     if text in admin_buttons:
         context.user_data.clear()
         state = None
@@ -2435,6 +2646,9 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=True)
+            return
+        if text == BTN_INCOMING:
+            await _show_admin_incoming_orders(update, context)
             return
 
         if text == BTN_USERS:
@@ -2641,7 +2855,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -2652,6 +2866,15 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_ALERT:
             await send_low_stock_list(update, context)
+            return
+
+        if text == BTN_CUST_ORDER:
+            context.user_data["state"] = "waiting_order_name"
+            await update.message.reply_text("📦 طلب توريد جديد\n\nاكتب اسم السلعة المطلوبة:", reply_markup=get_input_keyboard())
+            return
+
+        if text == BTN_CUST_MY_ORDERS:
+            await _show_customer_orders(update, context)
             return
 
         if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
@@ -2670,6 +2893,71 @@ async def handle_customer_message(update, context):
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
             return
         await process_search(update, context, text, admin_view=False)
+        context.user_data.clear()
+        return
+
+    # State: waiting_order_name - المستخدم كتب اسم السلعة المطلوبة
+    if state == "waiting_order_name":
+        if text == BTN_CUST_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم إلغاء الطلب.", reply_markup=get_customer_keyboard())
+            return
+        context.user_data["order_product"] = text
+        context.user_data["state"] = "waiting_order_qty"
+        await update.message.reply_text("📦 '" + text + "'\n\nكم الكمية المطلوبة؟", reply_markup=get_input_keyboard())
+        return
+
+    # State: waiting_order_qty - المستخدم كتب الكمية
+    if state == "waiting_order_qty":
+        if text == BTN_CUST_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم إلغاء الطلب.", reply_markup=get_customer_keyboard())
+            return
+        try:
+            qty = int(text.strip())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ أدخل رقم صحيح أكبر من 0:")
+            return
+        product_name = context.user_data.get("order_product", "")
+        db_user = get_user(user.id)
+        if not db_user:
+            await update.message.reply_text("❌ حدث خطأ في بيانات المستخدم.", reply_markup=get_customer_keyboard())
+            context.user_data.clear()
+            return
+        try:
+            order = create_incoming_order(db_user["id"], product_name, qty)
+            order_id = order["id"]
+            await update.message.reply_text(
+                "✅ تم تسجيل طلب التوريد بنجاح!\n\n"
+                "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
+                "📦 السلعة: <b>" + product_name + "</b>\n"
+                "🔢 الكمية: <b>" + str(qty) + "</b>\n"
+                "⏳ الحالة: <b>قيد التوريد</b>\n\n"
+                "سيتم إشعارك تلقائياً عند التوريد.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_customer_keyboard(),
+            )
+            # إشعار المديرين
+            req_name = user.first_name or user.username or str(user.id)
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text="🚚 طلب توريد جديد!\n\n"
+                             "👤 من: <b>" + req_name + "</b>\n"
+                             "📦 السلعة: <b>" + product_name + "</b>\n"
+                             "🔢 الكمية: <b>" + str(qty) + "</b>\n"
+                             "📋 رقم الطلب: <b>#" + str(order_id) + "</b>",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            logging.info("[INCOMING] Order #" + str(order_id) + " created by user " + str(user.id))
+        except Exception as e:
+            logging.error("[INCOMING] Failed to create order: " + str(e))
+            await update.message.reply_text("❌ حدث خطأ أثناء تسجيل الطلب.", reply_markup=get_customer_keyboard())
         context.user_data.clear()
         return
 
@@ -3022,6 +3310,148 @@ async def callback_admin_done_handler(update, context):
     await context.bot.send_message(chat_id=query.message.chat_id, text="✅ القائمة الرئيسية:", reply_markup=get_admin_keyboard())
 
 
+# ═══════════════════════════════════════════════════════════
+#  INCOMING ORDERS DISPLAY & CALLBACKS
+# ═══════════════════════════════════════════════════════════
+
+async def _show_admin_incoming_orders(update, context):
+    """عرض طلبات التوريد المعلّقة للمدير مع أزرار التأكيد."""
+    orders = get_pending_incoming_orders()
+    if not orders:
+        await update.message.reply_text("📭 لا توجد طلبات توريد معلّقة حالياً.", reply_markup=get_admin_keyboard())
+        return
+
+    lines = ["🚚 طلبات التوريد المعلّقة (" + str(len(orders)) + ")\n"]
+    buttons = []
+    for o in orders:
+        req_name = o.get("first_name") or o.get("username") or "مستخدم"
+        lines.append(
+            "📋 #" + str(o["id"]) + "  |  👤 " + req_name +
+            "  |  📦 " + o["product_name"] +
+            "  |  🔢 " + str(o["quantity"])
+        )
+        buttons.append([InlineKeyboardButton(
+            "✅ #" + str(o["id"]) + " " + o["product_name"][:20],
+            callback_data="io_complete_" + str(o["id"])
+        )])
+
+    # زر "توريد الكل" إذا فيه أكثر من طلب
+    if len(orders) > 1:
+        buttons.append([InlineKeyboardButton("✅ توريد الكل", callback_data="io_complete_all")])
+
+    text = "\n".join(lines)
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def _show_customer_orders(update, context):
+    """عرض طلبات التوريد المعلّقة للمستخدم."""
+    user = update.effective_user
+    db_user = get_user(user.id)
+    if not db_user:
+        await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+        return
+    orders = get_user_pending_orders(db_user["id"])
+    if not orders:
+        await update.message.reply_text("📭 لا توجد طلبات توريد معلّقة.", reply_markup=get_customer_keyboard())
+        return
+
+    lines = ["📋 طلباتك المعلّقة (" + str(len(orders)) + ")\n"]
+    for o in orders:
+        created = o["created_at"].strftime("%H:%M %d/%m") if o.get("created_at") else ""
+        lines.append(
+            "📋 #" + str(o["id"]) +
+            "  |  📦 " + o["product_name"] +
+            "  |  🔢 " + str(o["quantity"]) +
+            "  |  ⏰ " + created
+        )
+    lines.append("\n⏳ سيتم إشعارك تلقائياً عند التوريد.")
+    await update.message.reply_text("\n".join(lines), reply_markup=get_customer_keyboard())
+
+
+async def callback_incoming_order_handler(update, context):
+    """معالجة أزرار المدير: تأكيد توريد طلب واحد أو كل الطلبات."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    bot = context.bot
+
+    if data == "io_complete_all":
+        # توريد كل الطلبات المعلّقة
+        completed = complete_all_pending_orders()
+        if completed:
+            # إشعار كل صاحب طلب
+            notified = 0
+            for o in completed:
+                tg_id = o.get("telegram_id")
+                if tg_id:
+                    try:
+                        await bot.send_message(
+                            chat_id=tg_id,
+                            text="✅ تم توريد طلبك!\n\n"
+                                 "📦 السلعة: <b>" + o["product_name"] + "</b>\n"
+                                 "🔢 الكمية: <b>" + str(o["quantity"]) + "</b>\n"
+                                 "📋 رقم الطلب: <b>#" + str(o["id"]) + "</b>\n\n"
+                                 "شكراً لصبرك! 🙏",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        notified += 1
+                    except Exception:
+                        pass
+            count = len(completed)
+            await query.edit_message_text(
+                "✅ تم تأكيد توريد <b>" + str(count) + "</b> طلب بنجاح!" +
+                ("\n📱 تم إشعار " + str(notified) + " مستخدم." if notified else ""),
+                parse_mode=ParseMode.HTML,
+            )
+            logging.info("[INCOMING] Completed " + str(count) + " orders, notified " + str(notified))
+        else:
+            await query.edit_message_text("📭 لا توجد طلبات معلّقة.")
+        return
+
+    if data.startswith("io_complete_"):
+        order_id = int(data.split("_")[-1])
+        order = complete_incoming_order(order_id)
+        if order:
+            # إشعار صاحب الطلب
+            tg_id = None
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT telegram_id FROM users WHERE id = %s", (order["requester_id"],))
+                    row = cur.fetchone()
+                    if row:
+                        tg_id = row[0]
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                release_connection(conn)
+
+            if tg_id:
+                try:
+                    await bot.send_message(
+                        chat_id=tg_id,
+                        text="✅ تم توريد طلبك!\n\n"
+                             "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
+                             "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>\n"
+                             "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
+                             "شكراً لصبرك! 🙏",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+
+            await query.edit_message_text(
+                "✅ تم تأكيد توريد الطلب #" + str(order_id) +
+                "\n📦 " + order["product_name"] +
+                "\n🔢 الكمية: " + str(order["quantity"])
+            )
+            logging.info("[INCOMING] Completed order #" + str(order_id))
+        else:
+            await query.edit_message_text("❌ الطلب غير موجود أو تم تأكيده مسبقاً.")
+        return
+
+
 def build_application():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -3043,6 +3473,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(callback_promote_handler, pattern="^promote_"))
+    app.add_handler(CallbackQueryHandler(callback_promote_handler, pattern="^demote_"))
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
@@ -3059,6 +3491,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_extract_request_handler, pattern="^req_ext_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
+    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_complete_"))
+    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_complete_all$"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
