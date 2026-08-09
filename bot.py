@@ -350,7 +350,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE TABLE IF NOT EXISTS invoice_items (
     id              SERIAL PRIMARY KEY,
     invoice_id      INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
-    product_id      INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_id      INTEGER REFERENCES products(id) ON DELETE CASCADE,
     product_name    VARCHAR(500) NOT NULL,
     quantity        INTEGER NOT NULL,
     unit_price      NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -432,6 +432,11 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             -- Migration: add selling_price to products
             DO $$ BEGIN
                 ALTER TABLE products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(12,2) NOT NULL DEFAULT 0;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: allow invoice_items.product_id to be NULL (for manual products)
+            DO $$ BEGIN
+                ALTER TABLE invoice_items ALTER COLUMN product_id DROP NOT NULL;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             -- Seed: add invoice update notification
