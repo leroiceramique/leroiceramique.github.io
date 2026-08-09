@@ -2901,18 +2901,18 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
 
         elements = []
         elements.append(Paragraph("Produit Le Roi", title_style))
-        elements.append(Paragraph("فاتورة بيع", subtitle_style))
+        elements.append(Paragraph("Facture de Vente", subtitle_style))
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
         date_str = now.strftime("%Y/%m/%d %H:%M")
 
         info_data = [
-            [Paragraph("رقم الفاتورة", body_style), Paragraph("#" + str(invoice_id), body_style)],
-            [Paragraph("التاريخ", body_style), Paragraph(date_str, body_style)],
-            [Paragraph("الزبون", body_style), Paragraph(customer_name, body_style)],
+            [Paragraph("N° Facture", body_style), Paragraph("#" + str(invoice_id), body_style)],
+            [Paragraph("Date", body_style), Paragraph(date_str, body_style)],
+            [Paragraph("Client", body_style), Paragraph(customer_name, body_style)],
         ]
         if worker_name:
-            info_data.append([Paragraph("العامل", body_style), Paragraph(worker_name, body_style)])
+            info_data.append([Paragraph("Livreur", body_style), Paragraph(worker_name, body_style)])
 
         info_table = Table(info_data, colWidths=[60*mm, 80*mm])
         info_table.setStyle(TableStyle([
@@ -2927,10 +2927,10 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
 
         # Items table
         header = [
-            Paragraph("المنتج", body_style),
-            Paragraph("الكمية", body_style),
-            Paragraph("سعر الكرتون/العلبة", body_style),
-            Paragraph("المجموع", body_style),
+            Paragraph("Produit", body_style),
+            Paragraph("Quantité", body_style),
+            Paragraph("Prix Carton/Boîte", body_style),
+            Paragraph("Total", body_style),
         ]
         table_data = [header]
         for item in items:
@@ -2942,7 +2942,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
             ])
 
         table_data.append([
-            Paragraph("الإجمالي", body_style), "", "",
+            Paragraph("TOTAL", body_style), "", "",
             Paragraph("{:,.2f}".format(total), body_style),
         ])
 
@@ -2961,7 +2961,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         ]))
         elements.append(items_table)
         elements.append(Spacer(1, 10*mm))
-        elements.append(Paragraph("شكراً لتعاملكم معنا ❤️", small_style))
+        elements.append(Paragraph("Merci pour votre confiance !", small_style))
 
         doc.build(elements)
         return pdf_path
