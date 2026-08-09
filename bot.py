@@ -1064,6 +1064,7 @@ BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
 BTN_USERS = "⚙️ المستخدمين"
 BTN_BACKUP = "💾 نسخ احتياطي"
 BTN_ALERT = "🔔 تنبيه"
+BTN_UPDATE = "📢 إشعار تحديث"
 BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 BTN_INCOMING = "🚚 طلبات التوريد"
@@ -1104,6 +1105,54 @@ def format_product_customer(product):
         return "\U0001f4e6 " + product["name"] + "\n\U0001f7e1 \u0643\u0645\u064a\u0629 \u0645\u062d\u062f\u0648\u062f\u0629"
     else:
         return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
+
+
+async def _broadcast_update_notification(update, context):
+    """إرسال إشعار تحديث لكل المستخدمين مع زر /start."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        rows = []
+    finally:
+        release_connection(conn)
+
+    if not rows:
+        await update.message.reply_text("📭 لا يوجد مستخدمين مفعلين.", reply_markup=get_admin_keyboard())
+        return
+
+    text = (
+        "🆕 <b>تم تحديث البوت!</b>\n\n"
+        "تم إضافة ميزات جديدة.\n"
+        "اضغط /start للاستفادة من التحديثات.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 اضغط هنا للتحديث", callback_data="go_start")]
+    ])
+    sent = 0
+    for row in rows:
+        uid = row[0]
+        try:
+            await context.bot.send_message(
+                chat_id=uid, text=text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )
+            sent += 1
+        except Exception:
+            pass
+    await update.message.reply_text(
+        "✅ تم إرسال إشعار التحديث إلى <b>" + str(sent) + "</b> مستخدم.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_admin_keyboard(),
+    )
+    logging.info("[UPDATE] Broadcast sent to " + str(sent) + " users")
 
 
 async def _broadcast_to_all_users(bot, text):
@@ -1490,7 +1539,7 @@ def get_admin_keyboard():
             [BTN_EDIT, BTN_DELETE],
             [users_btn, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
-            [BTN_CANCEL],
+            [BTN_UPDATE, BTN_CANCEL],
         ],
         resize_keyboard=True,
     )
@@ -2566,7 +2615,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
@@ -2663,6 +2712,9 @@ async def handle_admin_message(update, context):
             alert_prompt = ("\U0001f514 أرسل نص التنبيه:" + chr(10) + chr(10)
                 + "سيتم إرساله لجميع المستخدمين.")
             await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
+            return
+        if text == BTN_UPDATE:
+            await _broadcast_update_notification(update, context)
             return
         if text == BTN_LOW_STOCK:
             await send_low_stock_list(update, context)
@@ -3325,12 +3377,61 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 async def callback_admin_done_handler(update, context):
     query = update.callback_query
     await query.answer()
-    context.user_data.clear()
     try:
-        await query.edit_message_text("✅ تم.")
+        await query.delete_message()
     except Exception:
         pass
     await context.bot.send_message(chat_id=query.message.chat_id, text="✅ القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+
+
+async def callback_go_start_handler(update, context):
+    """ينفّذ /start عند ضغط المستخدم على زر التحديث."""
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    sync_user_info(user)
+
+    db_user = get_user(user.id)
+    name = user.first_name or ""
+
+    if is_admin(user.id):
+        try:
+            await query.edit_message_text(
+                "\U0001f44b مرحباً <b>" + name + "</b>\n\n"
+                "\U0001f3e2 أنت مدير النظام.\n"
+                "\U0001f4cb استخدم الأزرار أدناه لإدارة المخزون.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_admin_keyboard(),
+            )
+        except Exception:
+            await query.message.reply_text("🔄 اضغط /start", reply_markup=get_admin_keyboard())
+    elif db_user and db_user.get("role") == "pending":
+        try:
+            await query.edit_message_text(
+                "👋 مرحباً <b>" + name + "</b>\n\n"
+                "⏳ حسابك قيد المراجعة.\n"
+                "يجب الانتظار حتى يفعلك المدير.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await query.edit_message_text(
+                "👋 مرحباً <b>" + name + "</b>\n\n"
+                "⌛ بحث عن المنتجات المتاحة\n"
+                "📁 استخدم الأزرار أدناه.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_customer_keyboard(),
+            )
+        except Exception:
+            await query.message.reply_text("🔄 اضغط /start", reply_markup=get_customer_keyboard())
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3516,6 +3617,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_complete_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_complete_all$"))
+    app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
