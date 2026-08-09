@@ -335,6 +335,30 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     key         VARCHAR(100) PRIMARY KEY,
     value       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS invoices (
+    id              SERIAL PRIMARY KEY,
+    customer_name   VARCHAR(500) NOT NULL,
+    worker_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    admin_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    total_amount    NUMERIC(12,2) NOT NULL DEFAULT 0,
+    status          VARCHAR(15) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','cancelled')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    approved_at     TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS invoice_items (
+    id              SERIAL PRIMARY KEY,
+    invoice_id      INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    product_id      INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_name    VARCHAR(500) NOT NULL,
+    quantity        INTEGER NOT NULL,
+    unit_price      NUMERIC(12,2) NOT NULL DEFAULT 0,
+    subtotal        NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
 """
 
 
@@ -405,6 +429,15 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 key         VARCHAR(100) PRIMARY KEY,
                 value       TEXT
             );
+            -- Migration: add selling_price to products
+            DO $$ BEGIN
+                ALTER TABLE products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(12,2) NOT NULL DEFAULT 0;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Seed: add invoice update notification
+            INSERT INTO bot_updates (description) VALUES
+            ('✅ تم إضافة نظام الفواتير' || chr(10) || chr(10) || '🧾 زر جديد: إنشاء فاتورة' || chr(10) || '💰 يمكن للمدير إنشاء فاتورة بعد البعد' || chr(10) || '📎 توليد PDF احترافي تلقائياً' || chr(10) || '📨 إشعار تلقائي للعامل المختار')
+            ON CONFLICT DO NOTHING;
             """)
         conn.commit()
         print("[DB] Schema initialized successfully.")
@@ -1112,6 +1145,11 @@ STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
 STATE_ADD_NAME_PLANTE = "waiting_add_name_plante"
 STATE_ALERT_MSG = "waiting_alert_msg"
+STATE_INVOICE_CUSTOMER = "waiting_invoice_customer"
+STATE_INVOICE_PRODUCT = "waiting_invoice_product"
+STATE_INVOICE_QTY = "waiting_invoice_qty"
+STATE_INVOICE_PRICE = "waiting_invoice_price"
+STATE_INVOICE_REVIEW = "waiting_invoice_review"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1127,6 +1165,7 @@ BTN_UPDATE = "📢 إشعار تحديث"
 BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 BTN_INCOMING = "🚚 طلبات التوريد"
+BTN_INVOICE = "🧾 إنشاء فاتورة"
 
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
@@ -1534,7 +1573,7 @@ def get_admin_keyboard():
             [BTN_EDIT, BTN_DELETE],
             [users_btn, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
-            [BTN_UPDATE, BTN_CANCEL],
+            [BTN_INVOICE, BTN_UPDATE, BTN_CANCEL],
         ],
         resize_keyboard=True,
     )
@@ -2687,12 +2726,379 @@ async def users_command(update, context):
     markup = InlineKeyboardMarkup(buttons) if buttons else None
     await update.message.reply_text("\n".join(msg_lines), reply_markup=markup)
 
-async def handle_admin_message(update, context):
+
+# ═══════════════════════════════════════════════════════════
+#  INVOICE SYSTEM FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
+async def _invoice_add_item(update, context, product_id, product_name, qty, price):
+    """Add item to invoice draft and ask for next product or review."""
+    items = context.user_data.get("invoice_items", [])
+    items.append({
+        "product_id": product_id,
+        "product_name": product_name,
+        "quantity": qty,
+        "unit_price": price,
+        "subtotal": qty * price,
+    })
+    context.user_data["invoice_items"] = items
+    # Show current items
+    total = sum(i["subtotal"] for i in items)
+    msg = "📦 تم إضافة:" + chr(10)
+    msg += "  ✔️ " + product_name + " × " + str(qty) + " = " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
+    msg += "📋 العناصر الحالية (" + str(len(items)) + "):" + chr(10)
+    for i, item in enumerate(items, 1):
+        msg += "  " + str(i) + ". " + item["product_name"] + " × " + str(item["quantity"]) + " = " + _fmt_price(item["subtotal"]) + chr(10)
+    msg += chr(10) + "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
+    msg += "📝 أرسل اسم المنتج التالي" + chr(10)
+    msg += "أو اضغط 📋 مراجعة الفاتورة"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 مراجعة الفاتورة", callback_data="invoice_review")],
+    ])
+    context.user_data["state"] = STATE_INVOICE_PRODUCT
+    await update.message.reply_text(msg, reply_markup=keyboard)
+
+
+def _fmt_price(val):
+    """Format price with Algerian convention (comma as decimal separator)."""
+    return "{:,.2f}".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+async def _invoice_show_review(update_or_query, context, from_callback=False):
+    """Show invoice draft for approval."""
+    items = context.user_data.get("invoice_items", [])
+    customer = context.user_data.get("invoice_customer", "")
+    if not items:
+        if from_callback:
+            await update_or_query.edit_message_text("❌ لا توجد عناصر في الفاتورة.")
+        else:
+            await update_or_query.message.reply_text("❌ لا توجد عناصر.")
+        return
+    total = sum(i["subtotal"] for i in items)
+    now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y/%m/%d %H:%M")
+    msg = "🧾 مسودة فاتورة" + chr(10) + chr(10)
+    msg += "👤 الزبون: " + customer + chr(10)
+    msg += "📅 التاريخ: " + now_str + chr(10)
+    msg += "━" * 20 + chr(10)
+    for i, item in enumerate(items, 1):
+        msg += str(i) + ". " + item["product_name"] + chr(10)
+        msg += "   " + str(item["quantity"]) + " × " + _fmt_price(item["unit_price"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+    msg += "━" * 20 + chr(10)
+    msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ اعتماد الفاتورة والخصم", callback_data="invoice_approve"),
+            InlineKeyboardButton("❌ إلغاء وتعديل", callback_data="invoice_cancel"),
+        ],
+    ])
+    if from_callback:
+        await update_or_query.edit_message_text(msg, reply_markup=keyboard)
+    else:
+        await update_or_query.message.reply_text(msg, reply_markup=keyboard)
+
+
+async def _invoice_show_workers(update_or_query, context, from_callback=False):
+    """Show worker selection list after invoice approval."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, telegram_id, username, first_name FROM users "
+                "WHERE role IN ('admin', 'customer') AND active = TRUE "
+                "ORDER BY first_name"
+            )
+            workers = cur.fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        workers = []
+    finally:
+        release_connection(conn)
+
+    if not workers:
+        msg = "❌ لا يوجد عمال مسجلين في النظام."
+        if from_callback:
+            await update_or_query.edit_message_text(msg)
+        else:
+            await update_or_query.message.reply_text(msg)
+        return
+
+    msg = "👷 اختر العامل المسؤول عن تجهيز الطلبية:" + chr(10) + chr(10)
+    buttons = []
+    for w in workers:
+        name = w["first_name"] or w["username"] or str(w["telegram_id"])
+        msg += "  👤 " + name + chr(10)
+        buttons.append([InlineKeyboardButton("👤 " + name, callback_data="inv_worker_" + str(w["id"]) + "_" + str(w["telegram_id"]))])
+
+    if from_callback:
+        await update_or_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await update_or_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=None):
+    """Generate a professional PDF invoice file. Returns file path."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm, cm
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import tempfile
+        import os
+
+        # Register fonts
+        font_path = "/usr/share/fonts/truetype/chinese/NotoSansSC-Regular.ttf"
+        pdfmetrics.registerFont(TTFont("NotoSans", font_path))
+
+        # Create temp file
+        fd, pdf_path = tempfile.mkstemp(suffix=".pdf", prefix="invoice_")
+        os.close(fd)
+
+        doc = SimpleDocTemplate(
+            pdf_path, pagesize=A4,
+            rightMargin=15*mm, leftMargin=15*mm,
+            topMargin=15*mm, bottomMargin=15*mm,
+        )
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle("ArabicTitle", parent=styles["Title"], fontName="NotoSans", fontSize=22, alignment=1, spaceAfter=5*mm)
+        subtitle_style = ParagraphStyle("ArabicSubtitle", parent=styles["Normal"], fontName="NotoSans", fontSize=11, alignment=1, spaceAfter=3*mm)
+        body_style = ParagraphStyle("ArabicBody", parent=styles["Normal"], fontName="NotoSans", fontSize=10, leading=14)
+        small_style = ParagraphStyle("ArabicSmall", parent=styles["Normal"], fontName="NotoSans", fontSize=8, alignment=1)
+
+        elements = []
+        elements.append(Paragraph("Produit Le Roi", title_style))
+        elements.append(Paragraph("فاتورة بيع", subtitle_style))
+
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
+        date_str = now.strftime("%Y/%m/%d %H:%M")
+
+        info_data = [
+            [Paragraph("رقم الفاتورة", body_style), Paragraph("#" + str(invoice_id), body_style)],
+            [Paragraph("التاريخ", body_style), Paragraph(date_str, body_style)],
+            [Paragraph("الزبون", body_style), Paragraph(customer_name, body_style)],
+        ]
+        if worker_name:
+            info_data.append([Paragraph("العامل", body_style), Paragraph(worker_name, body_style)])
+
+        info_table = Table(info_data, colWidths=[60*mm, 80*mm])
+        info_table.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3*mm),
+            ("TOPPADDING", (0, 0), (-1, -1), 3*mm),
+            ("LINEBELOW", (0, -1), (-1, -1), 1, colors.grey),
+        ]))
+        elements.append(info_table)
+        elements.append(Spacer(1, 5*mm))
+
+        # Items table
+        header = [
+            Paragraph("المنتج", body_style),
+            Paragraph("الكمية", body_style),
+            Paragraph("سعر الوحدة", body_style),
+            Paragraph("المجموع", body_style),
+        ]
+        table_data = [header]
+        for item in items:
+            table_data.append([
+                Paragraph(item["product_name"], body_style),
+                Paragraph(str(item["quantity"]), body_style),
+                Paragraph("{:,.2f}".format(item["unit_price"]), body_style),
+                Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
+            ])
+
+        table_data.append([
+            Paragraph("الإجمالي", body_style), "", "",
+            Paragraph("{:,.2f}".format(total), body_style),
+        ])
+
+        items_table = Table(table_data, colWidths=[65*mm, 25*mm, 30*mm, 30*mm])
+        items_table.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.3, 0.5)),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3*mm),
+            ("TOPPADDING", (0, 0), (-1, -1), 3*mm),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("LINEBELOW", (0, -1), (-1, -1), 2, colors.Color(0.2, 0.3, 0.5)),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.Color(0.9, 0.9, 0.9)),
+        ]))
+        elements.append(items_table)
+        elements.append(Spacer(1, 10*mm))
+        elements.append(Paragraph("شكراً لتعاملكم معنا ❤️", small_style))
+
+        doc.build(elements)
+        return pdf_path
+    except Exception as e:
+        logging.error("[INVOICE] PDF generation failed: " + str(e))
+        return None
+
+
+async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name):
+    """Finalize invoice: save to DB, deduct stock, generate PDF, notify worker."""
+    items = context.user_data.get("invoice_items", [])
+    customer = context.user_data.get("invoice_customer", "")
+    admin = update.effective_user
+    total = sum(i["subtotal"] for i in items)
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Create invoice record
+            cur.execute(
+                "INSERT INTO invoices (customer_name, worker_id, admin_id, total_amount, status, approved_at) "
+                "VALUES (%s, %s, %s, %s, 'approved', NOW()) RETURNING id",
+                (customer, worker_id, admin.id, total)
+            )
+            invoice = cur.fetchone()
+            invoice_id = invoice["id"]
+
+            # Create invoice items + deduct stock + log transactions
+            admin_user = get_user(admin.id)
+            admin_db_id = admin_user["id"] if admin_user else None
+            for item in items:
+                cur.execute(
+                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (invoice_id, item["product_id"], item["product_name"], item["quantity"], item["unit_price"], item["subtotal"])
+                )
+                # Deduct from stock if product exists in DB
+                if item["product_id"]:
+                    cur.execute(
+                        "UPDATE products SET quantity = quantity - %s WHERE id = %s AND quantity >= %s",
+                        (item["quantity"], item["product_id"], item["quantity"])
+                    )
+                    # Log transaction
+                    cur.execute(
+                        "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
+                        (item["product_id"], item["quantity"], admin_db_id)
+                    )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[INVOICE] DB save failed: " + str(e))
+        await update.message.reply_text("❌ حدث خطأ في حفظ الفاتورة: " + str(e), reply_markup=get_admin_keyboard())
+        return
+
+    # Generate PDF
+    pdf_path = _generate_invoice_pdf(invoice_id, customer, items, total, worker_name)
+
+    # Send PDF to admin
+    if pdf_path:
+        try:
+            import os
+            with open(pdf_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename="invoice_" + str(invoice_id) + ".pdf",
+                    caption="🧾 فاتورة #" + str(invoice_id) + " - " + customer + chr(10)
+                    + "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10)
+                    + "👷 العامل: " + worker_name
+                )
+            os.remove(pdf_path)
+        except Exception as e:
+            logging.error("[INVOICE] PDF send failed: " + str(e))
+
+    # Notify worker
+    try:
+        worker_msg = "🧾 فاتورة جديدة للتجهيز!" + chr(10) + chr(10)
+        worker_msg += "👤 الزبون: " + customer + chr(10)
+        worker_msg += "📅 " + now.strftime("%Y/%m/%d %H:%M") + chr(10)
+        worker_msg += "━" * 15 + chr(10)
+        for i, item in enumerate(items, 1):
+            worker_msg += str(i) + ". " + item["product_name"] + " × " + str(item["quantity"]) + chr(10)
+        worker_msg += "━" * 15 + chr(10)
+        worker_msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
+        worker_msg += "⚙️ يرجى تجهيز البضاعة فوراً"
+        await context.bot.send_message(chat_id=worker_tid, text=worker_msg)
+    except Exception as e:
+        logging.error("[INVOICE] Worker notification failed: " + str(e))
+
+    # Clear state and return to admin panel
+    context.user_data.clear()
+    await update.message.reply_text(
+        "✅ تم إنشاء الفاتورة بنجاح!" + chr(10) + chr(10)
+        + "🧾 #" + str(invoice_id) + chr(10)
+        + "👤 " + customer + chr(10)
+        + "💰 " + _fmt_price(total) + " د.ج" + chr(10)
+        + "👷 " + worker_name + chr(10) + chr(10)
+        + "📎 تم إرسال الفاتورة PDF" + chr(10)
+        + "📨 تم إشعار العامل" + chr(10)
+        + "✅ تم الخصم من المخزون",
+        reply_markup=get_admin_keyboard()
+    )
+
+
+async def callback_invoice_handler(update, context):
+    """Handle invoice-related callback queries."""
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        return
+    data = query.data
+
+    if data == "invoice_review":
+        await _invoice_show_review(query, context, from_callback=True)
+
+    elif data == "invoice_approve":
+        await _invoice_show_workers(query, context, from_callback=True)
+
+    elif data == "invoice_cancel":
+        context.user_data.clear()
+        try:
+            await query.edit_message_text(
+                "❌ تم إلغاء الفاتورة.",
+                reply_markup=None
+            )
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="📦 القائمة الرئيسية:",
+            reply_markup=get_admin_keyboard()
+        )
+
+    elif data.startswith("inv_worker_"):
+        parts = data.split("_")
+        worker_id = int(parts[2])
+        worker_tid = int(parts[3])
+        # Get worker name
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT first_name, username FROM users WHERE id = %s", (worker_id,))
+                w = cur.fetchone()
+                worker_name = (w["first_name"] or w["username"] or str(worker_tid)) if w else str(worker_tid)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            worker_name = str(worker_tid)
+        finally:
+            release_connection(conn)
+        # Show processing message
+        try:
+            await query.edit_message_text("⏳ جاري معالجة الفاتورة...")
+        except Exception:
+            pass
+        # Finalize
+        await _invoice_finalize(query, context, worker_id, worker_tid, worker_name)
 
 
 # ═══════════════════════════════════════════════════════════
 #  MESSAGE ROUTER
 # ═══════════════════════════════════════════════════════════
+
+async def handle_admin_message(update, context):
 
     state = context.user_data.get("state")
     text = update.message.text.strip()
@@ -2701,7 +3107,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
@@ -2808,6 +3214,14 @@ async def handle_admin_message(update, context):
         if text == BTN_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=True)
             return
+        if text == BTN_INVOICE:
+            context.user_data["state"] = STATE_INVOICE_CUSTOMER
+            context.user_data["invoice_items"] = []
+            await update.message.reply_text(
+                "\U0001f9fe \u0625\u0646\u0634\u0627\u0621 \u0641\u0627\u062a\u0648\u0631\u0629" + chr(10) + chr(10)
+                + "\U0001f464 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646 \u0623\u0648 \u0631\u0642\u0645 \u0647\u0627\u062a\u0641\u0647:",
+                reply_markup=get_input_keyboard())
+            return
         if text == BTN_INCOMING or text.startswith(BTN_INCOMING):
             await _show_admin_incoming_orders(update, context)
             return
@@ -2831,6 +3245,105 @@ async def handle_admin_message(update, context):
         context.user_data.clear()
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
         return
+
+    # ── Invoice FSM States ──
+    if state == STATE_INVOICE_CUSTOMER:
+        customer_name = text.strip()
+        if not customer_name:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646.", reply_markup=get_input_keyboard())
+            return
+        context.user_data["invoice_customer"] = customer_name
+        context.user_data["state"] = STATE_INVOICE_PRODUCT
+        await update.message.reply_text(
+            "\U0001f4e6 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c:" + chr(10) + chr(10)
+            + "\U0001f50d \u0627\u0643\u062a\u0628 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0644\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646" + chr(10)
+            + "\U0001f4cb \u0623\u0648 \u0627\u0643\u062a\u0628 \u0627\u0644\u0633\u0644\u0639\u0629 \u0645\u0628\u0627\u0634\u0631\u0629 \u0625\u0630\u0627 \u0644\u0645 \u062a\u0643\u0646 \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646",
+            reply_markup=get_input_keyboard())
+        return
+
+    if state == STATE_INVOICE_PRODUCT:
+        product_name = text.strip()
+        if not product_name:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c.", reply_markup=get_input_keyboard())
+            return
+        # Search for product in DB
+        products = get_all_products()
+        found = None
+        for p in products:
+            if product_name.lower() in p["name"].lower() or p["name"].lower() in product_name.lower():
+                found = p
+                break
+        if not found:
+            # Product not in inventory - still allow adding (manual entry)
+            context.user_data["invoice_tmp_product"] = product_name
+            context.user_data["invoice_tmp_pid"] = None
+        else:
+            context.user_data["invoice_tmp_product"] = found["name"]
+            context.user_data["invoice_tmp_pid"] = found["id"]
+        context.user_data["state"] = STATE_INVOICE_QTY
+        await update.message.reply_text(
+            "\U0001f4e6 " + (found["name"] if found else product_name) + chr(10) + chr(10)
+            + "\U0001f522 \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629:",
+            reply_markup=get_input_keyboard())
+        return
+
+    if state == STATE_INVOICE_QTY:
+        try:
+            qty = int(text.strip())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0635\u062d\u064a\u062d (\u0639\u062f\u062f \u0635\u062d\u064a\u062d).", reply_markup=get_input_keyboard())
+            return
+        product_name = context.user_data.get("invoice_tmp_product", "")
+        product_id = context.user_data.get("invoice_tmp_pid")
+        # Check stock if product exists in DB
+        if product_id:
+            conn = get_connection()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT quantity, selling_price FROM products WHERE id = %s", (product_id,))
+                    prod = cur.fetchone()
+                    if prod:
+                        if prod["quantity"] < qty:
+                            await update.message.reply_text(
+                                "\u26a0\ufe0f \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629 (" + str(qty) + ") \u0623\u0643\u0628\u0631 \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0641\u0631 (" + str(prod["quantity"]) + ")!" + chr(10)
+                                + "\u0623\u0639\u062f \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0623\u0648 \u0627\u0636\u063a\u0637 \u0625\u0644\u063a\u0627\u0621.",
+                                reply_markup=get_input_keyboard())
+                            return
+                        context.user_data["invoice_tmp_price"] = float(prod["selling_price"]) if prod["selling_price"] else 0
+            except Exception:
+                pass
+            finally:
+                release_connection(conn)
+        context.user_data["invoice_tmp_qty"] = qty
+        # If product has no price or is manual, ask for price
+        tmp_price = context.user_data.get("invoice_tmp_price", 0)
+        if tmp_price == 0:
+            context.user_data["state"] = STATE_INVOICE_PRICE
+            await update.message.reply_text(
+                "\U0001f4b0 \u0623\u0631\u0633\u0644 \u0633\u0639\u0631 \u0627\u0644\u0648\u062d\u062f\u0629 (" + chr(10)
+                + "\u0644\u0644\u0645\u0646\u062a\u062c: " + product_name,
+                reply_markup=get_input_keyboard())
+            return
+        # Price already known, add item directly
+        await _invoice_add_item(update, context, product_id, product_name, qty, tmp_price)
+        return
+
+    if state == STATE_INVOICE_PRICE:
+        try:
+            price = float(text.strip())
+            if price < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0633\u0639\u0631 \u0635\u062d\u064a\u062d.", reply_markup=get_input_keyboard())
+            return
+        product_id = context.user_data.get("invoice_tmp_pid")
+        product_name = context.user_data.get("invoice_tmp_product", "")
+        qty = context.user_data.get("invoice_tmp_qty", 1)
+        await _invoice_add_item(update, context, product_id, product_name, qty, price)
+        return
+
     if state == STATE_ADD_NAME:
         product_name = text.strip()
         if not product_name:
@@ -3784,6 +4297,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
