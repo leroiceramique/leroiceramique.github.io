@@ -1141,55 +1141,78 @@ def format_product_customer(product):
 
 
 async def _broadcast_update_notification(update, context):
-    """طلب وصف التحديث من المدير ثم بثه للمستخدمين."""
-    context.user_data["state"] = "waiting_update_msg"
-    await update.message.reply_text(
-        "📢 <b>إشعار تحديث</b>\n\n"
-        "أرسل وصف التحديث:\n"
-        "مثال:\n"
-        "✅ تم إضافة زر إرسال صورة الوصل في طلباتي\n\n"
-        "أو أرسل /cancel للإلغاء.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_input_keyboard(),
-    )
+    """إرسال إشعار التحديث تلقائياً - يجلب آخر عملية ويبثها مباشرة."""
+    # Fetch the most recent transaction
+    conn = get_connection()
+    recent = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "ORDER BY t.date DESC LIMIT 1")
+            col_names = [desc[0] for desc in cur.description]
+            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+            if rows:
+                recent = rows[0]
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        release_connection(conn)
 
-
-async def _send_update_broadcast(update, context):
-    """بث رسالة التحديث المخصصة لكل المستخدمين."""
-    user = update.effective_user
-    text = update.message.text
-    state = context.user_data.get("state")
-    if state != "waiting_update_msg":
+    if not recent:
+        await update.message.reply_text(
+            "📭 لا توجد عمليات حديثة للإشعار عنها.",
+            reply_markup=get_admin_keyboard(),
+        )
         return
 
+    # Build update description from last transaction
+    r = recent
+    if r["tx_type"] == "add":
+        icon = "✅"
+        action = "تمت إضافة"
+    else:
+        icon = "➖"
+        action = "تم إخراج"
+    time_str = r["date"].strftime("%H:%M %d/%m")
+    update_desc = icon + " " + action + " " + str(r["quantity"]) + " من " + r["product_name"] + " (" + time_str + ")"
+
+    # Fetch all active users
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
-            rows = cur.fetchall()
+            user_rows = cur.fetchall()
         conn.commit()
     except Exception:
         conn.rollback()
-        rows = []
+        user_rows = []
     finally:
         release_connection(conn)
 
-    if not rows:
-        await update.message.reply_text("📭 لا يوجد مستخدمين مفعلين.", reply_markup=get_admin_keyboard())
-        context.user_data.clear()
+    if not user_rows:
+        await update.message.reply_text(
+            "📭 لا يوجد مستخدمين مفعلين.",
+            reply_markup=get_admin_keyboard(),
+        )
         return
 
+    # Broadcast
     broadcast_text = (
         "🆕 <b>تحديث جديد!</b>\n\n"
-        + text + "\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        + update_desc + "\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 اضغط الزر أدناه لتحديث الواجهة\n"
         "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 تحديث الواجهة", callback_data="go_start")]
     ])
     sent = 0
-    for row in rows:
+    for row in user_rows:
         uid = row[0]
         try:
             await context.bot.send_message(
@@ -1200,104 +1223,14 @@ async def _send_update_broadcast(update, context):
             sent += 1
         except Exception:
             pass
+
     await update.message.reply_text(
-        "✅ تم إرسال إشعار التحديث إلى <b>" + str(sent) + "</b> مستخدم.",
+        "✅ تم إرسال إشعار التحديث إلى <b>" + str(sent) + "</b> مستخدم.\n\n"
+        "📋 " + update_desc,
         parse_mode=ParseMode.HTML,
         reply_markup=get_admin_keyboard(),
     )
-    logging.info("[UPDATE] Broadcast sent to " + str(sent) + " users: " + text[:80])
-    context.user_data.clear()
-
-
-async def _broadcast_to_all_users(bot, text):
-    """Send a message to all approved users (admin + customer)."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
-                rows = cur.fetchall()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-        for row in rows:
-            uid = row[0]
-            try:
-                await bot.send_message(chat_id=uid, text=text)
-            except Exception as e:
-                logging.warning("[BROADCAST] Failed for " + str(uid) + ": " + str(e))
-    except Exception as e:
-        logging.warning("[BROADCAST] Error: " + str(e))
-
-
-async def _broadcast_add_notification(bot, product, qty, actor_user, reason="truck"):
-    """Broadcast an automatic notification when stock is added.
-    reason: 'truck' for truck delivery, 'return' for customer return.
-    Sends to all users EXCEPT the person who added the stock."""
-    name = product["name"]
-    unit_ar = _get_unit_ar(name)
-    new_qty = product["quantity"]
-
-    # Build actor info
-    if actor_user:
-        actor_name = actor_user.get("username") or "مجهول"
-        actor_link = "<a href=\"tg://user?id=" + str(actor_user["telegram_id"]) + "\">" + actor_name + "</a>"
-    else:
-        actor_link = "النظام"
-
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
-
-    if reason == "return":
-        msg = ("↩️ إرجاع سلعة من زبون"
-            + chr(10) + chr(10)
-            + "📦 " + name
-            + chr(10)
-            + "➕ الكمية المرجوعة: " + str(qty) + " " + unit_ar
-            + chr(10)
-            + "📊 المخزون الحالي: " + str(new_qty) + " " + unit_ar
-            + chr(10)
-            + "👤 بواسطة: " + actor_link
-            + chr(10)
-            + "🕐 " + now)
-    else:
-        msg = ("🚚 وصول بضاعة جديدة من الشاحنة"
-            + chr(10) + chr(10)
-            + "📦 " + name
-            + chr(10)
-            + "➕ الكمية المضافة: " + str(qty) + " " + unit_ar
-            + chr(10)
-            + "📊 المخزون الحالي: " + str(new_qty) + " " + unit_ar
-            + chr(10)
-            + "👤 بواسطة: " + actor_link
-            + chr(10)
-            + "🕐 " + now)
-
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
-                rows = cur.fetchall()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-        for row in rows:
-            uid = row[0]
-            # Don't notify the person who added the stock
-            if actor_user and uid == actor_user["telegram_id"]:
-                continue
-            try:
-                await bot.send_message(chat_id=uid, text=msg, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                logging.warning("[ADD-NOTIFY] Failed for " + str(uid) + ": " + str(e))
-    except Exception as e:
-        logging.warning("[ADD-NOTIFY] Error: " + str(e))
+    logging.info("[UPDATE] Auto-broadcast sent to " + str(sent) + " users: " + update_desc)
 
 
 async def send_low_stock_alerts(bot):
@@ -3681,6 +3614,87 @@ async def handle_receipt_photo(update, context):
     context.user_data.clear()
 
 
+async def callback_upd_handler(update, context):
+    """Handle update notification choice: predefined option or custom text."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    # Custom text option → ask for input
+    if data == "upd_custom":
+        context.user_data["state"] = "waiting_update_msg"
+        await query.edit_message_text(
+            "\U0001f4e2 أرسل وصف التحديث:\n\n"
+            "أو أرسل /cancel للإلغاء.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Predefined option → broadcast directly
+    if data.startswith("upd_q_"):
+        idx = int(data.split("_")[-1])
+        options = context.user_data.get("update_options", [])
+        if idx < len(options):
+            update_text = options[idx]
+        else:
+            await query.edit_message_text("\u274c \u062e\u064a\u0627\u0631 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f.")
+            return
+    else:
+        return
+
+    # Broadcast the chosen text
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        rows = []
+    finally:
+        release_connection(conn)
+
+    if not rows:
+        await query.edit_message_text("\U0001f4ed \u0644\u0627 \u064a\u0648\u062c\u062f \u0645\u0633\u062a\u062e\u062f\u0645\u064a\u0646 \u0645\u0641\u0639\u0644\u064a\u0646.")
+        return
+
+    broadcast_text = (
+        "\U0001f195 <b>\u062a\u062d\u062f\u064a\u062b \u062c\u062f\u064a\u062f!</b>\n\n"
+        + update_text + "\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+        "\n\u26a1 \u062a\u0645 \u0627\u0644\u062a\u0637\u0648\u064a\u0631 \u0628\u0648\u0627\u0633\u0637\u0629 <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("\U0001f504 \u062a\u062d\u062f\u064a\u062b \u0627\u0644\u0648\u0627\u062c\u0647\u0629", callback_data="go_start")]
+    ])
+    sent = 0
+    for row in rows:
+        uid = row[0]
+        try:
+            await context.bot.send_message(
+                chat_id=uid, text=broadcast_text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )
+            sent += 1
+        except Exception:
+            pass
+
+    await query.edit_message_text(
+        "\u2705 \u062a\u0645 \u0625\u0631\u0633\u0627\u0644 \u0625\u0634\u0639\u0627\u0631 \u0627\u0644\u062a\u062d\u062f\u064a\u062b \u0625\u0644\u0649 <b>" + str(sent) + "</b> \u0645\u0633\u062a\u062e\u062f\u0645.",
+        parse_mode=ParseMode.HTML,
+    )
+    # Auto-return to admin keyboard
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="\U0001f3e2 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:",
+        reply_markup=get_admin_keyboard(),
+    )
+    logging.info("[UPDATE] Broadcast sent to " + str(sent) + " users: " + update_text[:80])
+    context.user_data.pop("update_options", None)
+
+
 async def callback_incoming_order_handler(update, context):
     """معالجة أزرار المدير: جاهز / غير جاهز."""
     query = update.callback_query
@@ -3853,6 +3867,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
+    app.add_handler(CallbackQueryHandler(callback_upd_handler, pattern="^upd_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
