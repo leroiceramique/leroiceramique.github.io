@@ -2975,8 +2975,13 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     items = context.user_data.get("invoice_items", [])
     customer = context.user_data.get("invoice_customer", "")
     admin = update.effective_user
+    chat_id = update.effective_chat.id
     total = sum(i["subtotal"] for i in items)
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
+
+    async def _send(text, markup=None):
+        """Safe send helper — works for both Update and CallbackQuery."""
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
     conn = get_connection()
     try:
@@ -2984,7 +2989,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         admin_user = get_user(admin.id)
         admin_db_id = admin_user["id"] if admin_user else None
         if not admin_db_id:
-            await update.message.reply_text("❌ حدث خطأ: لم يتم العثور على بيانات المدير.", reply_markup=get_admin_keyboard())
+            await _send("❌ حدث خطأ: لم يتم العثور على بيانات المدير.", get_admin_keyboard())
             return
 
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -3018,7 +3023,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     except Exception as e:
         conn.rollback()
         logging.error("[INVOICE] DB save failed: " + str(e))
-        await update.message.reply_text("❌ حدث خطأ في حفظ الفاتورة: " + str(e), reply_markup=get_admin_keyboard())
+        await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), get_admin_keyboard())
         return
 
     # Generate PDF
@@ -3069,7 +3074,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     if worker_notified:
         result_msg += "📨 تم إشعار العامل" + chr(10)
     result_msg += "✅ تم الخصم من المخزون"
-    await update.message.reply_text(result_msg, reply_markup=get_admin_keyboard())
+    await _send(result_msg, get_admin_keyboard())
 
 
 async def callback_invoice_handler(update, context):
