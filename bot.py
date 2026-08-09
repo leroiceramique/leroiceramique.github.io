@@ -1462,13 +1462,34 @@ async def _weekly_report_loop(bot):
 
 
 def get_admin_keyboard():
+    """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين."""
+    # عداد طلبات التوريد المعلّقة
+    incoming_count = 0
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM incoming_orders WHERE status = 'pending'")
+            incoming_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM users WHERE role = 'pending'")
+            pending_users_count = cur.fetchone()[0]
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        pending_users_count = 0
+    finally:
+        release_connection(conn)
+
+    # نص الأزرار مع العدادات
+    users_btn = ("⚙️ المستخدمين (" + str(pending_users_count) + ")") if pending_users_count > 0 else BTN_USERS
+    incoming_btn = ("🚚 طلبات التوريد (" + str(incoming_count) + ")") if incoming_count > 0 else BTN_INCOMING
+
     return ReplyKeyboardMarkup(
         [
             [BTN_ADD, BTN_SEARCH],
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
-            [BTN_USERS, BTN_BACKUP, BTN_ALERT],
-            [BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING],
+            [users_btn, BTN_BACKUP, BTN_ALERT],
+            [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
             [BTN_CANCEL],
         ],
         resize_keyboard=True,
@@ -2545,8 +2566,10 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_USERS, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING]
-    if text in admin_buttons:
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_LOW_STOCK, BTN_MOVEMENTS]
+    # هذه الأزرار ديناميكية (قد تحتوي عدادات)
+    dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
+    if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
         context.user_data.clear()
         state = None
 
@@ -2647,11 +2670,11 @@ async def handle_admin_message(update, context):
         if text == BTN_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=True)
             return
-        if text == BTN_INCOMING:
+        if text == BTN_INCOMING or text.startswith(BTN_INCOMING):
             await _show_admin_incoming_orders(update, context)
             return
 
-        if text == BTN_USERS:
+        if text == BTN_USERS or text.startswith(BTN_USERS):
             await users_command(update, context)
             return
         if text == BTN_BACKUP:
