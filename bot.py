@@ -2008,46 +2008,137 @@ def _fetch_today_movements():
         release_connection(conn)
 
 
-async def _show_all_movements(update, context, admin_view=True):
-    """Show ALL movements for today - visible to ALL users. Called from keyboard button."""
+
+
+def _fetch_movements_by_date(target_date):
+    """Fetch movements for a specific date from DB."""
+    conn = get_connection()
     try:
-        rows = _fetch_today_movements()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
+                "u.username AS user_name, u.telegram_id AS user_tid "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "WHERE t.date >= %s AND t.date < %s "
+                "ORDER BY t.date DESC",
+                (target_date, target_date + datetime.timedelta(days=1)))
+            col_names = [desc[0] for desc in cur.description]
+            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+        conn.commit()
+        return rows
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+async def _show_all_movements(update, context, admin_view=True):
+    """Show date picker for last 7 days - user picks a date to see movements."""
+    try:
+        today = datetime.date.today()
+        buttons = []
+        weekday_ar = {
+            0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
+            3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
+        }
+        for d in range(6, -1, -1):
+            day = today - datetime.timedelta(days=d)
+            day_str = day.strftime("%Y-%m-%d")
+            wd = day.weekday()
+            if d == 0:
+                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
+            else:
+                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m")
+            buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
+
+        text = "📋 اختار التاريخ لعرض الحركة:"
+        markup = InlineKeyboardMarkup(buttons)
+        await update.message.reply_text(text, reply_markup=markup)
+    except Exception as e:
+        logging.error("[MOVEMENTS_DATE] Error: " + str(e))
         kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+        await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
+
+
+async def callback_mov_date_handler(update, context):
+    """Handle date selection from movements date picker."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "movd_2025-01-15"
+
+    # Back button
+    if data == "movd_back":
+        today = datetime.date.today()
+        buttons = []
+        weekday_ar = {
+            0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
+            3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
+        }
+        for d in range(6, -1, -1):
+            day = today - datetime.timedelta(days=d)
+            day_str = day.strftime("%Y-%m-%d")
+            wd = day.weekday()
+            if d == 0:
+                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
+            else:
+                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m")
+            buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
+        await query.edit_message_text(
+            "📋 اختار التاريخ لعرض الحركة:",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    date_str = data.replace("movd_", "")
+    try:
+        target_date = datetime.date.fromisoformat(date_str)
+    except ValueError:
+        await query.edit_message_text("❌ تاريخ غير صالح.")
+        return
+
+    try:
+        rows = _fetch_movements_by_date(target_date)
+        weekday_ar = {
+            0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
+            3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
+        }
+        wd = target_date.weekday()
+        date_display = weekday_ar.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
 
         if not rows:
-            await update.message.reply_text(
-                "📋 حركة اليوم: لا توجد عمليات حتى الآن.",
-                reply_markup=kb)
+            await query.edit_message_text(
+                "📋 حركة " + date_display + ":\n\nلا توجد عمليات في هذا اليوم.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+                ]))
             return
 
         text = _build_movements_text(rows)
-        if len(text) <= 4096:
-            await update.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-        else:
-            chunks = []
-            current = []
-            cur_len = 0
-            for line in text.split(chr(10)):
-                line_len = len(line) + 1
-                if cur_len + line_len > 3900 and current:
-                    chunks.append(chr(10).join(current))
-                    current = []
-                    cur_len = 0
-                current.append(line)
-                cur_len += line_len
-            if current:
-                chunks.append(chr(10).join(current))
-            await update.message.reply_text(chunks[0], parse_mode=ParseMode.HTML)
-            for chunk in chunks[1:]:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=chunk, parse_mode=ParseMode.HTML)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="📦 القائمة الرئيسية:", reply_markup=kb)
+        # Replace header to show date
+        header = "📋 حركة " + date_display + " (" + str(len(rows)) + "):"
+        body_lines = text.split("\n")[2:]  # skip old header and blank line
+        text = header + "\n" + "\n".join(body_lines)
 
+        back_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+        ])
+
+        if len(text) <= 4096:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_button)
+        else:
+            await query.edit_message_text(text[:3900], parse_mode=ParseMode.HTML, reply_markup=back_button)
+            remaining = text[3900:]
+            while remaining:
+                chunk = remaining[:4096]
+                remaining = remaining[4096:]
+                await context.bot.send_message(
+                    chat_id=query.effective_chat.id,
+                    text=chunk,
+                    parse_mode=ParseMode.HTML)
     except Exception as e:
-        logging.error("[ALL_MOVEMENTS] Error: " + str(e))
-        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
-        await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
+        logging.error("[MOV_DATE_HANDLER] Error: " + str(e))
+        await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
 
 
 async def callback_product_select_handler(update, context):
@@ -3727,6 +3818,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
+    app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
