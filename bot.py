@@ -2951,19 +2951,22 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
 
     conn = get_connection()
     try:
+        # Get admin DB id first (admin.id is telegram_id, not DB id)
+        admin_user = get_user(admin.id)
+        admin_db_id = admin_user["id"] if admin_user else None
+        if not admin_db_id:
+            await update.message.reply_text("❌ حدث خطأ: لم يتم العثور على بيانات المدير.", reply_markup=get_admin_keyboard())
+            return
+
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # Create invoice record
             cur.execute(
                 "INSERT INTO invoices (customer_name, worker_id, admin_id, total_amount, status, approved_at) "
                 "VALUES (%s, %s, %s, %s, 'approved', NOW()) RETURNING id",
-                (customer, worker_id, admin.id, total)
+                (customer, worker_id, admin_db_id, total)
             )
             invoice = cur.fetchone()
             invoice_id = invoice["id"]
-
-            # Create invoice items + deduct stock + log transactions
-            admin_user = get_user(admin.id)
-            admin_db_id = admin_user["id"] if admin_user else None
             for item in items:
                 cur.execute(
                     "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
@@ -3150,6 +3153,70 @@ async def callback_invoice_handler(update, context):
                 await query.edit_message_text("\u274c \u0644\u0627 \u062a\u0648\u062c\u062f \u0639\u0646\u0627\u0635\u0631 \u0644\u0644\u062d\u0630\u0641.")
             except Exception:
                 pass
+
+    elif data.startswith("invsel_"):
+        # Product selection callback from invoice product search
+        if data.startswith("invsel_manual_"):
+            # Manual entry - go to qty step
+            manual_name = data[len("invsel_manual_"):]
+            context.user_data["invoice_tmp_product"] = manual_name
+            context.user_data["invoice_tmp_pid"] = None
+            context.user_data["state"] = STATE_INVOICE_QTY
+            try:
+                await query.edit_message_text(
+                    "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10)
+                    + "🔢 أرسل الكمية المطلوبة:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                         InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                    ]))
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="🔢 أرسل الكمية المطلوبة:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                         InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                    ]))
+        else:
+            # Selected from DB - extract product id
+            try:
+                product_id = int(data[len("invsel_"):])
+            except ValueError:
+                return
+            conn = get_connection()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT id, name, quantity, selling_price FROM products WHERE id = %s", (product_id,))
+                    prod = cur.fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                prod = None
+            finally:
+                release_connection(conn)
+            if not prod:
+                try:
+                    await query.edit_message_text("❌ المنتج غير موجود.")
+                except Exception:
+                    pass
+                return
+            context.user_data["invoice_tmp_product"] = prod["name"]
+            context.user_data["invoice_tmp_pid"] = prod["id"]
+            context.user_data["state"] = STATE_INVOICE_QTY
+            stock_info = " (المتوفر: " + str(prod["quantity"]) + ")" if prod["quantity"] > 0 else " (غير متوفر! ⚠️)"
+            try:
+                await query.edit_message_text(
+                    "📦 " + prod["name"] + stock_info + chr(10) + chr(10)
+                    + "🔢 أرسل الكمية المطلوبة:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                         InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                    ]))
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="📦 " + prod["name"] + stock_info + chr(10) + chr(10) + "🔢 أرسل الكمية المطلوبة:")
 
     elif data.startswith("inv_worker_"):
         parts = data.split("_")
@@ -3352,30 +3419,51 @@ async def handle_admin_message(update, context):
     if state == STATE_INVOICE_PRODUCT:
         product_name = text.strip()
         if not product_name:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0645\u0646\u062a\u062c.", reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ أرسل اسم المنتج.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_customer"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
             return
-        # Search for product in DB
-        products = get_all_products()
-        found = None
-        for p in products:
-            if product_name.lower() in p["name"].lower() or p["name"].lower() in product_name.lower():
-                found = p
-                break
-        if not found:
-            # Product not in inventory - still allow adding (manual entry)
+        # Smart search in DB
+        results = search_products(product_name)
+        if not results:
+            # Product not in inventory - still allow manual entry
             context.user_data["invoice_tmp_product"] = product_name
             context.user_data["invoice_tmp_pid"] = None
-        else:
+            context.user_data["state"] = STATE_INVOICE_QTY
+            await update.message.reply_text(
+                "❓ لم يتم العثور على \"" + product_name + "\" في المخزون" + chr(10) + chr(10)
+                + "📝 سيتم إضافته يدوياً" + chr(10) + chr(10)
+                + "🔢 أرسل الكمية المطلوبة:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+            return
+        if len(results) == 1:
+            # Only one result - select it directly
+            found = results[0]
             context.user_data["invoice_tmp_product"] = found["name"]
             context.user_data["invoice_tmp_pid"] = found["id"]
-        context.user_data["state"] = STATE_INVOICE_QTY
-        await update.message.reply_text(
-            "\U0001f4e6 " + (found["name"] if found else product_name) + chr(10) + chr(10)
-            + "\U0001f522 \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_product"),
-                 InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
-            ]))
+            context.user_data["state"] = STATE_INVOICE_QTY
+            stock_info = " (المتوفر: " + str(found["quantity"]) + ")" if found["quantity"] > 0 else " (غير متوفر! ⚠️)"
+            await update.message.reply_text(
+                "📦 " + found["name"] + stock_info + chr(10) + chr(10)
+                + "🔢 أرسل الكمية المطلوبة:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+            return
+        # Multiple results - show selection buttons
+        msg = "🔍 تم العثور على " + str(len(results)) + " منتجات مطابقة:" + chr(10) + chr(10)
+        buttons = []
+        for p in results:
+            stock = str(p["quantity"])
+            label = p["name"] + " [" + stock + "]"
+            if len(label) > 40:
+                label = label[:37] + "..."
+            buttons.append([InlineKeyboardButton(label, callback_data="invsel_" + str(p["id"]))])
+        buttons.append([InlineKeyboardButton("✍️ كتابة يدوية", callback_data="invsel_manual_" + product_name)])
+        buttons.append([InlineKeyboardButton("🔍 بحث آخر", callback_data="invoice_back_product")])
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if state == STATE_INVOICE_QTY:
@@ -4395,6 +4483,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_back_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_remove_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
