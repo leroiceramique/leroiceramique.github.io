@@ -3455,84 +3455,59 @@ async def callback_go_start_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def _show_admin_incoming_orders(update, context):
-    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمدير مع أزرار + صور الوصول."""
-    orders = get_pending_incoming_orders()
-    # جلب الطلبات قيد التجهيز (received)
+    """عرض طلبات التوريد - كل طلب برسالة منفصلة: صورة + أزرار جاهز/غير جاهز."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECT io.*, u.first_name, u.username, u.telegram_id
+            cur.execute("""\
+                SELECT io.*, u.first_name, u.username, u.telegram_id
                 FROM incoming_orders io
                 LEFT JOIN users u ON u.id = io.requester_id
-                WHERE io.status = 'received'
+                WHERE io.status IN ('pending', 'received')
                 ORDER BY io.created_at ASC
                 """)
-            received_orders = [dict(r) for r in cur.fetchall()]
+            all_orders = [dict(r) for r in cur.fetchall()]
         conn.commit()
     except Exception:
         conn.rollback()
-        received_orders = []
+        all_orders = []
     finally:
         release_connection(conn)
 
-    if not orders and not received_orders:
+    if not all_orders:
         await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=get_admin_keyboard())
         return
 
-    buttons = []
-    text_parts = []
-
-    # طلبات جديدة (pending) - أزرار استلام + صورة إن وجدت
-    if orders:
-        text_parts.append("🚚 طلبات جديدة (" + str(len(orders)) + ")\n")
-        for o in orders:
-            req_name = o.get("first_name") or o.get("username") or "مستخدم"
-            photo_icon = " 📷" if o.get("photo_file_id") else ""
-            text_parts.append(
-                "📋 #" + str(o["id"]) + "  |  👤 " + req_name +
-                "  |  📦 " + o["product_name"] +
-                "  |  🔢 " + str(o["quantity"]) + photo_icon
-            )
-            row_buttons = [InlineKeyboardButton(
-                "📦 استلام #" + str(o["id"]) + " " + o["product_name"][:20],
-                callback_data="io_receive_" + str(o["id"])
-            )]
-            # زر عرض صورة الوصل إن وجدت
-            if o.get("photo_file_id"):
-                row_buttons.append(InlineKeyboardButton(
-                    "📷 صورة الوصل",
-                    callback_data="io_photo_" + str(o["id"])
-                ))
-            buttons.append(row_buttons)
-
-    # طلبات قيد التجهيز (received) - أزرار جاهز/ليس جاهز + صورة إن وجدت
-    if received_orders:
-        text_parts.append("\n⏳ قيد التجهيز (" + str(len(received_orders)) + ")\n")
-        for o in received_orders:
-            req_name = o.get("first_name") or o.get("username") or "مستخدم"
-            photo_icon = " 📷" if o.get("photo_file_id") else ""
-            text_parts.append(
-                "🔧 #" + str(o["id"]) + "  |  👤 " + req_name +
-                "  |  📦 " + o["product_name"] + photo_icon
-            )
-            row_buttons = [
-                InlineKeyboardButton(
-                    "✅ جاهز #" + str(o["id"]),
-                    callback_data="io_ready_" + str(o["id"])
-                ),
-                InlineKeyboardButton(
-                    "⏳ ليس جاهز #" + str(o["id"]),
-                    callback_data="io_notready_" + str(o["id"])
-                ),
+    bot = context.bot
+    for o in all_orders:
+        order_id = o["id"]
+        req_name = o.get("first_name") or o.get("username") or "مستخدم"
+        caption = (
+            "🚚 طلب #" + str(order_id) +
+            "  |  👤 " + req_name +
+            "  |  📦 " + o["product_name"]
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ جاهز", callback_data="io_ready_" + str(order_id)),
+                InlineKeyboardButton("⏳ غير جاهز", callback_data="io_notready_" + str(order_id)),
             ]
-            if o.get("photo_file_id"):
-                row_buttons.append(InlineKeyboardButton(
-                    "📷 صورة الوصل",
-                    callback_data="io_photo_" + str(o["id"])
-                ))
-            buttons.append(row_buttons)
+        ])
+        if o.get("photo_file_id"):
+            try:
+                await bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=o["photo_file_id"],
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                await update.message.reply_text(caption, reply_markup=keyboard)
+        else:
+            await update.message.reply_text(caption + "\n\n⚠️ بدون صورة وصل", reply_markup=keyboard)
 
-    await update.message.reply_text("\n".join(text_parts), reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text("📤 عدد الطلبات: " + str(len(all_orders)), reply_markup=get_admin_keyboard())
 
 
 async def _show_customer_orders(update, context):
@@ -3616,52 +3591,13 @@ async def handle_receipt_photo(update, context):
 
 
 async def callback_incoming_order_handler(update, context):
-    """معالجة أزرار المدير: استلام → جاهز / ليس جاهز."""
+    """معالجة أزرار المدير: جاهز / غير جاهز."""
     query = update.callback_query
     await query.answer()
     data = query.data
     bot = context.bot
 
-    # ── 1. استلام الطلب (الخطوة الأولى) ──
-    if data.startswith("io_receive_"):
-        order_id = int(data.split("_")[-1])
-        order = receive_incoming_order(order_id)
-        if not order:
-            await query.edit_message_text("❌ الطلب غير موجود أو تم معالجته مسبقاً.")
-            return
-
-        # إشعار صاحب الطلب: "تم استلام طلبك - جاري التجهيز"
-        tg_id = _get_telegram_id(order["requester_id"])
-        if tg_id:
-            try:
-                await bot.send_message(
-                    chat_id=tg_id,
-                    text="📦 تم استلام طلبك!\n\n"
-                         "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
-                         "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>\n"
-                         "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
-                         "⏳ جاري تجهيز طلبك...\n"
-                         "سيتم إشعارك عند الجاهزية.",
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception:
-                pass
-
-        # عرض خيارين للمدير: جاهز / ليس جاهز بعد
-        await query.edit_message_text(
-            "📦 تم استلام الطلب #" + str(order_id) +
-            "\n📦 " + order["product_name"] +
-            "\n🔢 الكمية: " + str(order["quantity"]) +
-            "\n\nاختر حالة الطلب:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ طلبك جاهز في المخزن", callback_data="io_ready_" + str(order_id))],
-                [InlineKeyboardButton("⏳ طلبك ليس جاهز بعد", callback_data="io_notready_" + str(order_id))],
-            ])
-        )
-        logging.info("[INCOMING] Received order #" + str(order_id))
-        return
-
-    # ── 2. طلب جاهز في المخزن ──
+    # ── 1. طلب جاهز في المخزن ──
     if data.startswith("io_ready_"):
         order_id = int(data.split("_")[-1])
         order = complete_incoming_order(order_id)
@@ -3676,7 +3612,6 @@ async def callback_incoming_order_handler(update, context):
                     chat_id=tg_id,
                     text="✅ طلبك جاهز في المخزن الآن!\n\n"
                          "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
-                         "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>\n"
                          "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
                          "🏃 تقدر تيجان تأخذه!",
                     parse_mode=ParseMode.HTML,
@@ -3687,13 +3622,12 @@ async def callback_incoming_order_handler(update, context):
         await query.edit_message_text(
             "✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
             "📦 " + order["product_name"] +
-            "\n🔢 الكمية: " + str(order["quantity"]) +
             "\n\n📱 تم إشعار صاحب الطلب."
         )
         logging.info("[INCOMING] Ready order #" + str(order_id))
         return
 
-    # ── 3. طلب ليس جاهز بعد ──
+    # ── 2. طلب ليس جاهز بعد ──
     if data.startswith("io_notready_"):
         order_id = int(data.split("_")[-1])
 
@@ -3725,42 +3659,13 @@ async def callback_incoming_order_handler(update, context):
 
         if order:
             await query.edit_message_text(
-                "⏳ تم إبلاغ صاحب الطلب #" + str(order_id) + " بأنه ليس جاهزاً بعد.\n"
+                "⏳ الطلب #" + str(order_id) + " ليس جاهزاً بعد.\n"
                 "📦 " + dict(order).get("product_name", "") +
-                "\n📱 تم إشعار المستخدم."
+                "\n\n📱 تم إشعار المستخدم."
             )
         else:
             await query.edit_message_text("❌ الطلب غير موجود.")
         logging.info("[INCOMING] Not ready - order #" + str(order_id))
-        return
-
-    # ── 4. عرض صورة الوصل ──
-    if data.startswith("io_photo_"):
-        order_id = int(data.split("_")[-1])
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT * FROM incoming_orders WHERE id = %s", (order_id,))
-                order = cur.fetchone()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            order = None
-        finally:
-            release_connection(conn)
-
-        if not order or not order.get("photo_file_id"):
-            await query.answer("❌ لا توجد صورة لهذا الطلب.", show_alert=True)
-            return
-
-        try:
-            await query.message.reply_photo(
-                photo=order["photo_file_id"],
-                caption="📷 صورة وصل الطلب <b>#" + str(order_id) + "</b>\n📦 " + order["product_name"],
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            await query.answer("❌ حدث خطأ في عرض الصورة.", show_alert=True)
         return
 
 
@@ -3819,10 +3724,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_extract_request_handler, pattern="^req_ext_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
-    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_receive_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
-    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_photo_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
