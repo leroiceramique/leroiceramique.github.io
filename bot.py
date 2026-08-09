@@ -3002,8 +3002,14 @@ async def handle_customer_message(update, context):
             return
 
         if text == BTN_CUST_ORDER:
-            context.user_data["state"] = "waiting_order_name"
-            await update.message.reply_text("📦 طلب توريد جديد\n\nاكتب اسم السلعة المطلوبة:", reply_markup=get_input_keyboard())
+            context.user_data["state"] = "waiting_order_input"
+            await update.message.reply_text(
+                "📦 طلب توريد جديد\n\n"
+                "📷 أرسل صورة الوصل مباشرة\n"
+                "أو\n"
+                "📝 اكتب اسم السلعة المطلوبة:",
+                reply_markup=get_input_keyboard(),
+            )
             return
 
         if text == BTN_CUST_MY_ORDERS:
@@ -3029,8 +3035,8 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         return
 
-    # State: waiting_order_name - المستخدم كتب اسم السلعة المطلوبة
-    if state == "waiting_order_name":
+    # State: waiting_order_input / waiting_order_name - المستخدم يرسل صورة وصل أو يكتب اسم السلعة
+    if state in ("waiting_order_input", "waiting_order_name"):
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
             await update.message.reply_text("❌ تم إلغاء الطلب.", reply_markup=get_customer_keyboard())
@@ -3098,6 +3104,15 @@ async def handle_customer_message(update, context):
     if state == "waiting_receipt":
         await update.message.reply_text(
             "📷 يرجى إرسال صورة الوصل فقط.\n"
+            "أو اضغط ❌ إلغاء للرجوع.",
+            reply_markup=get_input_keyboard(),
+        )
+        return
+
+    # State: waiting_order_input - المستخدم في حالة انتظار طلب (صورة أو نص)
+    if state == "waiting_order_input":
+        await update.message.reply_text(
+            "❌ يرجى إرسال صورة الوصل أو كتابة اسم السلعة.\n"
             "أو اضغط ❌ إلغاء للرجوع.",
             reply_markup=get_input_keyboard(),
         )
@@ -3622,72 +3637,108 @@ async def callback_send_receipt_handler(update, context):
 
 
 async def handle_receipt_photo(update, context):
-    """معالجة صورة الوصل - توجيهها للمديرين مع معلومات الطلب."""
+    """معالجة صورة الوصل - إما إنشاء طلب جديد أو إرفاقها بطلب موجود."""
     user = update.effective_user
     state = context.user_data.get("state")
-    order_id = context.user_data.get("receipt_order_id")
-    # يعمل فقط إذا كان المستخدم في حالة انتظار إرسال وصل
-    if state != "waiting_receipt" or not order_id:
-        # ليس في حالة إرسال وصل - تجاهل الصورة
-        return
-
-    # جلب بيانات الطلب
-    conn = get_connection()
-    order = None
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM incoming_orders WHERE id = %s", (order_id,))
-            order = cur.fetchone()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        release_connection(conn)
-
-    if not order:
-        await update.message.reply_text("❌ الطلب غير موجود.", reply_markup=get_customer_keyboard())
-        context.user_data.clear()
-        return
-
-    # جلب الصورة الأكبر من الرسالة
     photo = update.message.photo
     if not photo:
-        await update.message.reply_text("❌ لم يتم العثور على صورة.", reply_markup=get_customer_keyboard())
+        return
+    file_id = photo[-1].file_id
+    req_name = user.first_name or user.username or str(user.id)
+
+    # ── الحالة 1: إرسال صورة كطلب توريد جديد (بدون كتابة اسم وكمية) ──
+    if state == "waiting_order_input":
+        db_user = get_user(user.id)
+        if not db_user:
+            await update.message.reply_text("❌ حدث خطأ في بيانات المستخدم.", reply_markup=get_customer_keyboard())
+            context.user_data.clear()
+            return
+        try:
+            order = create_incoming_order(db_user["id"], "طلب بوصل صورة", 1)
+            order_id = order["id"]
+            # إرسال الصورة للمديرين
+            caption = (
+                "🚚 طلب توريد جديد (بوصل صورة)!\n\n"
+                "👤 من: <b>" + req_name + "</b>\n"
+                "📋 رقم الطلب: <b>#" + str(order_id) + "</b>"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=admin_id,
+                        photo=file_id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                "✅ تم تسجيل طلب التوريد بنجاح!\n\n"
+                "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
+                "📦 الحالة: <b>قيد التوريد</b>\n\n"
+                "📷 تم إرسال صورة الوصل للمدير.\n"
+                "📡 سيتم إشعارك تلقائياً عند التحديث.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_customer_keyboard(),
+            )
+            logging.info("[INCOMING] Photo order #" + str(order_id) + " by user " + str(user.id))
+        except Exception as e:
+            logging.error("[INCOMING] Failed to create photo order: " + str(e))
+            await update.message.reply_text("❌ حدث خطأ أثناء تسجيل الطلب.", reply_markup=get_customer_keyboard())
         context.user_data.clear()
         return
-    # photo هو قائمة مرتبة بالأصغر للأكبر، نأخذ الأكبر
-    file_id = photo[-1].file_id
 
-    req_name = user.first_name or user.username or str(user.id)
-    caption = (
-        "📷 صورة وصل للطلب #" + str(order_id) + "\n\n"
-        "👤 من: <b>" + req_name + "</b>\n"
-        "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
-        "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>"
-    )
-
-    # إرسال الصورة لكل المديرين
-    for admin_id in ADMIN_IDS:
+    # ── الحالة 2: إرسال صورة وصل لطلب موجود (من طلباتي) ──
+    order_id = context.user_data.get("receipt_order_id")
+    if state == "waiting_receipt" and order_id:
+        conn = get_connection()
+        order = None
         try:
-            await context.bot.send_photo(
-                chat_id=admin_id,
-                photo=file_id,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-            )
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM incoming_orders WHERE id = %s", (order_id,))
+                order = cur.fetchone()
+            conn.commit()
         except Exception:
-            pass
+            conn.rollback()
+        finally:
+            release_connection(conn)
 
-    await update.message.reply_text(
-        "✅ تم إرسال صورة الوصل بنجاح!\n\n"
-        "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
-        "📦 السلعة: <b>" + order["product_name"] + "</b>\n\n"
-        "📱 تم توجيه الصورة للمدير.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_customer_keyboard(),
-    )
-    logging.info("[RECEIPT] Photo sent for order #" + str(order_id) + " by user " + str(user.id))
-    context.user_data.clear()
+        if not order:
+            await update.message.reply_text("❌ الطلب غير موجود.", reply_markup=get_customer_keyboard())
+            context.user_data.clear()
+            return
+
+        caption = (
+            "📷 صورة وصل للطلب #" + str(order_id) + "\n\n"
+            "👤 من: <b>" + req_name + "</b>\n"
+            "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
+            "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>"
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=file_id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        await update.message.reply_text(
+            "✅ تم إرسال صورة الوصل بنجاح!\n\n"
+            "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
+            "📦 السلعة: <b>" + order["product_name"] + "</b>\n\n"
+            "📱 تم توجيه الصورة للمدير.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_customer_keyboard(),
+        )
+        logging.info("[RECEIPT] Photo sent for order #" + str(order_id) + " by user " + str(user.id))
+        context.user_data.clear()
+        return
+
+    # ── حالة أخرى: تجاهل الصورة ──
+    return
 
 
 async def callback_incoming_order_handler(update, context):
