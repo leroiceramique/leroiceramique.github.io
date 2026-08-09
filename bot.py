@@ -314,6 +314,7 @@ CREATE TABLE IF NOT EXISTS incoming_orders (
     product_name   VARCHAR(500) NOT NULL,
     quantity       INTEGER NOT NULL DEFAULT 1,
     status         VARCHAR(12) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'received', 'completed')),
+    photo_file_id  TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at   TIMESTAMPTZ
 );
@@ -357,6 +358,11 @@ def init_db():
                 END $$;
                 ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_status_check
                     CHECK (status IN ('pending', 'received', 'completed'));
+                -- Migration: add photo_file_id column for receipt photos
+                DO $$ BEGIN
+                    ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS photo_file_id TEXT;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: create extraction_requests table
                 CREATE TABLE IF NOT EXISTS extraction_requests (
                     id            SERIAL PRIMARY KEY,
@@ -497,15 +503,15 @@ def is_approved(telegram_id):
 #  INCOMING ORDERS (طلبات التوريد)
 # ═══════════════════════════════════════════════════════════
 
-def create_incoming_order(requester_id, product_name, quantity):
+def create_incoming_order(requester_id, product_name, quantity, photo_file_id=None):
     """إنشاء طلب توريد جديد من صاحب المحل."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO incoming_orders (requester_id, product_name, quantity)
-                VALUES (%s, %s, %s)
-                RETURNING id, requester_id, product_name, quantity, status, created_at
-                """, (requester_id, product_name, quantity))
+            cur.execute("""\n                INSERT INTO incoming_orders (requester_id, product_name, quantity, photo_file_id)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, requester_id, product_name, quantity, status, created_at, photo_file_id
+                """, (requester_id, product_name, quantity, photo_file_id))
             order = cur.fetchone()
         conn.commit()
         return dict(order)
@@ -3521,7 +3527,7 @@ async def callback_go_start_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def _show_admin_incoming_orders(update, context):
-    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمدير مع أزرار."""
+    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمدير مع أزرار + صور الوصول."""
     orders = get_pending_incoming_orders()
     # جلب الطلبات قيد التجهيز (received)
     conn = get_connection()
@@ -3548,43 +3554,61 @@ async def _show_admin_incoming_orders(update, context):
     buttons = []
     text_parts = []
 
-    # طلبات جديدة (pending) - أزرار استلام
+    # طلبات جديدة (pending) - أزرار استلام + صورة إن وجدت
     if orders:
         text_parts.append("🚚 طلبات جديدة (" + str(len(orders)) + ")\n")
         for o in orders:
             req_name = o.get("first_name") or o.get("username") or "مستخدم"
+            photo_icon = " 📷" if o.get("photo_file_id") else ""
             text_parts.append(
                 "📋 #" + str(o["id"]) + "  |  👤 " + req_name +
                 "  |  📦 " + o["product_name"] +
-                "  |  🔢 " + str(o["quantity"])
+                "  |  🔢 " + str(o["quantity"]) + photo_icon
             )
-            buttons.append([InlineKeyboardButton(
+            row_buttons = [InlineKeyboardButton(
                 "📦 استلام #" + str(o["id"]) + " " + o["product_name"][:20],
                 callback_data="io_receive_" + str(o["id"])
-            )])
+            )]
+            # زر عرض صورة الوصل إن وجدت
+            if o.get("photo_file_id"):
+                row_buttons.append(InlineKeyboardButton(
+                    "📷 صورة الوصل",
+                    callback_data="io_photo_" + str(o["id"])
+                ))
+            buttons.append(row_buttons)
 
-    # طلبات قيد التجهيز (received) - أزرار جاهز/ليس جاهز
+    # طلبات قيد التجهيز (received) - أزرار جاهز/ليس جاهز + صورة إن وجدت
     if received_orders:
         text_parts.append("\n⏳ قيد التجهيز (" + str(len(received_orders)) + ")\n")
         for o in received_orders:
             req_name = o.get("first_name") or o.get("username") or "مستخدم"
+            photo_icon = " 📷" if o.get("photo_file_id") else ""
             text_parts.append(
                 "🔧 #" + str(o["id"]) + "  |  👤 " + req_name +
-                "  |  📦 " + o["product_name"]
+                "  |  📦 " + o["product_name"] + photo_icon
             )
-            buttons.append([InlineKeyboardButton(
-                "✅ جاهز #" + str(o["id"]),
-                callback_data="io_ready_" + str(o["id"])
-            ), InlineKeyboardButton(
-                "⏳ ليس جاهز #" + str(o["id"]),
-                callback_data="io_notready_" + str(o["id"])
-            )])
+            row_buttons = [
+                InlineKeyboardButton(
+                    "✅ جاهز #" + str(o["id"]),
+                    callback_data="io_ready_" + str(o["id"])
+                ),
+                InlineKeyboardButton(
+                    "⏳ ليس جاهز #" + str(o["id"]),
+                    callback_data="io_notready_" + str(o["id"])
+                ),
+            ]
+            if o.get("photo_file_id"):
+                row_buttons.append(InlineKeyboardButton(
+                    "📷 صورة الوصل",
+                    callback_data="io_photo_" + str(o["id"])
+                ))
+            buttons.append(row_buttons)
 
     await update.message.reply_text("\n".join(text_parts), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _show_customer_orders(update, context):
-    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمستخدم مع أزرار إرسال وصل."""
+    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمستخدم."""
     user = update.effective_user
     db_user = get_user(user.id)
     if not db_user:
@@ -3596,28 +3620,19 @@ async def _show_customer_orders(update, context):
         return
 
     lines = ["📋 طلباتك (" + str(len(orders)) + ")\n"]
-    buttons = []
     for o in orders:
         created = o["created_at"].strftime("%H:%M %d/%m") if o.get("created_at") else ""
         status_txt = "⏳ قيد التوريد" if o["status"] == "pending" else "🔧 جاري التجهيز"
+        photo_icon = "  📷" if o.get("photo_file_id") else ""
         lines.append(
             "📋 #" + str(o["id"]) +
             "  |  📦 " + o["product_name"] +
             "  |  🔢 " + str(o["quantity"]) +
             "  |  " + status_txt +
-            "  |  ⏰ " + created
+            "  |  ⏰ " + created + photo_icon
         )
-        # زر إرسال صورة الوصل لكل طلب
-        buttons.append([InlineKeyboardButton(
-            "📷 إرسال وصل #" + str(o["id"]) + " - " + o["product_name"][:20],
-            callback_data="send_receipt_" + str(o["id"])
-        )])
-    lines.append("\n📷 اضغط على زر إرسال الوصل لإرفاق صورة وصل مع الطلب.")
-    lines.append("📡 سيتم إشعارك تلقائياً بأي تحديث.")
-    await update.message.reply_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    lines.append("\n📡 سيتم إشعارك تلقائياً بأي تحديث.")
+    await update.message.reply_text("\n".join(lines), reply_markup=get_customer_keyboard())
 
 
 async def callback_send_receipt_handler(update, context):
@@ -3654,7 +3669,7 @@ async def handle_receipt_photo(update, context):
             context.user_data.clear()
             return
         try:
-            order = create_incoming_order(db_user["id"], "طلب بوصل صورة", 1)
+            order = create_incoming_order(db_user["id"], "طلب بوصل صورة", 1, photo_file_id=file_id)
             order_id = order["id"]
             # إرسال الصورة للمديرين
             caption = (
@@ -3860,6 +3875,35 @@ async def callback_incoming_order_handler(update, context):
         logging.info("[INCOMING] Not ready - order #" + str(order_id))
         return
 
+    # ── 4. عرض صورة الوصل ──
+    if data.startswith("io_photo_"):
+        order_id = int(data.split("_")[-1])
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM incoming_orders WHERE id = %s", (order_id,))
+                order = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            order = None
+        finally:
+            release_connection(conn)
+
+        if not order or not order.get("photo_file_id"):
+            await query.answer("❌ لا توجد صورة لهذا الطلب.", show_alert=True)
+            return
+
+        try:
+            await query.message.reply_photo(
+                photo=order["photo_file_id"],
+                caption="📷 صورة وصل الطلب <b>#" + str(order_id) + "</b>\n📦 " + order["product_name"],
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            await query.answer("❌ حدث خطأ في عرض الصورة.", show_alert=True)
+        return
+
 
 def _get_telegram_id(user_db_id):
     """جلب telegram_id من user_db_id."""
@@ -3919,6 +3963,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_receive_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
+    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_photo_"))
     app.add_handler(CallbackQueryHandler(callback_send_receipt_handler, pattern="^send_receipt_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CommandHandler("backup", backup_command))
