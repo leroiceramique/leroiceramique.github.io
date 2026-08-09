@@ -313,7 +313,7 @@ CREATE TABLE IF NOT EXISTS incoming_orders (
     requester_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
     product_name   VARCHAR(500) NOT NULL,
     quantity       INTEGER NOT NULL DEFAULT 1,
-    status         VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+    status         VARCHAR(12) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'received', 'completed')),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at   TIMESTAMPTZ
 );
@@ -350,6 +350,13 @@ def init_db():
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(255);
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                -- Migration: update incoming_orders status to include 'received'
+                DO $$ BEGIN
+                    ALTER TABLE incoming_orders DROP CONSTRAINT IF EXISTS incoming_orders_status_check;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_status_check
+                    CHECK (status IN ('pending', 'received', 'completed'));
                 -- Migration: create extraction_requests table
                 CREATE TABLE IF NOT EXISTS extraction_requests (
                     id            SERIAL PRIMARY KEY,
@@ -531,12 +538,12 @@ def get_pending_incoming_orders():
 
 
 def get_user_pending_orders(user_db_id):
-    """جلب طلبات التوريد المعلّقة لمستخدم محدد."""
+    """جلب طلبات التوريد المعلّقة + قيد التجهيز لمستخدم محدد."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""\n                SELECT * FROM incoming_orders
-                WHERE requester_id = %s AND status = 'pending'
+                WHERE requester_id = %s AND status IN ('pending', 'received')
                 ORDER BY created_at ASC
                 """, (user_db_id,))
             rows = cur.fetchall()
@@ -550,12 +557,32 @@ def get_user_pending_orders(user_db_id):
 
 
 def complete_incoming_order(order_id):
-    """تحديث طلب توريد إلى 'مكتمل'."""
+    """تحديث طلب توريد إلى 'مكتمل' (من pending أو received)."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""\n                UPDATE incoming_orders
                 SET status = 'completed', completed_at = NOW()
+                WHERE id = %s AND status IN ('pending', 'received')
+                RETURNING *
+                """, (order_id,))
+            order = cur.fetchone()
+        conn.commit()
+        return dict(order) if order else None
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def receive_incoming_order(order_id):
+    """تحديث طلب توريد إلى 'تم الاستلام' (جاري التجهيز)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                UPDATE incoming_orders
+                SET status = 'received'
                 WHERE id = %s AND status = 'pending'
                 RETURNING *
                 """, (order_id,))
@@ -1519,6 +1546,8 @@ def get_admin_keyboard():
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM incoming_orders WHERE status = 'pending'")
             incoming_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM incoming_orders WHERE status = 'received'")
+            incoming_count += cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM users WHERE role = 'pending'")
             pending_users_count = cur.fetchone()[0]
         conn.commit()
@@ -3439,36 +3468,70 @@ async def callback_go_start_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def _show_admin_incoming_orders(update, context):
-    """عرض طلبات التوريد المعلّقة للمدير مع أزرار التأكيد."""
+    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمدير مع أزرار."""
     orders = get_pending_incoming_orders()
-    if not orders:
-        await update.message.reply_text("📭 لا توجد طلبات توريد معلّقة حالياً.", reply_markup=get_admin_keyboard())
+    # جلب الطلبات قيد التجهيز (received)
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\n                SELECT io.*, u.first_name, u.username, u.telegram_id
+                FROM incoming_orders io
+                LEFT JOIN users u ON u.id = io.requester_id
+                WHERE io.status = 'received'
+                ORDER BY io.created_at ASC
+                """)
+            received_orders = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        received_orders = []
+    finally:
+        release_connection(conn)
+
+    if not orders and not received_orders:
+        await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=get_admin_keyboard())
         return
 
-    lines = ["🚚 طلبات التوريد المعلّقة (" + str(len(orders)) + ")\n"]
     buttons = []
-    for o in orders:
-        req_name = o.get("first_name") or o.get("username") or "مستخدم"
-        lines.append(
-            "📋 #" + str(o["id"]) + "  |  👤 " + req_name +
-            "  |  📦 " + o["product_name"] +
-            "  |  🔢 " + str(o["quantity"])
-        )
-        buttons.append([InlineKeyboardButton(
-            "✅ #" + str(o["id"]) + " " + o["product_name"][:20],
-            callback_data="io_complete_" + str(o["id"])
-        )])
+    text_parts = []
 
-    # زر "توريد الكل" إذا فيه أكثر من طلب
-    if len(orders) > 1:
-        buttons.append([InlineKeyboardButton("✅ توريد الكل", callback_data="io_complete_all")])
+    # طلبات جديدة (pending) - أزرار استلام
+    if orders:
+        text_parts.append("🚚 طلبات جديدة (" + str(len(orders)) + ")\n")
+        for o in orders:
+            req_name = o.get("first_name") or o.get("username") or "مستخدم"
+            text_parts.append(
+                "📋 #" + str(o["id"]) + "  |  👤 " + req_name +
+                "  |  📦 " + o["product_name"] +
+                "  |  🔢 " + str(o["quantity"])
+            )
+            buttons.append([InlineKeyboardButton(
+                "📦 استلام #" + str(o["id"]) + " " + o["product_name"][:20],
+                callback_data="io_receive_" + str(o["id"])
+            )])
 
-    text = "\n".join(lines)
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    # طلبات قيد التجهيز (received) - أزرار جاهز/ليس جاهز
+    if received_orders:
+        text_parts.append("\n⏳ قيد التجهيز (" + str(len(received_orders)) + ")\n")
+        for o in received_orders:
+            req_name = o.get("first_name") or o.get("username") or "مستخدم"
+            text_parts.append(
+                "🔧 #" + str(o["id"]) + "  |  👤 " + req_name +
+                "  |  📦 " + o["product_name"]
+            )
+            buttons.append([InlineKeyboardButton(
+                "✅ جاهز #" + str(o["id"]),
+                callback_data="io_ready_" + str(o["id"])
+            ), InlineKeyboardButton(
+                "⏳ ليس جاهز #" + str(o["id"]),
+                callback_data="io_notready_" + str(o["id"])
+            )])
+
+    await update.message.reply_text("\n".join(text_parts), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _show_customer_orders(update, context):
-    """عرض طلبات التوريد المعلّقة للمستخدم."""
+    """عرض طلبات التوريد المعلّقة + قيد التجهيز للمستخدم."""
     user = update.effective_user
     db_user = get_user(user.id)
     if not db_user:
@@ -3476,104 +3539,158 @@ async def _show_customer_orders(update, context):
         return
     orders = get_user_pending_orders(db_user["id"])
     if not orders:
-        await update.message.reply_text("📭 لا توجد طلبات توريد معلّقة.", reply_markup=get_customer_keyboard())
+        await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=get_customer_keyboard())
         return
 
-    lines = ["📋 طلباتك المعلّقة (" + str(len(orders)) + ")\n"]
+    lines = ["📋 طلباتك (" + str(len(orders)) + ")\n"]
     for o in orders:
         created = o["created_at"].strftime("%H:%M %d/%m") if o.get("created_at") else ""
+        status_txt = "⏳ قيد التوريد" if o["status"] == "pending" else "🔧 جاري التجهيز"
         lines.append(
             "📋 #" + str(o["id"]) +
             "  |  📦 " + o["product_name"] +
             "  |  🔢 " + str(o["quantity"]) +
+            "  |  " + status_txt +
             "  |  ⏰ " + created
         )
-    lines.append("\n⏳ سيتم إشعارك تلقائياً عند التوريد.")
+    lines.append("\n📡 سيتم إشعارك تلقائياً بأي تحديث.")
     await update.message.reply_text("\n".join(lines), reply_markup=get_customer_keyboard())
 
 
 async def callback_incoming_order_handler(update, context):
-    """معالجة أزرار المدير: تأكيد توريد طلب واحد أو كل الطلبات."""
+    """معالجة أزرار المدير: استلام → جاهز / ليس جاهز."""
     query = update.callback_query
     await query.answer()
     data = query.data
     bot = context.bot
 
-    if data == "io_complete_all":
-        # توريد كل الطلبات المعلّقة
-        completed = complete_all_pending_orders()
-        if completed:
-            # إشعار كل صاحب طلب
-            notified = 0
-            for o in completed:
-                tg_id = o.get("telegram_id")
-                if tg_id:
-                    try:
-                        await bot.send_message(
-                            chat_id=tg_id,
-                            text="✅ تم توريد طلبك!\n\n"
-                                 "📦 السلعة: <b>" + o["product_name"] + "</b>\n"
-                                 "🔢 الكمية: <b>" + str(o["quantity"]) + "</b>\n"
-                                 "📋 رقم الطلب: <b>#" + str(o["id"]) + "</b>\n\n"
-                                 "شكراً لصبرك! 🙏",
-                            parse_mode=ParseMode.HTML,
-                        )
-                        notified += 1
-                    except Exception:
-                        pass
-            count = len(completed)
-            await query.edit_message_text(
-                "✅ تم تأكيد توريد <b>" + str(count) + "</b> طلب بنجاح!" +
-                ("\n📱 تم إشعار " + str(notified) + " مستخدم." if notified else ""),
-                parse_mode=ParseMode.HTML,
-            )
-            logging.info("[INCOMING] Completed " + str(count) + " orders, notified " + str(notified))
-        else:
-            await query.edit_message_text("📭 لا توجد طلبات معلّقة.")
+    # ── 1. استلام الطلب (الخطوة الأولى) ──
+    if data.startswith("io_receive_"):
+        order_id = int(data.split("_")[-1])
+        order = receive_incoming_order(order_id)
+        if not order:
+            await query.edit_message_text("❌ الطلب غير موجود أو تم معالجته مسبقاً.")
+            return
+
+        # إشعار صاحب الطلب: "تم استلام طلبك - جاري التجهيز"
+        tg_id = _get_telegram_id(order["requester_id"])
+        if tg_id:
+            try:
+                await bot.send_message(
+                    chat_id=tg_id,
+                    text="📦 تم استلام طلبك!\n\n"
+                         "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
+                         "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>\n"
+                         "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
+                         "⏳ جاري تجهيز طلبك...\n"
+                         "سيتم إشعارك عند الجاهزية.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        # عرض خيارين للمدير: جاهز / ليس جاهز بعد
+        await query.edit_message_text(
+            "📦 تم استلام الطلب #" + str(order_id) +
+            "\n📦 " + order["product_name"] +
+            "\n🔢 الكمية: " + str(order["quantity"]) +
+            "\n\nاختر حالة الطلب:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ طلبك جاهز في المخزن", callback_data="io_ready_" + str(order_id))],
+                [InlineKeyboardButton("⏳ طلبك ليس جاهز بعد", callback_data="io_notready_" + str(order_id))],
+            ])
+        )
+        logging.info("[INCOMING] Received order #" + str(order_id))
         return
 
-    if data.startswith("io_complete_"):
+    # ── 2. طلب جاهز في المخزن ──
+    if data.startswith("io_ready_"):
         order_id = int(data.split("_")[-1])
         order = complete_incoming_order(order_id)
-        if order:
-            # إشعار صاحب الطلب
-            tg_id = None
-            conn = get_connection()
+        if not order:
+            await query.edit_message_text("❌ الطلب غير موجود.")
+            return
+
+        tg_id = _get_telegram_id(order["requester_id"])
+        if tg_id:
             try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT telegram_id FROM users WHERE id = %s", (order["requester_id"],))
-                    row = cur.fetchone()
-                    if row:
-                        tg_id = row[0]
-                conn.commit()
+                await bot.send_message(
+                    chat_id=tg_id,
+                    text="✅ طلبك جاهز في المخزن الآن!\n\n"
+                         "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
+                         "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>\n"
+                         "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
+                         "🏃 تقدر تيجان تأخذه!",
+                    parse_mode=ParseMode.HTML,
+                )
             except Exception:
-                conn.rollback()
-            finally:
-                release_connection(conn)
+                pass
 
-            if tg_id:
-                try:
-                    await bot.send_message(
-                        chat_id=tg_id,
-                        text="✅ تم توريد طلبك!\n\n"
-                             "📦 السلعة: <b>" + order["product_name"] + "</b>\n"
-                             "🔢 الكمية: <b>" + str(order["quantity"]) + "</b>\n"
-                             "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
-                             "شكراً لصبرك! 🙏",
-                        parse_mode=ParseMode.HTML,
-                    )
-                except Exception:
-                    pass
-
-            await query.edit_message_text(
-                "✅ تم تأكيد توريد الطلب #" + str(order_id) +
-                "\n📦 " + order["product_name"] +
-                "\n🔢 الكمية: " + str(order["quantity"])
-            )
-            logging.info("[INCOMING] Completed order #" + str(order_id))
-        else:
-            await query.edit_message_text("❌ الطلب غير موجود أو تم تأكيده مسبقاً.")
+        await query.edit_message_text(
+            "✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
+            "📦 " + order["product_name"] +
+            "\n🔢 الكمية: " + str(order["quantity"]) +
+            "\n\n📱 تم إشعار صاحب الطلب."
+        )
+        logging.info("[INCOMING] Ready order #" + str(order_id))
         return
+
+    # ── 3. طلب ليس جاهز بعد ──
+    if data.startswith("io_notready_"):
+        order_id = int(data.split("_")[-1])
+
+        tg_id = None
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT io.*, u.telegram_id FROM incoming_orders io LEFT JOIN users u ON u.id = io.requester_id WHERE io.id = %s", (order_id,))
+                order = cur.fetchone()
+                if order:
+                    tg_id = order.get("telegram_id")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            release_connection(conn)
+
+        if tg_id:
+            try:
+                await bot.send_message(
+                    chat_id=tg_id,
+                    text="⏳ طلبك ليس جاهزاً بعد.\n\n"
+                         "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
+                         "سيتم إشعارك فور الجاهزية.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        if order:
+            await query.edit_message_text(
+                "⏳ تم إبلاغ صاحب الطلب #" + str(order_id) + " بأنه ليس جاهزاً بعد.\n"
+                "📦 " + dict(order).get("product_name", "") +
+                "\n📱 تم إشعار المستخدم."
+            )
+        else:
+            await query.edit_message_text("❌ الطلب غير موجود.")
+        logging.info("[INCOMING] Not ready - order #" + str(order_id))
+        return
+
+
+def _get_telegram_id(user_db_id):
+    """جلب telegram_id من user_db_id."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT telegram_id FROM users WHERE id = %s", (user_db_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
 
 
 def build_application():
@@ -3615,8 +3732,9 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_extract_request_handler, pattern="^req_ext_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
-    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_complete_"))
-    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_complete_all$"))
+    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_receive_"))
+    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
+    app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
