@@ -2855,8 +2855,32 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         import tempfile
         import os
 
-        # Register fonts
-        font_path = "/usr/share/fonts/truetype/chinese/NotoSansSC-Regular.ttf"
+        # Register fonts - try multiple paths for compatibility across servers
+        font_path = None
+        _font_candidates = [
+            "/usr/share/fonts/truetype/chinese/NotoSansSC-Regular.ttf",
+            "/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ]
+        for _fp in _font_candidates:
+            if os.path.isfile(_fp):
+                font_path = _fp
+                break
+        if not font_path:
+            # Try to find any TTF font on the system
+            import subprocess
+            try:
+                result = subprocess.run(["find", "/usr/share/fonts", "-name", "*.ttf"],
+                                        capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    font_path = result.stdout.strip().split("\n")[0]
+            except Exception:
+                pass
+        if not font_path:
+            logging.error("[INVOICE] No TTF font found on system for PDF generation")
+            return None
         pdfmetrics.registerFont(TTFont("NotoSans", font_path))
 
         # Create temp file
@@ -3003,7 +3027,6 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     # Send PDF to admin
     if pdf_path:
         try:
-            import os
             with open(pdf_path, "rb") as f:
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
@@ -3018,6 +3041,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             logging.error("[INVOICE] PDF send failed: " + str(e))
 
     # Notify worker
+    worker_notified = False
     try:
         worker_msg = "🧾 فاتورة جديدة للتجهيز!" + chr(10) + chr(10)
         worker_msg += "👤 الزبون: " + customer + chr(10)
@@ -3029,22 +3053,23 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         worker_msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
         worker_msg += "⚙️ يرجى تجهيز البضاعة فوراً"
         await context.bot.send_message(chat_id=worker_tid, text=worker_msg)
+        worker_notified = True
     except Exception as e:
         logging.error("[INVOICE] Worker notification failed: " + str(e))
 
     # Clear state and return to admin panel
     context.user_data.clear()
-    await update.message.reply_text(
-        "✅ تم إنشاء الفاتورة بنجاح!" + chr(10) + chr(10)
-        + "🧾 #" + str(invoice_id) + chr(10)
-        + "👤 " + customer + chr(10)
-        + "💰 " + _fmt_price(total) + " د.ج" + chr(10)
-        + "👷 " + worker_name + chr(10) + chr(10)
-        + "📎 تم إرسال الفاتورة PDF" + chr(10)
-        + "📨 تم إشعار العامل" + chr(10)
-        + "✅ تم الخصم من المخزون",
-        reply_markup=get_admin_keyboard()
-    )
+    result_msg = "✅ تم إنشاء الفاتورة بنجاح!" + chr(10) + chr(10)
+    result_msg += "🧾 #" + str(invoice_id) + chr(10)
+    result_msg += "👤 " + customer + chr(10)
+    result_msg += "💰 " + _fmt_price(total) + " د.ج" + chr(10)
+    result_msg += "👷 " + worker_name + chr(10) + chr(10)
+    if pdf_path:
+        result_msg += "📎 تم إرسال الفاتورة PDF" + chr(10)
+    if worker_notified:
+        result_msg += "📨 تم إشعار العامل" + chr(10)
+    result_msg += "✅ تم الخصم من المخزون"
+    await update.message.reply_text(result_msg, reply_markup=get_admin_keyboard())
 
 
 async def callback_invoice_handler(update, context):
@@ -3246,7 +3271,18 @@ async def callback_invoice_handler(update, context):
         except Exception:
             pass
         # Finalize
-        await _invoice_finalize(query, context, worker_id, worker_tid, worker_name)
+        try:
+            await _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
+        except Exception as e:
+            logging.error("[INVOICE] Finalize unexpected error: " + str(e), exc_info=True)
+            try:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="❌ حدث خطأ أثناء إنشاء الفاتورة: " + str(e),
+                    reply_markup=get_admin_keyboard()
+                )
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════
