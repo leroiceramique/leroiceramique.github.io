@@ -2822,11 +2822,11 @@ async def callback_restore_last_handler(update, context):
 
 
 async def callback_add_notify_handler(update, context):
-    """Handle the 'reason for add' choice: truck or customer return."""
+    """Handle the 'reason for add' choice: truck, customer return, or silent correction."""
     query = update.callback_query
     await query.answer()
-    data = query.data  # "addnotify_truck" or "addnotify_return"
-    reason = "truck" if data == "addnotify_truck" else "return"
+    data = query.data  # "addnotify_truck", "addnotify_return", or "addnotify_silent"
+    reason = "truck" if data == "addnotify_truck" else ("return" if data == "addnotify_return" else "silent")
     pending = context.user_data.get("pending_add_notify")
     if not pending:
         await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
@@ -2836,14 +2836,19 @@ async def callback_add_notify_handler(update, context):
     qty = pending["qty"]
     actor = pending["user"]
     try:
-        # Broadcast the notification with the chosen reason
-        await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-        # Confirm to the user
-        if reason == "truck":
-            confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+        if reason == "silent":
+            # تصحيح المخزون — بدون إشعار لأحد
+            confirm = "📝 تم تصحيح المخزون بنجاح (بدون إشعار) ✅"
+            await query.edit_message_text(confirm)
         else:
-            confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
-        await query.edit_message_text(confirm)
+            # Broadcast the notification with the chosen reason
+            await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+            # Confirm to the user
+            if reason == "truck":
+                confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+            else:
+                confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+            await query.edit_message_text(confirm)
     except Exception as e:
         logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e), exc_info=True)
         try:
@@ -4210,6 +4215,7 @@ async def handle_admin_message(update, context):
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0628\u0636\u0627\u0639\u0629 \u0645\u0646 \u0627\u0644\u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
                      InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0633\u0644\u0639\u0629 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("\U0001f4dd \u062a\u0635\u062d\u064a\u062d \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0641\u0642\u0637", callback_data="addnotify_silent")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
@@ -4371,6 +4377,7 @@ async def handle_customer_message(update, context):
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🚚 وصول بضاعة من الشاحنة", callback_data="addnotify_truck"),
                      InlineKeyboardButton("↩️ إرجاع سلعة من زبون", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("📝 تصحيح المخزون فقط", callback_data="addnotify_silent")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
