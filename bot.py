@@ -2737,7 +2737,7 @@ async def users_command(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, box_area, num_boxes, total_price):
-    """Add item to invoice draft and show review."""
+    """Add item to invoice draft and ask for next product."""
     items = context.user_data.get("invoice_items", [])
     items.append({
         "product_id": product_id,
@@ -2752,22 +2752,12 @@ async def _invoice_add_item(update, context, product_id, product_name, qty_m2, p
     context.user_data["invoice_items"] = items
     chat_id = update.effective_chat.id
     total = sum(i["subtotal"] for i in items)
-    msg = "✅ تم إضافة: " + product_name + chr(10) + chr(10)
-    msg += "📐 المساحة: " + str(qty_m2) + " m² → " + str(num_boxes) + " علبة" + chr(10)
-    msg += "💰 المجموع: " + _fmt_price(total_price) + " د.ج" + chr(10) + chr(10)
-    msg += "━" * 20 + chr(10)
-    msg += "📋 الفاتورة (" + str(len(items)) + " عنصر):" + chr(10)
-    msg += "━" * 20 + chr(10)
-    for i, item in enumerate(items, 1):
-        msg += str(i) + ". " + item["product_name"] + chr(10)
-        msg += "   " + str(item["qty_m2"]) + " m² | " + str(item["quantity"]) + " علبة | " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
-    msg += "━" * 20 + chr(10)
-    msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
-    msg += "📝 أرسل اسم المنتج التالي" + chr(10)
-    msg += "أو اضغط 📋 اعتماد الفاتورة"
+    msg = "✅ تمت الإضافة (" + str(len(items)) + " عناصر)" + chr(10) + chr(10)
+    msg += "📦 " + product_name + " → " + str(num_boxes) + " علبة = " + _fmt_price(total_price) + " د.ج" + chr(10) + chr(10)
+    msg += "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ اعتماد الفاتورة", callback_data="invoice_review"),
-         InlineKeyboardButton("🗑 حذف آخر عنصر", callback_data="invoice_remove_last")],
+        [InlineKeyboardButton("📋 إنهاء الفاتورة", callback_data="invoice_review")],
+        [InlineKeyboardButton("🗑 حذف آخر عنصر", callback_data="invoice_remove_last")],
     ])
     context.user_data["state"] = STATE_INVOICE_PRODUCT
     await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=keyboard)
