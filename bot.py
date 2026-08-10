@@ -39,7 +39,7 @@ def can_extract(telegram_id):
         return bool(row and row["can_extract"])
     except Exception as e:
         conn.rollback()
-        logging.error("[DB] can_extract check failed: " + str(e))
+        logging.error("[DB] can_extract check failed: " + str(e), exc_info=True)
         return False
     finally:
         release_connection(conn)
@@ -901,12 +901,35 @@ def _fuzzy_score(name, query_tokens):
 
 
 def search_products(query):
-    """Smart search: fuzzy matching with typo tolerance, normalized text,
-    slash/x interchangeability, and accent handling."""
+    """Smart search: ILIKE fast path, then fuzzy matching with typo tolerance.
+    Normalized text, slash/x interchangeability, and accent handling."""
+    if not query or not query.strip():
+        return []
+
+    # ── FAST PATH: ILIKE exact/partial match in database (no full scan) ──
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Fetch all products (fuzzy matching needs full scan)
+            cur.execute(
+                "SELECT * FROM products WHERE name ILIKE %s ORDER BY id LIMIT 10",
+                ("%" + query.strip() + "%",),
+            )
+            ilike_rows = cur.fetchall()
+        conn.commit()
+        # If ILIKE found 3+ results, return them directly (fast, accurate)
+        ilike_results = [dict(r) for r in ilike_rows]
+        if len(ilike_results) >= 3:
+            return ilike_results
+    except Exception as e:
+        conn.rollback()
+        logging.error("[SEARCH] ILIKE fast path failed: " + str(e), exc_info=True)
+    finally:
+        release_connection(conn)
+
+    # ── SLOW PATH: Fuzzy matching (full scan, typo tolerance) ──
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM products ORDER BY id")
             all_rows = cur.fetchall()
         conn.commit()
@@ -921,7 +944,7 @@ def search_products(query):
     query_tokens = _normalize_text(query).split()
     if not query_tokens:
         return []
-    # Score every product
+    # If ILIKE returned some results (1-2), include them as baseline
     scored = []
     for p in all_products:
         s = _fuzzy_score(p["name"], query_tokens)
@@ -1156,6 +1179,22 @@ STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
+
+# ── State timeout: 10 minutes (600 seconds) ──
+_STATE_TIMEOUT_SECONDS = 600
+
+def _is_state_expired(context):
+    """Check if current state has been active longer than timeout. Returns True if expired."""
+    set_at = context.user_data.get("state_set_at")
+    if not set_at:
+        return False
+    elapsed = datetime.datetime.now(datetime.timezone.utc).timestamp() - set_at
+    return elapsed > _STATE_TIMEOUT_SECONDS
+
+def _set_state(context, state):
+    """Set state and record timestamp for timeout tracking."""
+    context.user_data["state"] = state
+    context.user_data["state_set_at"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1558,12 +1597,12 @@ async def generate_weekly_report(bot):
             await bot.send_message(chat_id=int(recipient_id), text=report_text)
             logging.info("[WEEKLY] Report sent to " + str(recipient_id))
         except Exception as e:
-            logging.error("[WEEKLY] Failed to send: " + str(e))
+            logging.error("[WEEKLY] Failed to send: " + str(e), exc_info=True)
 
         return report_text
 
     except Exception as e:
-        logging.error("[WEEKLY] Report generation failed: " + str(e))
+        logging.error("[WEEKLY] Report generation failed: " + str(e), exc_info=True)
         return None
 
 
@@ -1736,7 +1775,7 @@ async def callback_addtype_handler(update, context):
             except Exception:
                 pass
     except Exception as e:
-        logging.error("[ADDTYPE] Error: " + str(e))
+        logging.error("[ADDTYPE] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ: " + str(e))
         except Exception:
@@ -2093,7 +2132,7 @@ async def _show_all_movements(update, context, admin_view=True):
         markup = InlineKeyboardMarkup(buttons)
         await update.message.reply_text(text, reply_markup=markup)
     except Exception as e:
-        logging.error("[MOVEMENTS_DATE] Error: " + str(e))
+        logging.error("[MOVEMENTS_DATE] Error: " + str(e), exc_info=True)
         kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
 
@@ -2173,7 +2212,7 @@ async def callback_mov_date_handler(update, context):
                     text=chunk,
                     parse_mode=ParseMode.HTML)
     except Exception as e:
-        logging.error("[MOV_DATE_HANDLER] Error: " + str(e))
+        logging.error("[MOV_DATE_HANDLER] Error: " + str(e), exc_info=True)
         await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
 
 
@@ -2203,7 +2242,7 @@ async def callback_product_select_handler(update, context):
             return
         await _show_product_detail(update, context, dict(row))
     except Exception as e:
-        logging.error("[PSEL] Error: " + str(e))
+        logging.error("[PSEL] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
@@ -2255,7 +2294,7 @@ async def callback_product_action_handler(update, context):
                 text = "\n".join(tx_lines)
             await query.edit_message_text(text)
         except Exception as e:
-            logging.error("[PACT_LOG] Error: " + str(e))
+            logging.error("[PACT_LOG] Error: " + str(e), exc_info=True)
             try:
                 await query.edit_message_text("❌ خطأ في تحميل الحركة.")
             except Exception:
@@ -2293,7 +2332,7 @@ async def callback_product_action_handler(update, context):
         context.user_data["state"] = "waiting_pact_qty"
         await query.edit_message_text(text)
     except Exception as e:
-        logging.error("[PACT] Error: " + str(e))
+        logging.error("[PACT] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
@@ -2322,7 +2361,7 @@ async def start_command(update, context):
                         reply_markup=kb)
                     logging.info("[JOIN] Notification sent to admin " + str(admin_id) + " for user " + str(user.id))
                 except Exception as notify_err:
-                    logging.error("[JOIN] Failed to notify admin " + str(admin_id) + ": " + str(notify_err))
+                    logging.error("[JOIN] Failed to notify admin " + str(admin_id) + ": " + str(notify_err), exc_info=True)
     if is_admin(user.id):
         name = user.first_name or ""
         await update.message.reply_text(
@@ -2663,7 +2702,7 @@ async def callback_add_notify_handler(update, context):
             confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
         await query.edit_message_text(confirm)
     except Exception as e:
-        logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e))
+        logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
         except Exception:
@@ -2738,7 +2777,7 @@ async def users_command(update, context):
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logging.error("[USERS] Failed to fetch approved users: " + str(e))
+        logging.error("[USERS] Failed to fetch approved users: " + str(e), exc_info=True)
         approved = []
     finally:
         release_connection(conn)
@@ -2983,6 +3022,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         subtitle_style = ParagraphStyle("ArabicSubtitle", parent=styles["Normal"], fontName="NotoSans", fontSize=11, alignment=1, spaceAfter=3*mm)
         body_style = ParagraphStyle("ArabicBody", parent=styles["Normal"], fontName="NotoSans", fontSize=10, leading=14)
         small_style = ParagraphStyle("ArabicSmall", parent=styles["Normal"], fontName="NotoSans", fontSize=8, alignment=1)
+        detail_style = ParagraphStyle("DetailSmall", parent=styles["Normal"], fontName="NotoSans", fontSize=8, leading=10, textColor=colors.Color(0.3, 0.3, 0.3))
 
         elements = []
         elements.append(Paragraph("Produit Le Roi", title_style))
@@ -2992,7 +3032,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         date_str = now.strftime("%Y/%m/%d %H:%M")
 
         info_data = [
-            [Paragraph("N° Facture", body_style), Paragraph("#" + str(invoice_id), body_style)],
+            [Paragraph("N\u00b0 Facture", body_style), Paragraph("#" + str(invoice_id), body_style)],
             [Paragraph("Date", body_style), Paragraph(date_str, body_style)],
             [Paragraph("Client", body_style), Paragraph(customer_name, body_style)],
         ]
@@ -3010,52 +3050,61 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         elements.append(info_table)
         elements.append(Spacer(1, 5*mm))
 
-        # Items table - dynamic columns based on product types
+        # Items table
         header = [
+            Paragraph("N\u00b0", body_style),
             Paragraph("Produit", body_style),
-            Paragraph("Quantité", body_style),
+            Paragraph("D\u00e9tail", body_style),
             Paragraph("Prix", body_style),
             Paragraph("Total (DA)", body_style),
         ]
         table_data = [header]
-        for item in items:
+        for idx, item in enumerate(items, 1):
             pt = item.get("ptype", "m2")
+            num_label = Paragraph(str(idx), body_style)
+            name_label = Paragraph(item["product_name"], body_style)
             if pt == "pcs":
-                table_data.append([
-                    Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item["quantity"]) + " pcs", body_style),
-                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/pcs", body_style),
-                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-                ])
+                detail_text = (str(item["quantity"]) + " pi\u00e8ce(s)")
+                price_text = "{:,.2f}".format(item["unit_price"]) + " DA/pcs"
+                detail_label = Paragraph(detail_text, detail_style)
+                price_label = Paragraph(price_text, detail_style)
+                total_label = Paragraph("{:,.2f}".format(item["subtotal"]), body_style)
             elif pt == "plant":
-                table_data.append([
-                    Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item.get("num_pieces", item["quantity"])) + " pcs (" + str(item.get("length_m", "")) + " m)", body_style),
-                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m", body_style),
-                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-                ])
+                n_pieces = item.get("num_pieces", item["quantity"])
+                length_m = item.get("length_m", "")
+                qty_m = item.get("qty_m", 0)
+                detail_text = str(n_pieces) + " pi\u00e8ce(s) x " + str(length_m) + "m = " + str(round(qty_m, 2)) + " m.lin"
+                price_text = "{:,.2f}".format(item["unit_price"]) + " DA/m.lin"
+                detail_label = Paragraph(detail_text, detail_style)
+                price_label = Paragraph(price_text, detail_style)
+                total_label = Paragraph("{:,.2f}".format(item["subtotal"]), body_style)
             else:
-                table_data.append([
-                    Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item.get("qty_m2", item["quantity"])) + " m² (" + str(item["quantity"]) + " crt)", body_style),
-                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m²", body_style),
-                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-                ])
+                # m2 products
+                qty_m2 = item.get("qty_m2", 0)
+                n_boxes = item.get("num_boxes", item["quantity"])
+                box_area = item.get("box_area", 0)
+                detail_text = str(round(qty_m2, 2)) + " m\u00b2 (" + str(n_boxes) + " carton" + ("s" if n_boxes > 1 else "") + " x " + str(box_area) + " m\u00b2)"
+                price_text = "{:,.2f}".format(item["unit_price"]) + " DA/m\u00b2"
+                detail_label = Paragraph(detail_text, detail_style)
+                price_label = Paragraph(price_text, detail_style)
+                total_label = Paragraph("{:,.2f}".format(item["subtotal"]), body_style)
+            table_data.append([num_label, name_label, detail_label, price_label, total_label])
 
         table_data.append([
+            Paragraph("", body_style),
             Paragraph("TOTAL", body_style), "", "",
             Paragraph("{:,.2f}".format(total), body_style),
         ])
 
-        items_table = Table(table_data, colWidths=[55*mm, 35*mm, 35*mm, 30*mm])
+        items_table = Table(table_data, colWidths=[8*mm, 42*mm, 42*mm, 28*mm, 28*mm])
         items_table.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("ALIGN", (1, 1), (1, -2), "LEFT"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.3, 0.5)),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3*mm),
-            ("TOPPADDING", (0, 0), (-1, -1), 3*mm),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5*mm),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5*mm),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ("LINEBELOW", (0, -1), (-1, -1), 2, colors.Color(0.2, 0.3, 0.5)),
             ("BACKGROUND", (0, -1), (-1, -1), colors.Color(0.9, 0.9, 0.9)),
@@ -3067,7 +3116,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         doc.build(elements)
         return pdf_path
     except Exception as e:
-        logging.error("[INVOICE] PDF generation failed: " + str(e))
+        logging.error("[INVOICE] PDF generation failed: " + str(e), exc_info=True)
         return None
 
 
@@ -3123,7 +3172,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logging.error("[INVOICE] DB save failed: " + str(e))
+        logging.error("[INVOICE] DB save failed: " + str(e), exc_info=True)
         await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), get_admin_keyboard())
         return
 
@@ -3144,7 +3193,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                 )
             os.remove(pdf_path)
         except Exception as e:
-            logging.error("[INVOICE] PDF send failed: " + str(e))
+            logging.error("[INVOICE] PDF send failed: " + str(e), exc_info=True)
 
     # Notify worker
     worker_notified = False
@@ -3167,7 +3216,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         await context.bot.send_message(chat_id=worker_tid, text=worker_msg)
         worker_notified = True
     except Exception as e:
-        logging.error("[INVOICE] Worker notification failed: " + str(e))
+        logging.error("[INVOICE] Worker notification failed: " + str(e), exc_info=True)
 
     # Clear state and return to admin panel
     context.user_data.clear()
@@ -3501,6 +3550,13 @@ async def handle_admin_message(update, context):
     chat_id = update.effective_chat.id
     bot = context.bot
 
+    # ── State timeout: expire stale states after 10 minutes ──
+    if state and _is_state_expired(context):
+        logging.info(f"[STATE_TIMEOUT] Admin {user.id} state '{state}' expired, clearing.")
+        context.user_data.clear()
+        state = None
+        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=get_admin_keyboard())
+
     # In a state - if user clicks an admin button, clear state first
     admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
@@ -3515,6 +3571,7 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_SEARCH:
             context.user_data["state"] = STATE_SEARCH_ADMIN
+            context.user_data["state_set_at"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
             await update.message.reply_text(
                 "🔍 البحث الذكي" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:" + chr(10) + chr(10) + "💡 يفهم الأخطاء الإملائية" + chr(10) + "🔤 / و × متساويان (60/60 = 60x60)" + chr(10) + "🏭 ابحث بالمصنع أو المقاس",
                 reply_markup=get_input_keyboard())
@@ -4047,6 +4104,13 @@ async def handle_customer_message(update, context):
     state = context.user_data.get("state")
     user = update.effective_user
 
+    # ── State timeout: expire stale states after 10 minutes ──
+    if state and _is_state_expired(context):
+        logging.info(f"[STATE_TIMEOUT] Customer {user.id} state '{state}' expired, clearing.")
+        context.user_data.clear()
+        state = None
+        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=get_customer_keyboard())
+
     # Handle customer buttons (clear state first)
     cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS]
     if text in cust_buttons:
@@ -4193,9 +4257,9 @@ async def handle_customer_message(update, context):
                     ])
                     await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=kb)
                 except Exception as e:
-                    logging.error("[EXTRACT] Notify admin failed: " + str(e))
+                    logging.error("[EXTRACT] Notify admin failed: " + str(e), exc_info=True)
         except Exception as e:
-            logging.error("[EXTRACT] Request failed: " + str(e))
+            logging.error("[EXTRACT] Request failed: " + str(e), exc_info=True)
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
         return
@@ -4255,7 +4319,7 @@ async def callback_extract_perm_handler(update, context):
                     text="\🛑 تم منحك صلاحية طلب إخراج السلع.\nابحث عن سلعة واضغط طلب إخراج.",
                 )
             except Exception as e:
-                logging.error("[EXTRACT] Notify user failed: " + str(e))
+                logging.error("[EXTRACT] Notify user failed: " + str(e), exc_info=True)
         elif data.startswith("ext_revoke_"):
             tid = int(data.split("_")[2])
             set_extract_permission(tid, False)
@@ -4268,11 +4332,11 @@ async def callback_extract_perm_handler(update, context):
                     text="❌ تم سحب صلاحية طلب إخراج السلع.",
                 )
             except Exception as e:
-                logging.error("[EXTRACT] Notify user failed: " + str(e))
+                logging.error("[EXTRACT] Notify user failed: " + str(e), exc_info=True)
         elif data == "ext_pending_list":
             await _show_pending_extractions(update, context)
     except Exception as e:
-        logging.error("[EXTRACT_PERM] Error: " + str(e))
+        logging.error("[EXTRACT_PERM] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ خطأ: " + str(e))
         except Exception:
@@ -4284,7 +4348,7 @@ async def _show_pending_extractions(update, context):
     try:
         pending = get_pending_extraction_requests()
     except Exception as e:
-        logging.error("[EXTRACT] Get pending failed: " + str(e))
+        logging.error("[EXTRACT] Get pending failed: " + str(e), exc_info=True)
         await query.edit_message_text("❌ خطأ في تحميل الطلبات.")
         return
     if not pending:
@@ -4415,7 +4479,7 @@ async def callback_extract_approve_handler(update, context):
             if action == "approve":
                 await send_low_stock_alerts(context.bot)
     except Exception as e:
-        logging.error("[EXTRACT_APPROVE] Error: " + str(e))
+        logging.error("[EXTRACT_APPROVE] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ خطأ: " + str(e))
         except Exception:
@@ -4639,7 +4703,7 @@ async def handle_receipt_photo(update, context):
         )
         logging.info("[INCOMING] Photo order #" + str(order_id) + " by user " + str(user.id))
     except Exception as e:
-        logging.error("[INCOMING] Failed: " + str(e))
+        logging.error("[INCOMING] Failed: " + str(e), exc_info=True)
         await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
     context.user_data.clear()
 
@@ -4876,7 +4940,7 @@ def _fetch_latest_backup_from_email():
         mail.logout()
         return json_data
     except Exception as e:
-        logging.error("[IMAP] Failed to fetch backup: " + str(e))
+        logging.error("[IMAP] Failed to fetch backup: " + str(e), exc_info=True)
         return None
 
 def _send_backup_email(backup_bytes, filename):
@@ -4911,7 +4975,7 @@ def _send_backup_email(backup_bytes, filename):
         logging.info("[BACKUP] Email sent to " + BACKUP_EMAIL)
         return True
     except Exception as e:
-        logging.error("[BACKUP] Email failed: " + str(e))
+        logging.error("[BACKUP] Email failed: " + str(e), exc_info=True)
         return False
 
 
@@ -4931,7 +4995,7 @@ async def _daily_backup(bot):
         else:
             logging.warning("[BACKUP] Email not configured, backup saved in memory only")
     except Exception as e:
-        logging.error("[BACKUP] Daily backup failed: " + str(e))
+        logging.error("[BACKUP] Daily backup failed: " + str(e), exc_info=True)
 
 
 async def _daily_backup_loop(bot):
