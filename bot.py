@@ -2754,10 +2754,13 @@ async def _invoice_add_item(update, context, product_id, product_name, qty_m2, p
     total = sum(i["subtotal"] for i in items)
     msg = "✅ تمت الإضافة (" + str(len(items)) + " عناصر)" + chr(10) + chr(10)
     msg += "📦 " + product_name + " → " + str(num_boxes) + " علبة = " + _fmt_price(total_price) + " د.ج" + chr(10) + chr(10)
-    msg += "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج"
+    msg += "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
+    msg += "📦 اكتب اسم المنتج التالي:"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 إنهاء الفاتورة", callback_data="invoice_review")],
-        [InlineKeyboardButton("🗑 حذف آخر عنصر", callback_data="invoice_remove_last")],
+        [InlineKeyboardButton("➕ إضافة منتج جديد", callback_data="invoice_add_new")],
+        [InlineKeyboardButton("📋 إنهاء الفاتورة", callback_data="invoice_review"),
+         InlineKeyboardButton("🗑 حذف آخر عنصر", callback_data="invoice_remove_last")],
+        [InlineKeyboardButton("❌ إلغاء الفاتورة", callback_data="invoice_cancel")],
     ])
     context.user_data["state"] = STATE_INVOICE_PRODUCT
     await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=keyboard)
@@ -3254,8 +3257,16 @@ async def callback_invoice_handler(update, context):
                     chat_id=query.message.chat_id,
                     text="📦 " + prod["name"] + stock_info + chr(10) + chr(10) + "🔢 أرسل المساحة المطلوبة (m²):")
 
+    elif data == "invoice_add_new":
+        # Add new product to invoice
+        context.user_data["state"] = STATE_INVOICE_PRODUCT
+        try:
+            await query.edit_message_text("📦 أرسل اسم المنتج:")
+        except Exception:
+            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 أرسل اسم المنتج:")
+
     elif data.startswith("inv_area_"):
-        # Box area selection callback
+        # Box area selection callback - no longer used, but keep for compatibility
         try:
             box_area = float(data[len("inv_area_"):])
         except ValueError:
@@ -3582,25 +3593,31 @@ async def handle_admin_message(update, context):
         msg = "📦 " + product_name + chr(10) + chr(10)
         msg += "📐 المساحة: " + str(qty_m2) + " m²" + chr(10)
         msg += "💰 السعر: " + _fmt_price(price_m2) + " د.ج/m²" + chr(10) + chr(10)
-        msg += "📏 اختر مساحة العلبة (m²):"
-        area_options = [1.00, 1.21, 1.25, 1.31, 1.40, 1.42, 1.44, 1.50, 1.60, 1.62, 0.75, 0.77, 0.90]
-        buttons = []
-        row = []
-        for i, area in enumerate(area_options):
-            row.append(InlineKeyboardButton(str(area) + " m²", callback_data="inv_area_" + str(area)))
-            if len(row) == 3:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
-        buttons.append([InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"),
-                        InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")])
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+        msg += "📏 أرسل مساحة العلبة (m²):"
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+        ]))
         return
 
     if state == STATE_INVOICE_AREA:
-        # This should not happen - area is selected via callback
-        await update.message.reply_text("❌ اختر مساحة العلبة من الأزرار أعلاه.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
+        try:
+            box_area = float(text.strip())
+            if box_area <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ أرسل مساحة العلبة صحيحة (مثلاً: 1.44).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
+            return
+        product_name = context.user_data.get("invoice_tmp_product", "")
+        product_id = context.user_data.get("invoice_tmp_pid")
+        qty_m2 = context.user_data.get("invoice_tmp_qty", 0)
+        price_m2 = context.user_data.get("invoice_tmp_price", 0)
+        import math
+        raw_boxes = qty_m2 / box_area
+        num_boxes = math.ceil(raw_boxes)
+        actual_area = num_boxes * box_area
+        total_price = actual_area * price_m2
+        await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, box_area, num_boxes, total_price)
         return
 
     if state == STATE_ADD_NAME:
