@@ -1284,6 +1284,43 @@ async def _broadcast_update_notification(update, context):
     logging.info("[UPDATE] Auto-broadcast sent to " + str(sent) + " users")
 
 
+async def _broadcast_to_all_users(bot, message):
+    """Send a message to ALL active users (admin + customer)."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer') AND active = TRUE")
+                rows = cur.fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            rows = []
+        finally:
+            release_connection(conn)
+        for r in rows:
+            try:
+                await bot.send_message(chat_id=r[0], text=message)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.warning("[BROADCAST] Failed: " + str(e))
+
+
+async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
+    """Broadcast add-notification to all users with reason (truck arrival or customer return)."""
+    pname = product.get("name", "") if isinstance(product, dict) else str(product)
+    if reason == "truck":
+        msg = ("🚚 وصول بضاعة جديدة!" + chr(10) + chr(10)
+               + "📦 " + pname + chr(10)
+               + "➕ الكمية: " + str(qty))
+    else:
+        msg = ("↩️ إرجاع سلعة من زبون" + chr(10) + chr(10)
+               + "📦 " + pname + chr(10)
+               + "➕ الكمية: " + str(qty))
+    await _broadcast_to_all_users(bot, msg)
+
+
 async def send_low_stock_alerts(bot):
     """Send individual alerts to ALL users when products enter or leave low-stock list."""
     try:
@@ -1904,6 +1941,22 @@ def _is_pcs_product(name):
     return (n.startswith("motif") or n.startswith("plante")
             or n.startswith("120/60") or n.startswith("120x60")
             or n.startswith("120×60"))
+
+
+def _invoice_product_type(name):
+    """Detect invoice product type from name. Returns:
+       'm2'    -> sold by m² with box area (باقي السلع)
+       'pcs'   -> sold by piece with unit price (motif, 120/60)
+       'plant' -> sold by linear meter with length choice (plante)
+    """
+    if not name or not isinstance(name, str):
+        return "m2"
+    n = name.strip().lower()
+    if n.startswith("motif") or n.startswith("120/60") or n.startswith("120x60") or n.startswith("120×60"):
+        return "pcs"
+    if n.startswith("plante"):
+        return "plant"
+    return "m2"
 
 
 def _get_unit_code(product_name):
@@ -2600,14 +2653,21 @@ async def callback_add_notify_handler(update, context):
     product = pending["product"]
     qty = pending["qty"]
     actor = pending["user"]
-    # Broadcast the notification with the chosen reason
-    await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-    # Confirm to the user
-    if reason == "truck":
-        confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
-    else:
-        confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
-    await query.edit_message_text(confirm)
+    try:
+        # Broadcast the notification with the chosen reason
+        await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+        # Confirm to the user
+        if reason == "truck":
+            confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+        else:
+            confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+        await query.edit_message_text(confirm)
+    except Exception as e:
+        logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e))
+        try:
+            await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
+        except Exception:
+            pass
     context.user_data.pop("pending_add_notify", None)
 
 
@@ -2736,26 +2796,38 @@ async def users_command(update, context):
 #  INVOICE SYSTEM FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
-async def _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, box_area, num_boxes, total_price):
-    """Add item to invoice draft and ask for next product."""
+async def _invoice_add_item(update, context, product_id, product_name, qty, unit_price, ptype, extra_info=None):
+    """Add item to invoice draft. ptype: 'm2', 'pcs', 'plant'."""
     items = context.user_data.get("invoice_items", [])
-    items.append({
+    item = {
         "product_id": product_id,
         "product_name": product_name,
-        "quantity": num_boxes,
-        "qty_m2": qty_m2,
-        "price_m2": price_m2,
-        "box_area": box_area,
-        "unit_price": price_m2,
-        "subtotal": total_price,
-    })
+        "ptype": ptype,
+        "quantity": qty,
+        "unit_price": unit_price,
+    }
+    if ptype == "m2":
+        item["qty_m2"] = extra_info.get("qty_m2", qty) if extra_info else qty
+        item["box_area"] = extra_info.get("box_area", 1) if extra_info else 1
+        item["subtotal"] = qty * unit_price
+    elif ptype == "pcs":
+        item["subtotal"] = qty * unit_price
+    elif ptype == "plant":
+        item["length_m"] = extra_info.get("length_m", 0.45) if extra_info else 0.45
+        item["qty_m"] = qty
+        item["subtotal"] = qty * unit_price
+    items.append(item)
     context.user_data["invoice_items"] = items
     chat_id = update.effective_chat.id
     total = sum(i["subtotal"] for i in items)
     msg = "✅ تمت الإضافة (" + str(len(items)) + " عناصر)" + chr(10) + chr(10)
-    msg += "📦 " + product_name + " → " + str(num_boxes) + " علبة = " + _fmt_price(total_price) + " د.ج" + chr(10) + chr(10)
-    msg += "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
-    msg += "📦 اكتب اسم المنتج التالي:"
+    if ptype == "m2":
+        msg += "📦 " + product_name + " → " + str(item.get("num_boxes", qty)) + " علبة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+    elif ptype == "pcs":
+        msg += "📦 " + product_name + " → " + str(qty) + " قطعة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+    elif ptype == "plant":
+        msg += "📦 " + product_name + " → " + str(qty) + " م.ط = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+    msg += chr(10) + "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة منتج جديد", callback_data="invoice_add_new")],
         [InlineKeyboardButton("📋 إنهاء الفاتورة", callback_data="invoice_review"),
@@ -2789,8 +2861,16 @@ async def _invoice_show_review(update_or_query, context, from_callback=False):
     msg += "━" * 20 + chr(10)
     for i, item in enumerate(items, 1):
         msg += str(i) + ". " + item["product_name"] + chr(10)
-        msg += "   📐 " + str(item["qty_m2"]) + " m² → " + str(item["quantity"]) + " علبة (" + str(item["box_area"]) + " m²)" + chr(10)
-        msg += "   💰 " + _fmt_price(item["price_m2"]) + " د.ج/m² × " + str(round(item["qty_m2"], 2)) + " m² = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        pt = item.get("ptype", "m2")
+        if pt == "m2":
+            msg += "   📐 " + str(item.get("qty_m2", "")) + " m² → " + str(item["quantity"]) + " علبة" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/m² × " + str(round(item.get("qty_m2", 0), 2)) + " m² = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        elif pt == "pcs":
+            msg += "   📦 " + str(item["quantity"]) + " قطعة" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/قطعة × " + str(item["quantity"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        elif pt == "plant":
+            msg += "   📏 " + str(item.get("qty_m", item["quantity"])) + " م.ط (" + str(item.get("length_m", "")) + " م)" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/م.ط × " + str(item.get("qty_m", item["quantity"])) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     msg += "━" * 20 + chr(10)
     msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
@@ -2927,30 +3007,44 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         elements.append(info_table)
         elements.append(Spacer(1, 5*mm))
 
-        # Items table
+        # Items table - dynamic columns based on product types
         header = [
             Paragraph("Produit", body_style),
-            Paragraph("Surface (m²)", body_style),
-            Paragraph("Nb Cartons", body_style),
-            Paragraph("Prix/m²", body_style),
+            Paragraph("Quantité", body_style),
+            Paragraph("Prix", body_style),
             Paragraph("Total (DA)", body_style),
         ]
         table_data = [header]
         for item in items:
-            table_data.append([
-                Paragraph(item["product_name"], body_style),
-                Paragraph(str(item["qty_m2"]), body_style),
-                Paragraph(str(item["quantity"]), body_style),
-                Paragraph("{:,.2f}".format(item["price_m2"]), body_style),
-                Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-            ])
+            pt = item.get("ptype", "m2")
+            if pt == "pcs":
+                table_data.append([
+                    Paragraph(item["product_name"], body_style),
+                    Paragraph(str(item["quantity"]) + " pcs", body_style),
+                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/pcs", body_style),
+                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
+                ])
+            elif pt == "plant":
+                table_data.append([
+                    Paragraph(item["product_name"], body_style),
+                    Paragraph(str(item.get("qty_m", item["quantity"])) + " m. lin.", body_style),
+                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m", body_style),
+                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
+                ])
+            else:
+                table_data.append([
+                    Paragraph(item["product_name"], body_style),
+                    Paragraph(str(item.get("qty_m2", item["quantity"])) + " m² (" + str(item["quantity"]) + " crt)", body_style),
+                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m²", body_style),
+                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
+                ])
 
         table_data.append([
-            Paragraph("TOTAL", body_style), "", "", "",
+            Paragraph("TOTAL", body_style), "", "",
             Paragraph("{:,.2f}".format(total), body_style),
         ])
 
-        items_table = Table(table_data, colWidths=[50*mm, 25*mm, 22*mm, 25*mm, 28*mm])
+        items_table = Table(table_data, colWidths=[55*mm, 35*mm, 35*mm, 30*mm])
         items_table.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("ALIGN", (0, 0), (0, -1), "LEFT"),
@@ -3057,7 +3151,13 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         worker_msg += "📅 " + now.strftime("%Y/%m/%d %H:%M") + chr(10)
         worker_msg += "━" * 15 + chr(10)
         for i, item in enumerate(items, 1):
-            worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item["qty_m2"]) + "m² → " + str(item["quantity"]) + " علبة" + chr(10)
+            pt = item.get("ptype", "m2")
+            if pt == "pcs":
+                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item["quantity"]) + " قطعة" + chr(10)
+            elif pt == "plant":
+                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m", item["quantity"])) + " م.ط" + chr(10)
+            else:
+                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m2", "")) + "m² → " + str(item["quantity"]) + " علبة" + chr(10)
         worker_msg += "━" * 15 + chr(10)
         worker_msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
         worker_msg += "⚙️ يرجى تجهيز البضاعة فوراً"
@@ -3148,18 +3248,24 @@ async def callback_invoice_handler(update, context):
         context.user_data["state"] = STATE_INVOICE_QTY
         context.user_data.pop("invoice_tmp_qty", None)
         product_name = context.user_data.get("invoice_tmp_product", "\u0627\u0644\u0645\u0646\u062a\u062c")
+        ptype = context.user_data.get("invoice_tmp_ptype", "m2")
+        if ptype == "pcs":
+            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل عدد القطع:"
+        elif ptype == "plant":
+            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل الطول بالمتر (م.ط):"
+        else:
+            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل الكمية المطلوبة (m²):"
         try:
             await query.edit_message_text(
-                "\U0001f4e6 " + product_name + chr(10) + chr(10)
-                + "\U0001f522 \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629 \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629:",
+                q_text,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("\U0001f519 \u062a\u0631\u0627\u062c\u0639", callback_data="invoice_back_product"),
-                     InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                    [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
                 ]))
         except Exception:
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
-                text="\U0001f522 \u0623\u0639\u062f \u0623\u0631\u0633\u0644 \u0627\u0644\u0643\u0645\u064a\u0629:")
+                text=q_text)
 
     elif data == "invoice_remove_last":
         items = context.user_data.get("invoice_items", [])
@@ -3198,13 +3304,20 @@ async def callback_invoice_handler(update, context):
         if data.startswith("invsel_manual_"):
             # Manual entry - go to qty step
             manual_name = data[len("invsel_manual_"):]
+            ptype = _invoice_product_type(manual_name)
             context.user_data["invoice_tmp_product"] = manual_name
             context.user_data["invoice_tmp_pid"] = None
+            context.user_data["invoice_tmp_ptype"] = ptype
             context.user_data["state"] = STATE_INVOICE_QTY
+            if ptype == "pcs":
+                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل عدد القطع:"
+            elif ptype == "plant":
+                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل الطول بالمتر (م.ط):"
+            else:
+                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل المساحة المطلوبة (m²):"
             try:
                 await query.edit_message_text(
-                    "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10)
-                    + "🔢 أرسل المساحة المطلوبة (m²):",
+                    q_text,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
                          InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
@@ -3212,7 +3325,7 @@ async def callback_invoice_handler(update, context):
             except Exception:
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="🔢 أرسل المساحة المطلوبة (m²):",
+                    text=q_text,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
                          InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
@@ -3240,14 +3353,21 @@ async def callback_invoice_handler(update, context):
                 except Exception:
                     pass
                 return
+            ptype = _invoice_product_type(prod["name"])
             context.user_data["invoice_tmp_product"] = prod["name"]
             context.user_data["invoice_tmp_pid"] = prod["id"]
+            context.user_data["invoice_tmp_ptype"] = ptype
             context.user_data["state"] = STATE_INVOICE_QTY
             stock_info = " (المتوفر: " + str(prod["quantity"]) + ")" if prod["quantity"] > 0 else " (غير متوفر! ⚠️)"
+            if ptype == "pcs":
+                q_text = "🔢 أرسل عدد القطع:"
+            elif ptype == "plant":
+                q_text = "🔢 أرسل الطول بالمتر (م.ط):"
+            else:
+                q_text = "🔢 أرسل المساحة المطلوبة (m²):"
             try:
                 await query.edit_message_text(
-                    "📦 " + prod["name"] + stock_info + chr(10) + chr(10)
-                    + "🔢 أرسل المساحة المطلوبة (m²):",
+                    "📦 " + prod["name"] + stock_info + chr(10) + chr(10) + q_text,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
                          InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
@@ -3255,7 +3375,7 @@ async def callback_invoice_handler(update, context):
             except Exception:
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="📦 " + prod["name"] + stock_info + chr(10) + chr(10) + "🔢 أرسل المساحة المطلوبة (m²):")
+                    text="📦 " + prod["name"] + stock_info + chr(10) + chr(10) + q_text)
 
     elif data == "invoice_add_new":
         # Add new product to invoice
@@ -3264,6 +3384,36 @@ async def callback_invoice_handler(update, context):
             await query.edit_message_text("📦 أرسل اسم المنتج:")
         except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text="📦 أرسل اسم المنتج:")
+
+    elif data.startswith("inv_plen_"):
+        # Plante length selection
+        try:
+            length_m = float(data[len("inv_plen_"):])
+        except ValueError:
+            return
+        context.user_data["invoice_tmp_plant_len"] = length_m
+        qty = context.user_data.get("invoice_tmp_qty", 0)
+        product_name = context.user_data.get("invoice_tmp_product", "")
+        context.user_data["state"] = STATE_INVOICE_PRICE
+        try:
+            await query.edit_message_text(
+                "💰 أرسل سعر المتر الطولي (د.ج/م.ط):" + chr(10) + chr(10)
+                + "📦 " + product_name + chr(10)
+                + "📏 " + str(qty) + " م.ط (شريط " + str(length_m) + " م)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="💰 أرسل سعر المتر الطولي (د.ج/م.ط):" + chr(10) + chr(10)
+                + "📦 " + product_name + chr(10)
+                + "📏 " + str(qty) + " م.ط (شريط " + str(length_m) + " م)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
 
     elif data.startswith("inv_area_"):
         # Box area selection callback - no longer used, but keep for compatibility
@@ -3295,7 +3445,8 @@ async def callback_invoice_handler(update, context):
             await query.edit_message_text(summary)
         except Exception:
             pass
-        await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, box_area, num_boxes, total_price)
+        await _invoice_add_item(update, context, product_id, product_name, num_boxes, price_m2, "m2",
+                                 extra_info={"qty_m2": actual_area, "box_area": box_area, "num_boxes": num_boxes})
 
     elif data.startswith("inv_worker_"):
         parts = data.split("_")
@@ -3492,56 +3643,65 @@ async def handle_admin_message(update, context):
     if state == STATE_INVOICE_CUSTOMER:
         customer_name = text.strip()
         if not customer_name:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646.", reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ أرسل اسم الزبون.", reply_markup=get_input_keyboard())
             return
         context.user_data["invoice_customer"] = customer_name
         context.user_data["state"] = STATE_INVOICE_PRODUCT
         await update.message.reply_text(
             "📦 أرسل اسم المنتج:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_customer"),
-                 InlineKeyboardButton("\u274c إلغاء", callback_data="invoice_cancel")]
+                [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_customer"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
             ]))
         return
 
     if state == STATE_INVOICE_PRODUCT:
         product_name = text.strip()
         if not product_name:
-            await update.message.reply_text("❌ أرسل اسم المنتج.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_customer"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
+            await update.message.reply_text("❌ أرسل اسم المنتج.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_customer"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
             return
-        # Smart search in DB
         results = search_products(product_name)
         if not results:
-            # Product not in inventory - still allow manual entry
             context.user_data["invoice_tmp_product"] = product_name
             context.user_data["invoice_tmp_pid"] = None
+            ptype = _invoice_product_type(product_name)
+            context.user_data["invoice_tmp_ptype"] = ptype
             context.user_data["state"] = STATE_INVOICE_QTY
+            if ptype == "pcs":
+                q = "🔢 أرسل عدد القطع:"
+            elif ptype == "plant":
+                q = "🔢 أرسل الطول بالمتر (م.ط):"
+            else:
+                q = "🔢 أرسل المساحة المطلوبة (m²):"
             await update.message.reply_text(
-                "❓ لم يتم العثور على \"" + product_name + "\" في المخزون" + chr(10) + chr(10)
-                + "📝 سيتم إضافته يدوياً" + chr(10) + chr(10)
-                + "🔢 أرسل المساحة المطلوبة (m²):",
+                "❓ \"" + product_name + "\" غير موجود في المخزون" + chr(10) + chr(10) + q,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
                 ]))
             return
         if len(results) == 1:
-            # Only one result - select it directly
             found = results[0]
             context.user_data["invoice_tmp_product"] = found["name"]
             context.user_data["invoice_tmp_pid"] = found["id"]
+            ptype = _invoice_product_type(found["name"])
+            context.user_data["invoice_tmp_ptype"] = ptype
             context.user_data["state"] = STATE_INVOICE_QTY
-            stock_info = " (المتوفر: " + str(found["quantity"]) + ")" if found["quantity"] > 0 else " (غير متوفر! ⚠️)"
+            stock_info = " (" + str(found["quantity"]) + ")" if found["quantity"] > 0 else " (غير متوفر! ⚠️)"
+            if ptype == "pcs":
+                q = "🔢 أرسل عدد القطع:"
+            elif ptype == "plant":
+                q = "🔢 أرسل الطول بالمتر (م.ط):"
+            else:
+                q = "🔢 أرسل المساحة المطلوبة (m²):"
             await update.message.reply_text(
-                "📦 " + found["name"] + stock_info + chr(10) + chr(10)
-                + "🔢 أرسل المساحة المطلوبة (m²):",
+                "📦 " + found["name"] + stock_info + chr(10) + chr(10) + q,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_product"),
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
                 ]))
             return
-        # Multiple results - show selection buttons
-        msg = "🔍 تم العثور على " + str(len(results)) + " منتجات مطابقة:" + chr(10) + chr(10)
+        msg = "🔍 " + str(len(results)) + " نتائج:" + chr(10) + chr(10)
         buttons = []
         for p in results:
             stock = str(p["quantity"])
@@ -3560,45 +3720,85 @@ async def handle_admin_message(update, context):
             if qty <= 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ أرسل المساحة بالمتر المربع (مثلاً: 30.5).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
+            await update.message.reply_text("❌ أرسل رقم صحيح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
             return
         product_name = context.user_data.get("invoice_tmp_product", "")
         product_id = context.user_data.get("invoice_tmp_pid")
+        ptype = context.user_data.get("invoice_tmp_ptype", "m2")
         context.user_data["invoice_tmp_qty"] = qty
-        # Ask price per m²
-        context.user_data["state"] = STATE_INVOICE_PRICE
-        await update.message.reply_text(
-            "💰 أرسل سعر المتر المربع (د.ج/m²):" + chr(10) + chr(10)
-            + "📦 المنتج: " + product_name + chr(10)
-            + "📐 المساحة: " + str(qty) + " m²",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
-                 InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
-            ]))
+
+        if ptype == "pcs":
+            context.user_data["state"] = STATE_INVOICE_PRICE
+            await update.message.reply_text(
+                "💰 أرسل سعر القطعة (د.ج):" + chr(10) + chr(10)
+                + "📦 " + product_name + " × " + str(int(qty)) + " قطعة",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+            return
+        elif ptype == "plant":
+            context.user_data["state"] = "waiting_invoice_plant_length"
+            await update.message.reply_text(
+                "📏 اختر طول الشريط:" + chr(10) + chr(10)
+                + "📦 " + product_name + " × " + str(qty) + " م.ط",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("0.45 م", callback_data="inv_plen_0.45"),
+                     InlineKeyboardButton("0.60 م", callback_data="inv_plen_0.60")],
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+            return
+        else:
+            context.user_data["state"] = STATE_INVOICE_PRICE
+            await update.message.reply_text(
+                "💰 أرسل سعر المتر المربع (د.ج/m²):" + chr(10) + chr(10)
+                + "📦 " + product_name + chr(10)
+                + "📐 المساحة: " + str(qty) + " m²",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+            return
+
+    if state == "waiting_invoice_plant_length":
+        await update.message.reply_text("❌ اختر الطول من الأزرار أعلاه.")
         return
 
     if state == STATE_INVOICE_PRICE:
         try:
-            price_m2 = float(text.strip())
-            if price_m2 < 0:
+            price = float(text.strip())
+            if price < 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ أرسل سعر المتر المربع صحيح (مثلاً: 1500).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
+            await update.message.reply_text("❌ أرسل سعر صحيح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
             return
-        context.user_data["invoice_tmp_price"] = price_m2
-        # Now ask for box area
-        context.user_data["state"] = STATE_INVOICE_AREA
         product_name = context.user_data.get("invoice_tmp_product", "")
-        qty_m2 = context.user_data.get("invoice_tmp_qty", 0)
-        msg = "📦 " + product_name + chr(10) + chr(10)
-        msg += "📐 المساحة: " + str(qty_m2) + " m²" + chr(10)
-        msg += "💰 السعر: " + _fmt_price(price_m2) + " د.ج/m²" + chr(10) + chr(10)
-        msg += "📏 أرسل مساحة العلبة (m²):"
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"),
-             InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
-        ]))
-        return
+        product_id = context.user_data.get("invoice_tmp_pid")
+        qty = context.user_data.get("invoice_tmp_qty", 0)
+        ptype = context.user_data.get("invoice_tmp_ptype", "m2")
+
+        if ptype == "pcs":
+            await _invoice_add_item(update, context, product_id, product_name, int(qty), price, "pcs")
+            return
+        elif ptype == "plant":
+            length_m = context.user_data.get("invoice_tmp_plant_len", 0.45)
+            await _invoice_add_item(update, context, product_id, product_name, qty, price, "plant",
+                                     extra_info={"length_m": length_m, "qty_m": qty})
+            return
+        else:
+            context.user_data["invoice_tmp_price"] = price
+            context.user_data["state"] = STATE_INVOICE_AREA
+            await update.message.reply_text(
+                "📦 " + product_name + chr(10) + chr(10)
+                + "📐 المساحة: " + str(qty) + " m²" + chr(10)
+                + "💰 السعر: " + _fmt_price(price) + " د.ج/m²" + chr(10) + chr(10)
+                + "📏 أرسل مساحة العلبة (m²):",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
+            return
 
     if state == STATE_INVOICE_AREA:
         try:
@@ -3617,7 +3817,8 @@ async def handle_admin_message(update, context):
         num_boxes = math.ceil(raw_boxes)
         actual_area = num_boxes * box_area
         total_price = actual_area * price_m2
-        await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, box_area, num_boxes, total_price)
+        await _invoice_add_item(update, context, product_id, product_name, num_boxes, price_m2, "m2",
+                                 extra_info={"qty_m2": actual_area, "box_area": box_area, "num_boxes": num_boxes})
         return
 
     if state == STATE_ADD_NAME:
@@ -4579,6 +4780,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_back_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_remove_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
