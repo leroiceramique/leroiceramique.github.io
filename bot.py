@@ -3496,10 +3496,7 @@ async def handle_admin_message(update, context):
         context.user_data["invoice_customer"] = customer_name
         context.user_data["state"] = STATE_INVOICE_PRODUCT
         await update.message.reply_text(
-            "📦 أرسل اسم المنتج:" + chr(10) + chr(10)
-            + "🔍 اكتب اسم السلعة للبحث في المخزون" + chr(10)
-            + "📋 أو اكتب السلعة مباشرة إذا لم تكن في المخزون" + chr(10) + chr(10)
-            + "💡 بعد ذلك: المساحة (m²) ← السعر (د.ج/m²) ← مساحة العلبة",
+            "📦 أرسل اسم المنتج:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("\U0001f519 تراجع", callback_data="invoice_back_customer"),
                  InlineKeyboardButton("\u274c إلغاء", callback_data="invoice_cancel")]
