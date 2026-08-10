@@ -2159,10 +2159,10 @@ def _build_movements_text(rows):
     for r in rows:
         r = dict(r)
         if r["tx_type"] == "add":
-            icon = "➕"
+            icon = "🟢➕"
             action = "إضافة"
         else:
-            icon = "➖"
+            icon = "🔴➖"
             action = "إخراج"
         time_str = r["date"].strftime("%H:%M")
         prod = str(r["product_name"] or "")
@@ -2179,7 +2179,7 @@ def _build_movements_text(rows):
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    lines.append(chr(10) + "➕ " + str(add_count) + " إضافة  |  ➖ " + str(rem_count) + " إخراج")
+    lines.append(chr(10) + "🟢➕ " + str(add_count) + " إضافة  |  🔴➖ " + str(rem_count) + " إخراج")
     return chr(10).join(lines)
 
 
