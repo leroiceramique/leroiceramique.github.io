@@ -932,14 +932,14 @@ def search_products(query):
     # Determine the best score to filter low-quality matches
     if scored:
         best_score = scored[0][0]
-        # Keep results that are at least 50% of the best score (minimum 15)
-        threshold = max(15, best_score * 0.5)
+        # Keep results that are at least 70% of the best score (minimum 20)
+        threshold = max(20, best_score * 0.7)
         scored = [(s, p) for s, p in scored if s >= threshold]
     # If the query is very short (1-2 chars), only return very good matches
     if len(query.strip()) <= 2:
         scored = [(s, p) for s, p in scored if s >= 30]
-    # Limit to top 50 results max
-    scored = scored[:50]
+    # Limit to top 10 results max
+    scored = scored[:10]
     return [p for s, p in scored]
 
 
@@ -2737,7 +2737,7 @@ async def users_command(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, box_area, num_boxes, total_price):
-    """Add item to invoice draft and ask for next product or review."""
+    """Add item to invoice draft and show review."""
     items = context.user_data.get("invoice_items", [])
     items.append({
         "product_id": product_id,
@@ -2750,24 +2750,27 @@ async def _invoice_add_item(update, context, product_id, product_name, qty_m2, p
         "subtotal": total_price,
     })
     context.user_data["invoice_items"] = items
-    # Show current items
+    chat_id = update.effective_chat.id
     total = sum(i["subtotal"] for i in items)
-    msg = "📦 تم إضافة:" + chr(10)
-    msg += "  ✔️ " + product_name + chr(10)
-    msg += "     📐 " + str(qty_m2) + " m² → " + str(num_boxes) + " علبة (" + str(box_area) + " m²/علبة)" + chr(10)
-    msg += "     💰 " + _fmt_price(price_m2) + " × " + str(round(qty_m2, 2)) + " m² = " + _fmt_price(total_price) + " د.ج" + chr(10) + chr(10)
-    msg += "📋 العناصر الحالية (" + str(len(items)) + "):" + chr(10)
+    msg = "✅ تم إضافة: " + product_name + chr(10) + chr(10)
+    msg += "📐 المساحة: " + str(qty_m2) + " m² → " + str(num_boxes) + " علبة" + chr(10)
+    msg += "💰 المجموع: " + _fmt_price(total_price) + " د.ج" + chr(10) + chr(10)
+    msg += "━" * 20 + chr(10)
+    msg += "📋 الفاتورة (" + str(len(items)) + " عنصر):" + chr(10)
+    msg += "━" * 20 + chr(10)
     for i, item in enumerate(items, 1):
-        msg += "  " + str(i) + ". " + item["product_name"] + " | " + str(item["qty_m2"]) + "m² | " + str(item["quantity"]) + " علبة | " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
-    msg += chr(10) + "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
+        msg += str(i) + ". " + item["product_name"] + chr(10)
+        msg += "   " + str(item["qty_m2"]) + " m² | " + str(item["quantity"]) + " علبة | " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+    msg += "━" * 20 + chr(10)
+    msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
     msg += "📝 أرسل اسم المنتج التالي" + chr(10)
-    msg += "أو اضغط 📋 مراجعة الفاتورة"
+    msg += "أو اضغط 📋 اعتماد الفاتورة"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 مراجعة الفاتورة", callback_data="invoice_review"),
+        [InlineKeyboardButton("✅ اعتماد الفاتورة", callback_data="invoice_review"),
          InlineKeyboardButton("🗑 حذف آخر عنصر", callback_data="invoice_remove_last")],
     ])
     context.user_data["state"] = STATE_INVOICE_PRODUCT
-    await update.message.reply_text(msg, reply_markup=keyboard)
+    await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=keyboard)
 
 
 def _fmt_price(val):
