@@ -22,11 +22,12 @@ from telegram.ext import (
     filters,
 )
 
-# ═══════════════════════════════════════════════════════════
-#  CONFIG
-# ═══════════════════════════════════════════════════════════
-#  EXTRACTION PERMISSION & REQUEST FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 1: EXTRACTION PERMISSION & REQUEST (Database Layer)
+#  Functions: can_extract, set_extract_permission,
+#              create_extraction_request, get_pending_extraction_requests,
+#              process_extraction_request
+# ═══════════════════════════════════════════════════════════════
 
 def can_extract(telegram_id):
     """Check if user has extraction permission."""
@@ -59,6 +60,7 @@ def set_extract_permission(telegram_id, allowed):
         return updated
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -79,6 +81,7 @@ def create_extraction_request(product_id, quantity, requester_id):
         return dict(row)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -102,6 +105,7 @@ def get_pending_extraction_requests():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -151,12 +155,16 @@ def process_extraction_request(request_id, approved, admin_id):
             return True, "❌ تم رفض طلب الإخراج."
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
 
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 2: ENVIRONMENT CONFIGURATION & GLOBAL VARIABLES
+#  Bot token, database URL, admin IDs, email settings
+# ═══════════════════════════════════════════════════════════════
 
 load_dotenv()
 
@@ -203,9 +211,12 @@ def _init_low_stock_ids():
     except Exception as e:
         logging.warning("[INIT] Failed to init low-stock IDs: " + str(e))
 
-# ═══════════════════════════════════════════════════════════
-#  DATABASE
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 3: DATABASE CONNECTION POOL & SCHEMA
+#  Functions: init_pool, get_connection, release_connection,
+#              init_db, seed_sample_products
+#  Constants: SCHEMA_SQL (table definitions)
+# ═══════════════════════════════════════════════════════════════
 
 _pool = None
 
@@ -479,9 +490,12 @@ def seed_sample_products():
         release_connection(conn)
 
 
-# ═══════════════════════════════════════════════════════════
-#  USER FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 4: USER MANAGEMENT (Database Layer)
+#  Functions: register_user, sync_user_info, get_user,
+#              is_admin, is_approved, get_pending_users,
+#              approve_user, reject_user
+# ═══════════════════════════════════════════════════════════════
 
 def register_user(telegram_id, username=None, first_name=None):
     conn = get_connection()
@@ -504,6 +518,7 @@ def register_user(telegram_id, username=None, first_name=None):
         return dict(user)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -540,6 +555,7 @@ def get_user(telegram_id):
         return dict(row) if row else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -563,9 +579,12 @@ def is_approved(telegram_id):
     return user is not None and user["role"] in ("admin", "customer")
 
 
-# ═══════════════════════════════════════════════════════════
-#  INCOMING ORDERS (طلبات التوريد)
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 5: INCOMING ORDERS - SUPPLY REQUESTS (Database Layer)
+#  Functions: create_incoming_order, get_pending_incoming_orders,
+#              get_user_pending_orders, complete_incoming_order,
+#              receive_incoming_order, complete_all_pending_orders
+# ═══════════════════════════════════════════════════════════════
 
 def create_incoming_order(requester_id, product_name, quantity, photo_file_id=None):
     """إنشاء طلب توريد جديد من صاحب المحل."""
@@ -581,6 +600,7 @@ def create_incoming_order(requester_id, product_name, quantity, photo_file_id=No
         return dict(order)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -602,6 +622,7 @@ def get_pending_incoming_orders():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -621,6 +642,7 @@ def get_user_pending_orders(user_db_id):
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -641,6 +663,7 @@ def complete_incoming_order(order_id):
         return dict(order) if order else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -661,6 +684,7 @@ def receive_incoming_order(order_id):
         return dict(order) if order else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -681,6 +705,7 @@ def complete_all_pending_orders():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -696,6 +721,7 @@ def get_pending_users():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -714,6 +740,7 @@ def approve_user(telegram_id):
         return dict(row) if row else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -729,10 +756,16 @@ def reject_user(telegram_id):
         return deleted
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 6: BACKUP & RESTORE (Database Layer)
+#  Functions: db_export_backup, db_import_backup
+# ═══════════════════════════════════════════════════════════════
 
 def db_export_backup():
     """Export all data as a dict (products + transactions + users)."""
@@ -756,6 +789,7 @@ def db_export_backup():
         }
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -812,13 +846,18 @@ def db_import_backup(data):
             "  العمليات: " + str(tx_count))
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
-# ═══════════════════════════════════════════════════════════
-#  PRODUCT FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 7: PRODUCT CRUD & SEARCH ENGINE
+#  Functions: db_add_product, db_update_product, db_update_quantity,
+#              db_delete_product, get_low_stock_products, get_all_products
+#  Search:    _normalize_text, _levenshtein_distance, _fuzzy_score,
+#              search_products (ILIKE fast path + fuzzy slow path)
+# ═══════════════════════════════════════════════════════════════
 
 def db_add_product(name, quantity=0, location="", minimum_stock=5):
     conn = get_connection()
@@ -833,6 +872,7 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
         return dict(product)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -936,6 +976,7 @@ def search_products(query):
         all_products = [dict(r) for r in all_rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -991,6 +1032,7 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
         return dict(product)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1033,6 +1075,7 @@ def db_update_quantity(product_id, change, transaction_type):
         return product
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1048,6 +1091,7 @@ def db_delete_product(product_id):
         return deleted
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1063,6 +1107,7 @@ def get_low_stock_products():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1078,6 +1123,7 @@ def get_all_products():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1100,6 +1146,7 @@ def log_transaction(product_id, transaction_type, quantity, user_id):
         return dict(tx)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1124,6 +1171,7 @@ def get_transactions(limit=20, offset=0):
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1149,13 +1197,16 @@ def get_product_transactions(product_id, limit=15):
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
-# ═══════════════════════════════════════════════════════════
-#  CONSTANTS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 9: FSM STATE CONSTANTS & TIMEOUT
+#  States: STATE_ADD_NAME, STATE_ADD_QTY, STATE_SEARCH_ADMIN, etc.
+#  Timeout: _is_state_expired(), _set_state() (10 min auto-clear)
+# ═══════════════════════════════════════════════════════════════
 
 STATE_ADD_NAME = "waiting_add_name"
 STATE_ADD_QTY = "waiting_add_qty"
@@ -1223,9 +1274,12 @@ BTN_CUST_ORDER = "📦 طلب توريد"
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 
 
-# ═══════════════════════════════════════════════════════════
-#  HELPERS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 10: FORMATTING HELPERS & PRODUCT UTILITIES
+#  Functions: format_product_admin, format_product_customer,
+#              _product_status_icon, _is_pcs_product, _invoice_product_type,
+#              _get_unit_code, _get_unit_ar, _show_product_detail
+# ═══════════════════════════════════════════════════════════════
 
 
 def format_product_admin(product):
@@ -1250,6 +1304,20 @@ def format_product_customer(product):
         return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
 
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 11: BROADCAST & NOTIFICATION SYSTEM
+#  Functions: _broadcast_update_notification, _broadcast_to_all_users,
+#              _broadcast_add_notification, send_low_stock_alerts,
+#              send_low_stock_list
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 11: BROADCAST & NOTIFICATION SYSTEM
+#  Functions: _broadcast_update_notification, _broadcast_to_all_users,
+#              _broadcast_add_notification, send_low_stock_alerts,
+#              send_low_stock_list
+# ═══════════════════════════════════════════════════════════════
 async def _broadcast_update_notification(update, context):
     """إرسال إشعار آخر تحديث تلقائياً بدون كتابة من المدير."""
     conn = get_connection()
@@ -1449,6 +1517,10 @@ async def send_low_stock_list(update=None, context=None, bot=None):
         logging.warning("[LOW_STOCK_LIST] Error: " + str(e))
 
 
+
+# ── Input Parsing Helpers ──
+
+# ── Input Parsing Helpers ──
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
@@ -1624,6 +1696,16 @@ async def _weekly_report_loop(bot):
 # ═══════════════════════════════════════════════════════════
 
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 13: KEYBOARD BUILDERS
+#  Functions: get_admin_keyboard, get_input_keyboard, get_customer_keyboard
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 13: KEYBOARD BUILDERS
+#  Functions: get_admin_keyboard, get_input_keyboard, get_customer_keyboard
+# ═══════════════════════════════════════════════════════════════
 def get_admin_keyboard():
     """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين."""
     # عداد طلبات التوريد المعلّقة
@@ -1680,6 +1762,18 @@ def get_customer_keyboard():
         ],
         resize_keyboard=True,
     )
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 14: ADMIN FSM - ADD PRODUCT FLOW
+#  Functions: ask_add_name, ask_add_qty, confirm_add_product,
+#              callback_addtype_handler, callback_add_handler
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 14: ADMIN FSM - ADD PRODUCT FLOW
+#  Functions: ask_add_name, ask_add_qty, confirm_add_product,
+#              callback_addtype_handler, callback_add_handler
+# ═══════════════════════════════════════════════════════════════
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
@@ -1809,6 +1903,18 @@ async def callback_add_handler(update, context):
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
 
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 15: ADMIN FSM - QUANTITY, EDIT, DELETE, SEARCH
+#  Functions: process_add_quantity, process_remove_quantity,
+#              process_edit_product, process_delete_product, process_search
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 15: ADMIN FSM - QUANTITY, EDIT, DELETE, SEARCH
+#  Functions: process_add_quantity, process_remove_quantity,
+#              process_edit_product, process_delete_product, process_search
+# ═══════════════════════════════════════════════════════════════
 async def process_add_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
@@ -1962,6 +2068,24 @@ async def process_search(update, context, text, admin_view=False):
 
 # ═══════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 16: PRODUCT DETAIL, MOVEMENTS & DATE PICKER
+#  Functions: _show_product_detail, callback_product_select_handler,
+#              callback_product_action_handler,
+#              _build_movements_text, _fetch_today_movements,
+#              _fetch_movements_by_date, _show_all_movements,
+#              callback_mov_date_handler
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 16: PRODUCT DETAIL, MOVEMENTS & DATE PICKER
+#  Functions: _show_product_detail, callback_product_select_handler,
+#              callback_product_action_handler,
+#              _build_movements_text, _fetch_today_movements,
+#              _fetch_movements_by_date, _show_all_movements,
+#              callback_mov_date_handler
+# ═══════════════════════════════════════════════════════════════
 def _product_status_icon(product):
     qty = product["quantity"]
     min_stock = product["minimum_stock"]
@@ -2078,6 +2202,7 @@ def _fetch_today_movements():
         return rows
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -2105,6 +2230,7 @@ def _fetch_movements_by_date(target_date):
         return rows
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -2424,9 +2550,10 @@ async def search_command(update, context):
     )
 
 
-# ═══════════════════════════════════════════════════════════
-
-# ── Whitelist: Approval Handler ───────────────────────
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 18: USER APPROVAL & ROLE MANAGEMENT CALLBACKS
+#  Functions: callback_approval_handler, callback_promote_handler
+# ═══════════════════════════════════════════════════════════════
 
 async def callback_approval_handler(update, context):
     """Handle approve/reject for pending users."""
@@ -2534,6 +2661,22 @@ async def callback_promote_handler(update, context):
 
 # ── Backup Command ─────────────────────────────────────
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 19: BACKUP COMMAND & RESTORE CALLBACKS
+#  Functions: backup_command, handle_backup_document,
+#              callback_restore_handler, callback_restore_from_email_handler,
+#              callback_restore_last_handler, callback_add_notify_handler,
+#              callback_email_restore_handler, callback_restore_last_confirm_handler
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 19: BACKUP COMMAND & RESTORE CALLBACKS
+#  Functions: backup_command, handle_backup_document,
+#              callback_restore_handler, callback_restore_from_email_handler,
+#              callback_restore_last_handler, callback_add_notify_handler,
+#              callback_email_restore_handler, callback_restore_last_confirm_handler
+# ═══════════════════════════════════════════════════════════════
 async def backup_command(update, context):
     global _last_backup_data
     if not is_admin(update.effective_user.id):
@@ -2762,6 +2905,16 @@ async def callback_restore_last_confirm_handler(update, context):
         except Exception:
             pass
 
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 20: USERS MANAGEMENT COMMAND
+#  Functions: users_command
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 20: USERS MANAGEMENT COMMAND
+#  Functions: users_command
+# ═══════════════════════════════════════════════════════════════
+
 # ── Users Command ──
 
 async def users_command(update, context):
@@ -2831,9 +2984,13 @@ async def users_command(update, context):
     await update.message.reply_text("\n".join(msg_lines), reply_markup=markup)
 
 
-# ═══════════════════════════════════════════════════════════
-#  INVOICE SYSTEM FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 21: INVOICE SYSTEM (Full Workflow)
+#  Functions: _invoice_add_item, _fmt_price, _invoice_show_review,
+#              _invoice_show_workers, _generate_invoice_pdf,
+#              _invoice_finalize, callback_invoice_handler
+#  Flow: customer → product → qty → price → area → review → worker → PDF
+# ═══════════════════════════════════════════════════════════════
 
 async def _invoice_add_item(update, context, product_id, product_name, qty, unit_price, ptype, extra_info=None):
     """Add item to invoice draft. ptype: 'm2', 'pcs', 'plant'."""
@@ -3538,9 +3695,12 @@ async def callback_invoice_handler(update, context):
                 pass
 
 
-# ═══════════════════════════════════════════════════════════
-#  MESSAGE ROUTER
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 22: MESSAGE ROUTER & FSM CONTROLLERS
+#  Functions: handle_admin_message (~554 lines, central admin dispatcher),
+#              handle_customer_message (~169 lines, customer dispatcher),
+#              route_message (entry point: registers user → routes by role)
+# ═══════════════════════════════════════════════════════════════
 
 async def handle_admin_message(update, context):
 
@@ -4294,9 +4454,11 @@ async def route_message(update, context):
         await handle_customer_message(update, context)
 
 
-# ═══════════════════════════════════════════════════════════
-#  EXTRACTION PERMISSION & REQUEST HANDLERS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 23: EXTRACTION PERMISSION & REQUEST HANDLERS (Callbacks)
+#  Functions: callback_extract_perm_handler, _show_pending_extractions,
+#              callback_extract_request_handler, callback_extract_approve_handler
+# ═══════════════════════════════════════════════════════════════
 
 async def callback_extract_perm_handler(update, context):
     """Handle grant/revoke extraction permission from users list."""
@@ -4485,9 +4647,10 @@ async def callback_extract_approve_handler(update, context):
         except Exception:
             pass
 
-# ═══════════════════════════════════════════════════════════
-#  ERROR HANDLER
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 24: GLOBAL ERROR HANDLER
+#  Functions: error_handler (Conflict detection + user notification)
+# ═══════════════════════════════════════════════════════════════
 
 async def error_handler(update, context):
     from telegram.error import Conflict
@@ -4501,9 +4664,12 @@ async def error_handler(update, context):
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════
-#  BUILD APP
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 25: APPLICATION BUILDER & HANDLER REGISTRATION
+#  Functions: build_application, callback_admin_done_handler,
+#              callback_go_start_handler
+#  Registers: 7 commands, 30 callbacks, 3 message handlers, 1 error handler
+# ═══════════════════════════════════════════════════════════════
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -4572,6 +4738,20 @@ async def callback_go_start_handler(update, context):
 #  INCOMING ORDERS DISPLAY & CALLBACKS
 # ═══════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 26: INCOMING ORDER HANDLERS & RECEIPT PHOTO
+#  Functions: _show_admin_incoming_orders, _show_customer_orders,
+#              handle_receipt_photo, callback_incoming_order_handler,
+#              _get_telegram_id
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 26: INCOMING ORDER HANDLERS & RECEIPT PHOTO
+#  Functions: _show_admin_incoming_orders, _show_customer_orders,
+#              handle_receipt_photo, callback_incoming_order_handler,
+#              _get_telegram_id
+# ═══════════════════════════════════════════════════════════════
 async def _show_admin_incoming_orders(update, context):
     """عرض طلبات التوريد - كل طلب برسالة منفصلة: صورة + أزرار جاهز/غير جاهز."""
     conn = get_connection()
@@ -4896,9 +5076,11 @@ def build_application():
     return app
 
 
-# ═══════════════════════════════════════════════════════════
-#  DAILY AUTO-BACKUP
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 27: EMAIL BACKUP, DAILY AUTO-BACKUP & BACKGROUND LOOPS
+#  Functions: _fetch_latest_backup_from_email, _send_backup_email,
+#              _daily_backup, _daily_backup_loop, _keep_alive
+# ═══════════════════════════════════════════════════════════════
 
 
 
