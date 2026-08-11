@@ -173,6 +173,11 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
+WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
+if not WEBHOOK_SECRET:
+    import hashlib
+    WEBHOOK_SECRET = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:32]
+    logging.warning("[SEC] WEBHOOK_SECRET not set — derived from BOT_TOKEN.")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
 
 # Email backup (optional — for daily auto-backup via email)
@@ -2308,7 +2313,7 @@ async def callback_addtype_handler(update, context):
     except Exception as e:
         logging.error("[ADDTYPE] Error: " + str(e), exc_info=True)
         try:
-            await query.edit_message_text("❌ حدث خطأ: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ داخلي.")
         except Exception:
             pass
 
@@ -2338,7 +2343,7 @@ async def callback_add_handler(update, context):
             await query.edit_message_text(msg)
             await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception as e:
-            await query.edit_message_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ داخلي.")
         user_data.clear()
 
     elif data == "add_cancel":
@@ -2347,12 +2352,6 @@ async def callback_add_handler(update, context):
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
 
 
-
-# ═══════════════════════════════════════════════════════════════
-#  SECTION 15: ADMIN FSM - QUANTITY, EDIT, DELETE, SEARCH
-#  Functions: process_add_quantity, process_remove_quantity,
-#              process_edit_product, process_delete_product, process_search
-# ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 15: ADMIN FSM - QUANTITY, EDIT, DELETE, SEARCH
@@ -2380,9 +2379,9 @@ async def process_add_quantity(update, context, text, telegram_id):
         await update.message.reply_text(msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 
@@ -2415,10 +2414,10 @@ async def process_remove_quantity(update, context, text, telegram_id):
         await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
         return  # important: do NOT clear user_data — user needs to type reason
     except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
         context.user_data.clear()
     except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
         context.user_data.clear()
 
 
@@ -2441,9 +2440,9 @@ async def process_edit_product(update, context, text, telegram_id):
         msg = msg + chr(10) + chr(10) + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
     except ValueError as e:
-        await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+        await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
     context.user_data.clear()
 
 async def process_delete_product(update, context, text, telegram_id):
@@ -3205,6 +3204,9 @@ async def search_command(update, context):
 async def callback_approval_handler(update, context):
     """Handle approve/reject for pending users."""
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     data = query.data  # "approve_123456" or "reject_123456"
     parts = data.split("_", 1)
@@ -3249,6 +3251,9 @@ async def callback_approval_handler(update, context):
 async def callback_promote_handler(update, context):
     """ترقية مستخدم إلى مدير أو إزالة صلاحية الإدارة."""
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     data = query.data  # "promote_123456" or "demote_123456"
     parts = data.split("_", 1)
@@ -3330,7 +3335,7 @@ async def dedup_command(update, context):
         await update.message.reply_text(msg)
     except Exception as e:
         logging.error("[DEDUP] Error: " + str(e), exc_info=True)
-        await update.message.reply_text("❌ حدث خطأ أثناء التنظيف: " + str(e))
+        await update.message.reply_text("❌ حدث خطأ داخلي.")
 
 async def backup_command(update, context):
     global _last_backup_data
@@ -3355,7 +3360,7 @@ async def backup_command(update, context):
             reply_markup=keyboard,
         )
     except Exception as e:
-        await update.message.reply_text("❌ فشل النسخ الاحتياطي: " + str(e))
+        await update.message.reply_text("❌ حدث خطأ داخلي.")
 
 
 async def handle_backup_document(update, context):
@@ -3390,11 +3395,14 @@ async def handle_backup_document(update, context):
             reply_markup=keyboard,
         )
     except Exception as e:
-        await update.message.reply_text("\u274c \u0641\u0634\u0644 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0645\u0644\u0641: " + str(e))
+        await update.message.reply_text("❌ حدث خطأ داخلي.")
 
 
 async def callback_restore_handler(update, context):
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     data = query.data
     if data == "restore_confirm":
@@ -3406,7 +3414,7 @@ async def callback_restore_handler(update, context):
             result = await asyncio.to_thread(db_import_backup, restore_data)
             await query.edit_message_text(result)
         except Exception as e:
-            await query.edit_message_text("\u274c \u0641\u0634\u0644 \u0627\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ داخلي.")
         context.user_data.pop("restore_data", None)
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
@@ -3434,6 +3442,9 @@ async def _safe_edit(query, text, reply_markup=None):
 
 async def callback_restore_from_email_handler(update, context):
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     await _safe_edit(query, "⏳ جارٍ البحث في البريد الإلكتروني...")
     data = await asyncio.get_running_loop().run_in_executor(None, _fetch_latest_backup_from_email)
@@ -3460,6 +3471,9 @@ async def callback_restore_from_email_handler(update, context):
 
 async def callback_restore_last_handler(update, context):
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     if not _last_backup_data:
         await _safe_edit(query, "❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
@@ -3532,6 +3546,9 @@ async def callback_add_notify_handler(update, context):
 
 async def callback_email_restore_handler(update, context):
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     data = query.data
     if data == "email_restore_confirm":
@@ -3543,7 +3560,7 @@ async def callback_email_restore_handler(update, context):
             result = await asyncio.to_thread(db_import_backup, restore_data)
             await _safe_edit(query, result)
         except Exception as e:
-            await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
+            await _safe_edit(query, "❌ حدث خطأ داخلي.")
         context.user_data.pop("email_restore_data", None)
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
@@ -3559,6 +3576,9 @@ async def callback_email_restore_handler(update, context):
 
 async def callback_restore_last_confirm_handler(update, context):
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     global _last_backup_data
     data = query.data
@@ -3570,7 +3590,7 @@ async def callback_restore_last_confirm_handler(update, context):
             result = await asyncio.to_thread(db_import_backup, _last_backup_data)
             await _safe_edit(query, result)
         except Exception as e:
-            await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
+            await _safe_edit(query, "❌ حدث خطأ داخلي.")
         try:
             await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
@@ -3954,7 +3974,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         invoice_id = invoice["id"]
     except Exception as e:
         logging.error("[INVOICE] DB save failed: " + str(e), exc_info=True)
-        await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), await asyncio.to_thread(get_admin_keyboard))
+        await _send("❌ حدث خطأ داخلي.", await asyncio.to_thread(get_admin_keyboard))
         return
 
     # Generate PDF
@@ -4849,9 +4869,9 @@ async def handle_admin_message(update, context):
                 ])
                 await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
         except ValueError as e:
-            await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
         except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
         return
 
     elif state == STATE_SEARCH_ADMIN:
@@ -4875,7 +4895,7 @@ async def handle_admin_message(update, context):
             result_msg = "✅ تم إرسال التنبيه لـ " + str(sent) + " مستخدم."
             await update.message.reply_text(result_msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception as e:
-            await update.message.reply_text("❌ خطأ: " + str(e), reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ حدث خطأ داخلي.", reply_markup=get_input_keyboard())
         context.user_data.clear()
         return
 
@@ -5012,9 +5032,9 @@ async def handle_customer_message(update, context):
                 await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
                 return
         except ValueError as e:
-            await update.message.reply_text("❌ " + str(e))
+            await update.message.reply_text("❌ حدث خطأ داخلي.")
         except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e))
+            await update.message.reply_text("❌ حدث خطأ داخلي.")
         context.user_data.clear()
         return
 
@@ -5056,7 +5076,7 @@ async def handle_customer_message(update, context):
                     logging.error("[EXTRACT] Notify admin failed: " + str(e), exc_info=True)
         except Exception as e:
             logging.error("[EXTRACT] Request failed: " + str(e), exc_info=True)
-            await update.message.reply_text("❌ حدث خطأ: " + str(e))
+            await update.message.reply_text("❌ حدث خطأ داخلي.")
         context.user_data.clear()
         return
 
@@ -5151,7 +5171,7 @@ async def callback_extract_perm_handler(update, context):
     except Exception as e:
         logging.error("[EXTRACT_PERM] Error: " + str(e), exc_info=True)
         try:
-            await query.edit_message_text("❌ خطأ: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ داخلي.")
         except Exception:
             pass
 
@@ -5272,7 +5292,7 @@ async def callback_extract_approve_handler(update, context):
     except Exception as e:
         logging.error("[EXTRACT_APPROVE] Error: " + str(e), exc_info=True)
         try:
-            await query.edit_message_text("❌ خطأ: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ داخلي.")
         except Exception:
             pass
 
@@ -5714,6 +5734,9 @@ async def handle_receipt_photo(update, context):
 async def callback_incoming_order_handler(update, context):
     """معالجة أزرار المدير: جاهز / غير جاهز."""
     query = update.callback_query
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
+        await query.answer("❌ هذا الأمر للمديرين فقط.", show_alert=True)
+        return
     await query.answer()
     data = query.data
     bot = context.bot
@@ -5999,15 +6022,21 @@ async def _daily_backup(bot):
 
 
 async def _daily_backup_loop(bot):
-    last_backup = ""
+    """Run daily backup at midnight Algeria time (UTC+1). Sleeps until next target."""
+    algeria_tz = datetime.timezone(datetime.timedelta(hours=1))
+    last_backup_date = ""
     while True:
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
+        now = datetime.datetime.now(algeria_tz)
         today = now.strftime("%Y-%m-%d")
-        # 5-minute window (23:00-23:04 UTC = midnight Algeria)
-        if today != last_backup and 23 <= now.hour <= 23 and now.minute < 5:
+        # Target: 00:00 Algeria time. If we missed it, run immediately once, then wait for tomorrow.
+        if today != last_backup_date and now.hour == 0:
             await _daily_backup(bot)
-            last_backup = today
-        await asyncio.sleep(60)
+            last_backup_date = today
+        # Sleep until next check: 1 minute if near midnight, 30 min otherwise
+        if now.hour == 23 or (now.hour == 0 and today == last_backup_date):
+            await asyncio.sleep(60)
+        else:
+            await asyncio.sleep(1800)
 
 
 async def _keep_alive(app):
@@ -6059,7 +6088,8 @@ if __name__ == "__main__":
         webhook_app.router.add_get("/", health)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
-            drop_pending_updates=True, webhook_app=webhook_app)
+            drop_pending_updates=True, webhook_app=webhook_app,
+            secret_token=WEBHOOK_SECRET)
     elif render_port:
         health_app = web.Application()
         async def health(request):
