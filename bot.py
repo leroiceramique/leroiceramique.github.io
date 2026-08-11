@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import html as html_mod
 import datetime
 import logging
 import asyncio
@@ -2195,28 +2196,34 @@ def _build_movements_text(rows):
     lines = ["📋 حركة اليوم (" + str(len(rows)) + "):", ""]
     for r in rows:
         r = dict(r)
-        if r["tx_type"] == "add":
-            icon = "🟢➕"
-            action = "إضافة"
-        else:
-            icon = "🔴➖"
-            action = "إخراج"
-        time_str = r["date"].strftime("%H:%M")
-        prod = str(r["product_name"] or "")
-        qty = r["quantity"]
-        unit = _get_unit_code(prod)
-        # Build clickable user link
-        user_tid = r.get("user_tid")
-        user_name = str(r.get("user_name") or "مجهول")
-        if user_tid and user_name != "مجهول":
-            user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
-        else:
-            user_link = user_name
-        lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str)
-        # Show reason if present
-        reason = r.get("reason")
-        if reason:
-            lines.append("   💬 " + reason)
+        try:
+            if r["tx_type"] == "add":
+                icon = "🟢➕"
+                action = "إضافة"
+            else:
+                icon = "🔴➖"
+                action = "إخراج"
+            time_str = r["date"].strftime("%H:%M") if hasattr(r["date"], "strftime") else str(r["date"])
+            prod_raw = str(r.get("product_name") or "—")
+            prod = html_mod.escape(prod_raw)
+            qty = r["quantity"]
+            unit = _get_unit_code(prod_raw)
+            # Build clickable user link
+            user_tid = r.get("user_tid")
+            user_name_raw = str(r.get("user_name") or "مجهول")
+            user_name = html_mod.escape(user_name_raw)
+            if user_tid and user_name_raw != "مجهول":
+                user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
+            else:
+                user_link = user_name
+            lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str)
+            # Show reason if present
+            reason = r.get("reason")
+            if reason:
+                lines.append("   💬 " + html_mod.escape(str(reason)))
+        except Exception as ex:
+            logging.error("[BUILD_MOV] Error building line: " + str(ex) + " row=" + str(r), exc_info=True)
+            lines.append("⚠️ خطأ في عرض حركة")
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
@@ -2380,7 +2387,15 @@ async def callback_mov_date_handler(update, context):
                     parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error("[MOV_DATE_HANDLER] Error: " + str(e), exc_info=True)
-        await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
+        try:
+            await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
+        except Exception:
+            try:
+                await context.bot.send_message(
+                    chat_id=query.effective_chat.id,
+                    text="❌ حدث خطأ في عرض الحركات.")
+            except Exception:
+                pass
 
 
 async def callback_product_select_handler(update, context):
