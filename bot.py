@@ -1988,12 +1988,17 @@ async def process_remove_quantity(update, context, text, telegram_id):
         # Ask for optional removal reason
         context.user_data["pending_remove_reason"] = {"product_id": product_id, "qty": qty, "user_id": db_user["id"]}
         context.user_data["state"] = STATE_REMOVE_REASON
-        skip_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭️ تخطي (بدون سبب)", callback_data="remreason_skip")]
+        reason_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 بيع لزبون", callback_data="remreason_بيع لزبون"),
+             InlineKeyboardButton("🏪 بيع لبائع منافس", callback_data="remreason_بيع لبائع منافس")],
+            [InlineKeyboardButton("💥 تالف/كسر", callback_data="remreason_تالف/كسر"),
+             InlineKeyboardButton("📦 نقل لمخزن آخر", callback_data="remreason_نقل لمخزن آخر")],
+            [InlineKeyboardButton("✏️ كتابة سبب آخر", callback_data="remreason_custom"),
+             InlineKeyboardButton("⏭️ تخطي", callback_data="remreason_skip")],
         ])
         await update.message.reply_text(
-            "💬 أضف سبب الإخراج (اختياري):\nمثال: بيع لبائع منافس أحمد",
-            reply_markup=skip_kb
+            "💬 سبب الإخراج (اختياري):",
+            reply_markup=reason_kb
         )
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
@@ -3142,10 +3147,11 @@ async def callback_restore_last_handler(update, context):
 
 
 async def callback_remove_reason_handler(update, context):
-    """Handle skip button for optional removal reason."""
+    """Handle removal reason buttons: skip, preset reasons, or custom input."""
     query = update.callback_query
     await query.answer()
     data = query.data
+
     if data == "remreason_skip":
         pending = context.user_data.get("pending_remove_reason")
         if pending:
@@ -3153,6 +3159,23 @@ async def callback_remove_reason_handler(update, context):
         context.user_data.pop("pending_remove_reason", None)
         context.user_data.clear()
         await query.edit_message_text("✅ تم الإخراج بدون سبب.")
+        return
+
+    if data == "remreason_custom":
+        context.user_data["state"] = STATE_REMOVE_REASON
+        await query.edit_message_text("✏️ اكتب سبب الإخراج:")
+        return
+
+    # Preset reason buttons: remreason_<reason_text>
+    if data.startswith("remreason_"):
+        reason = data[len("remreason_"):]
+        pending = context.user_data.get("pending_remove_reason")
+        if pending:
+            log_transaction(pending["product_id"], "remove", pending["qty"], pending["user_id"], reason=reason)
+        context.user_data.pop("pending_remove_reason", None)
+        context.user_data.clear()
+        await query.edit_message_text("✅ تم تسجيل السبب: " + reason)
+        return
 
 
 async def callback_add_notify_handler(update, context):
@@ -4560,12 +4583,17 @@ async def handle_admin_message(update, context):
             elif action == "remove" and db_user:
                 context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
                 context.user_data["state"] = STATE_REMOVE_REASON
-                skip_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏭️ تخطي (بدون سبب)", callback_data="remreason_skip")]
+                reason_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🛒 بيع لزبون", callback_data="remreason_بيع لزبون"),
+                     InlineKeyboardButton("🏪 بيع لبائع منافس", callback_data="remreason_بيع لبائع منافس")],
+                    [InlineKeyboardButton("💥 تالف/كسر", callback_data="remreason_تالف/كسر"),
+                     InlineKeyboardButton("📦 نقل لمخزن آخر", callback_data="remreason_نقل لمخزن آخر")],
+                    [InlineKeyboardButton("✏️ كتابة سبب آخر", callback_data="remreason_custom"),
+                     InlineKeyboardButton("⏭️ تخطي", callback_data="remreason_skip")],
                 ])
                 await update.message.reply_text(
-                    "💬 أضف سبب الإخراج (اختياري):\nمثال: بيع لبائع منافس أحمد",
-                    reply_markup=skip_kb
+                    "💬 سبب الإخراج (اختياري):",
+                    reply_markup=reason_kb
                 )
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
@@ -4748,12 +4776,17 @@ async def handle_customer_message(update, context):
             elif action == "remove" and db_user:
                 context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
                 context.user_data["state"] = STATE_REMOVE_REASON
-                skip_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏭️ تخطي (بدون سبب)", callback_data="remreason_skip")]
+                reason_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🛒 بيع لزبون", callback_data="remreason_بيع لزبون"),
+                     InlineKeyboardButton("🏪 بيع لبائع منافس", callback_data="remreason_بيع لبائع منافس")],
+                    [InlineKeyboardButton("💥 تالف/كسر", callback_data="remreason_تالف/كسر"),
+                     InlineKeyboardButton("📦 نقل لمخزن آخر", callback_data="remreason_نقل لمخزن آخر")],
+                    [InlineKeyboardButton("✏️ كتابة سبب آخر", callback_data="remreason_custom"),
+                     InlineKeyboardButton("⏭️ تخطي", callback_data="remreason_skip")],
                 ])
                 await update.message.reply_text(
-                    "💬 أضف سبب الإخراج (اختياري):\nمثال: بيع لبائع منافس أحمد",
-                    reply_markup=skip_kb
+                    "💬 سبب الإخراج (اختياري):",
+                    reply_markup=reason_kb
                 )
                 return
         except ValueError as e:
