@@ -2202,7 +2202,10 @@ def _build_movements_text(rows, admin_view=False):
             icon = "🟢➕"
         else:
             icon = "🔴➖"
-        time_str = r["date"].strftime("%H:%M")
+        dt = r.get("date")
+        if not dt:
+            continue
+        time_str = dt.strftime("%H:%M")
         prod = str(r["product_name"] or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         qty = r["quantity"]
         unit = _get_unit_code(str(r["product_name"] or ""))
@@ -2332,7 +2335,7 @@ async def _show_all_movements(update, context, admin_view=True):
         await _safe_send_html(
             chat_id=update.effective_chat.id,
             text=full_text,
-            bot=update.get_bot(),
+            bot=context.bot,
             reply_markup=markup)
     except Exception as e:
         logging.error("[MOVEMENTS_TODAY] Error: " + str(e), exc_info=True)
@@ -2883,9 +2886,11 @@ async def callback_remskip_handler(update, context):
     query = update.callback_query
     await query.answer()
     context.user_data.pop("pending_remove_reason", None)
+    is_adm = is_admin(query.from_user.id)
     context.user_data.clear()
+    kb = get_admin_keyboard() if is_adm else get_customer_keyboard()
     try:
-        await query.edit_message_text("✅ تم الإخراج بدون سبب.")
+        await query.edit_message_text("✅ تم الإخراج بدون سبب.", reply_markup=kb)
     except Exception:
         pass
 
@@ -4565,9 +4570,9 @@ async def handle_customer_message(update, context):
         context.user_data.pop("pending_remove_reason", None)
         context.user_data.clear()
         if reason_text:
-            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text)
+            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text, reply_markup=get_customer_keyboard())
         else:
-            await update.message.reply_text("✅ تم الإخراج.")
+            await update.message.reply_text("✅ تم الإخراج.", reply_markup=get_customer_keyboard())
         return
 
     # Default: treat as search query
