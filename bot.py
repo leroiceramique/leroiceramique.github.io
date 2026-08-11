@@ -2232,9 +2232,13 @@ def _build_movements_text(rows):
 
 
 def _fetch_today_movements():
-    """Fetch today's movements from DB. Uses regular cursor to avoid RealDictCursor + 'type' column conflict."""
+    """Fetch today's movements from DB (Algeria timezone). Uses regular cursor to avoid RealDictCursor + 'type' column conflict."""
     conn = get_connection()
     try:
+        today_alg = _algeria_today()
+        start_utc = datetime.datetime(today_alg.year, today_alg.month, today_alg.day,
+                                      tzinfo=datetime.timezone.utc) - datetime.timedelta(hours=1)
+        end_utc = start_utc + datetime.timedelta(days=1)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.reason, p.name AS product_name, "
@@ -2242,8 +2246,9 @@ def _fetch_today_movements():
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= CURRENT_DATE "
-                "ORDER BY t.date DESC")
+                "WHERE t.date >= %s AND t.date < %s "
+                "ORDER BY t.date DESC",
+                (start_utc, end_utc))
             col_names = [desc[0] for desc in cur.description]
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.commit()
@@ -2259,10 +2264,15 @@ def _fetch_today_movements():
 
 
 def _fetch_movements_by_date(target_date):
-    """Fetch movements for a specific date from DB."""
+    """Fetch movements for a specific date. Uses Algeria timezone (UTC+1) for date boundaries."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Use timezone-aware boundaries: target_date 00:00 Algeria = previous day 23:00 UTC
+            # target_date+1 00:00 Algeria = target_date 23:00 UTC
+            start_utc = datetime.datetime(target_date.year, target_date.month, target_date.day,
+                                          tzinfo=datetime.timezone.utc) - datetime.timedelta(hours=1)
+            end_utc = start_utc + datetime.timedelta(days=1)
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.reason, p.name AS product_name, "
                 "u.username AS user_name, u.telegram_id AS user_tid "
@@ -2271,7 +2281,7 @@ def _fetch_movements_by_date(target_date):
                 "LEFT JOIN users u ON u.id = t.user_id "
                 "WHERE t.date >= %s AND t.date < %s "
                 "ORDER BY t.date DESC",
-                (target_date, target_date + datetime.timedelta(days=1)))
+                (start_utc, end_utc))
             col_names = [desc[0] for desc in cur.description]
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.commit()
@@ -2283,10 +2293,20 @@ def _fetch_movements_by_date(target_date):
     finally:
         release_connection(conn)
 
+ALGERIA_TZ = datetime.timezone(datetime.timedelta(hours=1))
+
+
+def _algeria_today():
+    """Return today's date in Algeria timezone (UTC+1)."""
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_alg = now_utc.astimezone(ALGERIA_TZ)
+    return now_alg.date()
+
+
 async def _show_all_movements(update, context, admin_view=True):
     """Show date picker for last 7 days - user picks a date to see movements."""
     try:
-        today = datetime.date.today()
+        today = _algeria_today()
         buttons = []
         weekday_ar = {
             0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
@@ -2319,7 +2339,7 @@ async def callback_mov_date_handler(update, context):
 
     # Back button
     if data == "movd_back":
-        today = datetime.date.today()
+        today = _algeria_today()
         buttons = []
         weekday_ar = {
             0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
@@ -2373,18 +2393,40 @@ async def callback_mov_date_handler(update, context):
             [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
         ])
 
+        # Safe HTML chunking: split by lines, never cut in the middle of an HTML tag
         if len(text) <= 4096:
             await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_button)
         else:
-            await query.edit_message_text(text[:3900], parse_mode=ParseMode.HTML, reply_markup=back_button)
-            remaining = text[3900:]
-            while remaining:
-                chunk = remaining[:4096]
-                remaining = remaining[4096:]
-                await context.bot.send_message(
-                    chat_id=query.effective_chat.id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML)
+            all_lines = text.split("\n")
+            chunks = []
+            current_lines = []
+            current_len = 0
+            for ln in all_lines:
+                line_len = len(ln) + 1  # +1 for newline
+                if current_len + line_len > 3900 and current_lines:
+                    chunks.append("\n".join(current_lines))
+                    current_lines = []
+                    current_len = 0
+                current_lines.append(ln)
+                current_len += line_len
+            if current_lines:
+                chunks.append("\n".join(current_lines))
+
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    try:
+                        await query.edit_message_text(chunk, parse_mode=ParseMode.HTML, reply_markup=back_button)
+                    except Exception:
+                        # If edit fails (e.g. message too old), send as new message
+                        await context.bot.send_message(
+                            chat_id=query.effective_chat.id,
+                            text=chunk,
+                            parse_mode=ParseMode.HTML)
+                else:
+                    await context.bot.send_message(
+                        chat_id=query.effective_chat.id,
+                        text=chunk,
+                        parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error("[MOV_DATE_HANDLER] Error: " + str(e), exc_info=True)
         try:
