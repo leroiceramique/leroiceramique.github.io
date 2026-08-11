@@ -1041,6 +1041,8 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
 def db_update_quantity(product_id, change, transaction_type):
     if transaction_type not in ("add", "remove"):
         raise ValueError("transaction_type must be 'add' or 'remove'")
+    if change <= 0:
+        raise ValueError("الكمية يجب أن تكون أكبر من صفر.")
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1463,7 +1465,19 @@ async def send_low_stock_alerts(bot):
                 lower_name = name.lower().strip()
                 if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
                     continue
+                # Fetch CURRENT quantity from database (not old low-stock snapshot)
                 qty = prod.get("quantity", "?")
+                try:
+                    conn = get_connection()
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute("SELECT quantity FROM products WHERE id = %s", (pid,))
+                        row = cur.fetchone()
+                    conn.commit()
+                    release_connection(conn)
+                    if row:
+                        qty = row["quantity"]
+                except Exception:
+                    pass
                 unit = _get_unit_ar(name)
                 msg = ("✅ تنبيه: توفرت سلعة"
                     + chr(10) + chr(10)
