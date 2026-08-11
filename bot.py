@@ -2437,7 +2437,7 @@ async def callback_mov_date_handler(update, context):
                 reply_markup=markup)
         except Exception:
             await context.bot.send_message(
-                chat_id=query.effective_chat.id,
+                chat_id=query.message.chat.id,
                 text="📋 اختار التاريخ لعرض الحركة:",
                 reply_markup=markup)
         return
@@ -2449,11 +2449,11 @@ async def callback_mov_date_handler(update, context):
             rows = await asyncio.to_thread(_fetch_today_movements)
         except Exception as e:
             logging.error("[MOV_DATE_HANDLER] DB error today: " + str(e), exc_info=True)
-            await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[MOVEMENTS-TODAY]")
+            await report_diag(bot=context.bot, chat_id=query.message.chat.id, error=e, context_tag="[MOVEMENTS-TODAY]")
             try:
                 await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
             except Exception:
-                await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
+                await context.bot.send_message(chat_id=query.message.chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
             return
         wd = target_date.weekday()
         date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
@@ -2466,7 +2466,7 @@ async def callback_mov_date_handler(update, context):
                     ]))
             except Exception:
                 await context.bot.send_message(
-                    chat_id=query.effective_chat.id,
+                    chat_id=query.message.chat.id,
                     text="📋 حركة اليوم (" + date_display + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
@@ -2479,7 +2479,7 @@ async def callback_mov_date_handler(update, context):
             [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
         ])
         await _safe_send_html(
-            chat_id=query.effective_chat.id,
+            chat_id=query.message.chat.id,
             text=full_text,
             bot=context.bot,
             reply_markup=back_button,
@@ -2498,11 +2498,11 @@ async def callback_mov_date_handler(update, context):
         rows = await asyncio.to_thread(_fetch_movements_by_date, target_date)
     except Exception as e:
         logging.error("[MOV_DATE_HANDLER] DB error: " + str(e), exc_info=True)
-        await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[MOVEMENTS-DATE]")
+        await report_diag(bot=context.bot, chat_id=query.message.chat.id, error=e, context_tag="[MOVEMENTS-DATE]")
         try:
             await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
         except Exception:
-            await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
+            await context.bot.send_message(chat_id=query.message.chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
         return
 
     wd = target_date.weekday()
@@ -2517,7 +2517,7 @@ async def callback_mov_date_handler(update, context):
                 ]))
         except Exception:
             await context.bot.send_message(
-                chat_id=query.effective_chat.id,
+                chat_id=query.message.chat.id,
                 text="📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
@@ -2533,7 +2533,7 @@ async def callback_mov_date_handler(update, context):
     ])
 
     await _safe_send_html(
-        chat_id=query.effective_chat.id,
+        chat_id=query.message.chat.id,
         text=full_text,
         bot=context.bot,
         reply_markup=back_button,
@@ -2619,7 +2619,7 @@ async def callback_product_action_handler(update, context):
             await query.edit_message_text(text)
         except Exception as e:
             logging.error("[PACT_LOG] Error: " + str(e), exc_info=True)
-            await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[PRODUCT-LOG]")
+            await report_diag(bot=context.bot, chat_id=query.message.chat.id, error=e, context_tag="[PRODUCT-LOG]")
             try:
                 await query.edit_message_text("❌ خطأ في تحميل الحركة. تم إرسال التشخيص.")
             except Exception:
@@ -2658,7 +2658,7 @@ async def callback_product_action_handler(update, context):
         await query.edit_message_text(text)
     except Exception as e:
         logging.error("[PACT] Error: " + str(e), exc_info=True)
-        await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[PRODUCT-ACTION]")
+        await report_diag(bot=context.bot, chat_id=query.message.chat.id, error=e, context_tag="[PRODUCT-ACTION]")
         try:
             await query.edit_message_text("❌ حدث خطأ. تم إرسال التشخيص.")
         except Exception:
