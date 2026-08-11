@@ -2069,13 +2069,13 @@ async def process_remove_quantity(update, context, text, telegram_id):
         return
     try:
         updated = db_update_quantity(product_id, qty, "remove")
-        log_transaction(product_id, "remove", qty, db_user["id"])
+        tx = log_transaction(product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg)
         await send_low_stock_alerts(context.bot)
-        # Ask for optional free-text reason
-        context.user_data["pending_remove_reason"] = {"product_id": product_id, "user_id": db_user["id"]}
+        # Ask for optional free-text reason — save tx ID for exact match
+        context.user_data["pending_remove_reason"] = {"tx_id": tx["id"], "product_id": product_id, "user_id": db_user["id"]}
         skip_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
         ])
@@ -2373,14 +2373,18 @@ def _build_date_picker_markup():
 
 async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=None):
     """Send long HTML text safely: splits by complete lines, never cuts HTML tags.
-    If edit_message is given, first chunk tries to edit it; on failure sends new message."""
+    If edit_message is given, first chunk tries to edit it; on failure sends new message.
+    Returns list of sent Message objects (chunk messages to delete later)."""
     if len(text) <= 4096:
         if edit_message:
             try:
-                return await edit_message(text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                await edit_message(text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                return []
             except Exception:
-                return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                msg = await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                return [msg]
+        msg = await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        return [msg]
     # Split by lines
     all_lines = text.split(chr(10))
     chunks = []
@@ -2396,16 +2400,28 @@ async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=No
         current_len += line_len
     if current_lines:
         chunks.append(chr(10).join(current_lines))
-    sent = []
+    extra_msgs = []
     for i, chunk in enumerate(chunks):
         if i == 0 and edit_message:
             try:
-                sent.append(await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup))
+                await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             except Exception:
-                sent.append(await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup))
+                msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                extra_msgs.append(msg)
         else:
-            sent.append(await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML))
-    return sent
+            msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML)
+            extra_msgs.append(msg)
+    return extra_msgs
+
+
+async def _delete_extra_chunks(bot, chat_id, context):
+    """Delete any extra chunk messages stored in context.user_data['_mov_chunks']."""
+    chunks = context.user_data.pop("_mov_chunks", [])
+    for msg in chunks:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
+        except Exception:
+            pass
 
 
 async def _show_all_movements(update, context, admin_view=True):
@@ -2427,9 +2443,12 @@ async def callback_mov_date_handler(update, context):
     await query.answer()
     data = query.data
     admin_view = is_admin(query.from_user.id)
+    chat_id = query.message.chat.id
 
     # --- Back to date picker ---
     if data == "movd_back":
+        # Delete any leftover chunk messages first
+        await _delete_extra_chunks(context.bot, chat_id, context)
         markup = _build_date_picker_markup()
         try:
             await query.edit_message_text(
@@ -2437,7 +2456,7 @@ async def callback_mov_date_handler(update, context):
                 reply_markup=markup)
         except Exception:
             await context.bot.send_message(
-                chat_id=query.message.chat.id,
+                chat_id=chat_id,
                 text="📋 اختار التاريخ لعرض الحركة:",
                 reply_markup=markup)
         return
@@ -2449,11 +2468,11 @@ async def callback_mov_date_handler(update, context):
             rows = await asyncio.to_thread(_fetch_today_movements)
         except Exception as e:
             logging.error("[MOV_DATE_HANDLER] DB error today: " + str(e), exc_info=True)
-            await report_diag(bot=context.bot, chat_id=query.message.chat.id, error=e, context_tag="[MOVEMENTS-TODAY]")
+            await report_diag(bot=context.bot, chat_id=chat_id, error=e, context_tag="[MOVEMENTS-TODAY]")
             try:
                 await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
             except Exception:
-                await context.bot.send_message(chat_id=query.message.chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
+                await context.bot.send_message(chat_id=chat_id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
             return
         wd = target_date.weekday()
         date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
@@ -2466,7 +2485,7 @@ async def callback_mov_date_handler(update, context):
                     ]))
             except Exception:
                 await context.bot.send_message(
-                    chat_id=query.message.chat.id,
+                    chat_id=chat_id,
                     text="📋 حركة اليوم (" + date_display + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
@@ -2478,12 +2497,15 @@ async def callback_mov_date_handler(update, context):
         back_button = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
         ])
-        await _safe_send_html(
-            chat_id=query.message.chat.id,
+        extra = await _safe_send_html(
+            chat_id=chat_id,
             text=full_text,
             bot=context.bot,
             reply_markup=back_button,
             edit_message=query.edit_message_text)
+        # Save chunk messages to delete when going back
+        if extra:
+            context.user_data["_mov_chunks"] = extra
         return
 
     # --- Date selected: show movements for that date ---
@@ -2498,11 +2520,11 @@ async def callback_mov_date_handler(update, context):
         rows = await asyncio.to_thread(_fetch_movements_by_date, target_date)
     except Exception as e:
         logging.error("[MOV_DATE_HANDLER] DB error: " + str(e), exc_info=True)
-        await report_diag(bot=context.bot, chat_id=query.message.chat.id, error=e, context_tag="[MOVEMENTS-DATE]")
+        await report_diag(bot=context.bot, chat_id=chat_id, error=e, context_tag="[MOVEMENTS-DATE]")
         try:
             await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
         except Exception:
-            await context.bot.send_message(chat_id=query.message.chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
+            await context.bot.send_message(chat_id=chat_id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
         return
 
     wd = target_date.weekday()
@@ -2517,7 +2539,7 @@ async def callback_mov_date_handler(update, context):
                 ]))
         except Exception:
             await context.bot.send_message(
-                chat_id=query.message.chat.id,
+                chat_id=chat_id,
                 text="📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
@@ -2532,12 +2554,17 @@ async def callback_mov_date_handler(update, context):
         [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
     ])
 
-    await _safe_send_html(
-        chat_id=query.message.chat.id,
+    # Delete any leftover chunks from previous view
+    await _delete_extra_chunks(context.bot, chat_id, context)
+    extra = await _safe_send_html(
+        chat_id=chat_id,
         text=full_text,
         bot=context.bot,
         reply_markup=back_button,
         edit_message=query.edit_message_text)
+    # Save chunk messages to delete when going back
+    if extra:
+        context.user_data["_mov_chunks"] = extra
 
 
 async def callback_product_select_handler(update, context):
@@ -4329,9 +4356,16 @@ async def handle_admin_message(update, context):
             conn = get_connection()
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
-                        (reason_text, pending["product_id"], pending["user_id"]))
+                    if pending.get("tx_id"):
+                        # Update the exact transaction by ID
+                        cur.execute(
+                            "UPDATE transactions SET reason = %s WHERE id = %s",
+                            (reason_text, pending["tx_id"]))
+                    else:
+                        # Fallback: match by product+user+no reason
+                        cur.execute(
+                            "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
+                            (reason_text, pending["product_id"], pending["user_id"]))
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -4792,9 +4826,14 @@ async def handle_customer_message(update, context):
             conn = get_connection()
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
-                        (reason_text, pending["product_id"], pending["user_id"]))
+                    if pending.get("tx_id"):
+                        cur.execute(
+                            "UPDATE transactions SET reason = %s WHERE id = %s",
+                            (reason_text, pending["tx_id"]))
+                    else:
+                        cur.execute(
+                            "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
+                            (reason_text, pending["product_id"], pending["user_id"]))
                 conn.commit()
             except Exception:
                 conn.rollback()
