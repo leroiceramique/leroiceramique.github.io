@@ -174,6 +174,11 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
+# سر يتحقق منه تيليجرام في هيدر X-Telegram-Bot-Api-Secret-Token لمنع أي جهة غير تيليجرام
+# من إرسال تحديثات مزوّرة إلى الـ webhook (مهم لأن ADMIN_IDS تُستنتج من بيانات التحديث نفسه).
+WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "") or __import__("hashlib").sha256(
+    (os.getenv("BOT_TOKEN", "") + "webhook-secret").encode()
+).hexdigest()[:32]
 
 # Email backup (optional — for daily auto-backup via email)
 SMTP_HOST = os.getenv("SMTP_HOST", "")         # e.g. smtp.gmail.com
@@ -3771,8 +3776,18 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                 # Deduct from stock if product exists in DB
                 if item["product_id"]:
                     cur.execute(
-                        "UPDATE products SET quantity = quantity - %s WHERE id = %s AND quantity >= %s",
-                        (item["quantity"], item["product_id"], item["quantity"])
+                        "SELECT quantity FROM products WHERE id = %s FOR UPDATE",
+                        (item["product_id"],)
+                    )
+                    prow = cur.fetchone()
+                    if not prow or prow["quantity"] < item["quantity"]:
+                        raise ValueError(
+                            "❌ الكمية غير كافية للمنتج \"" + item["product_name"] + "\" "
+                            "(المتوفر: " + str(prow["quantity"] if prow else 0) + ", المطلوب: " + str(item["quantity"]) + ")"
+                        )
+                    cur.execute(
+                        "UPDATE products SET quantity = quantity - %s WHERE id = %s",
+                        (item["quantity"], item["product_id"])
                     )
                     # Log transaction
                     cur.execute(
@@ -3964,9 +3979,15 @@ async def callback_invoice_handler(update, context):
 
     elif data.startswith("invsel_"):
         # Product selection callback from invoice product search
-        if data.startswith("invsel_manual_"):
+        if data == "invsel_manual":
             # Manual entry - go to qty step
-            manual_name = data[len("invsel_manual_"):]
+            manual_name = context.user_data.get("invoice_manual_search_name", "").strip()
+            if not manual_name:
+                try:
+                    await query.edit_message_text("❌ انتهت صلاحية هذا الزر، أرسل اسم المنتج من جديد.")
+                except Exception:
+                    pass
+                return
             ptype = _invoice_product_type(manual_name)
             context.user_data["invoice_tmp_product"] = manual_name
             context.user_data["invoice_tmp_pid"] = None
@@ -4387,7 +4408,9 @@ async def handle_admin_message(update, context):
             if len(label) > 40:
                 label = label[:37] + "..."
             buttons.append([InlineKeyboardButton(label, callback_data="invsel_" + str(p["id"]))])
-        buttons.append([InlineKeyboardButton("✍️ كتابة يدوية", callback_data="invsel_manual_" + product_name)])
+        # لا نضع اسم المنتج داخل callback_data (حد تيليجرام 64 بايت قد يتجاوزه بحث طويل)
+        context.user_data["invoice_manual_search_name"] = product_name
+        buttons.append([InlineKeyboardButton("✍️ كتابة يدوية", callback_data="invsel_manual")])
         buttons.append([InlineKeyboardButton("🔍 بحث آخر", callback_data="invoice_back_product")])
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
         return
@@ -5943,8 +5966,8 @@ async def _daily_backup_loop(bot):
     while True:
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
         today = now.strftime("%Y-%m-%d")
-        # 5-minute window (23:00-23:04 UTC = midnight Algeria)
-        if today != last_backup and 23 <= now.hour <= 23 and now.minute < 5:
+        # نافذة 5 دقائق حول منتصف الليل بتوقيت الجزائر (now أصلاً محوّل لتوقيت الجزائر UTC+1)
+        if today != last_backup and now.hour == 0 and now.minute < 5:
             await _daily_backup(bot)
             last_backup = today
         await asyncio.sleep(60)
@@ -6004,7 +6027,8 @@ if __name__ == "__main__":
         webhook_app.router.add_get("/", health)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
-            drop_pending_updates=True, webhook_app=webhook_app)
+            drop_pending_updates=True, webhook_app=webhook_app,
+            secret_token=WEBHOOK_SECRET)
     elif render_port:
         health_app = web.Application()
         async def health(request):
