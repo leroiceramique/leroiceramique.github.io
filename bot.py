@@ -303,12 +303,20 @@ CREATE TABLE IF NOT EXISTS transactions (
     type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),
     quantity   INTEGER NOT NULL,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
-    date       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    date       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason     VARCHAR(200)
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_name ON products (name);
 CREATE INDEX IF NOT EXISTS idx_transactions_product ON transactions (product_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
+
+-- Migration: add reason column if missing (safe for existing DBs)
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'reason') THEN
+        ALTER TABLE transactions ADD COLUMN reason VARCHAR(200);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS extraction_requests (
     id            SERIAL PRIMARY KEY,
@@ -1135,14 +1143,15 @@ def get_all_products():
 #  TRANSACTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
-def log_transaction(product_id, transaction_type, quantity, user_id):
+def log_transaction(product_id, transaction_type, quantity, user_id, reason=None):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, product_id, type, quantity, user_id, date
-            """, (product_id, transaction_type, quantity, user_id))
+            cur.execute("""
+                INSERT INTO transactions (product_id, type, quantity, user_id, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, product_id, type, quantity, user_id, date, reason
+            """, (product_id, transaction_type, quantity, user_id, reason))
             tx = cur.fetchone()
         conn.commit()
         return dict(tx)
@@ -1186,7 +1195,7 @@ def get_product_transactions(product_id, limit=15):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT
-                    t.id, t.type AS tx_type, t.quantity, t.date,
+                    t.id, t.type AS tx_type, t.quantity, t.date, t.reason,
                     u.username AS operator_name
                 FROM transactions t
                 LEFT JOIN users u ON u.id = t.user_id
@@ -1232,6 +1241,7 @@ STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
+STATE_REMOVE_REASON = "waiting_remove_reason"
 
 # ── State timeout: 10 minutes (600 seconds) ──
 _STATE_TIMEOUT_SECONDS = 600
@@ -1971,11 +1981,20 @@ async def process_remove_quantity(update, context, text, telegram_id):
         return
     try:
         updated = db_update_quantity(product_id, qty, "remove")
-        log_transaction(product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        await update.message.reply_text(msg)
         await send_low_stock_alerts(context.bot)
+        # Ask for optional removal reason
+        context.user_data["pending_remove_reason"] = {"product_id": product_id, "qty": qty, "user_id": db_user["id"]}
+        context.user_data["state"] = STATE_REMOVE_REASON
+        skip_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ تخطي (بدون سبب)", callback_data="remreason_skip")]
+        ])
+        await update.message.reply_text(
+            "💬 أضف سبب الإخراج (اختياري):\nمثال: بيع لبائع منافس أحمد",
+            reply_markup=skip_kb
+        )
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
@@ -2190,6 +2209,10 @@ def _build_movements_text(rows):
         else:
             user_link = user_name
         lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str)
+        # Show reason if present
+        reason = r.get("reason")
+        if reason:
+            lines.append("   💬 " + reason)
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
@@ -2203,7 +2226,7 @@ def _fetch_today_movements():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
+                "SELECT t.type AS tx_type, t.quantity, t.date, t.reason, p.name AS product_name, "
                 "u.username AS user_name, u.telegram_id AS user_tid "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
@@ -2230,7 +2253,7 @@ def _fetch_movements_by_date(target_date):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
+                "SELECT t.type AS tx_type, t.quantity, t.date, t.reason, p.name AS product_name, "
                 "u.username AS user_name, u.telegram_id AS user_tid "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
@@ -2596,16 +2619,21 @@ async def log_command(update, context):
             if row:
                 product = dict(row)
             else:
-                # Try partial match
-                cur.execute("SELECT * FROM products WHERE name ILIKE %s LIMIT 5", ("%" + query + "%",))
+                # Try partial match — show buttons if multiple results
+                cur.execute("SELECT * FROM products WHERE name ILIKE %s LIMIT 8", ("%" + query + "%",))
                 rows = cur.fetchall()
                 if len(rows) == 1:
                     product = dict(rows[0])
                 elif len(rows) > 1:
-                    names = [r["name"] for r in rows]
-                    names_list = chr(10).join("  • " + n for n in names)
+                    btns = []
+                    for r in rows:
+                        label = r["name"]
+                        if len(label) > 45:
+                            label = label[:42] + "..."
+                        btns.append([InlineKeyboardButton(label, callback_data="logsel_" + str(r["id"]))])
                     await update.message.reply_text(
-                        "🔍 وجدت عدة سلع مشابهة، حدد بدقة:" + chr(10) + chr(10) + names_list
+                        "🔍 وجدت عدة سلع مشابهة، اختر واحدة:",
+                        reply_markup=InlineKeyboardMarkup(btns)
                     )
                     return
         conn.commit()
@@ -2621,7 +2649,11 @@ async def log_command(update, context):
         await update.message.reply_text("❌ لم أجد سلعة بهذا الاسم.")
         return
 
-    # Fetch transactions
+    await _send_product_log(update.message.reply_text, product)
+
+
+async def _send_product_log(send_fn, product):
+    """Build and send product transaction log (shared by /log command and logsel callback)."""
     txs = get_product_transactions(product["id"], limit=30)
 
     name = product["name"]
@@ -2632,7 +2664,7 @@ async def log_command(update, context):
         msg = ("📋 سجل السلعة: " + name + chr(10) + chr(10)
                + "📦 الكمية الحالية: " + str(current_qty) + " " + unit + chr(10) + chr(10)
                + "📭 لا توجد حركات مسجلة لهذه السلعة.")
-        await update.message.reply_text(msg)
+        await send_fn(msg)
         return
 
     # Build log message
@@ -2646,6 +2678,7 @@ async def log_command(update, context):
         qty = tx.get("quantity", 0)
         date = tx.get("date", "")
         operator = tx.get("operator_name") or "غير معروف"
+        reason = tx.get("reason") or ""
 
         # Format date/time in Algeria timezone
         try:
@@ -2664,11 +2697,12 @@ async def log_command(update, context):
             icon = "🔴➖"
             label = "إخراج"
 
-        lines.append(
-            icon + " " + label + " " + str(qty) + " " + unit
-            + "  │  " + fmt_date
-            + chr(10) + "   👤 " + operator
-        )
+        entry = (icon + " " + label + " " + str(qty) + " " + unit
+                 + "  │  " + fmt_date
+                 + chr(10) + "   👤 " + operator)
+        if reason:
+            entry += chr(10) + "   💬 " + reason
+        lines.append(entry)
 
     total_add = sum(tx["quantity"] for tx in txs if tx.get("tx_type", tx.get("type", "")) == "add")
     total_rem = sum(tx["quantity"] for tx in txs if tx.get("tx_type", tx.get("type", "")) == "remove")
@@ -2689,9 +2723,44 @@ async def log_command(update, context):
         if current_chunk:
             chunks.append(chr(10).join(current_chunk))
         for chunk in chunks:
-            await update.message.reply_text(chunk)
+            await send_fn(chunk)
     else:
-        await update.message.reply_text(text)
+        await send_fn(text)
+
+
+async def callback_log_select_handler(update, context):
+    """Handle product selection from /log search results."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "logsel_<product_id>"
+    parts = data.split("_", 1)
+    if len(parts) != 2:
+        return
+    pid_str = parts[1]
+    if not pid_str.isdigit():
+        return
+    product_id = int(pid_str)
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        await query.edit_message_text("❌ حدث خطأ.")
+        return
+    finally:
+        release_connection(conn)
+
+    if not row:
+        await query.edit_message_text("❌ السلعة غير موجودة.")
+        return
+
+    product = dict(row)
+    await query.edit_message_text("📋 سجل السلعة: " + product["name"] + "\n⏳ جاري التحميل...")
+    await _send_product_log(query.message.reply_text, product)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2965,6 +3034,20 @@ async def callback_restore_last_handler(update, context):
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
+async def callback_remove_reason_handler(update, context):
+    """Handle skip button for optional removal reason."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "remreason_skip":
+        pending = context.user_data.get("pending_remove_reason")
+        if pending:
+            log_transaction(pending["product_id"], "remove", pending["qty"], pending["user_id"])
+        context.user_data.pop("pending_remove_reason", None)
+        context.user_data.clear()
+        await query.edit_message_text("✅ تم الإخراج بدون سبب.")
+
+
 async def callback_add_notify_handler(update, context):
     """Handle the 'reason for add' choice: truck, customer return, or silent correction."""
     query = update.callback_query
@@ -2981,10 +3064,13 @@ async def callback_add_notify_handler(update, context):
     actor = pending["user"]
     try:
         if reason == "silent":
-            # تصحيح المخزون — بدون إشعار لأحد
-            confirm = "📝 تم تصحيح المخزون بنجاح (بدون إشعار) ✅"
+            # تصحيح المخزون — بدون إشعار وبدون تسجيل في سجل الحركة
+            confirm = "📝 تم تصحيح المخزون بنجاح (بدون إشعار وبدون تسجيل) ✅"
             await query.edit_message_text(confirm)
         else:
+            # Log the transaction ONLY for real stock movements (truck/return)
+            if actor:
+                log_transaction(product["id"], "add", qty, actor["id"])
             # Broadcast the notification with the chosen reason
             await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
             # Confirm to the user
@@ -4335,8 +4421,8 @@ async def handle_admin_message(update, context):
         try:
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
-            if db_user:
-                log_transaction(product["id"], action, qty, db_user["id"])
+            # Transaction logging deferred to callback_add_notify_handler
+            # (skip logging here — will log only if NOT silent correction)
             icon = _product_status_icon(updated)
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
@@ -4363,6 +4449,17 @@ async def handle_admin_message(update, context):
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
+            # After remove: ask for optional reason
+            elif action == "remove" and db_user:
+                context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
+                context.user_data["state"] = STATE_REMOVE_REASON
+                skip_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭️ تخطي (بدون سبب)", callback_data="remreason_skip")]
+                ])
+                await update.message.reply_text(
+                    "💬 أضف سبب الإخراج (اختياري):\nمثال: بيع لبائع منافس أحمد",
+                    reply_markup=skip_kb
+                )
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -4403,7 +4500,21 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("❌ خطأ: " + str(e), reply_markup=get_input_keyboard())
         context.user_data.clear()
         return
-    
+
+    elif state == STATE_REMOVE_REASON:
+        reason_text = text.strip()
+        pending = context.user_data.get("pending_remove_reason")
+        if pending:
+            log_transaction(pending["product_id"], "remove", pending["qty"], pending["user_id"],
+                           reason=reason_text if reason_text else None)
+        context.user_data.pop("pending_remove_reason", None)
+        context.user_data.clear()
+        if reason_text:
+            await update.message.reply_text("✅ تم تسجيل السبب.", reply_markup=get_admin_keyboard())
+        else:
+            await update.message.reply_text("✅ تم الإخراج بدون سبب.", reply_markup=get_admin_keyboard())
+        return
+
     else:
         context.user_data.clear()
         await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
@@ -4499,8 +4610,8 @@ async def handle_customer_message(update, context):
         try:
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
-            if db_user:
-                log_transaction(product["id"], action, qty, db_user["id"])
+            # Transaction logging deferred to callback_add_notify_handler
+            # (skip logging here — will log only if NOT silent correction)
             icon = _product_status_icon(updated)
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
@@ -4526,6 +4637,18 @@ async def handle_customer_message(update, context):
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
                 return  # Don't clear user_data yet — callback needs pending_add_notify
+            # After remove: ask for optional reason
+            elif action == "remove" and db_user:
+                context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
+                context.user_data["state"] = STATE_REMOVE_REASON
+                skip_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭️ تخطي (بدون سبب)", callback_data="remreason_skip")]
+                ])
+                await update.message.reply_text(
+                    "💬 أضف سبب الإخراج (اختياري):\nمثال: بيع لبائع منافس أحمد",
+                    reply_markup=skip_kb
+                )
+                return
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
@@ -4573,6 +4696,21 @@ async def handle_customer_message(update, context):
             logging.error("[EXTRACT] Request failed: " + str(e), exc_info=True)
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
+        return
+
+    # State: remove reason (optional)
+    if state == STATE_REMOVE_REASON:
+        reason_text = text.strip()
+        pending = context.user_data.get("pending_remove_reason")
+        if pending:
+            log_transaction(pending["product_id"], "remove", pending["qty"], pending["user_id"],
+                           reason=reason_text if reason_text else None)
+        context.user_data.pop("pending_remove_reason", None)
+        context.user_data.clear()
+        if reason_text:
+            await update.message.reply_text("✅ تم تسجيل السبب.")
+        else:
+            await update.message.reply_text("✅ تم الإخراج بدون سبب.")
         return
 
     # Default: treat as search query
@@ -5187,6 +5325,8 @@ def build_application():
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("log", log_command))
+    app.add_handler(CallbackQueryHandler(callback_log_select_handler, pattern="^logsel_"))
+    app.add_handler(CallbackQueryHandler(callback_remove_reason_handler, pattern="^remreason_"))
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
