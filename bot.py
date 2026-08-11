@@ -1,6 +1,8 @@
 import os
 import re
 import json
+import traceback
+import inspect
 import datetime
 import logging
 import asyncio
@@ -2414,8 +2416,9 @@ async def _show_all_movements(update, context, admin_view=True):
         await update.message.reply_text(text, reply_markup=markup)
     except Exception as e:
         logging.error("[MOVEMENTS_DATE] Error: " + str(e), exc_info=True)
+        await report_diag(bot=context.bot, chat_id=update.effective_chat.id, error=e, context_tag="[MOVEMENTS-SHOW]")
         kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
-        await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
+        await update.message.reply_text("❌ حدث خطأ في عرض الحركات. تم إرسال التشخيص.", reply_markup=kb)
 
 
 async def callback_mov_date_handler(update, context):
@@ -2446,10 +2449,11 @@ async def callback_mov_date_handler(update, context):
             rows = await asyncio.to_thread(_fetch_today_movements)
         except Exception as e:
             logging.error("[MOV_DATE_HANDLER] DB error today: " + str(e), exc_info=True)
+            await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[MOVEMENTS-TODAY]")
             try:
-                await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+                await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
             except Exception:
-                await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+                await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
             return
         wd = target_date.weekday()
         date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
@@ -2494,10 +2498,11 @@ async def callback_mov_date_handler(update, context):
         rows = await asyncio.to_thread(_fetch_movements_by_date, target_date)
     except Exception as e:
         logging.error("[MOV_DATE_HANDLER] DB error: " + str(e), exc_info=True)
+        await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[MOVEMENTS-DATE]")
         try:
-            await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+            await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
         except Exception:
-            await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+            await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
         return
 
     wd = target_date.weekday()
@@ -2614,8 +2619,9 @@ async def callback_product_action_handler(update, context):
             await query.edit_message_text(text)
         except Exception as e:
             logging.error("[PACT_LOG] Error: " + str(e), exc_info=True)
+            await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[PRODUCT-LOG]")
             try:
-                await query.edit_message_text("❌ خطأ في تحميل الحركة.")
+                await query.edit_message_text("❌ خطأ في تحميل الحركة. تم إرسال التشخيص.")
             except Exception:
                 pass
         return
@@ -2652,8 +2658,9 @@ async def callback_product_action_handler(update, context):
         await query.edit_message_text(text)
     except Exception as e:
         logging.error("[PACT] Error: " + str(e), exc_info=True)
+        await report_diag(bot=context.bot, chat_id=query.effective_chat.id, error=e, context_tag="[PRODUCT-ACTION]")
         try:
-            await query.edit_message_text("❌ حدث خطأ.")
+            await query.edit_message_text("❌ حدث خطأ. تم إرسال التشخيص.")
         except Exception:
             pass
 #  SHOW PRODUCTS LIST
@@ -5025,19 +5032,229 @@ async def callback_extract_approve_handler(update, context):
             pass
 
 # ═══════════════════════════════════════════════════════════════
-#  SECTION 24: GLOBAL ERROR HANDLER
-#  Functions: error_handler (Conflict detection + user notification)
+#  SECTION 24: DIAGNOSTIC SYSTEM & GLOBAL ERROR HANDLER
+#  Functions: _diag_analyze, _diag_find_source, report_diag,
+#              error_handler (Conflict + full diagnostic to admin)
 # ═══════════════════════════════════════════════════════════════
 
+# --- Global reference filled during build_application() ---
+_bot_app = None  # Application instance, needed by report_diag
+
+
+def _diag_analyze(error):
+    """Analyze an exception and return a human-readable diagnosis in Arabic.
+    Returns: (title, explanation, likely_cause, suggestion)"""
+    err_type = type(error).__name__
+    err_msg = str(error)
+
+    # ---- Telegram API errors ----
+    if "Message is too long" in err_msg or "message is too long" in err_msg:
+        return ("رسالة طويلة جداً",
+                "النص المطلوب إرساله يتجاوز 4096 حرف (حد تيليجرام).",
+                "دالة _safe_send_html لم تقسم النص بشكل صحيح، أو النص ذو سطر واحد طويل جداً.",
+                "تأكد أن _safe_send_html يقسم السطور الطويلة أيضاً، وليس فقط عند حرف n.")
+
+    if "Message to edit not found" in err_msg or "message can't be edited" in err_msg.lower():
+        return ("تعديل رسالة غير موجودة",
+                "محاولة تعديل رسالة تم حذفها أو انتهت صلاحيتها.",
+                "المستخدم ضغط على زر بعد فترة طويلة، أو الرسالة حُذفت يدوياً، أو تم إرسال رسالة جديدة بدل التعديل ثم حُذفت الأصلية.",
+                "كل edit_message_text يجب أن يكون داخل try/except، و fallback بـ send_message.")
+
+    if "Bad Request" in err_msg and ("can't parse" in err_msg.lower() or "parse" in err_msg.lower()):
+        return ("خطأ تحليل HTML/Markdown",
+                "تيليجرام رفض النص لوجود HTML أو Markdown غير صالح.",
+                "وجود حرف <> أو & غير مُهرب، أو وسم HTML مفتوح بدون إغلاق، أو محاولة إرسال HTML بدون تحديد parse_mode.",
+                "تأكد من إضافة parse_mode=ParseMode.HTML، وأن كل <> و & مُهربة بـ &lt; &gt; &amp;.")
+
+    if "QueryIdInvalid" in err_msg or "query_id invalid" in err_msg.lower():
+        return ("Callback منتهي الصلاحية",
+                "المستخدم ضغط على زر قديم expired callback query.",
+                "الزُر ظهر منذ أكثر من 10 ثوانٍ بدون ضغط، أو اتصال بطيء.",
+                "هذا طبيعي مع الأزرار القديمة. تأكد من query.answer() في البداية.")
+
+    if "Timed out" in err_msg or "timeout" in err_msg.lower():
+        return ("انتهاء وقت الانتظار",
+                "العملية استغرقت وقتاً أطول من المسموح (غالباً استعلام DB بطيء أو اتصال بالشبكة).",
+                "قاعدة البيانات بطيئة، أو Pool الاتصال فارغ/مُجمّد.",
+                "1) تأكد من asyncio.to_thread لكل استعلام DB.\n2) تحقق من فتح/إغلاق الاتصالات.\n3) تأكد أن release_connection يُستدعى دائماً.")
+
+    if "Conflict" in err_msg or "terminated by other getUpdates" in err_msg.lower():
+        return ("تعارض بين نسختين",
+                "يوجد أكثر من نسخة من البوت تعمل بنفس التوكن.",
+                "أعد تشغيل البوت أو أوقف النسخة القديمة.",
+                "لا حاجة لإصلاح — يتعافى تلقائياً.")
+
+    if "Chat not found" in err_msg or "chat not found" in err_msg.lower():
+        return ("محادثة غير موجودة",
+                "محاولة إرسال رسالة لشخص حظر البوت أو لم يبدأ محادثة معه.",
+                "المستخدم لم يبدأ conversation مع البوت بعد، أو حظره.",
+                "تأكد أن المستخدم بدأ /start أولاً.")
+
+    if "Forbidden" in err_msg or "bot was blocked by the user" in err_msg.lower():
+        return ("ممنوع الوصول",
+                "المستخدم حظر البوت.",
+                "البوت لا يستطيع إرسال رسائل لهذا المستخدم.",
+                "المستخدم يجب أن يُلغي حظر البوت.")
+
+    # ---- psycopg2 / DB errors ----
+    if "psycopg2" in str(type(error).__module__) or "PostgreSQL" in err_msg:
+        if "connection" in err_msg.lower() and ("refused" in err_msg.lower() or "closed" in err_msg.lower() or "timeout" in err_msg.lower()):
+            return ("فقدان اتصال قاعدة البيانات",
+                    "الاتصال بقاعدة البيانات انقطع أو انتهى.",
+                    "إما أن الخادم أغلق الاتصال بسبب idle timeout، أو تجاوز Pool حد الاتصالات.",
+                    "1) تحقق من keep-alive (الخاصية pool_recycle).\n2) تأكد من release_connection.\n3) أعد تشغيل البوت لإعادة إنشاء Pool.")
+
+        if "unique constraint" in err_msg.lower() or "duplicate key" in err_msg.lower():
+            return ("تكرار في قاعدة البيانات",
+                    "محاولة إدخال سجل موجود مسبقاً (مفتاح فريد مُكرّر).",
+                    "منتج بنفس الاسم موجود بالفعل، أو مستخدم بنفس telegram_id.",
+                    "أضف existence check قبل INSERT: SELECT أولاً، إذا وجدت → UPDATE بدل INSERT.")
+
+        if "deadlock" in err_msg.lower():
+            return ("حالة انتظار متبادل (Deadlock)",
+                    "عمليتان تتعارضان على نفس الصف في قاعدة البيانات.",
+                    "عمليتان متزامنتان تحاولان تعديل نفس المنتج/المستخدم.",
+                    "استخدم RETRY مع sleep قصير. أضف UNIQUE constraint في DB.")
+
+    # ---- Python built-in errors ----
+    if err_type == "KeyError":
+        return ("مفتاح غير موجود (KeyError)",
+                "محاولة الوصول لعنصر في قاموس/ديكشنري بمفتاح غير موجود.",
+                "الكود يفترض وجود حقل في DB أو user_data لكنه غير موجود.\nالمفتاح المفقود: " + repr(err_msg),
+                "أضف .get() بدل [] للوصول الآمن، أو تحقق بـ 'if key in dict'.")
+
+    if err_type == "IndexError":
+        return ("فهرس خارج المدى (IndexError)",
+                "محاولة الوصول لعنصر في قائمة بفهرس أكبر من حجمها.",
+                "قائمة فارغة أو أقصر مما يُفترض.\nالفهرس: " + repr(err_msg),
+                "تحقق من len() قبل الوصول، أو أضف if واقي.")
+
+    if err_type == "TypeError":
+        return ("نوع خاطئ (TypeError)",
+                "استخدام دالة أو عملية على نوع بيانات خاطئ.",
+                repr(err_msg),
+                "تحقق من أن القيمة من النوع الصحيح قبل استخدامها.")
+
+    if err_type == "AttributeError":
+        if "NoneType" in err_msg and "has no attribute" in err_msg:
+            return ("استدعاء على None (AttributeError)",
+                    "محاولة استدعاء دالة على قيمة None.",
+                    err_msg,
+                    "أضف فحص if x is not None قبل الاستدعاء.")
+        return ("صفة غير موجودة (AttributeError)",
+                "محاولة الوصول لصفة/دالة غير موجودة.",
+                err_msg,
+                "تأكد من الاسم الصحيح. مثلاً update.get_bot() → context.bot في PTB v21.")
+
+    if err_type == "ValueError":
+        return ("قيمة غير صالحة (ValueError)",
+                "قيمة غير صالحة مُمرّرة لدالة.",
+                repr(err_msg),
+                "تأكد من أن القيمة بالصيغة الصحيحة.")
+
+    if err_type == "RuntimeError":
+        return ("خطأ تشغيلي (RuntimeError)",
+                repr(err_msg),
+                "",
+                "تحقق من شروط التشغيل.")
+
+    # ---- Generic fallback ----
+    return ("خطأ غير معروف",
+            err_type + ": " + err_msg[:200],
+            "لم يتم التعرف على نوع الخطأ.",
+            "افحص التفاصيل التقنية أدناه.")
+
+
+def _diag_find_source(error):
+    """Extract the most relevant source line from traceback.
+    Returns: (filename, lineno, function_name, code_line)"""
+    tb = traceback.extract_tb(error.__traceback__)
+    # Walk from bottom (most recent) to top
+    for frame in reversed(tb):
+        # Skip library frames, focus on bot.py
+        if frame.filename and "bot.py" in frame.filename:
+            return (os.path.basename(frame.filename), frame.lineno, frame.name, frame.line or "")
+    # If no bot.py frame, return the innermost frame
+    if tb:
+        frame = tb[-1]
+        return (os.path.basename(frame.filename), frame.lineno, frame.name, frame.line or "")
+    return ("?", 0, "?", "?")
+
+
+async def report_diag(bot, chat_id, error, context_tag=""):
+    """Send a full diagnostic report to the admin.
+    context_tag: short label like [MOVEMENTS] or [ADD_PRODUCT]."""
+    title, explanation, cause, suggestion = _diag_analyze(error)
+    fname, lineno, func, code_line = _diag_find_source(error)
+    err_type = type(error).__name__
+    err_msg = str(error)
+
+    # Build report
+    report = "🔧 تقرير تشخيص الخطأ" + ((" " + context_tag) if context_tag else "")
+    report += chr(10) + "━" * 30
+    report += chr(10) + chr(10)
+    report += "❌ المشكلة: " + title
+    report += chr(10) + chr(10)
+    report += "📝 الشرح: " + explanation
+    report += chr(10) + chr(10)
+    report += "🔍 السبب المحتمل: " + (cause or "غير محدد")
+    report += chr(10) + chr(10)
+    report += "💡 الاقتراح: " + (suggestion or "افحص الكود.")
+    report += chr(10) + chr(10)
+    report += "━" * 30
+    report += chr(10) + "🔬 التفاصيل التقنية:"
+    report += chr(10) + "نوع الخطأ: " + err_type
+    report += chr(10) + "الرسالة: " + err_msg[:300]
+    report += chr(10) + "الموقع: " + fname + " سطر " + str(lineno) + " في " + func + "()"
+    if code_line:
+        report += chr(10) + "الكود: " + code_line.strip()[:200]
+
+    # Send — split if too long
+    if len(report) > 3900:
+        # Keep main report, show truncated traceback separately
+        tb_text = traceback.format_exc()
+        main_report = report
+        report = main_report[:3800] + chr(10) + chr(10) + "(تم اقتطاع — يوجد stack trace كامل في السجلات)"
+
+    try:
+        await bot.send_message(chat_id=chat_id, text=report)
+    except Exception:
+        # Last resort: log it
+        logging.error("[DIAG] Failed to send diagnostic report: " + report[:200])
+
+
 async def error_handler(update, context):
+    """Global error handler: sends diagnostic report to admin."""
     from telegram.error import Conflict
     if isinstance(context.error, Conflict):
         logging.warning("[BOT] Conflict detected - another instance running. Will recover automatically.")
         return
+
     logging.error("[BOT ERROR] %s: %s", type(context.error).__name__, context.error, exc_info=True)
+
+    # Determine admin chat_id to send diagnostic report
+    diag_chat_id = None
+    if update and update.effective_user:
+        diag_chat_id = update.effective_user.id
+    elif ADMIN_IDS:
+        diag_chat_id = ADMIN_IDS[0]
+
+    if diag_chat_id and _bot_app:
+        try:
+            await report_diag(
+                bot=_bot_app.bot,
+                chat_id=diag_chat_id,
+                error=context.error,
+                context_tag="[GLOBAL]")
+        except Exception:
+            pass
+
+    # Also notify the user who triggered the error
     try:
         if update and update.effective_message:
-            await update.effective_message.reply_text("❌ حدث خطأ حاول مرة أخرى.")
+            await update.effective_message.reply_text(
+                "❌ حدث خطأ. تم إرسال تقرير تشخيصي للأدمن.",
+                parse_mode=ParseMode.HTML)
     except Exception:
         pass
 
@@ -5395,7 +5612,9 @@ def _get_telegram_id(user_db_id):
 
 
 def build_application():
+    global _bot_app
     app = Application.builder().token(BOT_TOKEN).build()
+    _bot_app = app  # Reference for diagnostic system
 
     # ── Middleware: تحديث بيانات المستخدم تلقائياً عند أي تفاعل ──
     async def auto_sync_user(update, context):
