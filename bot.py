@@ -2314,35 +2314,13 @@ async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=No
 
 
 async def _show_all_movements(update, context, admin_view=True):
-    """Show today's movements directly, with date buttons for past 7 days below."""
+    """Show date picker for last 7 days — user picks a date to see movements."""
     try:
-        today = datetime.date.today()
-        rows = _fetch_today_movements()
-        wd = today.weekday()
-        date_label = WEEKDAY_AR.get(wd, "") + " " + today.strftime("%d/%m/%Y")
-
-        # Build date buttons (always shown)
-        date_buttons = _build_date_buttons()
-
-        if not rows:
-            text = "📋 حركة اليوم (" + date_label + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم."
-            markup = InlineKeyboardMarkup(date_buttons)
-            await update.message.reply_text(text, reply_markup=markup)
-            return
-
-        header = "📋 حركة اليوم (" + date_label + ") — " + str(len(rows)) + " عملية:"
-        body = _build_movements_text(rows, admin_view=admin_view)
-        full_text = header + chr(10) + chr(10) + body
-
-        markup = InlineKeyboardMarkup(date_buttons)
-
-        await _safe_send_html(
-            chat_id=update.effective_chat.id,
-            text=full_text,
-            bot=context.bot,
-            reply_markup=markup)
+        text = "📋 اختار التاريخ لعرض الحركة:"
+        markup = _build_date_picker_markup()
+        await update.message.reply_text(text, reply_markup=markup)
     except Exception as e:
-        logging.error("[MOVEMENTS_TODAY] Error: " + str(e), exc_info=True)
+        logging.error("[MOVEMENTS_DATE] Error: " + str(e), exc_info=True)
         kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
 
@@ -2354,12 +2332,39 @@ async def callback_mov_date_handler(update, context):
     data = query.data
     admin_view = is_admin(query.from_user.id)
 
-    # --- Back: show date picker for past 7 days ---
+    # --- Back to date picker ---
     if data == "movd_back":
         markup = _build_date_picker_markup()
         await query.edit_message_text(
             "📋 اختار التاريخ لعرض الحركة:",
             reply_markup=markup)
+        return
+
+    # --- Today shortcut ---
+    if data == "movd_today":
+        target_date = datetime.date.today()
+        rows = _fetch_today_movements()
+        wd = target_date.weekday()
+        date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
+        if not rows:
+            await query.edit_message_text(
+                "📋 حركة اليوم (" + date_display + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+                ]))
+            return
+        header = "📋 حركة اليوم (" + date_display + ") — " + str(len(rows)) + " عملية:"
+        body = _build_movements_text(rows, admin_view=admin_view)
+        full_text = header + chr(10) + chr(10) + body
+        back_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+        ])
+        await _safe_send_html(
+            chat_id=query.effective_chat.id,
+            text=full_text,
+            bot=context.bot,
+            reply_markup=back_button,
+            edit_message=query.edit_message_text)
         return
 
     # --- Date selected: show movements for that date ---
