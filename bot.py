@@ -22,11 +22,12 @@ from telegram.ext import (
     filters,
 )
 
-# ═══════════════════════════════════════════════════════════
-#  CONFIG
-# ═══════════════════════════════════════════════════════════
-#  EXTRACTION PERMISSION & REQUEST FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 1: EXTRACTION PERMISSION & REQUEST (Database Layer)
+#  Functions: can_extract, set_extract_permission,
+#              create_extraction_request, get_pending_extraction_requests,
+#              process_extraction_request
+# ═══════════════════════════════════════════════════════════════
 
 def can_extract(telegram_id):
     """Check if user has extraction permission."""
@@ -39,7 +40,7 @@ def can_extract(telegram_id):
         return bool(row and row["can_extract"])
     except Exception as e:
         conn.rollback()
-        logging.error("[DB] can_extract check failed: " + str(e))
+        logging.error("[DB] can_extract check failed: " + str(e), exc_info=True)
         return False
     finally:
         release_connection(conn)
@@ -59,6 +60,7 @@ def set_extract_permission(telegram_id, allowed):
         return updated
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -79,6 +81,7 @@ def create_extraction_request(product_id, quantity, requester_id):
         return dict(row)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -102,6 +105,7 @@ def get_pending_extraction_requests():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -151,12 +155,16 @@ def process_extraction_request(request_id, approved, admin_id):
             return True, "❌ تم رفض طلب الإخراج."
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
 
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 2: ENVIRONMENT CONFIGURATION & GLOBAL VARIABLES
+#  Bot token, database URL, admin IDs, email settings
+# ═══════════════════════════════════════════════════════════════
 
 load_dotenv()
 
@@ -203,9 +211,12 @@ def _init_low_stock_ids():
     except Exception as e:
         logging.warning("[INIT] Failed to init low-stock IDs: " + str(e))
 
-# ═══════════════════════════════════════════════════════════
-#  DATABASE
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 3: DATABASE CONNECTION POOL & SCHEMA
+#  Functions: init_pool, get_connection, release_connection,
+#              init_db, seed_sample_products
+#  Constants: SCHEMA_SQL (table definitions)
+# ═══════════════════════════════════════════════════════════════
 
 _pool = None
 
@@ -292,7 +303,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),
     quantity   INTEGER NOT NULL,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
-    date       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    date       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason     VARCHAR(200)
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_name ON products (name);
@@ -408,7 +420,13 @@ def init_db():
                     processed_at  TIMESTAMPTZ
                 );
                 CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
-            -- Migration: create bot_settings table
+                -- Migration: add reason column to transactions table
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'reason') THEN
+                        ALTER TABLE transactions ADD COLUMN reason VARCHAR(200);
+                    END IF;
+                END $$;
+                -- Migration: create bot_settings table
             
 CREATE TABLE IF NOT EXISTS bot_updates (
     id          SERIAL PRIMARY KEY,
@@ -479,9 +497,12 @@ def seed_sample_products():
         release_connection(conn)
 
 
-# ═══════════════════════════════════════════════════════════
-#  USER FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 4: USER MANAGEMENT (Database Layer)
+#  Functions: register_user, sync_user_info, get_user,
+#              is_admin, is_approved, get_pending_users,
+#              approve_user, reject_user
+# ═══════════════════════════════════════════════════════════════
 
 def register_user(telegram_id, username=None, first_name=None):
     conn = get_connection()
@@ -504,6 +525,7 @@ def register_user(telegram_id, username=None, first_name=None):
         return dict(user)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -540,6 +562,7 @@ def get_user(telegram_id):
         return dict(row) if row else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -563,9 +586,12 @@ def is_approved(telegram_id):
     return user is not None and user["role"] in ("admin", "customer")
 
 
-# ═══════════════════════════════════════════════════════════
-#  INCOMING ORDERS (طلبات التوريد)
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 5: INCOMING ORDERS - SUPPLY REQUESTS (Database Layer)
+#  Functions: create_incoming_order, get_pending_incoming_orders,
+#              get_user_pending_orders, complete_incoming_order,
+#              receive_incoming_order, complete_all_pending_orders
+# ═══════════════════════════════════════════════════════════════
 
 def create_incoming_order(requester_id, product_name, quantity, photo_file_id=None):
     """إنشاء طلب توريد جديد من صاحب المحل."""
@@ -581,6 +607,7 @@ def create_incoming_order(requester_id, product_name, quantity, photo_file_id=No
         return dict(order)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -602,6 +629,7 @@ def get_pending_incoming_orders():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -621,6 +649,7 @@ def get_user_pending_orders(user_db_id):
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -641,6 +670,7 @@ def complete_incoming_order(order_id):
         return dict(order) if order else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -661,6 +691,7 @@ def receive_incoming_order(order_id):
         return dict(order) if order else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -681,6 +712,7 @@ def complete_all_pending_orders():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -696,6 +728,7 @@ def get_pending_users():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -714,6 +747,7 @@ def approve_user(telegram_id):
         return dict(row) if row else None
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -729,10 +763,16 @@ def reject_user(telegram_id):
         return deleted
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 6: BACKUP & RESTORE (Database Layer)
+#  Functions: db_export_backup, db_import_backup
+# ═══════════════════════════════════════════════════════════════
 
 def db_export_backup():
     """Export all data as a dict (products + transactions + users)."""
@@ -756,6 +796,7 @@ def db_export_backup():
         }
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -812,13 +853,18 @@ def db_import_backup(data):
             "  العمليات: " + str(tx_count))
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
-# ═══════════════════════════════════════════════════════════
-#  PRODUCT FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 7: PRODUCT CRUD & SEARCH ENGINE
+#  Functions: db_add_product, db_update_product, db_update_quantity,
+#              db_delete_product, get_low_stock_products, get_all_products
+#  Search:    _normalize_text, _levenshtein_distance, _fuzzy_score,
+#              search_products (ILIKE fast path + fuzzy slow path)
+# ═══════════════════════════════════════════════════════════════
 
 def db_add_product(name, quantity=0, location="", minimum_stock=5):
     conn = get_connection()
@@ -833,6 +879,7 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
         return dict(product)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -901,18 +948,42 @@ def _fuzzy_score(name, query_tokens):
 
 
 def search_products(query):
-    """Smart search: fuzzy matching with typo tolerance, normalized text,
-    slash/x interchangeability, and accent handling."""
+    """Smart search: ILIKE fast path, then fuzzy matching with typo tolerance.
+    Normalized text, slash/x interchangeability, and accent handling."""
+    if not query or not query.strip():
+        return []
+
+    # ── FAST PATH: ILIKE exact/partial match in database (no full scan) ──
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Fetch all products (fuzzy matching needs full scan)
+            cur.execute(
+                "SELECT * FROM products WHERE name ILIKE %s ORDER BY id LIMIT 10",
+                ("%" + query.strip() + "%",),
+            )
+            ilike_rows = cur.fetchall()
+        conn.commit()
+        # If ILIKE found 3+ results, return them directly (fast, accurate)
+        ilike_results = [dict(r) for r in ilike_rows]
+        if len(ilike_results) >= 3:
+            return ilike_results
+    except Exception as e:
+        conn.rollback()
+        logging.error("[SEARCH] ILIKE fast path failed: " + str(e), exc_info=True)
+    finally:
+        release_connection(conn)
+
+    # ── SLOW PATH: Fuzzy matching (full scan, typo tolerance) ──
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM products ORDER BY id")
             all_rows = cur.fetchall()
         conn.commit()
         all_products = [dict(r) for r in all_rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -921,7 +992,7 @@ def search_products(query):
     query_tokens = _normalize_text(query).split()
     if not query_tokens:
         return []
-    # Score every product
+    # If ILIKE returned some results (1-2), include them as baseline
     scored = []
     for p in all_products:
         s = _fuzzy_score(p["name"], query_tokens)
@@ -968,6 +1039,7 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
         return dict(product)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -976,6 +1048,8 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
 def db_update_quantity(product_id, change, transaction_type):
     if transaction_type not in ("add", "remove"):
         raise ValueError("transaction_type must be 'add' or 'remove'")
+    if change <= 0:
+        raise ValueError("الكمية يجب أن تكون أكبر من صفر.")
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1010,6 +1084,7 @@ def db_update_quantity(product_id, change, transaction_type):
         return product
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1025,6 +1100,7 @@ def db_delete_product(product_id):
         return deleted
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1040,6 +1116,7 @@ def get_low_stock_products():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1055,6 +1132,7 @@ def get_all_products():
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1064,19 +1142,21 @@ def get_all_products():
 #  TRANSACTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
-def log_transaction(product_id, transaction_type, quantity, user_id):
+def log_transaction(product_id, transaction_type, quantity, user_id, reason=None):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, product_id, type, quantity, user_id, date
-            """, (product_id, transaction_type, quantity, user_id))
+            cur.execute("""
+                INSERT INTO transactions (product_id, type, quantity, user_id, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, product_id, type, quantity, user_id, date, reason
+            """, (product_id, transaction_type, quantity, user_id, reason))
             tx = cur.fetchone()
         conn.commit()
         return dict(tx)
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1101,6 +1181,7 @@ def get_transactions(limit=20, offset=0):
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
@@ -1126,13 +1207,16 @@ def get_product_transactions(product_id, limit=15):
         return [dict(r) for r in rows]
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
-# ═══════════════════════════════════════════════════════════
-#  CONSTANTS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 9: FSM STATE CONSTANTS & TIMEOUT
+#  States: STATE_ADD_NAME, STATE_ADD_QTY, STATE_SEARCH_ADMIN, etc.
+#  Timeout: _is_state_expired(), _set_state() (10 min auto-clear)
+# ═══════════════════════════════════════════════════════════════
 
 STATE_ADD_NAME = "waiting_add_name"
 STATE_ADD_QTY = "waiting_add_qty"
@@ -1156,6 +1240,23 @@ STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
+STATE_REMOVE_REASON = "waiting_remove_reason"
+
+# ── State timeout: 10 minutes (600 seconds) ──
+_STATE_TIMEOUT_SECONDS = 600
+
+def _is_state_expired(context):
+    """Check if current state has been active longer than timeout. Returns True if expired."""
+    set_at = context.user_data.get("state_set_at")
+    if not set_at:
+        return False
+    elapsed = datetime.datetime.now(datetime.timezone.utc).timestamp() - set_at
+    return elapsed > _STATE_TIMEOUT_SECONDS
+
+def _set_state(context, state):
+    """Set state and record timestamp for timeout tracking."""
+    context.user_data["state"] = state
+    context.user_data["state_set_at"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1184,9 +1285,12 @@ BTN_CUST_ORDER = "📦 طلب توريد"
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 
 
-# ═══════════════════════════════════════════════════════════
-#  HELPERS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 10: FORMATTING HELPERS & PRODUCT UTILITIES
+#  Functions: format_product_admin, format_product_customer,
+#              _product_status_icon, _is_pcs_product, _invoice_product_type,
+#              _get_unit_code, _get_unit_ar, _show_product_detail
+# ═══════════════════════════════════════════════════════════════
 
 
 def format_product_admin(product):
@@ -1211,6 +1315,20 @@ def format_product_customer(product):
         return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
 
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 11: BROADCAST & NOTIFICATION SYSTEM
+#  Functions: _broadcast_update_notification, _broadcast_to_all_users,
+#              _broadcast_add_notification, send_low_stock_alerts,
+#              send_low_stock_list
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 11: BROADCAST & NOTIFICATION SYSTEM
+#  Functions: _broadcast_update_notification, _broadcast_to_all_users,
+#              _broadcast_add_notification, send_low_stock_alerts,
+#              send_low_stock_list
+# ═══════════════════════════════════════════════════════════════
 async def _broadcast_update_notification(update, context):
     """إرسال إشعار آخر تحديث تلقائياً بدون كتابة من المدير."""
     conn = get_connection()
@@ -1356,7 +1474,19 @@ async def send_low_stock_alerts(bot):
                 lower_name = name.lower().strip()
                 if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
                     continue
+                # Fetch CURRENT quantity from database (not old low-stock snapshot)
                 qty = prod.get("quantity", "?")
+                try:
+                    conn = get_connection()
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute("SELECT quantity FROM products WHERE id = %s", (pid,))
+                        row = cur.fetchone()
+                    conn.commit()
+                    release_connection(conn)
+                    if row:
+                        qty = row["quantity"]
+                except Exception:
+                    pass
                 unit = _get_unit_ar(name)
                 msg = ("✅ تنبيه: توفرت سلعة"
                     + chr(10) + chr(10)
@@ -1410,6 +1540,10 @@ async def send_low_stock_list(update=None, context=None, bot=None):
         logging.warning("[LOW_STOCK_LIST] Error: " + str(e))
 
 
+
+# ── Input Parsing Helpers ──
+
+# ── Input Parsing Helpers ──
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
@@ -1558,12 +1692,12 @@ async def generate_weekly_report(bot):
             await bot.send_message(chat_id=int(recipient_id), text=report_text)
             logging.info("[WEEKLY] Report sent to " + str(recipient_id))
         except Exception as e:
-            logging.error("[WEEKLY] Failed to send: " + str(e))
+            logging.error("[WEEKLY] Failed to send: " + str(e), exc_info=True)
 
         return report_text
 
     except Exception as e:
-        logging.error("[WEEKLY] Report generation failed: " + str(e))
+        logging.error("[WEEKLY] Report generation failed: " + str(e), exc_info=True)
         return None
 
 
@@ -1585,6 +1719,16 @@ async def _weekly_report_loop(bot):
 # ═══════════════════════════════════════════════════════════
 
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 13: KEYBOARD BUILDERS
+#  Functions: get_admin_keyboard, get_input_keyboard, get_customer_keyboard
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 13: KEYBOARD BUILDERS
+#  Functions: get_admin_keyboard, get_input_keyboard, get_customer_keyboard
+# ═══════════════════════════════════════════════════════════════
 def get_admin_keyboard():
     """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين."""
     # عداد طلبات التوريد المعلّقة
@@ -1641,6 +1785,18 @@ def get_customer_keyboard():
         ],
         resize_keyboard=True,
     )
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 14: ADMIN FSM - ADD PRODUCT FLOW
+#  Functions: ask_add_name, ask_add_qty, confirm_add_product,
+#              callback_addtype_handler, callback_add_handler
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 14: ADMIN FSM - ADD PRODUCT FLOW
+#  Functions: ask_add_name, ask_add_qty, confirm_add_product,
+#              callback_addtype_handler, callback_add_handler
+# ═══════════════════════════════════════════════════════════════
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
@@ -1736,7 +1892,7 @@ async def callback_addtype_handler(update, context):
             except Exception:
                 pass
     except Exception as e:
-        logging.error("[ADDTYPE] Error: " + str(e))
+        logging.error("[ADDTYPE] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ: " + str(e))
         except Exception:
@@ -1770,6 +1926,18 @@ async def callback_add_handler(update, context):
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
 
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 15: ADMIN FSM - QUANTITY, EDIT, DELETE, SEARCH
+#  Functions: process_add_quantity, process_remove_quantity,
+#              process_edit_product, process_delete_product, process_search
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 15: ADMIN FSM - QUANTITY, EDIT, DELETE, SEARCH
+#  Functions: process_add_quantity, process_remove_quantity,
+#              process_edit_product, process_delete_product, process_search
+# ═══════════════════════════════════════════════════════════════
 async def process_add_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
@@ -1815,13 +1983,22 @@ async def process_remove_quantity(update, context, text, telegram_id):
         log_transaction(product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        await update.message.reply_text(msg)
         await send_low_stock_alerts(context.bot)
+        # Ask for optional free-text reason
+        context.user_data["pending_remove_reason"] = {"product_id": product_id, "user_id": db_user["id"]}
+        skip_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
+        ])
+        context.user_data["state"] = STATE_REMOVE_REASON
+        await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
+        return  # important: do NOT clear user_data — user needs to type reason
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
+        context.user_data.clear()
     except Exception as e:
         await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+        context.user_data.clear()
 
 
 async def process_edit_product(update, context, text, telegram_id):
@@ -1923,6 +2100,24 @@ async def process_search(update, context, text, admin_view=False):
 
 # ═══════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 16: PRODUCT DETAIL, MOVEMENTS & DATE PICKER
+#  Functions: _show_product_detail, callback_product_select_handler,
+#              callback_product_action_handler,
+#              _build_movements_text, _fetch_today_movements,
+#              _fetch_movements_by_date, _show_all_movements,
+#              callback_mov_date_handler
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 16: PRODUCT DETAIL, MOVEMENTS & DATE PICKER
+#  Functions: _show_product_detail, callback_product_select_handler,
+#              callback_product_action_handler,
+#              _build_movements_text, _fetch_today_movements,
+#              _fetch_movements_by_date, _show_all_movements,
+#              callback_mov_date_handler
+# ═══════════════════════════════════════════════════════════════
 def _product_status_icon(product):
     qty = product["quantity"]
     min_stock = product["minimum_stock"]
@@ -1988,62 +2183,48 @@ async def _show_product_detail(update, context, product):
         await update.message.reply_text(text, reply_markup=keyboard)
 
 
-def _build_movements_text(rows):
-    """Build formatted movements text from transaction rows. Usernames are clickable Telegram links."""
+WEEKDAY_AR = {
+    0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
+    3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
+}
+
+
+def _build_movements_text(rows, admin_view=False):
+    """Build formatted movements text from transaction rows.
+    Usernames are clickable Telegram links.
+    If admin_view=True, removal reasons are shown; otherwise hidden."""
     if not rows:
         return None
-    lines = ["📋 حركة اليوم (" + str(len(rows)) + "):", ""]
+    lines = []
     for r in rows:
         r = dict(r)
         if r["tx_type"] == "add":
-            icon = "➕"
-            action = "إضافة"
+            icon = "🟢➕"
         else:
-            icon = "➖"
-            action = "إخراج"
+            icon = "🔴➖"
         time_str = r["date"].strftime("%H:%M")
-        prod = str(r["product_name"] or "")
+        prod = str(r["product_name"] or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         qty = r["quantity"]
-        unit = _get_unit_code(prod)
+        unit = _get_unit_code(str(r["product_name"] or ""))
         # Build clickable user link
         user_tid = r.get("user_tid")
-        user_name = str(r.get("user_name") or "مجهول")
+        user_name = str(r.get("user_name") or "مجهول").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if user_tid and user_name != "مجهول":
             user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
         else:
             user_link = user_name
-        lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str)
+        line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str
+        # Show reason only for admin, only for removals
+        reason = r.get("reason")
+        if admin_view and reason and r["tx_type"] == "remove":
+            reason = str(reason).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            line = line + chr(10) + "   💬 " + reason
+        lines.append(line)
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    lines.append(chr(10) + "➕ " + str(add_count) + " إضافة  |  ➖ " + str(rem_count) + " إخراج")
+    lines.append(chr(10) + "🟢➕ " + str(add_count) + " إضافة  |  🔴➖ " + str(rem_count) + " إخراج")
     return chr(10).join(lines)
-
-
-def _fetch_today_movements():
-    """Fetch today's movements from DB. Uses regular cursor to avoid RealDictCursor + 'type' column conflict."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                "u.username AS user_name, u.telegram_id AS user_tid "
-                "FROM transactions t "
-                "JOIN products p ON p.id = t.product_id "
-                "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= CURRENT_DATE "
-                "ORDER BY t.date DESC")
-            col_names = [desc[0] for desc in cur.description]
-            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
-        conn.commit()
-        return rows
-    except Exception as e:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
 
 
 def _fetch_movements_by_date(target_date):
@@ -2052,7 +2233,7 @@ def _fetch_movements_by_date(target_date):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
+                "SELECT t.type AS tx_type, t.quantity, t.date, t.reason, p.name AS product_name, "
                 "u.username AS user_name, u.telegram_id AS user_tid "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
@@ -2066,66 +2247,115 @@ def _fetch_movements_by_date(target_date):
         return rows
     except Exception as e:
         conn.rollback()
+        logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
         raise
     finally:
         release_connection(conn)
 
+
+def _fetch_today_movements():
+    """Fetch today's movements from DB."""
+    return _fetch_movements_by_date(datetime.date.today())
+
+
+def _build_date_picker_markup():
+    """Build inline keyboard for last 7 days date picker."""
+    today = datetime.date.today()
+    buttons = []
+    for d in range(6, -1, -1):
+        day = today - datetime.timedelta(days=d)
+        day_str = day.strftime("%Y-%m-%d")
+        wd = day.weekday()
+        if d == 0:
+            label = "📅 " + WEEKDAY_AR.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
+        else:
+            label = "📅 " + WEEKDAY_AR.get(wd, "") + " " + day.strftime("%d/%m")
+        buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=None):
+    """Send long HTML text safely: splits by complete lines, never cuts HTML tags.
+    If edit_message is given, first chunk edits it; rest are sent as new messages."""
+    if len(text) <= 4096:
+        if edit_message:
+            return await edit_message(text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    # Split by lines
+    all_lines = text.split(chr(10))
+    chunks = []
+    current_lines = []
+    current_len = 0
+    for ln in all_lines:
+        line_len = len(ln) + 1
+        if current_len + line_len > 3900 and current_lines:
+            chunks.append(chr(10).join(current_lines))
+            current_lines = []
+            current_len = 0
+        current_lines.append(ln)
+        current_len += line_len
+    if current_lines:
+        chunks.append(chr(10).join(current_lines))
+    sent = []
+    for i, chunk in enumerate(chunks):
+        if i == 0 and edit_message:
+            sent.append(await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup))
+        else:
+            sent.append(await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML))
+    return sent
+
+
 async def _show_all_movements(update, context, admin_view=True):
-    """Show date picker for last 7 days - user picks a date to see movements."""
+    """Show today\u2019s movements directly, with a button to browse past 7 days."""
     try:
         today = datetime.date.today()
-        buttons = []
-        weekday_ar = {
-            0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
-            3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
-        }
-        for d in range(6, -1, -1):
-            day = today - datetime.timedelta(days=d)
-            day_str = day.strftime("%Y-%m-%d")
-            wd = day.weekday()
-            if d == 0:
-                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
-            else:
-                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m")
-            buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
+        rows = _fetch_today_movements()
+        wd = today.weekday()
+        date_label = WEEKDAY_AR.get(wd, "") + " " + today.strftime("%d/%m/%Y")
 
-        text = "📋 اختار التاريخ لعرض الحركة:"
-        markup = InlineKeyboardMarkup(buttons)
-        await update.message.reply_text(text, reply_markup=markup)
+        if not rows:
+            text = "📋 حركة اليوم (" + date_label + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم."
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 تواريخ سابقة", callback_data="movd_dates")],
+            ])
+            await update.message.reply_text(text, reply_markup=markup)
+            return
+
+        header = "📋 حركة اليوم (" + date_label + ") — " + str(len(rows)) + " عملية:"
+        body = _build_movements_text(rows, admin_view=admin_view)
+        full_text = header + chr(10) + chr(10) + body
+
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📅 تواريخ سابقة", callback_data="movd_dates")],
+        ])
+
+        await _safe_send_html(
+            chat_id=update.effective_chat.id,
+            text=full_text,
+            bot=update.get_bot(),
+            reply_markup=markup)
     except Exception as e:
-        logging.error("[MOVEMENTS_DATE] Error: " + str(e))
+        logging.error("[MOVEMENTS_TODAY] Error: " + str(e), exc_info=True)
         kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
 
 
 async def callback_mov_date_handler(update, context):
-    """Handle date selection from movements date picker."""
+    """Handle movement callbacks: date picker, date selection, back."""
     query = update.callback_query
     await query.answer()
-    data = query.data  # "movd_2025-01-15"
+    data = query.data
+    admin_view = is_admin(query.from_user.id)
 
-    # Back button
-    if data == "movd_back":
-        today = datetime.date.today()
-        buttons = []
-        weekday_ar = {
-            0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
-            3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
-        }
-        for d in range(6, -1, -1):
-            day = today - datetime.timedelta(days=d)
-            day_str = day.strftime("%Y-%m-%d")
-            wd = day.weekday()
-            if d == 0:
-                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
-            else:
-                label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m")
-            buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
+    # --- Show date picker for past 7 days ---
+    if data == "movd_dates" or data == "movd_back":
+        markup = _build_date_picker_markup()
         await query.edit_message_text(
             "📋 اختار التاريخ لعرض الحركة:",
-            reply_markup=InlineKeyboardMarkup(buttons))
+            reply_markup=markup)
         return
 
+    # --- Date selected: show movements for that date ---
     date_str = data.replace("movd_", "")
     try:
         target_date = datetime.date.fromisoformat(date_str)
@@ -2135,46 +2365,37 @@ async def callback_mov_date_handler(update, context):
 
     try:
         rows = _fetch_movements_by_date(target_date)
-        weekday_ar = {
-            0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
-            3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
-        }
         wd = target_date.weekday()
-        date_display = weekday_ar.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
+        date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
 
         if not rows:
             await query.edit_message_text(
-                "📋 حركة " + date_display + ":\n\nلا توجد عمليات في هذا اليوم.",
+                "📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
                 ]))
             return
 
-        text = _build_movements_text(rows)
-        # Replace header to show date
-        header = "📋 حركة " + date_display + " (" + str(len(rows)) + "):"
-        body_lines = text.split("\n")[2:]  # skip old header and blank line
-        text = header + "\n" + "\n".join(body_lines)
+        header = "📋 حركة " + date_display + " (" + str(len(rows)) + " عملية):"
+        body = _build_movements_text(rows, admin_view=admin_view)
+        full_text = header + chr(10) + chr(10) + body
 
         back_button = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
         ])
 
-        if len(text) <= 4096:
-            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_button)
-        else:
-            await query.edit_message_text(text[:3900], parse_mode=ParseMode.HTML, reply_markup=back_button)
-            remaining = text[3900:]
-            while remaining:
-                chunk = remaining[:4096]
-                remaining = remaining[4096:]
-                await context.bot.send_message(
-                    chat_id=query.effective_chat.id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML)
+        await _safe_send_html(
+            chat_id=query.effective_chat.id,
+            text=full_text,
+            bot=context.bot,
+            reply_markup=back_button,
+            edit_message=query.edit_message_text)
     except Exception as e:
-        logging.error("[MOV_DATE_HANDLER] Error: " + str(e))
-        await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
+        logging.error("[MOV_DATE_HANDLER] Error: " + str(e), exc_info=True)
+        try:
+            await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
+        except Exception:
+            pass
 
 
 async def callback_product_select_handler(update, context):
@@ -2203,7 +2424,7 @@ async def callback_product_select_handler(update, context):
             return
         await _show_product_detail(update, context, dict(row))
     except Exception as e:
-        logging.error("[PSEL] Error: " + str(e))
+        logging.error("[PSEL] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
@@ -2255,7 +2476,7 @@ async def callback_product_action_handler(update, context):
                 text = "\n".join(tx_lines)
             await query.edit_message_text(text)
         except Exception as e:
-            logging.error("[PACT_LOG] Error: " + str(e))
+            logging.error("[PACT_LOG] Error: " + str(e), exc_info=True)
             try:
                 await query.edit_message_text("❌ خطأ في تحميل الحركة.")
             except Exception:
@@ -2293,7 +2514,7 @@ async def callback_product_action_handler(update, context):
         context.user_data["state"] = "waiting_pact_qty"
         await query.edit_message_text(text)
     except Exception as e:
-        logging.error("[PACT] Error: " + str(e))
+        logging.error("[PACT] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
@@ -2322,7 +2543,7 @@ async def start_command(update, context):
                         reply_markup=kb)
                     logging.info("[JOIN] Notification sent to admin " + str(admin_id) + " for user " + str(user.id))
                 except Exception as notify_err:
-                    logging.error("[JOIN] Failed to notify admin " + str(admin_id) + ": " + str(notify_err))
+                    logging.error("[JOIN] Failed to notify admin " + str(admin_id) + ": " + str(notify_err), exc_info=True)
     if is_admin(user.id):
         name = user.first_name or ""
         await update.message.reply_text(
@@ -2385,9 +2606,11 @@ async def search_command(update, context):
     )
 
 
-# ═══════════════════════════════════════════════════════════
 
-# ── Whitelist: Approval Handler ───────────────────────
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 18: USER APPROVAL & ROLE MANAGEMENT CALLBACKS
+#  Functions: callback_approval_handler, callback_promote_handler
+# ═══════════════════════════════════════════════════════════════
 
 async def callback_approval_handler(update, context):
     """Handle approve/reject for pending users."""
@@ -2495,6 +2718,22 @@ async def callback_promote_handler(update, context):
 
 # ── Backup Command ─────────────────────────────────────
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 19: BACKUP COMMAND & RESTORE CALLBACKS
+#  Functions: backup_command, handle_backup_document,
+#              callback_restore_handler, callback_restore_from_email_handler,
+#              callback_restore_last_handler, callback_add_notify_handler,
+#              callback_email_restore_handler, callback_restore_last_confirm_handler
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 19: BACKUP COMMAND & RESTORE CALLBACKS
+#  Functions: backup_command, handle_backup_document,
+#              callback_restore_handler, callback_restore_from_email_handler,
+#              callback_restore_last_handler, callback_add_notify_handler,
+#              callback_email_restore_handler, callback_restore_last_confirm_handler
+# ═══════════════════════════════════════════════════════════════
 async def backup_command(update, context):
     global _last_backup_data
     if not is_admin(update.effective_user.id):
@@ -2639,12 +2878,24 @@ async def callback_restore_last_handler(update, context):
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
-async def callback_add_notify_handler(update, context):
-    """Handle the 'reason for add' choice: truck or customer return."""
+async def callback_remskip_handler(update, context):
+    """Handle skip button for optional removal reason."""
     query = update.callback_query
     await query.answer()
-    data = query.data  # "addnotify_truck" or "addnotify_return"
-    reason = "truck" if data == "addnotify_truck" else "return"
+    context.user_data.pop("pending_remove_reason", None)
+    context.user_data.clear()
+    try:
+        await query.edit_message_text("✅ تم الإخراج بدون سبب.")
+    except Exception:
+        pass
+
+
+async def callback_add_notify_handler(update, context):
+    """Handle the 'reason for add' choice: truck, customer return, or silent correction."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "addnotify_truck", "addnotify_return", or "addnotify_silent"
+    reason = "truck" if data == "addnotify_truck" else ("return" if data == "addnotify_return" else "silent")
     pending = context.user_data.get("pending_add_notify")
     if not pending:
         await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
@@ -2654,16 +2905,24 @@ async def callback_add_notify_handler(update, context):
     qty = pending["qty"]
     actor = pending["user"]
     try:
-        # Broadcast the notification with the chosen reason
-        await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-        # Confirm to the user
-        if reason == "truck":
-            confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+        if reason == "silent":
+            # تصحيح المخزون — بدون إشعار وبدون تسجيل في سجل الحركة
+            confirm = "📝 تم تصحيح المخزون بنجاح (بدون إشعار وبدون تسجيل) ✅"
+            await query.edit_message_text(confirm)
         else:
-            confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
-        await query.edit_message_text(confirm)
+            # Log the transaction ONLY for real stock movements (truck/return)
+            if actor:
+                log_transaction(product["id"], "add", qty, actor["id"])
+            # Broadcast the notification with the chosen reason
+            await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+            # Confirm to the user
+            if reason == "truck":
+                confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+            else:
+                confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+            await query.edit_message_text(confirm)
     except Exception as e:
-        logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e))
+        logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
         except Exception:
@@ -2723,6 +2982,16 @@ async def callback_restore_last_confirm_handler(update, context):
         except Exception:
             pass
 
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 20: USERS MANAGEMENT COMMAND
+#  Functions: users_command
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 20: USERS MANAGEMENT COMMAND
+#  Functions: users_command
+# ═══════════════════════════════════════════════════════════════
+
 # ── Users Command ──
 
 async def users_command(update, context):
@@ -2738,7 +3007,7 @@ async def users_command(update, context):
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logging.error("[USERS] Failed to fetch approved users: " + str(e))
+        logging.error("[USERS] Failed to fetch approved users: " + str(e), exc_info=True)
         approved = []
     finally:
         release_connection(conn)
@@ -2792,9 +3061,13 @@ async def users_command(update, context):
     await update.message.reply_text("\n".join(msg_lines), reply_markup=markup)
 
 
-# ═══════════════════════════════════════════════════════════
-#  INVOICE SYSTEM FUNCTIONS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 21: INVOICE SYSTEM (Full Workflow)
+#  Functions: _invoice_add_item, _fmt_price, _invoice_show_review,
+#              _invoice_show_workers, _generate_invoice_pdf,
+#              _invoice_finalize, callback_invoice_handler
+#  Flow: customer → product → qty → price → area → review → worker → PDF
+# ═══════════════════════════════════════════════════════════════
 
 async def _invoice_add_item(update, context, product_id, product_name, qty, unit_price, ptype, extra_info=None):
     """Add item to invoice draft. ptype: 'm2', 'pcs', 'plant'."""
@@ -2809,24 +3082,27 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, unit
     if ptype == "m2":
         item["qty_m2"] = extra_info.get("qty_m2", qty) if extra_info else qty
         item["box_area"] = extra_info.get("box_area", 1) if extra_info else 1
-        item["subtotal"] = qty * unit_price
+        item["num_boxes"] = extra_info.get("num_boxes", qty) if extra_info else qty
+        item["subtotal"] = item["qty_m2"] * unit_price
     elif ptype == "pcs":
         item["subtotal"] = qty * unit_price
     elif ptype == "plant":
         item["length_m"] = extra_info.get("length_m", 0.45) if extra_info else 0.45
-        item["qty_m"] = qty
-        item["subtotal"] = qty * unit_price
+        item["qty_m"] = extra_info.get("qty_m", qty) if extra_info else qty
+        item["num_pieces"] = extra_info.get("num_pieces", qty) if extra_info else qty
+        item["subtotal"] = item["qty_m"] * unit_price
     items.append(item)
     context.user_data["invoice_items"] = items
     chat_id = update.effective_chat.id
     total = sum(i["subtotal"] for i in items)
     msg = "✅ تمت الإضافة (" + str(len(items)) + " عناصر)" + chr(10) + chr(10)
     if ptype == "m2":
-        msg += "📦 " + product_name + " → " + str(item.get("num_boxes", qty)) + " علبة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        msg += "📦 " + product_name + " → " + str(item.get("num_boxes", qty)) + " علبة" + chr(10)
+        msg += "📐 " + str(round(item.get("qty_m2", 0), 2)) + " م² × " + _fmt_price(item["unit_price"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "pcs":
         msg += "📦 " + product_name + " → " + str(qty) + " قطعة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "plant":
-        msg += "📦 " + product_name + " → " + str(qty) + " م.ط = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        msg += "📦 " + product_name + " → " + str(item.get("num_pieces", qty)) + " قطعة (" + str(item.get("length_m", "")) + " م) = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     msg += chr(10) + "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة منتج جديد", callback_data="invoice_add_new")],
@@ -2869,8 +3145,8 @@ async def _invoice_show_review(update_or_query, context, from_callback=False):
             msg += "   📦 " + str(item["quantity"]) + " قطعة" + chr(10)
             msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/قطعة × " + str(item["quantity"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
         elif pt == "plant":
-            msg += "   📏 " + str(item.get("qty_m", item["quantity"])) + " م.ط (" + str(item.get("length_m", "")) + " م)" + chr(10)
-            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/م.ط × " + str(item.get("qty_m", item["quantity"])) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+            msg += "   📏 " + str(item.get("qty_m", "")) + " م.ط (" + str(item.get("length_m", "")) + " م) → " + str(item.get("num_pieces", item["quantity"])) + " قطعة" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/م.ط × " + str(round(item.get("qty_m", 0), 2)) + " م.ط = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     msg += "━" * 20 + chr(10)
     msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
@@ -2980,6 +3256,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         subtitle_style = ParagraphStyle("ArabicSubtitle", parent=styles["Normal"], fontName="NotoSans", fontSize=11, alignment=1, spaceAfter=3*mm)
         body_style = ParagraphStyle("ArabicBody", parent=styles["Normal"], fontName="NotoSans", fontSize=10, leading=14)
         small_style = ParagraphStyle("ArabicSmall", parent=styles["Normal"], fontName="NotoSans", fontSize=8, alignment=1)
+        detail_style = ParagraphStyle("DetailSmall", parent=styles["Normal"], fontName="NotoSans", fontSize=8, leading=10, textColor=colors.Color(0.3, 0.3, 0.3))
 
         elements = []
         elements.append(Paragraph("Produit Le Roi", title_style))
@@ -2989,7 +3266,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         date_str = now.strftime("%Y/%m/%d %H:%M")
 
         info_data = [
-            [Paragraph("N° Facture", body_style), Paragraph("#" + str(invoice_id), body_style)],
+            [Paragraph("N\u00b0 Facture", body_style), Paragraph("#" + str(invoice_id), body_style)],
             [Paragraph("Date", body_style), Paragraph(date_str, body_style)],
             [Paragraph("Client", body_style), Paragraph(customer_name, body_style)],
         ]
@@ -3007,52 +3284,61 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         elements.append(info_table)
         elements.append(Spacer(1, 5*mm))
 
-        # Items table - dynamic columns based on product types
+        # Items table
         header = [
+            Paragraph("N\u00b0", body_style),
             Paragraph("Produit", body_style),
-            Paragraph("Quantité", body_style),
+            Paragraph("D\u00e9tail", body_style),
             Paragraph("Prix", body_style),
             Paragraph("Total (DA)", body_style),
         ]
         table_data = [header]
-        for item in items:
+        for idx, item in enumerate(items, 1):
             pt = item.get("ptype", "m2")
+            num_label = Paragraph(str(idx), body_style)
+            name_label = Paragraph(item["product_name"], body_style)
             if pt == "pcs":
-                table_data.append([
-                    Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item["quantity"]) + " pcs", body_style),
-                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/pcs", body_style),
-                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-                ])
+                detail_text = (str(item["quantity"]) + " pi\u00e8ce(s)")
+                price_text = "{:,.2f}".format(item["unit_price"]) + " DA/pcs"
+                detail_label = Paragraph(detail_text, detail_style)
+                price_label = Paragraph(price_text, detail_style)
+                total_label = Paragraph("{:,.2f}".format(item["subtotal"]), body_style)
             elif pt == "plant":
-                table_data.append([
-                    Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item.get("qty_m", item["quantity"])) + " m. lin.", body_style),
-                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m", body_style),
-                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-                ])
+                n_pieces = item.get("num_pieces", item["quantity"])
+                length_m = item.get("length_m", "")
+                qty_m = item.get("qty_m", 0)
+                detail_text = str(n_pieces) + " pi\u00e8ce(s) x " + str(length_m) + "m = " + str(round(qty_m, 2)) + " m.lin"
+                price_text = "{:,.2f}".format(item["unit_price"]) + " DA/m.lin"
+                detail_label = Paragraph(detail_text, detail_style)
+                price_label = Paragraph(price_text, detail_style)
+                total_label = Paragraph("{:,.2f}".format(item["subtotal"]), body_style)
             else:
-                table_data.append([
-                    Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item.get("qty_m2", item["quantity"])) + " m² (" + str(item["quantity"]) + " crt)", body_style),
-                    Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m²", body_style),
-                    Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
-                ])
+                # m2 products
+                qty_m2 = item.get("qty_m2", 0)
+                n_boxes = item.get("num_boxes", item["quantity"])
+                box_area = item.get("box_area", 0)
+                detail_text = str(round(qty_m2, 2)) + " m\u00b2 (" + str(n_boxes) + " carton" + ("s" if n_boxes > 1 else "") + " x " + str(box_area) + " m\u00b2)"
+                price_text = "{:,.2f}".format(item["unit_price"]) + " DA/m\u00b2"
+                detail_label = Paragraph(detail_text, detail_style)
+                price_label = Paragraph(price_text, detail_style)
+                total_label = Paragraph("{:,.2f}".format(item["subtotal"]), body_style)
+            table_data.append([num_label, name_label, detail_label, price_label, total_label])
 
         table_data.append([
+            Paragraph("", body_style),
             Paragraph("TOTAL", body_style), "", "",
             Paragraph("{:,.2f}".format(total), body_style),
         ])
 
-        items_table = Table(table_data, colWidths=[55*mm, 35*mm, 35*mm, 30*mm])
+        items_table = Table(table_data, colWidths=[8*mm, 42*mm, 42*mm, 28*mm, 28*mm])
         items_table.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("ALIGN", (1, 1), (1, -2), "LEFT"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.3, 0.5)),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3*mm),
-            ("TOPPADDING", (0, 0), (-1, -1), 3*mm),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5*mm),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5*mm),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ("LINEBELOW", (0, -1), (-1, -1), 2, colors.Color(0.2, 0.3, 0.5)),
             ("BACKGROUND", (0, -1), (-1, -1), colors.Color(0.9, 0.9, 0.9)),
@@ -3064,7 +3350,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         doc.build(elements)
         return pdf_path
     except Exception as e:
-        logging.error("[INVOICE] PDF generation failed: " + str(e))
+        logging.error("[INVOICE] PDF generation failed: " + str(e), exc_info=True)
         return None
 
 
@@ -3120,7 +3406,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logging.error("[INVOICE] DB save failed: " + str(e))
+        logging.error("[INVOICE] DB save failed: " + str(e), exc_info=True)
         await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), get_admin_keyboard())
         return
 
@@ -3141,7 +3427,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                 )
             os.remove(pdf_path)
         except Exception as e:
-            logging.error("[INVOICE] PDF send failed: " + str(e))
+            logging.error("[INVOICE] PDF send failed: " + str(e), exc_info=True)
 
     # Notify worker
     worker_notified = False
@@ -3155,7 +3441,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             if pt == "pcs":
                 worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item["quantity"]) + " قطعة" + chr(10)
             elif pt == "plant":
-                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m", item["quantity"])) + " م.ط" + chr(10)
+                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("num_pieces", item["quantity"])) + " قطعة (" + str(item.get("qty_m", "")) + " م.ط)" + chr(10)
             else:
                 worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m2", "")) + "m² → " + str(item["quantity"]) + " علبة" + chr(10)
         worker_msg += "━" * 15 + chr(10)
@@ -3164,7 +3450,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         await context.bot.send_message(chat_id=worker_tid, text=worker_msg)
         worker_notified = True
     except Exception as e:
-        logging.error("[INVOICE] Worker notification failed: " + str(e))
+        logging.error("[INVOICE] Worker notification failed: " + str(e), exc_info=True)
 
     # Clear state and return to admin panel
     context.user_data.clear()
@@ -3252,7 +3538,7 @@ async def callback_invoice_handler(update, context):
         if ptype == "pcs":
             q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل عدد القطع:"
         elif ptype == "plant":
-            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل الطول بالمتر (م.ط):"
+            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
         else:
             q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل الكمية المطلوبة (m²):"
         try:
@@ -3312,7 +3598,7 @@ async def callback_invoice_handler(update, context):
             if ptype == "pcs":
                 q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل عدد القطع:"
             elif ptype == "plant":
-                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل الطول بالمتر (م.ط):"
+                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
                 q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل المساحة المطلوبة (m²):"
             try:
@@ -3362,7 +3648,7 @@ async def callback_invoice_handler(update, context):
             if ptype == "pcs":
                 q_text = "🔢 أرسل عدد القطع:"
             elif ptype == "plant":
-                q_text = "🔢 أرسل الطول بالمتر (م.ط):"
+                q_text = "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
                 q_text = "🔢 أرسل المساحة المطلوبة (m²):"
             try:
@@ -3386,34 +3672,35 @@ async def callback_invoice_handler(update, context):
             await context.bot.send_message(chat_id=query.message.chat_id, text="📦 أرسل اسم المنتج:")
 
     elif data.startswith("inv_plen_"):
-        # Plante length selection
+        # Plante length selection - calculate pieces and add item
         try:
             length_m = float(data[len("inv_plen_"):])
         except ValueError:
             return
         context.user_data["invoice_tmp_plant_len"] = length_m
-        qty = context.user_data.get("invoice_tmp_qty", 0)
+        total_meters = context.user_data.get("invoice_tmp_qty", 0)
+        price_m = context.user_data.get("invoice_tmp_price", 0)
         product_name = context.user_data.get("invoice_tmp_product", "")
-        context.user_data["state"] = STATE_INVOICE_PRICE
+        product_id = context.user_data.get("invoice_tmp_pid")
+        import math
+        num_pieces = math.ceil(total_meters / length_m) if length_m > 0 else 0
+        actual_meters = num_pieces * length_m
+        subtotal = actual_meters * price_m
+        # Show summary
+        summary = ("📦 " + product_name + chr(10) + chr(10)
+                   + "📏 المساحة المطلوبة: " + str(total_meters) + " م.ط" + chr(10)
+                   + "📏 طول القطعة: " + str(length_m) + " م" + chr(10)
+                   + "📦 عدد القطع: " + str(num_pieces) + " (" + str(round(total_meters / length_m, 2)) + " → تقريب للأعلى)" + chr(10)
+                   + "📐 المساحة الفعلية: " + str(round(actual_meters, 2)) + " م.ط" + chr(10)
+                   + "💰 السعر/م.ط: " + _fmt_price(price_m) + " د.ج" + chr(10)
+                   + "━" * 20 + chr(10)
+                   + "💵 الإجمالي: " + _fmt_price(subtotal) + " د.ج")
         try:
-            await query.edit_message_text(
-                "💰 أرسل سعر المتر الطولي (د.ج/م.ط):" + chr(10) + chr(10)
-                + "📦 " + product_name + chr(10)
-                + "📏 " + str(qty) + " م.ط (شريط " + str(length_m) + " م)",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
-                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
-                ]))
+            await query.edit_message_text(summary)
         except Exception:
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text="💰 أرسل سعر المتر الطولي (د.ج/م.ط):" + chr(10) + chr(10)
-                + "📦 " + product_name + chr(10)
-                + "📏 " + str(qty) + " م.ط (شريط " + str(length_m) + " م)",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
-                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
-                ]))
+            pass
+        await _invoice_add_item(update, context, product_id, product_name, num_pieces, price_m, "plant",
+                                 extra_info={"length_m": length_m, "qty_m": actual_meters, "num_pieces": num_pieces, "total_requested_m": total_meters})
 
     elif data.startswith("inv_area_"):
         # Box area selection callback - no longer used, but keep for compatibility
@@ -3485,9 +3772,12 @@ async def callback_invoice_handler(update, context):
                 pass
 
 
-# ═══════════════════════════════════════════════════════════
-#  MESSAGE ROUTER
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 22: MESSAGE ROUTER & FSM CONTROLLERS
+#  Functions: handle_admin_message (~554 lines, central admin dispatcher),
+#              handle_customer_message (~169 lines, customer dispatcher),
+#              route_message (entry point: registers user → routes by role)
+# ═══════════════════════════════════════════════════════════════
 
 async def handle_admin_message(update, context):
 
@@ -3496,6 +3786,13 @@ async def handle_admin_message(update, context):
     user = update.effective_user
     chat_id = update.effective_chat.id
     bot = context.bot
+
+    # ── State timeout: expire stale states after 10 minutes ──
+    if state and _is_state_expired(context):
+        logging.info(f"[STATE_TIMEOUT] Admin {user.id} state '{state}' expired, clearing.")
+        context.user_data.clear()
+        state = None
+        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=get_admin_keyboard())
 
     # In a state - if user clicks an admin button, clear state first
     admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE]
@@ -3511,6 +3808,7 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_SEARCH:
             context.user_data["state"] = STATE_SEARCH_ADMIN
+            context.user_data["state_set_at"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
             await update.message.reply_text(
                 "🔍 البحث الذكي" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:" + chr(10) + chr(10) + "💡 يفهم الأخطاء الإملائية" + chr(10) + "🔤 / و × متساويان (60/60 = 60x60)" + chr(10) + "🏭 ابحث بالمصنع أو المقاس",
                 reply_markup=get_input_keyboard())
@@ -3670,7 +3968,7 @@ async def handle_admin_message(update, context):
             if ptype == "pcs":
                 q = "🔢 أرسل عدد القطع:"
             elif ptype == "plant":
-                q = "🔢 أرسل الطول بالمتر (م.ط):"
+                q = "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
                 q = "🔢 أرسل المساحة المطلوبة (m²):"
             await update.message.reply_text(
@@ -3691,7 +3989,7 @@ async def handle_admin_message(update, context):
             if ptype == "pcs":
                 q = "🔢 أرسل عدد القطع:"
             elif ptype == "plant":
-                q = "🔢 أرسل الطول بالمتر (م.ط):"
+                q = "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
                 q = "🔢 أرسل المساحة المطلوبة (m²):"
             await update.message.reply_text(
@@ -3738,13 +4036,12 @@ async def handle_admin_message(update, context):
                 ]))
             return
         elif ptype == "plant":
-            context.user_data["state"] = "waiting_invoice_plant_length"
+            context.user_data["state"] = STATE_INVOICE_PRICE
             await update.message.reply_text(
-                "📏 اختر طول الشريط:" + chr(10) + chr(10)
-                + "📦 " + product_name + " × " + str(qty) + " م.ط",
+                "💰 أرسل سعر المتر (د.ج/م.ط):" + chr(10) + chr(10)
+                + "📦 " + product_name + chr(10)
+                + "📏 المساحة المطلوبة: " + str(qty) + " م.ط",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("0.45 م", callback_data="inv_plen_0.45"),
-                     InlineKeyboardButton("0.60 م", callback_data="inv_plen_0.60")],
                     [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
                 ]))
@@ -3762,7 +4059,58 @@ async def handle_admin_message(update, context):
             return
 
     if state == "waiting_invoice_plant_length":
-        await update.message.reply_text("❌ اختر الطول من الأزرار أعلاه.")
+        # Accept manual length input for plante (e.g. 0.45 or 0.6)
+        try:
+            length_val = float(text.strip())
+            if length_val <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ أرسل طول القطعة بالمتر (مثلاً: 0.45 أو 0.6):")
+            return
+        # Process the same as the inv_plen_ callback
+        total_meters = context.user_data.get("invoice_tmp_qty", 0)
+        price_m = context.user_data.get("invoice_tmp_price", 0)
+        product_name = context.user_data.get("invoice_tmp_product", "")
+        product_id = context.user_data.get("invoice_tmp_pid")
+        import math
+        num_pieces = math.ceil(total_meters / length_val) if length_val > 0 else 0
+        actual_meters = num_pieces * length_val
+        subtotal = actual_meters * price_m
+        summary = ("📦 " + product_name + chr(10) + chr(10)
+                   + "📏 المساحة المطلوبة: " + str(total_meters) + " م.ط" + chr(10)
+                   + "📏 طول القطعة: " + str(length_val) + " م" + chr(10)
+                   + "📦 عدد القطع: " + str(num_pieces) + " (" + str(round(total_meters / length_val, 2)) + " → تقريب للأعلى)" + chr(10)
+                   + "📐 المساحة الفعلية: " + str(round(actual_meters, 2)) + " م.ط" + chr(10)
+                   + "💰 السعر/م.ط: " + _fmt_price(price_m) + " د.ج" + chr(10)
+                   + "━" * 20 + chr(10)
+                   + "💵 الإجمالي: " + _fmt_price(subtotal) + " د.ج")
+        await update.message.reply_text(summary)
+        await _invoice_add_item(update, context, product_id, product_name, num_pieces, price_m, "plant",
+                                 extra_info={"length_m": length_val, "qty_m": actual_meters, "num_pieces": num_pieces, "total_requested_m": total_meters})
+        return
+
+    # State: remove reason (optional free-text)
+    if state == STATE_REMOVE_REASON:
+        reason_text = text.strip()
+        pending = context.user_data.get("pending_remove_reason")
+        if pending and reason_text:
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
+                        (reason_text, pending["product_id"], pending["user_id"]))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                release_connection(conn)
+        context.user_data.pop("pending_remove_reason", None)
+        context.user_data.clear()
+        if reason_text:
+            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text, reply_markup=get_admin_keyboard())
+        else:
+            await update.message.reply_text("✅ تم الإخراج.", reply_markup=get_admin_keyboard())
         return
 
     if state == STATE_INVOICE_PRICE:
@@ -3782,9 +4130,21 @@ async def handle_admin_message(update, context):
             await _invoice_add_item(update, context, product_id, product_name, int(qty), price, "pcs")
             return
         elif ptype == "plant":
-            length_m = context.user_data.get("invoice_tmp_plant_len", 0.45)
-            await _invoice_add_item(update, context, product_id, product_name, qty, price, "plant",
-                                     extra_info={"length_m": length_m, "qty_m": qty})
+            context.user_data["invoice_tmp_price"] = price
+            context.user_data["state"] = "waiting_invoice_plant_length"
+            qty_val = context.user_data.get("invoice_tmp_qty", 0)
+            await update.message.reply_text(
+                "📏 أرسل طول القطعة (بالمتر):" + chr(10) + chr(10)
+                + "📦 " + product_name + chr(10)
+                + "📏 المساحة: " + str(qty_val) + " م.ط" + chr(10)
+                + "💰 السعر: " + _fmt_price(price) + " د.ج/م.ط" + chr(10) + chr(10)
+                + "💡 اكتب 0.45 أو 0.6 أو اختر من الأزرار:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("0.45 م", callback_data="inv_plen_0.45"),
+                     InlineKeyboardButton("0.60 م", callback_data="inv_plen_0.60")],
+                    [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"),
+                     InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
+                ]))
             return
         else:
             context.user_data["invoice_tmp_price"] = price
@@ -3927,8 +4287,8 @@ async def handle_admin_message(update, context):
         try:
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
-            if db_user:
-                log_transaction(product["id"], action, qty, db_user["id"])
+            # Transaction logging deferred to callback_add_notify_handler
+            # (skip logging here — will log only if NOT silent correction)
             icon = _product_status_icon(updated)
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
@@ -3951,9 +4311,18 @@ async def handle_admin_message(update, context):
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0628\u0636\u0627\u0639\u0629 \u0645\u0646 \u0627\u0644\u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
                      InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0633\u0644\u0639\u0629 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("\U0001f4dd \u062a\u0635\u062d\u064a\u062d \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0641\u0642\u0637", callback_data="addnotify_silent")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
+            # After remove: ask for optional free-text reason
+            elif action == "remove" and db_user:
+                context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
+                context.user_data["state"] = STATE_REMOVE_REASON
+                skip_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
+                ])
+                await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -3994,7 +4363,8 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("❌ خطأ: " + str(e), reply_markup=get_input_keyboard())
         context.user_data.clear()
         return
-    
+
+
     else:
         context.user_data.clear()
         await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
@@ -4004,6 +4374,13 @@ async def handle_customer_message(update, context):
     text = update.message.text.strip()
     state = context.user_data.get("state")
     user = update.effective_user
+
+    # ── State timeout: expire stale states after 10 minutes ──
+    if state and _is_state_expired(context):
+        logging.info(f"[STATE_TIMEOUT] Customer {user.id} state '{state}' expired, clearing.")
+        context.user_data.clear()
+        state = None
+        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=get_customer_keyboard())
 
     # Handle customer buttons (clear state first)
     cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS]
@@ -4083,8 +4460,8 @@ async def handle_customer_message(update, context):
         try:
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
-            if db_user:
-                log_transaction(product["id"], action, qty, db_user["id"])
+            # Transaction logging deferred to callback_add_notify_handler
+            # (skip logging here — will log only if NOT silent correction)
             icon = _product_status_icon(updated)
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
@@ -4105,10 +4482,20 @@ async def handle_customer_message(update, context):
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🚚 وصول بضاعة من الشاحنة", callback_data="addnotify_truck"),
                      InlineKeyboardButton("↩️ إرجاع سلعة من زبون", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("📝 تصحيح المخزون فقط", callback_data="addnotify_silent")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
                 return  # Don't clear user_data yet — callback needs pending_add_notify
+            # After remove: ask for optional free-text reason
+            elif action == "remove" and db_user:
+                context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
+                context.user_data["state"] = STATE_REMOVE_REASON
+                skip_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
+                ])
+                await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
+                return
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
@@ -4151,11 +4538,36 @@ async def handle_customer_message(update, context):
                     ])
                     await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=kb)
                 except Exception as e:
-                    logging.error("[EXTRACT] Notify admin failed: " + str(e))
+                    logging.error("[EXTRACT] Notify admin failed: " + str(e), exc_info=True)
         except Exception as e:
-            logging.error("[EXTRACT] Request failed: " + str(e))
+            logging.error("[EXTRACT] Request failed: " + str(e), exc_info=True)
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
+        return
+
+
+    # State: remove reason (optional free-text)
+    if state == STATE_REMOVE_REASON:
+        reason_text = text.strip()
+        pending = context.user_data.get("pending_remove_reason")
+        if pending and reason_text:
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
+                        (reason_text, pending["product_id"], pending["user_id"]))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                release_connection(conn)
+        context.user_data.pop("pending_remove_reason", None)
+        context.user_data.clear()
+        if reason_text:
+            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text)
+        else:
+            await update.message.reply_text("✅ تم الإخراج.")
         return
 
     # Default: treat as search query
@@ -4188,9 +4600,11 @@ async def route_message(update, context):
         await handle_customer_message(update, context)
 
 
-# ═══════════════════════════════════════════════════════════
-#  EXTRACTION PERMISSION & REQUEST HANDLERS
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 23: EXTRACTION PERMISSION & REQUEST HANDLERS (Callbacks)
+#  Functions: callback_extract_perm_handler, _show_pending_extractions,
+#              callback_extract_request_handler, callback_extract_approve_handler
+# ═══════════════════════════════════════════════════════════════
 
 async def callback_extract_perm_handler(update, context):
     """Handle grant/revoke extraction permission from users list."""
@@ -4213,7 +4627,7 @@ async def callback_extract_perm_handler(update, context):
                     text="\🛑 تم منحك صلاحية طلب إخراج السلع.\nابحث عن سلعة واضغط طلب إخراج.",
                 )
             except Exception as e:
-                logging.error("[EXTRACT] Notify user failed: " + str(e))
+                logging.error("[EXTRACT] Notify user failed: " + str(e), exc_info=True)
         elif data.startswith("ext_revoke_"):
             tid = int(data.split("_")[2])
             set_extract_permission(tid, False)
@@ -4226,11 +4640,11 @@ async def callback_extract_perm_handler(update, context):
                     text="❌ تم سحب صلاحية طلب إخراج السلع.",
                 )
             except Exception as e:
-                logging.error("[EXTRACT] Notify user failed: " + str(e))
+                logging.error("[EXTRACT] Notify user failed: " + str(e), exc_info=True)
         elif data == "ext_pending_list":
             await _show_pending_extractions(update, context)
     except Exception as e:
-        logging.error("[EXTRACT_PERM] Error: " + str(e))
+        logging.error("[EXTRACT_PERM] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ خطأ: " + str(e))
         except Exception:
@@ -4242,7 +4656,7 @@ async def _show_pending_extractions(update, context):
     try:
         pending = get_pending_extraction_requests()
     except Exception as e:
-        logging.error("[EXTRACT] Get pending failed: " + str(e))
+        logging.error("[EXTRACT] Get pending failed: " + str(e), exc_info=True)
         await query.edit_message_text("❌ خطأ في تحميل الطلبات.")
         return
     if not pending:
@@ -4373,15 +4787,16 @@ async def callback_extract_approve_handler(update, context):
             if action == "approve":
                 await send_low_stock_alerts(context.bot)
     except Exception as e:
-        logging.error("[EXTRACT_APPROVE] Error: " + str(e))
+        logging.error("[EXTRACT_APPROVE] Error: " + str(e), exc_info=True)
         try:
             await query.edit_message_text("❌ خطأ: " + str(e))
         except Exception:
             pass
 
-# ═══════════════════════════════════════════════════════════
-#  ERROR HANDLER
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 24: GLOBAL ERROR HANDLER
+#  Functions: error_handler (Conflict detection + user notification)
+# ═══════════════════════════════════════════════════════════════
 
 async def error_handler(update, context):
     from telegram.error import Conflict
@@ -4395,9 +4810,12 @@ async def error_handler(update, context):
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════
-#  BUILD APP
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 25: APPLICATION BUILDER & HANDLER REGISTRATION
+#  Functions: build_application, callback_admin_done_handler,
+#              callback_go_start_handler
+#  Registers: 7 commands, 30 callbacks, 3 message handlers, 1 error handler
+# ═══════════════════════════════════════════════════════════════
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -4466,6 +4884,20 @@ async def callback_go_start_handler(update, context):
 #  INCOMING ORDERS DISPLAY & CALLBACKS
 # ═══════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 26: INCOMING ORDER HANDLERS & RECEIPT PHOTO
+#  Functions: _show_admin_incoming_orders, _show_customer_orders,
+#              handle_receipt_photo, callback_incoming_order_handler,
+#              _get_telegram_id
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 26: INCOMING ORDER HANDLERS & RECEIPT PHOTO
+#  Functions: _show_admin_incoming_orders, _show_customer_orders,
+#              handle_receipt_photo, callback_incoming_order_handler,
+#              _get_telegram_id
+# ═══════════════════════════════════════════════════════════════
 async def _show_admin_incoming_orders(update, context):
     """عرض طلبات التوريد - كل طلب برسالة منفصلة: صورة + أزرار جاهز/غير جاهز."""
     conn = get_connection()
@@ -4597,7 +5029,7 @@ async def handle_receipt_photo(update, context):
         )
         logging.info("[INCOMING] Photo order #" + str(order_id) + " by user " + str(user.id))
     except Exception as e:
-        logging.error("[INCOMING] Failed: " + str(e))
+        logging.error("[INCOMING] Failed: " + str(e), exc_info=True)
         await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
     context.user_data.clear()
 
@@ -4757,6 +5189,7 @@ def build_application():
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
+    app.add_handler(CallbackQueryHandler(callback_remskip_handler, pattern="^remskip$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
@@ -4790,9 +5223,11 @@ def build_application():
     return app
 
 
-# ═══════════════════════════════════════════════════════════
-#  DAILY AUTO-BACKUP
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+#  SECTION 27: EMAIL BACKUP, DAILY AUTO-BACKUP & BACKGROUND LOOPS
+#  Functions: _fetch_latest_backup_from_email, _send_backup_email,
+#              _daily_backup, _daily_backup_loop, _keep_alive
+# ═══════════════════════════════════════════════════════════════
 
 
 
@@ -4834,7 +5269,7 @@ def _fetch_latest_backup_from_email():
         mail.logout()
         return json_data
     except Exception as e:
-        logging.error("[IMAP] Failed to fetch backup: " + str(e))
+        logging.error("[IMAP] Failed to fetch backup: " + str(e), exc_info=True)
         return None
 
 def _send_backup_email(backup_bytes, filename):
@@ -4869,7 +5304,7 @@ def _send_backup_email(backup_bytes, filename):
         logging.info("[BACKUP] Email sent to " + BACKUP_EMAIL)
         return True
     except Exception as e:
-        logging.error("[BACKUP] Email failed: " + str(e))
+        logging.error("[BACKUP] Email failed: " + str(e), exc_info=True)
         return False
 
 
@@ -4889,7 +5324,7 @@ async def _daily_backup(bot):
         else:
             logging.warning("[BACKUP] Email not configured, backup saved in memory only")
     except Exception as e:
-        logging.error("[BACKUP] Daily backup failed: " + str(e))
+        logging.error("[BACKUP] Daily backup failed: " + str(e), exc_info=True)
 
 
 async def _daily_backup_loop(bot):
