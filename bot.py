@@ -2588,7 +2588,7 @@ async def search_command(update, context):
 
 
 async def log_command(update, context):
-    """Secret command: /log <product_name> — shows full transaction history for a product."""
+    """Secret command: /log <name> — shows transaction history for a product OR a user/operator."""
     user_id = update.effective_user.id if update.effective_user else 0
     if not is_admin(user_id):
         return  # silent — secret command, no feedback
@@ -2597,29 +2597,48 @@ async def log_command(update, context):
     parts = raw.split(None, 1)
     if len(parts) < 2:
         await update.message.reply_text(
-            "📋 استخدم: /log اسم السلعة\nمثال: /log colmar beige 8/60"
+            "📋 استخدم: /log اسم السلعة أو اسم البائع\nمثال: /log colmar beige 8/60\nأو: /log أحمد"
         )
         return
 
     query = parts[1].strip()
     if not query:
         await update.message.reply_text(
-            "📋 استخدم: /log اسم السلعة\nمثال: /log colmar beige 8/60"
+            "📋 استخدم: /log اسم السلعة أو اسم البائع\nمثال: /log colmar beige 8/60\nأو: /log أحمد"
         )
         return
 
-    # Search for product — try exact match first, then ILIKE
+    # ── Try user/operator search first ──
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, username, telegram_id FROM users WHERE username ILIKE %s",
+                (query,)
+            )
+            user_row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        user_row = None
+    finally:
+        release_connection(conn)
+
+    if user_row:
+        user_id_db = user_row["id"]
+        user_name = user_row["username"] or str(user_row["telegram_id"])
+        await _send_user_log(update.message.reply_text, user_id_db, user_name)
+        return
+
+    # ── Fall back to product search ──
     conn = get_connection()
     product = None
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Try exact match first
             cur.execute("SELECT * FROM products WHERE name ILIKE %s", (query,))
             row = cur.fetchone()
             if row:
                 product = dict(row)
             else:
-                # Try partial match — show buttons if multiple results
                 cur.execute("SELECT * FROM products WHERE name ILIKE %s LIMIT 8", ("%" + query + "%",))
                 rows = cur.fetchall()
                 if len(rows) == 1:
@@ -2646,7 +2665,7 @@ async def log_command(update, context):
         release_connection(conn)
 
     if not product:
-        await update.message.reply_text("❌ لم أجد سلعة بهذا الاسم.")
+        await update.message.reply_text("❌ لم أجد سلعة أو بائع بهذا الاسم.")
         return
 
     await _send_product_log(update.message.reply_text, product)
@@ -2719,6 +2738,94 @@ async def _send_product_log(send_fn, product):
             if len(chr(10).join(current_chunk)) + len(chr(10) + ln) > 4000:
                 chunks.append(chr(10).join(current_chunk))
                 current_chunk = ["📋 سجل " + name + " (تابع)"]
+            current_chunk.append(ln)
+        if current_chunk:
+            chunks.append(chr(10).join(current_chunk))
+        for chunk in chunks:
+            await send_fn(chunk)
+    else:
+        await send_fn(text)
+
+
+async def _send_user_log(send_fn, user_id_db, user_name):
+    """Build and send all transaction history for a specific user/operator."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    t.id, t.type AS tx_type, t.quantity, t.date, t.reason,
+                    p.name AS product_name
+                FROM transactions t
+                JOIN products p ON p.id = t.product_id
+                WHERE t.user_id = %s
+                ORDER BY t.date DESC
+                LIMIT 50
+            """, (user_id_db,))
+            txs = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[LOG_CMD] User tx error: " + str(e))
+        await send_fn("❌ حدث خطأ.")
+        return
+    finally:
+        release_connection(conn)
+
+    header = "👤 سجل البائع: " + user_name
+    header += chr(10) + "📦 عدد العمليات: " + str(len(txs))
+
+    if not txs:
+        await send_fn(header + chr(10) + chr(10) + "📭 لا توجد حركات مسجلة لهذا البائع.")
+        return
+
+    header += chr(10) + "━━━━━━━━━━━━━━━━━━━━"
+    lines = [header]
+    for tx in txs:
+        tx_type = tx.get("tx_type", "")
+        qty = tx.get("quantity", 0)
+        date = tx.get("date", "")
+        prod = tx.get("product_name", "?")
+        reason = tx.get("reason") or ""
+        unit = _get_unit_ar(prod)
+
+        try:
+            from datetime import datetime, timezone, timedelta
+            if hasattr(date, "astimezone"):
+                alg_tz = timezone(timedelta(hours=1))
+                date = date.astimezone(alg_tz)
+            fmt_date = date.strftime("%Y-%m-%d %H:%M") if hasattr(date, "strftime") else str(date)
+        except Exception:
+            fmt_date = str(date)
+
+        if tx_type == "add":
+            icon = "🟢➕"
+            label = "إضافة"
+        else:
+            icon = "🔴➖"
+            label = "إخراج"
+
+        entry = (icon + " " + label + " " + str(qty) + " " + unit
+                 + "  │  " + prod
+                 + chr(10) + "   📅 " + fmt_date)
+        if reason:
+            entry += chr(10) + "   💬 " + reason
+        lines.append(entry)
+
+    total_add = sum(tx["quantity"] for tx in txs if tx.get("tx_type", "") == "add")
+    total_rem = sum(tx["quantity"] for tx in txs if tx.get("tx_type", "") == "remove")
+    lines.append(chr(10) + "━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📊 الإجمالي:  🟢➕ " + str(total_add) + " إضافة  │  🔴➖ " + str(total_rem) + " إخراج")
+
+    text = chr(10).join(lines)
+
+    if len(text) > 4096:
+        chunks = []
+        current_chunk = [header]
+        for ln in lines[1:]:
+            if len(chr(10).join(current_chunk)) + len(chr(10) + ln) > 4000:
+                chunks.append(chr(10).join(current_chunk))
+                current_chunk = ["👤 سجل " + user_name + " (تابع)"]
             current_chunk.append(ln)
         if current_chunk:
             chunks.append(chr(10).join(current_chunk))
