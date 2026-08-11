@@ -2116,21 +2116,67 @@ async def process_edit_product(update, context, text, telegram_id):
 
 async def process_delete_product(update, context, text, telegram_id):
     text = text.strip()
-    if not text.isdigit():
+
+    # Parse input: supports "5", "1, 3, 5", "1-5", "1,3-5,7"
+    ids_to_delete = set()
+    for part in text.split(","):
+        part = part.strip()
+        if "-" in part:
+            # Range: "1-5"
+            range_parts = part.split("-")
+            if len(range_parts) == 2 and range_parts[0].strip().isdigit() and range_parts[1].strip().isdigit():
+                start_id = int(range_parts[0].strip())
+                end_id = int(range_parts[1].strip())
+                for i in range(min(start_id, end_id), max(start_id, end_id) + 1):
+                    ids_to_delete.add(i)
+            else:
+                await update.message.reply_text(
+                    "❌ صيغة غير صالحة: " + part + chr(10) + "المدى يجب أن يكون رقم-رقم مثال: 1-5",
+                    reply_markup=get_input_keyboard())
+                return
+        elif part.isdigit() and part:
+            ids_to_delete.add(int(part))
+        elif part:
+            await update.message.reply_text(
+                "❌ أرسل أرقام السلع فقط." + chr(10) + chr(10)
+                + "صيغ مدعومة:" + chr(10)
+                + "• رقم واحد: 5" + chr(10)
+                + "• عدة أرقام: 1, 3, 5" + chr(10)
+                + "• مدى: 1-5" + chr(10)
+                + "• مزيج: 1, 3-5, 8",
+                reply_markup=get_input_keyboard())
+            return
+
+    if not ids_to_delete:
         await update.message.reply_text(
-            "\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637.\n\u0645\u062b\u0627\u0644: 5",
-            reply_markup=get_input_keyboard(),
-        )
+            "❌ لم يتم تحديد أي رقم.",
+            reply_markup=get_input_keyboard())
         return
-    product_id = int(text)
-    try:
-        deleted = db_delete_product(product_id)
-        if deleted:
-            await update.message.reply_text("\u2705 \u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d.", reply_markup=get_admin_keyboard())
-        else:
-            await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
-    except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
+
+    ids_list = sorted(ids_to_delete)
+    deleted_count = 0
+    not_found = []
+    for product_id in ids_list:
+        try:
+            deleted = db_delete_product(product_id)
+            if deleted:
+                deleted_count += 1
+            else:
+                not_found.append(str(product_id))
+        except Exception as e:
+            not_found.append(str(product_id) + " (خطأ)")
+
+    msg = ""
+    if deleted_count > 0:
+        msg = "✅ تم حذف " + str(deleted_count) + " سلعة بنجاح."
+    if not_found:
+        if msg:
+            msg += chr(10) + chr(10)
+        msg += "⚠️ أرقام لم يتم العثور عليها: " + ", ".join(not_found)
+    if deleted_count == 0:
+        msg = "❌ لم يتم حذف أي سلعة. تأكد من الأرقام."
+
+    await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
     context.user_data.clear()
 
 
@@ -4213,10 +4259,13 @@ async def handle_admin_message(update, context):
                 for chunk in chunks:
                     await update.message.reply_text(chunk)
             context.user_data["state"] = STATE_DELETE_PRODUCT
-            del_prompt = ("\U0001f5d1\ufe0f حذف سلعة" + chr(10) + chr(10)
-                + "أرسل رقم السلعة فقط:" + chr(10)
-                + "مثال: 5" + chr(10) + chr(10)
-                + "\u26a0\ufe0f سيتم حذف السلعة وجميع سجلاتها نهائياً!")
+            del_prompt = ("🗑 حذف سلعة (أو عدة سلع)" + chr(10) + chr(10)
+                + "أرسل رقم أو أرقام السلع:" + chr(10)
+                + "• رقم واحد: 5" + chr(10)
+                + "• عدة أرقام: 1, 3, 5" + chr(10)
+                + "• مدى: 1-5" + chr(10)
+                + "• مزيج: 1, 3-5, 8" + chr(10) + chr(10)
+                + "⚠️ سيتم حذف السلع وجميع سجلاتها نهائياً!")
             await update.message.reply_text(del_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_ALERT:
