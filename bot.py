@@ -1986,16 +1986,19 @@ async def process_remove_quantity(update, context, text, telegram_id):
         await update.message.reply_text(msg)
         await send_low_stock_alerts(context.bot)
         # Ask for optional free-text reason
+        context.user_data["pending_remove_reason"] = {"product_id": product_id, "user_id": db_user["id"]}
         skip_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
         ])
         context.user_data["state"] = STATE_REMOVE_REASON
         await update.message.reply_text("💬 سبب الإخراج (اختياري):\nاكتب السبب أو اضغط تخطي", reply_markup=skip_kb)
+        return  # important: do NOT clear user_data — user needs to type reason
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
+        context.user_data.clear()
     except Exception as e:
         await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+        context.user_data.clear()
 
 
 async def process_edit_product(update, context, text, telegram_id):
