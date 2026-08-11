@@ -2564,6 +2564,136 @@ async def search_command(update, context):
     )
 
 
+async def log_command(update, context):
+    """Secret command: /log <product_name> — shows full transaction history for a product."""
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not is_admin(user_id):
+        return  # silent — secret command, no feedback
+
+    raw = update.message.text or ""
+    parts = raw.split(None, 1)
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "📋 استخدم: /log اسم السلعة\nمثال: /log colmar beige 8/60"
+        )
+        return
+
+    query = parts[1].strip()
+    if not query:
+        await update.message.reply_text(
+            "📋 استخدم: /log اسم السلعة\nمثال: /log colmar beige 8/60"
+        )
+        return
+
+    # Search for product — try exact match first, then ILIKE
+    conn = get_connection()
+    product = None
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Try exact match first
+            cur.execute("SELECT * FROM products WHERE name ILIKE %s", (query,))
+            row = cur.fetchone()
+            if row:
+                product = dict(row)
+            else:
+                # Try partial match
+                cur.execute("SELECT * FROM products WHERE name ILIKE %s LIMIT 5", ("%" + query + "%",))
+                rows = cur.fetchall()
+                if len(rows) == 1:
+                    product = dict(rows[0])
+                elif len(rows) > 1:
+                    names = [r["name"] for r in rows]
+                    names_list = chr(10).join("  • " + n for n in names)
+                    await update.message.reply_text(
+                        "🔍 وجدت عدة سلع مشابهة، حدد بدقة:" + chr(10) + chr(10) + names_list
+                    )
+                    return
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[LOG_CMD] DB error: " + str(e))
+        await update.message.reply_text("❌ حدث خطأ في البحث.")
+        return
+    finally:
+        release_connection(conn)
+
+    if not product:
+        await update.message.reply_text("❌ لم أجد سلعة بهذا الاسم.")
+        return
+
+    # Fetch transactions
+    txs = get_product_transactions(product["id"], limit=30)
+
+    name = product["name"]
+    unit = _get_unit_ar(name)
+    current_qty = product["quantity"]
+
+    if not txs:
+        msg = ("📋 سجل السلعة: " + name + chr(10) + chr(10)
+               + "📦 الكمية الحالية: " + str(current_qty) + " " + unit + chr(10) + chr(10)
+               + "📭 لا توجد حركات مسجلة لهذه السلعة.")
+        await update.message.reply_text(msg)
+        return
+
+    # Build log message
+    header = "📋 سجل السلعة: " + name
+    header += chr(10) + "📦 الكمية الحالية: " + str(current_qty) + " " + unit
+    header += chr(10) + "━━━━━━━━━━━━━━━━━━━━"
+
+    lines = [header]
+    for tx in txs:
+        tx_type = tx.get("tx_type", tx.get("type", ""))
+        qty = tx.get("quantity", 0)
+        date = tx.get("date", "")
+        operator = tx.get("operator_name") or "غير معروف"
+
+        # Format date/time in Algeria timezone
+        try:
+            from datetime import datetime, timezone, timedelta
+            if hasattr(date, "astimezone"):
+                alg_tz = timezone(timedelta(hours=1))
+                date = date.astimezone(alg_tz)
+            fmt_date = date.strftime("%Y-%m-%d %H:%M") if hasattr(date, "strftime") else str(date)
+        except Exception:
+            fmt_date = str(date)
+
+        if tx_type == "add":
+            icon = "🟢➕"
+            label = "إضافة"
+        else:
+            icon = "🔴➖"
+            label = "إخراج"
+
+        lines.append(
+            icon + " " + label + " " + str(qty) + " " + unit
+            + "  │  " + fmt_date
+            + chr(10) + "   👤 " + operator
+        )
+
+    total_add = sum(tx["quantity"] for tx in txs if tx.get("tx_type", tx.get("type", "")) == "add")
+    total_rem = sum(tx["quantity"] for tx in txs if tx.get("tx_type", tx.get("type", "")) == "remove")
+    lines.append(chr(10) + "━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📊 الإجمالي:  🟢➕ " + str(total_add) + " إضافة  │  🔴➖ " + str(total_rem) + " إخراج")
+
+    text = chr(10).join(lines)
+
+    # Split if too long
+    if len(text) > 4096:
+        chunks = []
+        current_chunk = [header]
+        for ln in lines[1:]:
+            if len(chr(10).join(current_chunk)) + len(chr(10) + ln) > 4000:
+                chunks.append(chr(10).join(current_chunk))
+                current_chunk = ["📋 سجل " + name + " (تابع)"]
+            current_chunk.append(ln)
+        if current_chunk:
+            chunks.append(chr(10).join(current_chunk))
+        for chunk in chunks:
+            await update.message.reply_text(chunk)
+    else:
+        await update.message.reply_text(text)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 18: USER APPROVAL & ROLE MANAGEMENT CALLBACKS
 #  Functions: callback_approval_handler, callback_promote_handler
@@ -5056,6 +5186,7 @@ def build_application():
     app.add_handler(CommandHandler("cancel", route_message))
     app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
