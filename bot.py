@@ -311,13 +311,6 @@ CREATE INDEX IF NOT EXISTS idx_products_name ON products (name);
 CREATE INDEX IF NOT EXISTS idx_transactions_product ON transactions (product_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 
--- Migration: add reason column if missing (safe for existing DBs)
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'reason') THEN
-        ALTER TABLE transactions ADD COLUMN reason VARCHAR(200);
-    END IF;
-END $$;
-
 CREATE TABLE IF NOT EXISTS extraction_requests (
     id            SERIAL PRIMARY KEY,
     product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -427,7 +420,13 @@ def init_db():
                     processed_at  TIMESTAMPTZ
                 );
                 CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
-            -- Migration: create bot_settings table
+                -- Migration: add reason column to transactions table
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'reason') THEN
+                        ALTER TABLE transactions ADD COLUMN reason VARCHAR(200);
+                    END IF;
+                END $$;
+                -- Migration: create bot_settings table
             
 CREATE TABLE IF NOT EXISTS bot_updates (
     id          SERIAL PRIMARY KEY,
