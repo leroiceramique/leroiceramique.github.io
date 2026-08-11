@@ -461,6 +461,23 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             INSERT INTO bot_updates (description) VALUES
             ('✅ تم إضافة نظام الفواتير' || chr(10) || chr(10) || '🧾 زر جديد: إنشاء فاتورة' || chr(10) || '💰 يمكن للمدير إنشاء فاتورة عن بُعد' || chr(10) || '📎 توليد PDF احترافي تلقائياً' || chr(10) || '📨 إشعار تلقائي للعامل المختار')
             ON CONFLICT DO NOTHING;
+            -- Migration: add normalized_name column to products for duplicate prevention
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'products' AND column_name = 'normalized_name') THEN
+                    ALTER TABLE products ADD COLUMN normalized_name VARCHAR(500);
+                END IF;
+            END $$;
+            -- Backfill normalized_name from existing names
+            DO $$ BEGIN
+                UPDATE products SET normalized_name = LOWER(TRIM(REGEXP_REPLACE(name, '\\s+', ' ', 'g')))
+                WHERE normalized_name IS NULL OR normalized_name = '';
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Create unique index on normalized_name to prevent duplicates at DB level
+            DO $$ BEGIN
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_products_normalized_name ON products (normalized_name);
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
             """)
         conn.commit()
         print("[DB] Schema initialized successfully.")
@@ -826,10 +843,12 @@ def db_import_backup(data):
             # ── Import products with their ORIGINAL ids ──
             prod_count = 0
             for p in data.get("products", []):
+                pname = p["name"]
+                norm_name = _normalize_product_name(pname) if pname else ""
                 cur.execute(
-                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (p["id"], p["name"], p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at")))
+                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, normalized_name) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (p["id"], pname, p["quantity"], p.get("location", ""),
+                     p.get("minimum_stock", 5), p.get("created_at"), norm_name))
                 prod_count += 1
             if prod_count > 0:
                 max_pid = max(p["id"] for p in data.get("products", []))
@@ -866,17 +885,78 @@ def db_import_backup(data):
 #              search_products (ILIKE fast path + fuzzy slow path)
 # ═══════════════════════════════════════════════════════════════
 
-def db_add_product(name, quantity=0, location="", minimum_stock=5):
+def _normalize_product_name(name):
+    """Normalize product name for exact duplicate detection.
+    - Strip leading/trailing whitespace
+    - Collapse multiple spaces into one
+    - Case-insensitive comparison (stored lowercase)
+    Does NOT change the meaning — only used for duplicate checking."""
+    if not name:
+        return ""
+    name = name.strip()
+    name = re.sub(r"\s+", " ", name)
+    name = name.lower()
+    return name
+
+
+def db_find_product_by_normalized(name):
+    """Find a product by its normalized name. Returns product dict or None."""
+    normalized = _normalize_product_name(name)
+    if not normalized:
+        return None
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO products (name, quantity, location, minimum_stock)
-                VALUES (%s, %s, %s, %s)
+            cur.execute("SELECT * FROM products WHERE normalized_name = %s LIMIT 1", (normalized,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def db_add_product(name, quantity=0, location="", minimum_stock=5, skip_duplicate_check=False):
+    """Add a new product. If a product with the same normalized name exists, update its quantity instead.
+    Returns (product_dict, is_new)."""
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("اسم المنتج فارغ.")
+    normalized = _normalize_product_name(clean_name)
+
+    # Check for existing product (unless explicitly skipped, e.g. for backup import)
+    if not skip_duplicate_check:
+        existing = db_find_product_by_normalized(clean_name)
+        if existing:
+            # Product already exists — update quantity instead of creating new
+            conn = get_connection()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        "UPDATE products SET quantity = quantity + %s WHERE id = %s RETURNING *",
+                        (quantity, existing["id"]))
+                    updated = cur.fetchone()
+                conn.commit()
+                return dict(updated), False
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                release_connection(conn)
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO products (name, quantity, location, minimum_stock, normalized_name)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id, name, quantity, location, minimum_stock, created_at
-            """, (name.strip(), quantity, location.strip(), minimum_stock))
+            """, (clean_name, quantity, location.strip(), minimum_stock, normalized))
             product = cur.fetchone()
         conn.commit()
-        return dict(product)
+        return dict(product), True
     except Exception as e:
         conn.rollback()
         logging.error("[DB_ERROR] Operation failed: " + str(e), exc_info=True)
@@ -1912,8 +1992,15 @@ async def callback_add_handler(update, context):
         qty = user_data.get("add_qty", 0)
         telegram_id = query.from_user.id
         try:
-            product = db_add_product(name=name, quantity=qty)
-            msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
+            product, is_new = db_add_product(name=name, quantity=qty)
+            if is_new:
+                msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
+            else:
+                msg = "\u2705 \u0627\u0644\u0633\u0644\u0639\u0629 \u0645\u0648\u062c\u0648\u062f\u0629 \u0645\u0633\u0628\u0642\u0627\u064b — \u062a\u0645 \u0625\u0636\u0627\u0641\u0629 " + str(qty) + " " + _get_unit_code(product["name"]) + " \u0644\u0644\u0643\u0645\u064a\u0629.\n\n" + format_product_admin(product)
+                # Log the addition to existing product
+                db_user = get_user(telegram_id)
+                if db_user:
+                    log_transaction(product["id"], "add", qty, db_user["id"])
             await query.edit_message_text(msg)
             await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
         except Exception as e:
@@ -2284,10 +2371,13 @@ def _build_date_picker_markup():
 
 async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=None):
     """Send long HTML text safely: splits by complete lines, never cuts HTML tags.
-    If edit_message is given, first chunk edits it; rest are sent as new messages."""
+    If edit_message is given, first chunk tries to edit it; on failure sends new message."""
     if len(text) <= 4096:
         if edit_message:
-            return await edit_message(text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            try:
+                return await edit_message(text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            except Exception:
+                return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         return await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
     # Split by lines
     all_lines = text.split(chr(10))
@@ -2307,7 +2397,10 @@ async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=No
     sent = []
     for i, chunk in enumerate(chunks):
         if i == 0 and edit_message:
-            sent.append(await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup))
+            try:
+                sent.append(await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup))
+            except Exception:
+                sent.append(await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup))
         else:
             sent.append(await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML))
     return sent
@@ -2335,23 +2428,45 @@ async def callback_mov_date_handler(update, context):
     # --- Back to date picker ---
     if data == "movd_back":
         markup = _build_date_picker_markup()
-        await query.edit_message_text(
-            "📋 اختار التاريخ لعرض الحركة:",
-            reply_markup=markup)
+        try:
+            await query.edit_message_text(
+                "📋 اختار التاريخ لعرض الحركة:",
+                reply_markup=markup)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=query.effective_chat.id,
+                text="📋 اختار التاريخ لعرض الحركة:",
+                reply_markup=markup)
         return
 
     # --- Today shortcut ---
     if data == "movd_today":
         target_date = datetime.date.today()
-        rows = _fetch_today_movements()
+        try:
+            rows = await asyncio.to_thread(_fetch_today_movements)
+        except Exception as e:
+            logging.error("[MOV_DATE_HANDLER] DB error today: " + str(e), exc_info=True)
+            try:
+                await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+            except Exception:
+                await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+            return
         wd = target_date.weekday()
         date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
         if not rows:
-            await query.edit_message_text(
-                "📋 حركة اليوم (" + date_display + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
-                ]))
+            try:
+                await query.edit_message_text(
+                    "📋 حركة اليوم (" + date_display + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+                    ]))
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=query.effective_chat.id,
+                    text="📋 حركة اليوم (" + date_display + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+                    ]))
             return
         header = "📋 حركة اليوم (" + date_display + ") — " + str(len(rows)) + " عملية:"
         body = _build_movements_text(rows, admin_view=admin_view)
@@ -2376,38 +2491,48 @@ async def callback_mov_date_handler(update, context):
         return
 
     try:
-        rows = _fetch_movements_by_date(target_date)
-        wd = target_date.weekday()
-        date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
+        rows = await asyncio.to_thread(_fetch_movements_by_date, target_date)
+    except Exception as e:
+        logging.error("[MOV_DATE_HANDLER] DB error: " + str(e), exc_info=True)
+        try:
+            await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+        except Exception:
+            await context.bot.send_message(chat_id=query.effective_chat.id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+        return
 
-        if not rows:
+    wd = target_date.weekday()
+    date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
+
+    if not rows:
+        try:
             await query.edit_message_text(
                 "📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
                 ]))
-            return
-
-        header = "📋 حركة " + date_display + " (" + str(len(rows)) + " عملية):"
-        body = _build_movements_text(rows, admin_view=admin_view)
-        full_text = header + chr(10) + chr(10) + body
-
-        back_button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
-        ])
-
-        await _safe_send_html(
-            chat_id=query.effective_chat.id,
-            text=full_text,
-            bot=context.bot,
-            reply_markup=back_button,
-            edit_message=query.edit_message_text)
-    except Exception as e:
-        logging.error("[MOV_DATE_HANDLER] Error: " + str(e), exc_info=True)
-        try:
-            await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
         except Exception:
-            pass
+            await context.bot.send_message(
+                chat_id=query.effective_chat.id,
+                text="📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+                ]))
+        return
+
+    header = "📋 حركة " + date_display + " (" + str(len(rows)) + " عملية):"
+    body = _build_movements_text(rows, admin_view=admin_view)
+    full_text = header + chr(10) + chr(10) + body
+
+    back_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+    ])
+
+    await _safe_send_html(
+        chat_id=query.effective_chat.id,
+        text=full_text,
+        bot=context.bot,
+        reply_markup=back_button,
+        edit_message=query.edit_message_text)
 
 
 async def callback_product_select_handler(update, context):
@@ -2746,6 +2871,92 @@ async def callback_promote_handler(update, context):
 #              callback_restore_last_handler, callback_add_notify_handler,
 #              callback_email_restore_handler, callback_restore_last_confirm_handler
 # ═══════════════════════════════════════════════════════════════
+async def dedup_command(update, context):
+    """Clean duplicate products: merge exact matches (same normalized name).
+    Keeps the oldest record, merges quantities, deletes duplicates."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ للمديرين فقط.")
+        return
+    await update.message.reply_text("🔍 جاري فحص التكرارات...")
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # Find all duplicate groups (same normalized_name, more than 1 record)
+            cur.execute("""
+                SELECT normalized_name, COUNT(*) as cnt
+                FROM products
+                WHERE normalized_name IS NOT NULL AND normalized_name != ''
+                GROUP BY normalized_name
+                HAVING COUNT(*) > 1
+                ORDER BY cnt DESC
+            """)
+            dup_groups = cur.fetchall()
+        if not dup_groups:
+            await update.message.reply_text("✅ لا توجد تكرارات مطابقة في قاعدة البيانات.")
+            return
+
+        total_merged = 0
+        total_deleted = 0
+        merge_details = []
+
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            for group in dup_groups:
+                norm_name = group["normalized_name"]
+                cur.execute("""
+                    SELECT * FROM products
+                    WHERE normalized_name = %s
+                    ORDER BY created_at ASC, id ASC
+                """, (norm_name,))
+                rows = cur.fetchall()
+
+                # Keep the first (oldest) record
+                keep = dict(rows[0])
+                merge_ids = [r["id"] for r in rows[1:]]
+
+                # Merge quantities
+                total_qty = sum(r["quantity"] for r in rows)
+                if total_qty != keep["quantity"]:
+                    cur.execute(
+                        "UPDATE products SET quantity = %s WHERE id = %s",
+                        (total_qty, keep["id"]))
+
+                # Reassign transactions from deleted records to the kept one
+                for del_id in merge_ids:
+                    cur.execute(
+                        "UPDATE transactions SET product_id = %s WHERE product_id = %s",
+                        (keep["id"], del_id))
+                    cur.execute(
+                        "DELETE FROM extraction_requests WHERE product_id = %s",
+                        (del_id,))
+
+                # Delete duplicate records
+                for del_id in merge_ids:
+                    cur.execute("DELETE FROM products WHERE id = %s", (del_id,))
+
+                total_deleted += len(merge_ids)
+                total_merged += 1
+                merge_details.append(
+                    keep["name"] + " (" + str(len(merge_ids)) + " مكرر → كمية: " + str(total_qty) + ")")
+
+        conn.commit()
+
+        msg = ("✅ تم تنظيف التكرارات:\n\n"
+            + "📊 المجموعات المدمجة: " + str(total_merged) + "\n"
+            + "🗑 السجلات المحذوفة: " + str(total_deleted) + "\n\n")
+        # Show first 10 details
+        for detail in merge_details[:10]:
+            msg = msg + "  • " + detail + "\n"
+        if len(merge_details) > 10:
+            msg = msg + "  ... و " + str(len(merge_details) - 10) + " أخرى"
+        await update.message.reply_text(msg)
+    except Exception as e:
+        conn.rollback()
+        logging.error("[DEDUP] Error: " + str(e), exc_info=True)
+        await update.message.reply_text("❌ حدث خطأ أثناء التنظيف: " + str(e))
+    finally:
+        release_connection(conn)
+
+
 async def backup_command(update, context):
     global _last_backup_data
     if not is_admin(update.effective_user.id):
@@ -4206,24 +4417,30 @@ async def handle_admin_message(update, context):
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
             return
-        if not product_name.lower().startswith("motif"):
-            product_name = "motif " + product_name
+        # Remove prefix if user typed it again (avoid "motif motif X")
+        if product_name.lower().startswith("motif "):
+            product_name = product_name[6:].strip()
+        product_name = "motif " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
     elif state == STATE_ADD_NAME_12060:
         product_name = text.strip()
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
             return
-        if not product_name.lower().startswith("120/60") and not product_name.lower().startswith("120x60"):
-            product_name = "120/60 " + product_name
+        # Remove prefix if user typed it again (avoid "120/60 120/60 X")
+        if product_name.lower().startswith("120/60 ") or product_name.lower().startswith("120x60 "):
+            product_name = product_name[7:].strip()
+        product_name = "120/60 " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
     elif state == STATE_ADD_NAME_PLANTE:
         product_name = text.strip()
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
             return
-        if not product_name.lower().startswith("plante"):
-            product_name = "plante " + product_name
+        # Remove prefix if user typed it again (avoid "plante plante X")
+        if product_name.lower().startswith("plante "):
+            product_name = product_name[7:].strip()
+        product_name = "plante " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
     elif state == STATE_ADD_QTY:
         qty = parse_crt_input(text)
@@ -5228,6 +5445,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_remove_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
+    app.add_handler(CommandHandler("dedup", dedup_command))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
