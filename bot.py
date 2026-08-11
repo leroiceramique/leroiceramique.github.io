@@ -174,11 +174,6 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
-# سر يتحقق منه تيليجرام في هيدر X-Telegram-Bot-Api-Secret-Token لمنع أي جهة غير تيليجرام
-# من إرسال تحديثات مزوّرة إلى الـ webhook (مهم لأن ADMIN_IDS تُستنتج من بيانات التحديث نفسه).
-WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "") or __import__("hashlib").sha256(
-    (os.getenv("BOT_TOKEN", "") + "webhook-secret").encode()
-).hexdigest()[:32]
 
 # Email backup (optional — for daily auto-backup via email)
 SMTP_HOST = os.getenv("SMTP_HOST", "")         # e.g. smtp.gmail.com
@@ -1345,6 +1340,410 @@ def _set_state(context, state):
     context.user_data["state"] = state
     context.user_data["state_set_at"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
+
+# ═══════════════════════════════════════════════════════════════
+#  SYNC DB HELPERS (called via asyncio.to_thread from async handlers)
+#  These encapsulate direct get_connection() blocks so async handlers
+#  never touch the DB synchronously.
+# ═══════════════════════════════════════════════════════════════
+
+def _db_fetch_latest_update():
+    """Fetch the latest bot_update description."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT description FROM bot_updates ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_broadcast_users(active_only=False):
+    """Fetch telegram_ids of admin+customer users. If active_only, filter active=TRUE."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if active_only:
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer') AND active = TRUE")
+            else:
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+            rows = cur.fetchall()
+        conn.commit()
+        return [r[0] for r in rows]
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_product_quantity(product_id):
+    """Fetch current quantity for a single product. Returns int or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT quantity FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return row["quantity"] if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_weekly_report_data():
+    """Fetch all stats needed for the weekly report. Returns dict or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT COUNT(*) as cnt FROM products")
+            total = cur.fetchone()["cnt"]
+            cur.execute("SELECT COALESCE(SUM(quantity), 0) as total_qty FROM products")
+            total_qty = cur.fetchone()["total_qty"]
+            cur.execute("SELECT COUNT(*) as cnt FROM products WHERE quantity <= minimum_stock")
+            low_count = cur.fetchone()["cnt"]
+            cur.execute("SELECT name, quantity FROM products WHERE quantity > 0 ORDER BY quantity DESC LIMIT 5")
+            top_products = cur.fetchall()
+            cur.execute("SELECT name, quantity FROM products ORDER BY quantity ASC LIMIT 5")
+            bottom_products = cur.fetchall()
+            cur.execute("SELECT COUNT(*) as cnt FROM transactions WHERE date >= NOW() - INTERVAL '7 days'")
+            week_transactions = cur.fetchone()["cnt"]
+            cur.execute("SELECT type AS tx_type, COUNT(*) as cnt FROM transactions WHERE date >= NOW() - INTERVAL '7 days' GROUP BY type")
+            type_counts = {r["tx_type"]: r["cnt"] for r in cur.fetchall()}
+        conn.commit()
+        return {
+            "total": total, "total_qty": total_qty, "low_count": low_count,
+            "top_products": top_products, "bottom_products": bottom_products,
+            "week_transactions": week_transactions,
+            "adds": type_counts.get("add", 0), "removes": type_counts.get("remove", 0),
+        }
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_product_by_id(product_id):
+    """Fetch a product row by ID. Returns dict or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_product_name(product_id):
+    """Fetch product name by ID. Returns string or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return row["name"] if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_promote_demote_user(telegram_id, action):
+    """Promote or demote a user. Returns updated user dict or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if action == "promote":
+                cur.execute("UPDATE users SET role = 'admin' WHERE telegram_id = %s AND role = 'customer' RETURNING *", (telegram_id,))
+            elif action == "demote":
+                cur.execute("UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'admin' AND telegram_id NOT IN %s RETURNING *",
+                    (telegram_id, tuple(ADMIN_IDS)))
+            else:
+                return None
+            user = cur.fetchone()
+        conn.commit()
+        return dict(user) if user else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_approved_users():
+    """Fetch all approved admin+customer users ordered by role, created_at."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE role IN ('admin', 'customer') ORDER BY role, created_at")
+            approved = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return approved
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_workers():
+    """Fetch active workers (admin+customer) for invoice assignment."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, telegram_id, username, first_name FROM users "
+                "WHERE role IN ('admin', 'customer') AND active = TRUE ORDER BY first_name"
+            )
+            workers = cur.fetchall()
+        conn.commit()
+        return workers
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def _db_update_tx_reason(tx_id, product_id, user_id, reason):
+    """Update reason on a transaction row. Uses tx_id if available, else fuzzy match."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if tx_id:
+                cur.execute("UPDATE transactions SET reason = %s WHERE id = %s", (reason, tx_id))
+            else:
+                cur.execute(
+                    "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
+                    (reason, product_id, user_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        release_connection(conn)
+
+
+def _db_finalize_invoice(customer, worker_id, admin_db_id, items):
+    """Create invoice + items, deduct stock, log transactions. Returns invoice dict or raises."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            total = sum(item.get("subtotal", 0) for item in items)
+            cur.execute(
+                "INSERT INTO invoices (customer_name, worker_id, admin_id, total_amount, status, approved_at) "
+                "VALUES (%s, %s, %s, %s, 'approved', NOW()) RETURNING id",
+                (customer, worker_id, admin_db_id, total))
+            invoice = cur.fetchone()
+            invoice_id = invoice["id"]
+            for item in items:
+                cur.execute(
+                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (invoice_id, item.get("product_id"), item.get("product_name", ""), item.get("quantity", 0), item.get("unit_price", 0), item.get("subtotal", 0)))
+                if item.get("product_id"):
+                    cur.execute("UPDATE products SET quantity = quantity - %s WHERE id = %s AND quantity >= %s",
+                        (item["quantity"], item["product_id"], item["quantity"]))
+                    cur.execute(
+                        "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
+                        (item["product_id"], item["quantity"], admin_db_id))
+        conn.commit()
+        return dict(invoice)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_extraction_request_info(request_id):
+    """Fetch extraction request details with user and product info."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT er.requester_id, u.telegram_id, p.name AS product_name, er.quantity "
+                "FROM extraction_requests er "
+                "JOIN users u ON u.id = er.requester_id "
+                "JOIN products p ON p.id = er.product_id "
+                "WHERE er.id = %s",
+                (request_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_incoming_orders():
+    """Fetch all pending/received incoming orders with user info."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""\
+                SELECT io.*, u.first_name, u.username, u.telegram_id
+                FROM incoming_orders io
+                LEFT JOIN users u ON u.id = io.requester_id
+                WHERE io.status IN ('pending', 'received')
+                ORDER BY io.created_at ASC
+                """)
+            all_orders = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return all_orders
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_incoming_order_with_user(order_id):
+    """Fetch a single incoming order with user telegram_id."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT io.*, u.telegram_id FROM incoming_orders io "
+                "LEFT JOIN users u ON u.id = io.requester_id WHERE io.id = %s",
+                (order_id,))
+            order = cur.fetchone()
+        conn.commit()
+        return dict(order) if order else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_invoice_product(product_id):
+    """Fetch product id/name/quantity/price for invoice item selection."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, name, quantity, selling_price FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _db_fetch_worker_name(worker_id):
+    """Fetch worker display name by DB id."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT first_name, username FROM users WHERE id = %s", (worker_id,))
+            w = cur.fetchone()
+        conn.commit()
+        return (w["first_name"] or w["username"] or str(worker_id)) if w else str(worker_id)
+    except Exception:
+        conn.rollback()
+        return str(worker_id)
+    finally:
+        release_connection(conn)
+
+
+def _db_ping():
+    """Ping the database to keep the connection pool alive."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        conn.commit()
+    finally:
+        release_connection(conn)
+
+
+def _db_dedup_products():
+    """Find and merge duplicate products (same normalized_name).
+    Returns (merged_count, deleted_count, merge_details) or None if no duplicates.
+    Raises on DB error."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT normalized_name, COUNT(*) as cnt
+                FROM products
+                WHERE normalized_name IS NOT NULL AND normalized_name != ''
+                GROUP BY normalized_name
+                HAVING COUNT(*) > 1
+                ORDER BY cnt DESC
+            """)
+            dup_groups = cur.fetchall()
+
+        if not dup_groups:
+            return None
+
+        total_merged = 0
+        total_deleted = 0
+        merge_details = []
+
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            for group in dup_groups:
+                norm_name = group["normalized_name"]
+                cur.execute("""
+                    SELECT * FROM products
+                    WHERE normalized_name = %s
+                    ORDER BY created_at ASC, id ASC
+                """, (norm_name,))
+                rows = cur.fetchall()
+
+                keep = dict(rows[0])
+                merge_ids = [r["id"] for r in rows[1:]]
+
+                total_qty = sum(r["quantity"] for r in rows)
+                if total_qty != keep["quantity"]:
+                    cur.execute(
+                        "UPDATE products SET quantity = %s WHERE id = %s",
+                        (total_qty, keep["id"]))
+
+                for del_id in merge_ids:
+                    cur.execute(
+                        "UPDATE transactions SET product_id = %s WHERE product_id = %s",
+                        (keep["id"], del_id))
+                    cur.execute(
+                        "DELETE FROM extraction_requests WHERE product_id = %s",
+                        (del_id,))
+
+                for del_id in merge_ids:
+                    cur.execute("DELETE FROM products WHERE id = %s", (del_id,))
+
+                total_deleted += len(merge_ids)
+                total_merged += 1
+                merge_details.append(
+                    keep["name"] + " (" + str(len(merge_ids)) + " \u0645\u0643\u0631\u0631 \u2192 \u0643\u0645\u064a\u0629: " + str(total_qty) + ")")
+
+        conn.commit()
+        return (total_merged, total_deleted, merge_details)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
 BTN_ADD_QTY = "\u2795 \u0625\u0636\u0627\u0641\u0629 \u0643\u0645\u064a\u0629"
@@ -1418,43 +1817,23 @@ def format_product_customer(product):
 # ═══════════════════════════════════════════════════════════════
 async def _broadcast_update_notification(update, context):
     """إرسال إشعار آخر تحديث تلقائياً بدون كتابة من المدير."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT description FROM bot_updates ORDER BY id DESC LIMIT 1")
-            row = cur.fetchone()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        row = None
-    finally:
-        release_connection(conn)
+    row = await asyncio.to_thread(_db_fetch_latest_update)
 
     if not row:
         await update.message.reply_text(
             "📭 لا يوجد تحديثات مسجلة.",
-            reply_markup=get_admin_keyboard(),
+            reply_markup=await asyncio.to_thread(get_admin_keyboard),
         )
         return
 
     update_desc = row["description"]
 
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
-            user_rows = cur.fetchall()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        user_rows = []
-    finally:
-        release_connection(conn)
+    user_rows = await asyncio.to_thread(_db_fetch_broadcast_users)
 
     if not user_rows:
         await update.message.reply_text(
             "📭 لا يوجد مستخدمين مفعلين.",
-            reply_markup=get_admin_keyboard(),
+            reply_markup=await asyncio.to_thread(get_admin_keyboard),
         )
         return
 
@@ -1469,8 +1848,7 @@ async def _broadcast_update_notification(update, context):
         [InlineKeyboardButton("🔄 تحديث الواجهة", callback_data="go_start")]
     ])
     sent = 0
-    for r in user_rows:
-        uid = r[0]
+    for uid in user_rows:
         try:
             await context.bot.send_message(
                 chat_id=uid, text=broadcast_text,
@@ -1484,7 +1862,7 @@ async def _broadcast_update_notification(update, context):
     await update.message.reply_text(
         "✅ تم إرسال إشعار التحديث إلى <b>" + str(sent) + "</b> مستخدم.",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_admin_keyboard(),
+        reply_markup=await asyncio.to_thread(get_admin_keyboard),
     )
     logging.info("[UPDATE] Auto-broadcast sent to " + str(sent) + " users")
 
@@ -1492,20 +1870,10 @@ async def _broadcast_update_notification(update, context):
 async def _broadcast_to_all_users(bot, message):
     """Send a message to ALL active users (admin + customer)."""
     try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer') AND active = TRUE")
-                rows = cur.fetchall()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            rows = []
-        finally:
-            release_connection(conn)
-        for r in rows:
+        rows = await asyncio.to_thread(_db_fetch_broadcast_users, True)
+        for uid in rows:
             try:
-                await bot.send_message(chat_id=r[0], text=message)
+                await bot.send_message(chat_id=uid, text=message)
             except Exception:
                 pass
     except Exception as e:
@@ -1529,7 +1897,7 @@ async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
 async def send_low_stock_alerts(bot):
     """Send individual alerts to ALL users when products enter or leave low-stock list."""
     try:
-        low_stock = get_low_stock_products()
+        low_stock = await asyncio.to_thread(get_low_stock_products)
         if not low_stock:
             current = {}
         else:
@@ -1563,17 +1931,9 @@ async def send_low_stock_alerts(bot):
                     continue
                 # Fetch CURRENT quantity from database (not old low-stock snapshot)
                 qty = prod.get("quantity", "?")
-                try:
-                    conn = get_connection()
-                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                        cur.execute("SELECT quantity FROM products WHERE id = %s", (pid,))
-                        row = cur.fetchone()
-                    conn.commit()
-                    release_connection(conn)
-                    if row:
-                        qty = row["quantity"]
-                except Exception:
-                    pass
+                new_qty = await asyncio.to_thread(_db_fetch_product_quantity, pid)
+                if new_qty is not None:
+                    qty = new_qty
                 unit = _get_unit_ar(name)
                 msg = ("✅ تنبيه: توفرت سلعة"
                     + chr(10) + chr(10)
@@ -1591,7 +1951,7 @@ async def send_low_stock_alerts(bot):
 async def send_low_stock_list(update=None, context=None, bot=None):
     """Send full low-stock list. Works for admin or customer button."""
     try:
-        low_stock = get_low_stock_products()
+        low_stock = await asyncio.to_thread(get_low_stock_products)
         valid_items = []
         for p in low_stock:
             lower_name = p["name"].lower().strip()
@@ -1695,50 +2055,17 @@ def set_bot_setting(key, value):
 async def generate_weekly_report(bot):
     """Generate and send the weekly inventory report. Returns report text."""
     try:
-        conn = get_connection()
-        try:
-            with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
-                # Total products
-                cur.execute("SELECT COUNT(*) as cnt FROM products")
-                total = cur.fetchone()["cnt"]
-
-                # Total quantity
-                cur.execute("SELECT COALESCE(SUM(quantity), 0) as total_qty FROM products")
-                total_qty = cur.fetchone()["total_qty"]
-
-                # Low stock count
-                cur.execute("SELECT COUNT(*) as cnt FROM products WHERE quantity <= minimum_stock")
-                low_count = cur.fetchone()["cnt"]
-
-                # Top 5 highest quantity
-                cur.execute(
-                    "SELECT name, quantity FROM products"
-                    " WHERE quantity > 0"
-                    " ORDER BY quantity DESC LIMIT 5")
-                top_products = cur.fetchall()
-
-                # Bottom 5 (lowest / zero)
-                cur.execute(
-                    "SELECT name, quantity FROM products"
-                    " ORDER BY quantity ASC LIMIT 5")
-                bottom_products = cur.fetchall()
-
-                # Transactions this week
-                cur.execute(
-                    "SELECT COUNT(*) as cnt FROM transactions"
-                    " WHERE date >= NOW() - INTERVAL '7 days'")
-                week_transactions = cur.fetchone()["cnt"]
-
-                # Adds vs removes this week
-                cur.execute(
-                    "SELECT type AS tx_type, COUNT(*) as cnt FROM transactions"
-                    " WHERE date >= NOW() - INTERVAL '7 days'"
-                    " GROUP BY type")
-                type_counts = {r["tx_type"]: r["cnt"] for r in cur.fetchall()}
-                adds = type_counts.get("add", 0)
-                removes = type_counts.get("remove", 0)
-        finally:
-            release_connection(conn)
+        data = await asyncio.to_thread(_db_fetch_weekly_report_data)
+        if not data:
+            return None
+        total = data["total"]
+        total_qty = data["total_qty"]
+        low_count = data["low_count"]
+        top_products = data["top_products"]
+        bottom_products = data["bottom_products"]
+        week_transactions = data["week_transactions"]
+        adds = data["adds"]
+        removes = data["removes"]
 
         # Build report message
         lines = []
@@ -1770,7 +2097,7 @@ async def generate_weekly_report(bot):
         report_text = chr(10).join(lines)
 
         # Send to configured recipient
-        recipient_id = get_bot_setting("weekly_report_recipient")
+        recipient_id = await asyncio.to_thread(get_bot_setting, "weekly_report_recipient")
         if not recipient_id:
             logging.warning("[WEEKLY] No recipient configured")
             return report_text
@@ -1797,7 +2124,7 @@ async def _weekly_report_loop(bot):
         today = now.strftime("%Y-%m-%d")
         is_sunday = now.weekday() == 6
         hour_ok = 22 <= now.hour < 23
-        enabled = get_bot_setting("weekly_report_enabled", "false") == "true"
+        enabled = await asyncio.to_thread(get_bot_setting, "weekly_report_enabled", "false") == "true"
         if is_sunday and hour_ok and today != last_report and enabled:
             await generate_weekly_report(bot)
             last_report = today
@@ -1975,7 +2302,7 @@ async def callback_addtype_handler(update, context):
         elif data == "addtype_cancel":
             await query.edit_message_text("❌ تم الإلغاء.")
             try:
-                await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+                await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
             except Exception:
                 pass
     except Exception as e:
@@ -1999,17 +2326,17 @@ async def callback_add_handler(update, context):
         qty = user_data.get("add_qty", 0)
         telegram_id = query.from_user.id
         try:
-            product, is_new = db_add_product(name=name, quantity=qty)
+            product, is_new = await asyncio.to_thread(db_add_product, name=name, quantity=qty)
             if is_new:
                 msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
             else:
                 msg = "\u2705 \u0627\u0644\u0633\u0644\u0639\u0629 \u0645\u0648\u062c\u0648\u062f\u0629 \u0645\u0633\u0628\u0642\u0627\u064b — \u062a\u0645 \u0625\u0636\u0627\u0641\u0629 " + str(qty) + " " + _get_unit_code(product["name"]) + " \u0644\u0644\u0643\u0645\u064a\u0629.\n\n" + format_product_admin(product)
                 # Log the addition to existing product
-                db_user = get_user(telegram_id)
+                db_user = await asyncio.to_thread(get_user, telegram_id)
                 if db_user:
-                    log_transaction(product["id"], "add", qty, db_user["id"])
+                    await asyncio.to_thread(log_transaction, product["id"], "add", qty, db_user["id"])
             await query.edit_message_text(msg)
-            await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception as e:
             await query.edit_message_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e))
         user_data.clear()
@@ -2017,7 +2344,7 @@ async def callback_add_handler(update, context):
     elif data == "add_cancel":
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
-        await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+        await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
 
 
 
@@ -2041,16 +2368,16 @@ async def process_add_quantity(update, context, text, telegram_id):
         )
         return
     product_id, qty = parsed
-    db_user = get_user(telegram_id)
+    db_user = await asyncio.to_thread(get_user, telegram_id)
     if not db_user:
         await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.", reply_markup=get_input_keyboard())
         return
     try:
-        updated = db_update_quantity(product_id, qty, "add")
-        log_transaction(product_id, "add", qty, db_user["id"])
+        updated = await asyncio.to_thread(db_update_quantity, product_id, qty, "add")
+        await asyncio.to_thread(log_transaction, product_id, "add", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        await update.message.reply_text(msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
         await send_low_stock_alerts(context.bot)
     except ValueError as e:
         await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
@@ -2068,13 +2395,13 @@ async def process_remove_quantity(update, context, text, telegram_id):
         )
         return
     product_id, qty = parsed
-    db_user = get_user(telegram_id)
+    db_user = await asyncio.to_thread(get_user, telegram_id)
     if not db_user:
         await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.", reply_markup=get_input_keyboard())
         return
     try:
-        updated = db_update_quantity(product_id, qty, "remove")
-        tx = log_transaction(product_id, "remove", qty, db_user["id"])
+        updated = await asyncio.to_thread(db_update_quantity, product_id, qty, "remove")
+        tx = await asyncio.to_thread(log_transaction, product_id, "remove", qty, db_user["id"])
         unit = _get_unit_code(updated["name"])
         msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg)
@@ -2109,10 +2436,10 @@ async def process_edit_product(update, context, text, telegram_id):
         await update.message.reply_text("❌ أرسل الاسم الجديد.", reply_markup=get_input_keyboard())
         return
     try:
-        updated = db_update_product(product_id, name=new_name)
+        updated = await asyncio.to_thread(db_update_product, product_id, name=new_name)
         msg = "✅ تم تعديل الاسم بنجاح!"
         msg = msg + chr(10) + chr(10) + format_product_admin(updated)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        await update.message.reply_text(msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
     except ValueError as e:
         await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
@@ -2163,7 +2490,7 @@ async def process_delete_product(update, context, text, telegram_id):
     not_found = []
     for product_id in ids_list:
         try:
-            deleted = db_delete_product(product_id)
+            deleted = await asyncio.to_thread(db_delete_product, product_id)
             if deleted:
                 deleted_count += 1
             else:
@@ -2181,7 +2508,7 @@ async def process_delete_product(update, context, text, telegram_id):
     if deleted_count == 0:
         msg = "❌ لم يتم حذف أي سلعة. تأكد من الأرقام."
 
-    await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+    await update.message.reply_text(msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
     context.user_data.clear()
 
 
@@ -2192,7 +2519,7 @@ async def process_search(update, context, text, admin_view=False):
             reply_markup=get_input_keyboard(),
         )
         return
-    results = search_products(text)
+    results = await asyncio.to_thread(search_products, text)
     if not results:
         if admin_view:
             msg = ("\U0001f50d لم يتم العثور على نتائج لـ " + text)
@@ -2209,7 +2536,7 @@ async def process_search(update, context, text, admin_view=False):
         for p in results:
             lines.append("  #" + str(p["id"]) + " " + format_product_admin(p))
             lines.append("")
-        await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
+        await update.message.reply_text("\n".join(lines), reply_markup=await asyncio.to_thread(get_admin_keyboard))
     else:
         if len(results) == 1:
             p = results[0]
@@ -2310,7 +2637,7 @@ async def _show_product_detail(update, context, product):
     text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " " + unit_ar + " " + icon
     pid = str(p["id"])
     user_id = update.effective_user.id if update.effective_user else 0
-    admin_view = is_admin(user_id)
+    admin_view = await asyncio.to_thread(is_admin, user_id)
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
@@ -2513,7 +2840,7 @@ async def _show_all_movements(update, context, admin_view=True):
     except Exception as e:
         logging.error("[MOVEMENTS_DATE] Error: " + str(e), exc_info=True)
         await report_diag(bot=context.bot, chat_id=update.effective_chat.id, error=e, context_tag="[MOVEMENTS-SHOW]")
-        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+        kb = await asyncio.to_thread(get_admin_keyboard) if admin_view else asyncio.to_thread(get_customer_keyboard)
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات. تم إرسال التشخيص.", reply_markup=kb)
 
 
@@ -2522,7 +2849,7 @@ async def callback_mov_date_handler(update, context):
     query = update.callback_query
     await query.answer()
     data = query.data
-    admin_view = is_admin(query.from_user.id)
+    admin_view = await asyncio.to_thread(is_admin, query.from_user.id)
     chat_id = query.message.chat.id
 
     PER_PAGE = 8
@@ -2700,21 +3027,11 @@ async def callback_product_select_handler(update, context):
         await query.edit_message_text("❌ خطأ في الاختيار.")
         return
     try:
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
-                row = cur.fetchone()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
+        row = await asyncio.to_thread(_db_fetch_product_by_id, product_id)
         if not row:
             await query.edit_message_text("❌ المنتج غير موجود.")
             return
-        await _show_product_detail(update, context, dict(row))
+        await _show_product_detail(update, context, row)
     except Exception as e:
         logging.error("[PSEL] Error: " + str(e), exc_info=True)
         try:
@@ -2738,19 +3055,8 @@ async def callback_product_action_handler(update, context):
     user_id = update.effective_user.id if update.effective_user else 0
     if action == "log":
         try:
-            txns = get_product_transactions(product_id, limit=15)
-            conn = get_connection()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
-                    row = cur.fetchone()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
-            product_name = dict(row)["name"] if row else "?"
+            txns = await asyncio.to_thread(get_product_transactions, product_id, limit=15)
+            product_name = await asyncio.to_thread(_db_fetch_product_name, product_id) or "?"
             if not txns:
                 text = "📜 لا توجد حركات مسجلة لـ\n" + product_name
             else:
@@ -2776,21 +3082,11 @@ async def callback_product_action_handler(update, context):
                 pass
         return
     try:
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT id, name, quantity FROM products WHERE id = %s", (product_id,))
-                row = cur.fetchone()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
+        row = await asyncio.to_thread(_db_fetch_product_by_id, product_id)
         if not row:
             await query.edit_message_text("❌ المنتج غير موجود.")
             return
-        product = dict(row)
+        product = row
         context.user_data["cust_product"] = product
         if action == "add":
             unit = _get_unit_code(product["name"])
@@ -2819,10 +3115,10 @@ async def callback_product_action_handler(update, context):
 
 async def start_command(update, context):
     user = update.effective_user
-    sync_user_info(user)
+    await asyncio.to_thread(sync_user_info, user)
     # Notify admins about new pending user
-    if not is_admin(user.id):
-        db_user = get_user(user.id)
+    if not await asyncio.to_thread(is_admin, user.id):
+        db_user = await asyncio.to_thread(get_user, user.id)
         if db_user and db_user.get("role") == "pending":
             uname = user.first_name or user.username or str(user.id)
             for admin_id in ADMIN_IDS:
@@ -2838,16 +3134,16 @@ async def start_command(update, context):
                     logging.info("[JOIN] Notification sent to admin " + str(admin_id) + " for user " + str(user.id))
                 except Exception as notify_err:
                     logging.error("[JOIN] Failed to notify admin " + str(admin_id) + ": " + str(notify_err), exc_info=True)
-    if is_admin(user.id):
+    if await asyncio.to_thread(is_admin, user.id):
         name = user.first_name or ""
         await update.message.reply_text(
             "\U0001f44b \u0645\u0631\u062d\u0628\u0627\u064b <b>" + name + "</b>\n\n\U0001f3e2 \u0623\u0646\u062a \u0645\u062f\u064a\u0631 \u0627\u0644\u0646\u0638\u0627\u0645.\n\U0001f4cb \u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0644\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u062e\u0632\u0648\u0646.\n\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\u26a1 \u062a\u0645 \u0627\u0644\u062a\u0637\u0648\u064a\u0631 \u0628\u0648\u0627\u0633\u0637\u0629 <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
-            reply_markup=get_admin_keyboard(),
+            reply_markup=await asyncio.to_thread(get_admin_keyboard),
             parse_mode=ParseMode.HTML,
         )
     else:
         name = user.first_name or ""
-        db_user = get_user(user.id)
+        db_user = await asyncio.to_thread(get_user, user.id)
         if db_user and db_user.get("role") == "pending":
             await update.message.reply_text(
                 "👋 مرحباً <b>" + name + "</b>\n\n⏳ حسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
@@ -2856,7 +3152,7 @@ async def start_command(update, context):
         else:
             await update.message.reply_text(
                 "👋 مرحباً <b>" + name + "</b>\n\n⌛ بحث عن المنتجات المتاحة\n📁 استخدم الأزرار أدناه.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
-                reply_markup=get_customer_keyboard(),
+                reply_markup=await asyncio.to_thread(get_customer_keyboard),
                 parse_mode=ParseMode.HTML,
             )
     context.user_data.clear()
@@ -2864,7 +3160,7 @@ async def start_command(update, context):
 
 async def help_command(update, context):
     user = update.effective_user
-    if is_admin(user.id):
+    if await asyncio.to_thread(is_admin, user.id):
         text = (
             "\U0001f4cb \u0623\u0648\u0627\u0645\u0631 \u0627\u0644\u0625\u062f\u0627\u0631\u0629:\n\n"
             "/start - \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629\n"
@@ -2883,14 +3179,14 @@ async def help_command(update, context):
 
 
 async def add_command(update, context):
-    if not is_admin(update.effective_user.id):
+    if not await asyncio.to_thread(is_admin, update.effective_user.id):
         await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     await ask_add_name(update, context)
 
 
 async def search_command(update, context):
-    if not is_admin(update.effective_user.id):
+    if not await asyncio.to_thread(is_admin, update.effective_user.id):
         await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
     context.user_data["state"] = STATE_SEARCH_ADMIN
@@ -2920,7 +3216,7 @@ async def callback_approval_handler(update, context):
     target_id = int(tid_str)
 
     if action == "approve":
-        user = approve_user(target_id)
+        user = await asyncio.to_thread(approve_user, target_id)
         if user:
             await query.edit_message_text(
                 "\u2705 \u062a\u0645 \u062a\u0641\u0639\u064a\u0644 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:\n"
@@ -2939,7 +3235,7 @@ async def callback_approval_handler(update, context):
             await query.edit_message_text("⚠️ المستخدم غير موجود أو مفعل بالفعل.")
 
     elif action == "reject":
-        deleted = reject_user(target_id)
+        deleted = await asyncio.to_thread(reject_user, target_id)
         if deleted:
             await query.edit_message_text("❌ تم رفض و حذف المستخدم.")
             try:
@@ -2963,27 +3259,9 @@ async def callback_promote_handler(update, context):
         return
     target_id = int(tid_str)
 
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if action == "promote":
-                cur.execute("UPDATE users SET role = 'admin' WHERE telegram_id = %s AND role = 'customer' RETURNING *", (target_id,))
-                user = cur.fetchone()
-            elif action == "demote":
-                cur.execute("UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'admin' AND telegram_id NOT IN %s RETURNING *",
-                    (target_id, tuple(ADMIN_IDS)))
-                user = cur.fetchone()
-            else:
-                return
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        user = None
-    finally:
-        release_connection(conn)
+    user = await asyncio.to_thread(_db_promote_demote_user, target_id, action)
 
     if user:
-        user = dict(user)
         name = user.get("first_name") or user.get("username") or str(user["telegram_id"])
         if action == "promote":
             await query.edit_message_text("👑 تم ترقية <b>" + name + "</b> إلى مدير!", parse_mode=ParseMode.HTML)
@@ -3031,72 +3309,16 @@ async def callback_promote_handler(update, context):
 async def dedup_command(update, context):
     """Clean duplicate products: merge exact matches (same normalized name).
     Keeps the oldest record, merges quantities, deletes duplicates."""
-    if not is_admin(update.effective_user.id):
+    if not await asyncio.to_thread(is_admin, update.effective_user.id):
         await update.message.reply_text("❌ للمديرين فقط.")
         return
     await update.message.reply_text("🔍 جاري فحص التكرارات...")
-    conn = get_connection()
     try:
-        with conn.cursor() as cur:
-            # Find all duplicate groups (same normalized_name, more than 1 record)
-            cur.execute("""
-                SELECT normalized_name, COUNT(*) as cnt
-                FROM products
-                WHERE normalized_name IS NOT NULL AND normalized_name != ''
-                GROUP BY normalized_name
-                HAVING COUNT(*) > 1
-                ORDER BY cnt DESC
-            """)
-            dup_groups = cur.fetchall()
-        if not dup_groups:
+        result = await asyncio.to_thread(_db_dedup_products)
+        if result is None:
             await update.message.reply_text("✅ لا توجد تكرارات مطابقة في قاعدة البيانات.")
             return
-
-        total_merged = 0
-        total_deleted = 0
-        merge_details = []
-
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            for group in dup_groups:
-                norm_name = group["normalized_name"]
-                cur.execute("""
-                    SELECT * FROM products
-                    WHERE normalized_name = %s
-                    ORDER BY created_at ASC, id ASC
-                """, (norm_name,))
-                rows = cur.fetchall()
-
-                # Keep the first (oldest) record
-                keep = dict(rows[0])
-                merge_ids = [r["id"] for r in rows[1:]]
-
-                # Merge quantities
-                total_qty = sum(r["quantity"] for r in rows)
-                if total_qty != keep["quantity"]:
-                    cur.execute(
-                        "UPDATE products SET quantity = %s WHERE id = %s",
-                        (total_qty, keep["id"]))
-
-                # Reassign transactions from deleted records to the kept one
-                for del_id in merge_ids:
-                    cur.execute(
-                        "UPDATE transactions SET product_id = %s WHERE product_id = %s",
-                        (keep["id"], del_id))
-                    cur.execute(
-                        "DELETE FROM extraction_requests WHERE product_id = %s",
-                        (del_id,))
-
-                # Delete duplicate records
-                for del_id in merge_ids:
-                    cur.execute("DELETE FROM products WHERE id = %s", (del_id,))
-
-                total_deleted += len(merge_ids)
-                total_merged += 1
-                merge_details.append(
-                    keep["name"] + " (" + str(len(merge_ids)) + " مكرر → كمية: " + str(total_qty) + ")")
-
-        conn.commit()
-
+        total_merged, total_deleted, merge_details = result
         msg = ("✅ تم تنظيف التكرارات:\n\n"
             + "📊 المجموعات المدمجة: " + str(total_merged) + "\n"
             + "🗑 السجلات المحذوفة: " + str(total_deleted) + "\n\n")
@@ -3107,22 +3329,18 @@ async def dedup_command(update, context):
             msg = msg + "  ... و " + str(len(merge_details) - 10) + " أخرى"
         await update.message.reply_text(msg)
     except Exception as e:
-        conn.rollback()
         logging.error("[DEDUP] Error: " + str(e), exc_info=True)
         await update.message.reply_text("❌ حدث خطأ أثناء التنظيف: " + str(e))
-    finally:
-        release_connection(conn)
-
 
 async def backup_command(update, context):
     global _last_backup_data
-    if not is_admin(update.effective_user.id):
+    if not await asyncio.to_thread(is_admin, update.effective_user.id):
         await update.message.reply_text("❌ للمديرين فقط.")
         return
     try:
         import io
         from telegram import InputFile
-        backup = db_export_backup()
+        backup = await asyncio.to_thread(db_export_backup)
         _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
@@ -3142,7 +3360,7 @@ async def backup_command(update, context):
 
 async def handle_backup_document(update, context):
     """Admin sends a backup .json file to restore data."""
-    if not is_admin(update.effective_user.id):
+    if not await asyncio.to_thread(is_admin, update.effective_user.id):
         return
     if not update.message.document:
         return
@@ -3185,20 +3403,20 @@ async def callback_restore_handler(update, context):
             await query.edit_message_text("\u274c \u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u064a\u0627\u0646\u0627\u062a \u0644\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f.")
             return
         try:
-            result = db_import_backup(restore_data)
+            result = await asyncio.to_thread(db_import_backup, restore_data)
             await query.edit_message_text(result)
         except Exception as e:
             await query.edit_message_text("\u274c \u0641\u0634\u0644 \u0627\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f: " + str(e))
         context.user_data.pop("restore_data", None)
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
             pass
     elif data == "restore_cancel":
         await query.edit_message_text("\u274c \u062a\u0645 \u0625\u0644\u063a\u0627\u0621 \u0627\u0633\u062a\u064a\u0631\u0627\u062f \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a.")
         context.user_data.pop("restore_data", None)
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
             pass
 
@@ -3263,9 +3481,9 @@ async def callback_remskip_handler(update, context):
     query = update.callback_query
     await query.answer()
     context.user_data.pop("pending_remove_reason", None)
-    is_adm = is_admin(query.from_user.id)
+    is_adm = await asyncio.to_thread(is_admin, query.from_user.id)
     context.user_data.clear()
-    kb = get_admin_keyboard() if is_adm else get_customer_keyboard()
+    kb = await asyncio.to_thread(get_admin_keyboard) if is_adm else asyncio.to_thread(get_customer_keyboard)
     try:
         await query.edit_message_text("✅ تم الإخراج بدون سبب.", reply_markup=kb)
     except Exception:
@@ -3294,7 +3512,7 @@ async def callback_add_notify_handler(update, context):
         else:
             # Log the transaction ONLY for real stock movements (truck/return)
             if actor:
-                log_transaction(product["id"], "add", qty, actor["id"])
+                await asyncio.to_thread(log_transaction, product["id"], "add", qty, actor["id"])
             # Broadcast the notification with the chosen reason
             await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
             # Confirm to the user
@@ -3322,20 +3540,20 @@ async def callback_email_restore_handler(update, context):
             await _safe_edit(query, "❌ لا يوجد بيانات.")
             return
         try:
-            result = db_import_backup(restore_data)
+            result = await asyncio.to_thread(db_import_backup, restore_data)
             await _safe_edit(query, result)
         except Exception as e:
             await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
         context.user_data.pop("email_restore_data", None)
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
             pass
     elif data == "email_restore_cancel":
         await _safe_edit(query, "❌ تم الإلغاء.")
         context.user_data.pop("email_restore_data", None)
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
             pass
 
@@ -3349,18 +3567,18 @@ async def callback_restore_last_confirm_handler(update, context):
             await _safe_edit(query, "❌ لا توجد نسخة.")
             return
         try:
-            result = db_import_backup(_last_backup_data)
+            result = await asyncio.to_thread(db_import_backup, _last_backup_data)
             await _safe_edit(query, result)
         except Exception as e:
             await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
             pass
     elif data == "last_restore_cancel":
         await _safe_edit(query, "❌ تم الإلغاء.")
         try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+            await context.bot.send_message(chat_id=query.message.chat_id, text="📦 القائمة الرئيسية:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception:
             pass
 
@@ -3377,22 +3595,11 @@ async def callback_restore_last_confirm_handler(update, context):
 # ── Users Command ──
 
 async def users_command(update, context):
-    if not is_admin(update.effective_user.id):
+    if not await asyncio.to_thread(is_admin, update.effective_user.id):
         await update.message.reply_text("❌ للمديرين فقط.")
         return
-    pending = get_pending_users()
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE role IN ('admin', 'customer') ORDER BY role, created_at")
-            approved = [dict(r) for r in cur.fetchall()]
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logging.error("[USERS] Failed to fetch approved users: " + str(e), exc_info=True)
-        approved = []
-    finally:
-        release_connection(conn)
+    pending = await asyncio.to_thread(get_pending_users)
+    approved = await asyncio.to_thread(_db_fetch_approved_users)
 
     # أزرار الموافقة/الرفض للمعلّقين
     buttons = []
@@ -3545,21 +3752,7 @@ async def _invoice_show_review(update_or_query, context, from_callback=False):
 
 async def _invoice_show_workers(update_or_query, context, from_callback=False):
     """Show worker selection list after invoice approval."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, telegram_id, username, first_name FROM users "
-                "WHERE role IN ('admin', 'customer') AND active = TRUE "
-                "ORDER BY first_name"
-            )
-            workers = cur.fetchall()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        workers = []
-    finally:
-        release_connection(conn)
+    workers = await asyncio.to_thread(_db_fetch_workers)
 
     if not workers:
         msg = "❌ لا يوجد عمال مسجلين في النظام."
@@ -3749,57 +3942,19 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         """Safe send helper — works for both Update and CallbackQuery."""
         await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
-    conn = get_connection()
     try:
         # Get admin DB id first (admin.id is telegram_id, not DB id)
-        admin_user = get_user(admin.id)
+        admin_user = await asyncio.to_thread(get_user, admin.id)
         admin_db_id = admin_user["id"] if admin_user else None
         if not admin_db_id:
-            await _send("❌ حدث خطأ: لم يتم العثور على بيانات المدير.", get_admin_keyboard())
+            await _send("❌ حدث خطأ: لم يتم العثور على بيانات المدير.", await asyncio.to_thread(get_admin_keyboard))
             return
 
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Create invoice record
-            cur.execute(
-                "INSERT INTO invoices (customer_name, worker_id, admin_id, total_amount, status, approved_at) "
-                "VALUES (%s, %s, %s, %s, 'approved', NOW()) RETURNING id",
-                (customer, worker_id, admin_db_id, total)
-            )
-            invoice = cur.fetchone()
-            invoice_id = invoice["id"]
-            for item in items:
-                cur.execute(
-                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (invoice_id, item["product_id"], item["product_name"], item["quantity"], item["unit_price"], item["subtotal"])
-                )
-                # Deduct from stock if product exists in DB
-                if item["product_id"]:
-                    cur.execute(
-                        "SELECT quantity FROM products WHERE id = %s FOR UPDATE",
-                        (item["product_id"],)
-                    )
-                    prow = cur.fetchone()
-                    if not prow or prow["quantity"] < item["quantity"]:
-                        raise ValueError(
-                            "❌ الكمية غير كافية للمنتج \"" + item["product_name"] + "\" "
-                            "(المتوفر: " + str(prow["quantity"] if prow else 0) + ", المطلوب: " + str(item["quantity"]) + ")"
-                        )
-                    cur.execute(
-                        "UPDATE products SET quantity = quantity - %s WHERE id = %s",
-                        (item["quantity"], item["product_id"])
-                    )
-                    # Log transaction
-                    cur.execute(
-                        "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
-                        (item["product_id"], item["quantity"], admin_db_id)
-                    )
-
-        conn.commit()
+        invoice = await asyncio.to_thread(_db_finalize_invoice, customer, worker_id, admin_db_id, items)
+        invoice_id = invoice["id"]
     except Exception as e:
-        conn.rollback()
         logging.error("[INVOICE] DB save failed: " + str(e), exc_info=True)
-        await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), get_admin_keyboard())
+        await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), await asyncio.to_thread(get_admin_keyboard))
         return
 
     # Generate PDF
@@ -3856,14 +4011,14 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     if worker_notified:
         result_msg += "📨 تم إشعار العامل" + chr(10)
     result_msg += "✅ تم الخصم من المخزون"
-    await _send(result_msg, get_admin_keyboard())
+    await _send(result_msg, await asyncio.to_thread(get_admin_keyboard))
 
 
 async def callback_invoice_handler(update, context):
     """Handle invoice-related callback queries."""
     query = update.callback_query
     await query.answer()
-    if not is_admin(query.from_user.id):
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
     data = query.data
@@ -3886,7 +4041,7 @@ async def callback_invoice_handler(update, context):
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text="📦 القائمة الرئيسية:",
-            reply_markup=get_admin_keyboard()
+            reply_markup=await asyncio.to_thread(get_admin_keyboard)
         )
 
     elif data == "invoice_back_customer":
@@ -3979,15 +4134,9 @@ async def callback_invoice_handler(update, context):
 
     elif data.startswith("invsel_"):
         # Product selection callback from invoice product search
-        if data == "invsel_manual":
+        if data.startswith("invsel_manual_"):
             # Manual entry - go to qty step
-            manual_name = context.user_data.get("invoice_manual_search_name", "").strip()
-            if not manual_name:
-                try:
-                    await query.edit_message_text("❌ انتهت صلاحية هذا الزر، أرسل اسم المنتج من جديد.")
-                except Exception:
-                    pass
-                return
+            manual_name = data[len("invsel_manual_"):]
             ptype = _invoice_product_type(manual_name)
             context.user_data["invoice_tmp_product"] = manual_name
             context.user_data["invoice_tmp_pid"] = None
@@ -4020,17 +4169,7 @@ async def callback_invoice_handler(update, context):
                 product_id = int(data[len("invsel_"):])
             except ValueError:
                 return
-            conn = get_connection()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT id, name, quantity, selling_price FROM products WHERE id = %s", (product_id,))
-                    prod = cur.fetchone()
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                prod = None
-            finally:
-                release_connection(conn)
+            prod = await asyncio.to_thread(_db_fetch_invoice_product, product_id)
             if not prod:
                 try:
                     await query.edit_message_text("❌ المنتج غير موجود.")
@@ -4138,18 +4277,7 @@ async def callback_invoice_handler(update, context):
         worker_id = int(parts[2])
         worker_tid = int(parts[3])
         # Get worker name
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT first_name, username FROM users WHERE id = %s", (worker_id,))
-                w = cur.fetchone()
-                worker_name = (w["first_name"] or w["username"] or str(worker_tid)) if w else str(worker_tid)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            worker_name = str(worker_tid)
-        finally:
-            release_connection(conn)
+        worker_name = await asyncio.to_thread(_db_fetch_worker_name, worker_id)
         # Show processing message
         try:
             await query.edit_message_text("⏳ جاري معالجة الفاتورة...")
@@ -4164,7 +4292,7 @@ async def callback_invoice_handler(update, context):
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
                     text="❌ حدث خطأ أثناء إنشاء الفاتورة: " + str(e),
-                    reply_markup=get_admin_keyboard()
+                    reply_markup=await asyncio.to_thread(get_admin_keyboard)
                 )
             except Exception:
                 pass
@@ -4190,7 +4318,7 @@ async def handle_admin_message(update, context):
         logging.info(f"[STATE_TIMEOUT] Admin {user.id} state '{state}' expired, clearing.")
         context.user_data.clear()
         state = None
-        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
 
     # In a state - if user clicks an admin button, clear state first
     admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE]
@@ -4222,9 +4350,9 @@ async def handle_admin_message(update, context):
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
         if text == BTN_EDIT:
-            products = get_all_products()
+            products = await asyncio.to_thread(get_all_products)
             if not products:
-                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
+                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
                 return
             lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
             for p in products:
@@ -4254,9 +4382,9 @@ async def handle_admin_message(update, context):
             await update.message.reply_text(edit_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_DELETE:
-            products = get_all_products()
+            products = await asyncio.to_thread(get_all_products)
             if not products:
-                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
+                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
                 return
             lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
             for p in products:
@@ -4325,17 +4453,17 @@ async def handle_admin_message(update, context):
             await backup_command(update, context)
             return
         if text == BTN_CANCEL:
-            await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
             return
         await update.message.reply_text(
             "استخدم الأزرار أدناه أو الأوامر:" + chr(10) + "/add, /search",
-            reply_markup=get_admin_keyboard())
+            reply_markup=await asyncio.to_thread(get_admin_keyboard))
         return
 
     # State handlers
     if text == BTN_CANCEL:
         context.user_data.clear()
-        await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         return
 
     # ── Invoice FSM States ──
@@ -4359,7 +4487,7 @@ async def handle_admin_message(update, context):
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم المنتج.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_customer"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
             return
-        results = search_products(product_name)
+        results = await asyncio.to_thread(search_products, product_name)
         if not results:
             context.user_data["invoice_tmp_product"] = product_name
             context.user_data["invoice_tmp_pid"] = None
@@ -4408,9 +4536,7 @@ async def handle_admin_message(update, context):
             if len(label) > 40:
                 label = label[:37] + "..."
             buttons.append([InlineKeyboardButton(label, callback_data="invsel_" + str(p["id"]))])
-        # لا نضع اسم المنتج داخل callback_data (حد تيليجرام 64 بايت قد يتجاوزه بحث طويل)
-        context.user_data["invoice_manual_search_name"] = product_name
-        buttons.append([InlineKeyboardButton("✍️ كتابة يدوية", callback_data="invsel_manual")])
+        buttons.append([InlineKeyboardButton("✍️ كتابة يدوية", callback_data="invsel_manual_" + product_name)])
         buttons.append([InlineKeyboardButton("🔍 بحث آخر", callback_data="invoice_back_product")])
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
         return
@@ -4497,30 +4623,13 @@ async def handle_admin_message(update, context):
         reason_text = text.strip()
         pending = context.user_data.get("pending_remove_reason")
         if pending and reason_text:
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    if pending.get("tx_id"):
-                        # Update the exact transaction by ID
-                        cur.execute(
-                            "UPDATE transactions SET reason = %s WHERE id = %s",
-                            (reason_text, pending["tx_id"]))
-                    else:
-                        # Fallback: match by product+user+no reason
-                        cur.execute(
-                            "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
-                            (reason_text, pending["product_id"], pending["user_id"]))
-                conn.commit()
-            except Exception:
-                conn.rollback()
-            finally:
-                release_connection(conn)
+            await asyncio.to_thread(_db_update_tx_reason, pending.get("tx_id"), pending.get("product_id"), pending.get("user_id"), reason_text)
         context.user_data.pop("pending_remove_reason", None)
         context.user_data.clear()
         if reason_text:
-            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text, reply_markup=get_admin_keyboard())
+            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text, reply_markup=await asyncio.to_thread(get_admin_keyboard))
         else:
-            await update.message.reply_text("✅ تم الإخراج.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("✅ تم الإخراج.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         return
 
     if state == STATE_INVOICE_PRICE:
@@ -4644,7 +4753,7 @@ async def handle_admin_message(update, context):
     elif state == STATE_DELETE_PRODUCT:
         await process_delete_product(update, context, text, user.id)
     elif state == STATE_ADMIN_ADD_SEL:
-        results = search_products(text)
+        results = await asyncio.to_thread(search_products, text)
         if not results:
             await update.message.reply_text("\U0001f50d \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0646\u062a\u0627\u0626\u062c.", reply_markup=get_input_keyboard())
             return
@@ -4665,7 +4774,7 @@ async def handle_admin_message(update, context):
         context.user_data["state"] = None
         return
     elif state == STATE_ADMIN_REM_SEL:
-        results = search_products(text)
+        results = await asyncio.to_thread(search_products, text)
         if not results:
             await update.message.reply_text("\U0001f50d \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0646\u062a\u0627\u0626\u062c.", reply_markup=get_input_keyboard())
             return
@@ -4692,7 +4801,7 @@ async def handle_admin_message(update, context):
             action = "remove" if action == "rem" else "add"
         if not product:
             context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
             return
         parsed = parse_crt_input(text)
         if parsed is None:
@@ -4701,8 +4810,8 @@ async def handle_admin_message(update, context):
             return
         qty = parsed
         try:
-            updated = db_update_quantity(product["id"], qty, action)
-            db_user = get_user(user.id)
+            updated = await asyncio.to_thread(db_update_quantity, product["id"], qty, action)
+            db_user = await asyncio.to_thread(get_user, user.id)
             # Transaction logging deferred to callback_add_notify_handler
             # (skip logging here — will log only if NOT silent correction)
             icon = _product_status_icon(updated)
@@ -4753,17 +4862,7 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("❌ أرسل نص التنبيه.", reply_markup=get_input_keyboard())
             return
         try:
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
-                    users = [r[0] for r in cur.fetchall()]
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                release_connection(conn)
+            users = await asyncio.to_thread(_db_fetch_broadcast_users)
             sent = 0
             for uid in users:
                 try:
@@ -4774,7 +4873,7 @@ async def handle_admin_message(update, context):
                 except Exception as e:
                     logging.warning("[ALERT] Failed for " + str(uid) + ": " + str(e))
             result_msg = "✅ تم إرسال التنبيه لـ " + str(sent) + " مستخدم."
-            await update.message.reply_text(result_msg, reply_markup=get_admin_keyboard())
+            await update.message.reply_text(result_msg, reply_markup=await asyncio.to_thread(get_admin_keyboard))
         except Exception as e:
             await update.message.reply_text("❌ خطأ: " + str(e), reply_markup=get_input_keyboard())
         context.user_data.clear()
@@ -4783,7 +4882,7 @@ async def handle_admin_message(update, context):
 
     else:
         context.user_data.clear()
-        await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
 
 
 async def handle_customer_message(update, context):
@@ -4796,7 +4895,7 @@ async def handle_customer_message(update, context):
         logging.info(f"[STATE_TIMEOUT] Customer {user.id} state '{state}' expired, clearing.")
         context.user_data.clear()
         state = None
-        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=get_customer_keyboard())
+        await update.message.reply_text("⏰ انتهت مهلة العملية. ابدأ من جديد.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
 
     # Handle customer buttons (clear state first)
     cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS]
@@ -4805,7 +4904,7 @@ async def handle_customer_message(update, context):
         state = None
 
         if text == BTN_CUST_CANCEL:
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
             return
 
         if text == BTN_CUST_ALERT:
@@ -4838,7 +4937,7 @@ async def handle_customer_message(update, context):
     if state == "waiting_cust_search":
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
             return
         await process_search(update, context, text, admin_view=False)
         context.user_data.clear()
@@ -4848,7 +4947,7 @@ async def handle_customer_message(update, context):
     if state in ("waiting_order_photo", "waiting_order_input", "waiting_order_name"):
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
             return
         await update.message.reply_text(
             "📷 يرجى إرسال صورة الوصل فقط.\n"
@@ -4865,7 +4964,7 @@ async def handle_customer_message(update, context):
             action = "remove" if action == "rem" else "add"
         if not product:
             context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
             return
         parsed = parse_crt_input(text)
         if parsed is None:
@@ -4874,8 +4973,8 @@ async def handle_customer_message(update, context):
             return
         qty = parsed
         try:
-            updated = db_update_quantity(product["id"], qty, action)
-            db_user = get_user(user.id)
+            updated = await asyncio.to_thread(db_update_quantity, product["id"], qty, action)
+            db_user = await asyncio.to_thread(get_user, user.id)
             # Transaction logging deferred to callback_add_notify_handler
             # (skip logging here — will log only if NOT silent correction)
             icon = _product_status_icon(updated)
@@ -4924,7 +5023,7 @@ async def handle_customer_message(update, context):
         product = context.user_data.get("cust_product")
         if not product:
             context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
             return
         parsed = parse_crt_input(text)
         if parsed is None:
@@ -4934,12 +5033,12 @@ async def handle_customer_message(update, context):
         if qty <= 0:
             await update.message.reply_text("❌ الكمية يجب أن تكون أكبر من 0.")
             return
-        db_user = get_user(user.id)
+        db_user = await asyncio.to_thread(get_user, user.id)
         if not db_user:
             await update.message.reply_text("❌ حسابك غير مسجل.")
             return
         try:
-            req = create_extraction_request(product["id"], qty, db_user["id"])
+            req = await asyncio.to_thread(create_extraction_request, product["id"], qty, db_user["id"])
             unit_ar = _get_unit_ar(product["name"])
             msg = "📨 تم إرسال طلب الإخراج!" + chr(10) + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit_ar + chr(10) + chr(10) + "⏳ بانتظار موافقة المدير."
             await update.message.reply_text(msg)
@@ -4967,28 +5066,13 @@ async def handle_customer_message(update, context):
         reason_text = text.strip()
         pending = context.user_data.get("pending_remove_reason")
         if pending and reason_text:
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    if pending.get("tx_id"):
-                        cur.execute(
-                            "UPDATE transactions SET reason = %s WHERE id = %s",
-                            (reason_text, pending["tx_id"]))
-                    else:
-                        cur.execute(
-                            "UPDATE transactions SET reason = %s WHERE product_id = %s AND type = 'remove' AND user_id = %s AND reason IS NULL ORDER BY date DESC LIMIT 1",
-                            (reason_text, pending["product_id"], pending["user_id"]))
-                conn.commit()
-            except Exception:
-                conn.rollback()
-            finally:
-                release_connection(conn)
+            await asyncio.to_thread(_db_update_tx_reason, pending.get("tx_id"), pending.get("product_id"), pending.get("user_id"), reason_text)
         context.user_data.pop("pending_remove_reason", None)
         context.user_data.clear()
         if reason_text:
-            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text, reply_markup=get_customer_keyboard())
+            await update.message.reply_text("✅ تم تسجيل السبب: " + reason_text, reply_markup=await asyncio.to_thread(get_customer_keyboard))
         else:
-            await update.message.reply_text("✅ تم الإخراج.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("✅ تم الإخراج.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
         return
 
     # Default: treat as search query
@@ -5001,7 +5085,7 @@ async def handle_customer_message(update, context):
 async def route_message(update, context):
     user = update.effective_user
     text = update.message.text.strip()
-    if not is_admin(user.id) and not is_approved(user.id):
+    if not await asyncio.to_thread(is_admin, user.id) and not await asyncio.to_thread(is_approved, user.id):
         if text == "/cancel":
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         elif text != "/start":
@@ -5009,13 +5093,13 @@ async def route_message(update, context):
         return
     if text == "/cancel":
         context.user_data.clear()
-        if is_admin(user.id):
-            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=get_admin_keyboard())
+        if await asyncio.to_thread(is_admin, user.id):
+            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         else:
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         return
-    register_user(telegram_id=user.id, username=user.username, first_name=user.first_name)
-    if is_admin(user.id):
+    await asyncio.to_thread(register_user, telegram_id=user.id, username=user.username, first_name=user.first_name)
+    if await asyncio.to_thread(is_admin, user.id):
         await handle_admin_message(update, context)
     else:
         await handle_customer_message(update, context)
@@ -5031,15 +5115,15 @@ async def callback_extract_perm_handler(update, context):
     """Handle grant/revoke extraction permission from users list."""
     query = update.callback_query
     await query.answer()
-    if not is_admin(query.from_user.id):
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
     data = query.data
     try:
         if data.startswith("ext_grant_"):
             tid = int(data.split("_")[2])
-            set_extract_permission(tid, True)
-            db_u = get_user(tid)
+            await asyncio.to_thread(set_extract_permission, tid, True)
+            db_u = await asyncio.to_thread(get_user, tid)
             uname = db_u.get("username") or str(tid) if db_u else str(tid)
             await query.edit_message_text("✅ تم منح صلاحية الإخراج لـ " + uname)
             try:
@@ -5051,8 +5135,8 @@ async def callback_extract_perm_handler(update, context):
                 logging.error("[EXTRACT] Notify user failed: " + str(e), exc_info=True)
         elif data.startswith("ext_revoke_"):
             tid = int(data.split("_")[2])
-            set_extract_permission(tid, False)
-            db_u = get_user(tid)
+            await asyncio.to_thread(set_extract_permission, tid, False)
+            db_u = await asyncio.to_thread(get_user, tid)
             uname = db_u.get("username") or str(tid) if db_u else str(tid)
             await query.edit_message_text("❌ تم سحب صلاحية الإخراج من " + uname)
             try:
@@ -5075,7 +5159,7 @@ async def _show_pending_extractions(update, context):
     """Show list of pending extraction requests."""
     query = update.callback_query
     try:
-        pending = get_pending_extraction_requests()
+        pending = await asyncio.to_thread(get_pending_extraction_requests)
     except Exception as e:
         logging.error("[EXTRACT] Get pending failed: " + str(e), exc_info=True)
         await query.edit_message_text("❌ خطأ في تحميل الطلبات.")
@@ -5119,7 +5203,7 @@ async def callback_extract_request_handler(update, context):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    if not can_extract(user_id):
+    if not await asyncio.to_thread(can_extract, user_id):
         await query.answer("❌ ليس لديك صلاحية الإخراج.", show_alert=True)
         return
     data = query.data
@@ -5128,21 +5212,11 @@ async def callback_extract_request_handler(update, context):
     except (IndexError, ValueError):
         await query.edit_message_text("❌ خطأ في الاختيار.")
         return
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, name, quantity FROM products WHERE id = %s", (product_id,))
-            row = cur.fetchone()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
+    row = await asyncio.to_thread(_db_fetch_product_by_id, product_id)
     if not row:
         await query.edit_message_text("❌ المنتج غير موجود.")
         return
-    product = dict(row)
+    product = row
     context.user_data["cust_product"] = product
     context.user_data["state"] = "waiting_extract_qty"
     unit = _get_unit_code(product["name"])
@@ -5162,7 +5236,7 @@ async def callback_extract_approve_handler(update, context):
     """Handle admin approve/reject extraction request."""
     query = update.callback_query
     await query.answer()
-    if not is_admin(query.from_user.id):
+    if not await asyncio.to_thread(is_admin, query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
     data = query.data
@@ -5172,26 +5246,14 @@ async def callback_extract_approve_handler(update, context):
         request_id = int(parts[2])
     except (IndexError, ValueError):
         return
-    admin_db = get_user(query.from_user.id)
+    admin_db = await asyncio.to_thread(get_user, query.from_user.id)
     admin_uid = admin_db["id"] if admin_db else 0
     try:
-        success, msg = process_extraction_request(request_id, action == "approve", admin_uid)
+        success, msg = await asyncio.to_thread(process_extraction_request, request_id, action == "approve", admin_uid)
         await query.edit_message_text(msg)
         if success:
             try:
-                conn = get_connection()
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute(
-                        "SELECT er.requester_id, u.telegram_id, p.name AS product_name, er.quantity "
-                        "FROM extraction_requests er "
-                        "JOIN users u ON u.id = er.requester_id "
-                        "JOIN products p ON p.id = er.product_id "
-                        "WHERE er.id = %s",
-                        (request_id,),
-                    )
-                    req_info = cur.fetchone()
-                conn.commit()
-                release_connection(conn)
+                req_info = await asyncio.to_thread(_db_fetch_extraction_request_info, request_id)
                 if req_info:
                     unit_ar = _get_unit_ar(req_info["product_name"])
                     if action == "approve":
@@ -5458,7 +5520,7 @@ async def callback_admin_done_handler(update, context):
         await query.delete_message()
     except Exception:
         pass
-    await context.bot.send_message(chat_id=query.message.chat_id, text="✅ القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+    await context.bot.send_message(chat_id=query.message.chat_id, text="✅ القائمة الرئيسية:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
 
 
 async def callback_go_start_handler(update, context):
@@ -5466,12 +5528,12 @@ async def callback_go_start_handler(update, context):
     query = update.callback_query
     await query.answer()
     user = query.from_user
-    sync_user_info(user)
+    await asyncio.to_thread(sync_user_info, user)
 
-    db_user = get_user(user.id)
+    db_user = await asyncio.to_thread(get_user, user.id)
     name = user.first_name or ""
 
-    if is_admin(user.id):
+    if await asyncio.to_thread(is_admin, user.id):
         try:
             await query.edit_message_text(
                 "\U0001f44b مرحباً <b>" + name + "</b>\n\n"
@@ -5480,10 +5542,10 @@ async def callback_go_start_handler(update, context):
                 "━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_admin_keyboard(),
+                reply_markup=await asyncio.to_thread(get_admin_keyboard),
             )
         except Exception:
-            await query.message.reply_text("🔄 اضغط /start", reply_markup=get_admin_keyboard())
+            await query.message.reply_text("🔄 اضغط /start", reply_markup=await asyncio.to_thread(get_admin_keyboard))
     elif db_user and db_user.get("role") == "pending":
         try:
             await query.edit_message_text(
@@ -5505,10 +5567,10 @@ async def callback_go_start_handler(update, context):
                 "━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_customer_keyboard(),
+                reply_markup=await asyncio.to_thread(get_customer_keyboard),
             )
         except Exception:
-            await query.message.reply_text("🔄 اضغط /start", reply_markup=get_customer_keyboard())
+            await query.message.reply_text("🔄 اضغط /start", reply_markup=await asyncio.to_thread(get_customer_keyboard))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -5531,26 +5593,10 @@ async def callback_go_start_handler(update, context):
 # ═══════════════════════════════════════════════════════════════
 async def _show_admin_incoming_orders(update, context):
     """عرض طلبات التوريد - كل طلب برسالة منفصلة: صورة + أزرار جاهز/غير جاهز."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\
-                SELECT io.*, u.first_name, u.username, u.telegram_id
-                FROM incoming_orders io
-                LEFT JOIN users u ON u.id = io.requester_id
-                WHERE io.status IN ('pending', 'received')
-                ORDER BY io.created_at ASC
-                """)
-            all_orders = [dict(r) for r in cur.fetchall()]
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        all_orders = []
-    finally:
-        release_connection(conn)
+    all_orders = await asyncio.to_thread(_db_fetch_incoming_orders)
 
     if not all_orders:
-        await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
         return
 
     bot = context.bot
@@ -5582,19 +5628,19 @@ async def _show_admin_incoming_orders(update, context):
         else:
             await update.message.reply_text(caption + "\n\n⚠️ بدون صورة وصل", reply_markup=keyboard)
 
-    await update.message.reply_text("📤 عدد الطلبات: " + str(len(all_orders)), reply_markup=get_admin_keyboard())
+    await update.message.reply_text("📤 عدد الطلبات: " + str(len(all_orders)), reply_markup=await asyncio.to_thread(get_admin_keyboard))
 
 
 async def _show_customer_orders(update, context):
     """عرض طلبات التوريد المعلّقة + قيد التجهيز للمستخدم."""
     user = update.effective_user
-    db_user = get_user(user.id)
+    db_user = await asyncio.to_thread(get_user, user.id)
     if not db_user:
-        await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+        await update.message.reply_text("❌ حدث خطأ.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
         return
-    orders = get_user_pending_orders(db_user["id"])
+    orders = await asyncio.to_thread(get_user_pending_orders, db_user["id"])
     if not orders:
-        await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=get_customer_keyboard())
+        await update.message.reply_text("📭 لا توجد طلبات توريد حالياً.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
         return
 
     lines = ["📋 طلباتك (" + str(len(orders)) + ")\n"]
@@ -5610,7 +5656,7 @@ async def _show_customer_orders(update, context):
             "  |  ⏰ " + created + photo_icon
         )
     lines.append("\n📡 سيتم إشعارك تلقائياً بأي تحديث.")
-    await update.message.reply_text("\n".join(lines), reply_markup=get_customer_keyboard())
+    await update.message.reply_text("\n".join(lines), reply_markup=await asyncio.to_thread(get_customer_keyboard))
 
 
 async def handle_receipt_photo(update, context):
@@ -5626,13 +5672,13 @@ async def handle_receipt_photo(update, context):
     if state not in ("waiting_order_photo", "waiting_order_input", "waiting_order_name"):
         return
 
-    db_user = get_user(user.id)
+    db_user = await asyncio.to_thread(get_user, user.id)
     if not db_user:
-        await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+        await update.message.reply_text("❌ حدث خطأ.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
         context.user_data.clear()
         return
     try:
-        order = create_incoming_order(db_user["id"], "طلب بوصل صورة", 1, photo_file_id=file_id)
+        order = await asyncio.to_thread(create_incoming_order, db_user["id"], "طلب بوصل صورة", 1, photo_file_id=file_id)
         order_id = order["id"]
         caption = (
             "🚚 طلب توريد جديد!\n\n"
@@ -5656,12 +5702,12 @@ async def handle_receipt_photo(update, context):
             "📡 سيتم إشعارك تلقائياً عند التحديث.\n"
             "تابع طلبك من 📋 طلباتي",
             parse_mode=ParseMode.HTML,
-            reply_markup=get_customer_keyboard(),
+            reply_markup=await asyncio.to_thread(get_customer_keyboard),
         )
         logging.info("[INCOMING] Photo order #" + str(order_id) + " by user " + str(user.id))
     except Exception as e:
         logging.error("[INCOMING] Failed: " + str(e), exc_info=True)
-        await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+        await update.message.reply_text("❌ حدث خطأ.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
     context.user_data.clear()
 
 
@@ -5675,7 +5721,7 @@ async def callback_incoming_order_handler(update, context):
     # ── 1. طلب جاهز في المخزن ──
     if data.startswith("io_ready_"):
         order_id = int(data.split("_")[-1])
-        order = complete_incoming_order(order_id)
+        order = await asyncio.to_thread(complete_incoming_order, order_id)
         if not order:
             try:
                 await query.edit_message_caption(caption="❌ الطلب غير موجود.")
@@ -5686,7 +5732,7 @@ async def callback_incoming_order_handler(update, context):
                     pass
             return
 
-        tg_id = _get_telegram_id(order["requester_id"])
+        tg_id = await asyncio.to_thread(_get_telegram_id, order["requester_id"])
         if tg_id:
             try:
                 await bot.send_message(
@@ -5725,18 +5771,9 @@ async def callback_incoming_order_handler(update, context):
         order_id = int(data.split("_")[-1])
 
         tg_id = None
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT io.*, u.telegram_id FROM incoming_orders io LEFT JOIN users u ON u.id = io.requester_id WHERE io.id = %s", (order_id,))
-                order = cur.fetchone()
-                if order:
-                    tg_id = order.get("telegram_id")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-        finally:
-            release_connection(conn)
+        order = await asyncio.to_thread(_db_fetch_incoming_order_with_user, order_id)
+        if order:
+            tg_id = order.get("telegram_id")
 
         if tg_id:
             try:
@@ -5803,7 +5840,7 @@ def build_application():
     async def auto_sync_user(update, context):
         user = update.effective_user
         if user:
-            sync_user_info(user)
+            await asyncio.to_thread(sync_user_info, user)
 
     # يشغل sync_user_info قبل أي handler آخر
     app.add_handler(MessageHandler(filters.ALL, auto_sync_user), group=-1)
@@ -5946,7 +5983,7 @@ async def _daily_backup(bot):
     global _last_backup_data
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
     try:
-        backup = db_export_backup()
+        backup = await asyncio.to_thread(db_export_backup)
         _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
@@ -5966,8 +6003,8 @@ async def _daily_backup_loop(bot):
     while True:
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
         today = now.strftime("%Y-%m-%d")
-        # نافذة 5 دقائق حول منتصف الليل بتوقيت الجزائر (now أصلاً محوّل لتوقيت الجزائر UTC+1)
-        if today != last_backup and now.hour == 0 and now.minute < 5:
+        # 5-minute window (23:00-23:04 UTC = midnight Algeria)
+        if today != last_backup and 23 <= now.hour <= 23 and now.minute < 5:
             await _daily_backup(bot)
             last_backup = today
         await asyncio.sleep(60)
@@ -5992,12 +6029,7 @@ async def _keep_alive(app):
                         logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
                 # Ping Neon database to prevent auto-suspend (cold start)
                 try:
-                    conn = get_connection()
-                    try:
-                        with conn.cursor() as cur:
-                            cur.execute("SELECT 1")
-                    finally:
-                        release_connection(conn)
+                    await asyncio.to_thread(_db_ping)
                 except Exception as db_err:
                     logging.warning("[KEEP-ALIVE] DB ping failed: " + str(db_err))
             except Exception as e:
@@ -6027,8 +6059,7 @@ if __name__ == "__main__":
         webhook_app.router.add_get("/", health)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
-            drop_pending_updates=True, webhook_app=webhook_app,
-            secret_token=WEBHOOK_SECRET)
+            drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
         health_app = web.Application()
         async def health(request):
@@ -6059,4 +6090,3 @@ if __name__ == "__main__":
     else:
         print("[BOT] Local polling mode")
         tg_app.run_polling(drop_pending_updates=True)
-
