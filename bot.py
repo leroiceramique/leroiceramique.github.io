@@ -2278,14 +2278,27 @@ WEEKDAY_AR = {
 }
 
 
-def _build_movements_text(rows, admin_view=False):
-    """Build formatted movements text from transaction rows.
-    Usernames are clickable Telegram links.
-    If admin_view=True, removal reasons are shown; otherwise hidden."""
+def _build_movements_text(rows, admin_view=False, start=0, per_page=8):
+    """Build formatted movements text for one page with summary header.
+    Returns (full_text, total_pages) tuple."""
     if not rows:
-        return None
+        return None, 0
+
+    total = len(rows)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_rows = rows[start:start + per_page]
+    page_num = (start // per_page) + 1
+
+    add_count = sum(1 for r in rows if r["tx_type"] == "add")
+    rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
+
     lines = []
-    for r in rows:
+    # ── Summary header ──
+    lines.append("📊 <b>الملخص:</b>  🟢➕ " + str(add_count) + " إضافة  |  🔴➖ " + str(rem_count) + " إخراج  |  المجموع: " + str(total))
+    lines.append("")
+
+    # ── Operations ──
+    for r in page_rows:
         r = dict(r)
         if r["tx_type"] == "add":
             icon = "🟢➕"
@@ -2305,7 +2318,7 @@ def _build_movements_text(rows, admin_view=False):
             user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
         else:
             user_link = user_name
-        line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str
+        line = icon + " <b>" + prod + "</b> " + str(qty) + " " + unit + "  —  " + user_link + "  " + time_str
         # Show reason only for admin, only for removals
         reason = r.get("reason")
         if admin_view and reason and r["tx_type"] == "remove":
@@ -2313,10 +2326,12 @@ def _build_movements_text(rows, admin_view=False):
             line = line + chr(10) + "   💬 " + reason
         lines.append(line)
 
-    add_count = sum(1 for r in rows if r["tx_type"] == "add")
-    rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    lines.append(chr(10) + "🟢➕ " + str(add_count) + " إضافة  |  🔴➖ " + str(rem_count) + " إخراج")
-    return chr(10).join(lines)
+    # ── Page indicator ──
+    if total_pages > 1:
+        lines.append("")
+        lines.append("📄 صفحة " + str(page_num) + "/" + str(total_pages))
+
+    return chr(10).join(lines), total_pages
 
 
 def _fetch_movements_by_date(target_date):
@@ -2424,6 +2439,20 @@ async def _delete_extra_chunks(bot, chat_id, context):
             pass
 
 
+def _build_mov_pagination_buttons(date_str, page, total_pages):
+    """Build pagination keyboard for movement views."""
+    buttons = []
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ السابق", callback_data="movp_" + date_str + "_" + str(page - 1)))
+    nav_row.append(InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("▶️ التالي", callback_data="movp_" + date_str + "_" + str(page + 1)))
+    if nav_row:
+        buttons.append(nav_row)
+    return InlineKeyboardMarkup(buttons)
+
+
 async def _show_all_movements(update, context, admin_view=True):
     """Show date picker for last 7 days — user picks a date to see movements."""
     try:
@@ -2438,17 +2467,69 @@ async def _show_all_movements(update, context, admin_view=True):
 
 
 async def callback_mov_date_handler(update, context):
-    """Handle movement callbacks: date picker, date selection, back."""
+    """Handle movement callbacks: date picker, date selection, pagination, back."""
     query = update.callback_query
     await query.answer()
     data = query.data
     admin_view = is_admin(query.from_user.id)
     chat_id = query.message.chat.id
 
+    PER_PAGE = 8
+
+    # --- Pagination: movp_YYYY-MM-DD_pageNum ---
+    if data.startswith("movp_"):
+        parts = data.split("_")
+        date_str = parts[1]
+        page = int(parts[2])
+        try:
+            target_date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            await query.edit_message_text("❌ تاريخ غير صالح.")
+            return
+        # Get cached rows or fetch again
+        cache_key = "_mov_rows"
+        rows = context.user_data.get(cache_key, [])
+        if not rows:
+            try:
+                rows = await asyncio.to_thread(_fetch_movements_by_date, target_date)
+                context.user_data[cache_key] = rows
+            except Exception as e:
+                logging.error("[MOV_DATE_HANDLER] DB error pagination: " + str(e), exc_info=True)
+                await report_diag(bot=context.bot, chat_id=chat_id, error=e, context_tag="[MOVEMENTS-PAGE]")
+                try:
+                    await query.edit_message_text("❌ حدث خطأ في الاتصال.")
+                except Exception:
+                    pass
+                return
+        wd = target_date.weekday()
+        date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
+        start = page * PER_PAGE
+        body, total_pages = _build_movements_text(rows, admin_view=admin_view, start=start, per_page=PER_PAGE)
+        if not body:
+            try:
+                await query.edit_message_text(
+                    "📋 لا توجد عمليات في هذا اليوم.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+                    ]))
+            except Exception:
+                pass
+            return
+        header = "📋 حركة " + date_display + ":"
+        full_text = header + chr(10) + chr(10) + body
+        markup = _build_mov_pagination_buttons(date_str, page, total_pages)
+        await _delete_extra_chunks(context.bot, chat_id, context)
+        extra = await _safe_send_html(
+            chat_id=chat_id, text=full_text, bot=context.bot,
+            reply_markup=markup, edit_message=query.edit_message_text)
+        if extra:
+            context.user_data["_mov_chunks"] = extra
+        return
+
     # --- Back to date picker ---
     if data == "movd_back":
-        # Delete any leftover chunk messages first
         await _delete_extra_chunks(context.bot, chat_id, context)
+        context.user_data.pop("_mov_rows", None)
         markup = _build_date_picker_markup()
         try:
             await query.edit_message_text(
@@ -2491,19 +2572,16 @@ async def callback_mov_date_handler(update, context):
                         [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
                     ]))
             return
-        header = "📋 حركة اليوم (" + date_display + ") — " + str(len(rows)) + " عملية:"
-        body = _build_movements_text(rows, admin_view=admin_view)
+        # Cache rows for pagination
+        context.user_data["_mov_rows"] = rows
+        date_str = target_date.strftime("%Y-%m-%d")
+        body, total_pages = _build_movements_text(rows, admin_view=admin_view, start=0, per_page=PER_PAGE)
+        header = "📋 حركة اليوم (" + date_display + "):"
         full_text = header + chr(10) + chr(10) + body
-        back_button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
-        ])
+        markup = _build_mov_pagination_buttons(date_str, 0, total_pages)
         extra = await _safe_send_html(
-            chat_id=chat_id,
-            text=full_text,
-            bot=context.bot,
-            reply_markup=back_button,
-            edit_message=query.edit_message_text)
-        # Save chunk messages to delete when going back
+            chat_id=chat_id, text=full_text, bot=context.bot,
+            reply_markup=markup, edit_message=query.edit_message_text)
         if extra:
             context.user_data["_mov_chunks"] = extra
         return
@@ -2546,23 +2624,17 @@ async def callback_mov_date_handler(update, context):
                 ]))
         return
 
-    header = "📋 حركة " + date_display + " (" + str(len(rows)) + " عملية):"
-    body = _build_movements_text(rows, admin_view=admin_view)
+    # Cache rows for pagination
+    context.user_data["_mov_rows"] = rows
+    body, total_pages = _build_movements_text(rows, admin_view=admin_view, start=0, per_page=PER_PAGE)
+    header = "📋 حركة " + date_display + ":"
     full_text = header + chr(10) + chr(10) + body
+    markup = _build_mov_pagination_buttons(date_str, 0, total_pages)
 
-    back_button = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
-    ])
-
-    # Delete any leftover chunks from previous view
     await _delete_extra_chunks(context.bot, chat_id, context)
     extra = await _safe_send_html(
-        chat_id=chat_id,
-        text=full_text,
-        bot=context.bot,
-        reply_markup=back_button,
-        edit_message=query.edit_message_text)
-    # Save chunk messages to delete when going back
+        chat_id=chat_id, text=full_text, bot=context.bot,
+        reply_markup=markup, edit_message=query.edit_message_text)
     if extra:
         context.user_data["_mov_chunks"] = extra
 
@@ -5695,7 +5767,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
-    app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
+    app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^mov[d,p]_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_area_"))
