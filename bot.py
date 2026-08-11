@@ -2261,8 +2261,8 @@ def _fetch_today_movements():
     return _fetch_movements_by_date(datetime.date.today())
 
 
-def _build_date_picker_markup():
-    """Build inline keyboard for last 7 days date picker."""
+def _build_date_buttons():
+    """Build list of date buttons for last 7 days (for inline keyboard)."""
     today = datetime.date.today()
     buttons = []
     for d in range(6, -1, -1):
@@ -2274,7 +2274,12 @@ def _build_date_picker_markup():
         else:
             label = "📅 " + WEEKDAY_AR.get(wd, "") + " " + day.strftime("%d/%m")
         buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
-    return InlineKeyboardMarkup(buttons)
+    return buttons
+
+
+def _build_date_picker_markup():
+    """Build full date picker markup (dates only)."""
+    return InlineKeyboardMarkup(_build_date_buttons())
 
 
 async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=None):
@@ -2309,18 +2314,19 @@ async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=No
 
 
 async def _show_all_movements(update, context, admin_view=True):
-    """Show today\u2019s movements directly, with a button to browse past 7 days."""
+    """Show today's movements directly, with date buttons for past 7 days below."""
     try:
         today = datetime.date.today()
         rows = _fetch_today_movements()
         wd = today.weekday()
         date_label = WEEKDAY_AR.get(wd, "") + " " + today.strftime("%d/%m/%Y")
 
+        # Build date buttons (always shown)
+        date_buttons = _build_date_buttons()
+
         if not rows:
             text = "📋 حركة اليوم (" + date_label + "):" + chr(10) + chr(10) + "لا توجد عمليات اليوم."
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📅 تواريخ سابقة", callback_data="movd_dates")],
-            ])
+            markup = InlineKeyboardMarkup(date_buttons)
             await update.message.reply_text(text, reply_markup=markup)
             return
 
@@ -2328,9 +2334,7 @@ async def _show_all_movements(update, context, admin_view=True):
         body = _build_movements_text(rows, admin_view=admin_view)
         full_text = header + chr(10) + chr(10) + body
 
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 تواريخ سابقة", callback_data="movd_dates")],
-        ])
+        markup = InlineKeyboardMarkup(date_buttons)
 
         await _safe_send_html(
             chat_id=update.effective_chat.id,
@@ -2350,8 +2354,8 @@ async def callback_mov_date_handler(update, context):
     data = query.data
     admin_view = is_admin(query.from_user.id)
 
-    # --- Show date picker for past 7 days ---
-    if data == "movd_dates" or data == "movd_back":
+    # --- Back: show date picker for past 7 days ---
+    if data == "movd_back":
         markup = _build_date_picker_markup()
         await query.edit_message_text(
             "📋 اختار التاريخ لعرض الحركة:",
