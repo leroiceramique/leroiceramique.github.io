@@ -225,6 +225,7 @@ def init_pool():
     global _pool
     _pool = psycopg2.pool.SimpleConnectionPool(
         minconn=1, maxconn=5, dsn=DATABASE_URL,
+        connection_factory=lambda: psycopg2.connect(DATABASE_URL, connect_timeout=10),
     )
     return _pool
 
@@ -236,6 +237,8 @@ def get_connection():
     for attempt in range(2):
         try:
             conn = _pool.getconn()
+            conn.autocommit = False
+            conn.set_session(connect_timeout=10, statement_timeout=15)
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.execute("SET TIME ZONE 'Africa/Algiers'")
@@ -252,11 +255,19 @@ def get_connection():
     except Exception:
         pass
     _pool = None
-    init_pool()
-    conn = _pool.getconn()
-    with conn.cursor() as cur:
-        cur.execute("SET TIME ZONE 'Africa/Algiers'")
-    return conn
+    try:
+        init_pool()
+        conn = _pool.getconn()
+        conn.set_session(connect_timeout=10, statement_timeout=15)
+        with conn.cursor() as cur:
+            cur.execute("SET TIME ZONE 'Africa/Algiers'")
+        return conn
+    except Exception as e:
+        logging.error("[DB] Pool recreation failed: " + str(e))
+        raise
+
+
+
 
 def release_connection(conn):
     if conn is None:
@@ -4793,7 +4804,14 @@ async def handle_customer_message(update, context):
 async def route_message(update, context):
     user = update.effective_user
     text = update.message.text.strip()
-    if not await asyncio.to_thread(is_admin, user.id) and not await asyncio.to_thread(is_approved, user.id):
+    try:
+        is_adm = await asyncio.to_thread(is_admin, user.id)
+        is_appr = is_adm or await asyncio.to_thread(is_approved, user.id)
+    except Exception as e:
+        logging.error("[ROUTE] DB check failed: " + str(e))
+        is_adm = False
+        is_appr = False
+    if not is_adm and not is_appr:
         if text == "/cancel":
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         elif text != "/start":
@@ -5540,10 +5558,13 @@ def build_application():
     async def auto_sync_user(update, context):
         user = update.effective_user
         if user:
-            await asyncio.to_thread(sync_user_info, user)
+            try:
+                await asyncio.to_thread(sync_user_info, user)
+            except Exception as e:
+                logging.warning("[SYNC] Failed to sync user " + str(user.id) + ": " + str(e))
 
-    # يشغل sync_user_info قبل أي handler آخر
-    app.add_handler(MessageHandler(filters.ALL, auto_sync_user), group=-1)
+    # يشغل sync_user_info قبل أي handler آخر (non-blocking)
+    app.add_handler(MessageHandler(filters.ALL, auto_sync_user, block=False), group=-1)
     app.add_handler(CallbackQueryHandler(auto_sync_user, block=False), group=-1)
 
     app.add_handler(CommandHandler("start", start_command))
@@ -5694,16 +5715,6 @@ async def _daily_backup(bot):
     except Exception as e:
         logging.error("[BACKUP] Daily backup failed: " + str(e), exc_info=True)
 
-async def _keep_alive_loop():
-    """Background loop: ping DB every 4 minutes to prevent Neon cold start."""
-    while True:
-        try:
-            await asyncio.sleep(240)  # every 4 minutes
-            await asyncio.to_thread(_db_ping)
-            logging.info("[KEEP-ALIVE] DB ping OK")
-        except Exception as e:
-            logging.warning("[KEEP-ALIVE] DB ping failed: " + str(e))
-
 if __name__ == "__main__":
     init_db()
 
@@ -5725,11 +5736,6 @@ if __name__ == "__main__":
         print("[INIT] Low-stock init failed (non-fatal): " + str(e))
 
     tg_app = build_application()
-    # Start keep-alive loop when app starts (prevents Neon cold start)
-    async def _post_init(application):
-        asyncio.create_task(_keep_alive_loop())
-        logging.info("[KEEP-ALIVE] Background loop scheduled (every 4 min)")
-    tg_app.post_init = _post_init
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
         port = render_port or 10000
