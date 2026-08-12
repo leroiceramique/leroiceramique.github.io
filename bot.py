@@ -2805,15 +2805,19 @@ async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=No
     if current_lines:
         chunks.append(chr(10).join(current_lines))
     extra_msgs = []
+    total_chunks = len(chunks)
     for i, chunk in enumerate(chunks):
+        is_last = (i == total_chunks - 1)
+        # Attach reply_markup only to the LAST chunk so buttons appear at the bottom
+        markup = reply_markup if is_last else None
         if i == 0 and edit_message:
             try:
-                await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
             except Exception:
-                msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
                 extra_msgs.append(msg)
         else:
-            msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML)
+            msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
             extra_msgs.append(msg)
     return extra_msgs
 
