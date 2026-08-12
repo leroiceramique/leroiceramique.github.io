@@ -1173,6 +1173,44 @@ def get_product_transactions(product_id, limit=15):
     finally:
         release_connection(conn)
 
+
+def _send_product_list(update, products, context, state_key="id_map"):
+    """Send product list with sequential numbering (#1, #2...) and store ID mapping."""
+    id_map = {}
+    lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
+    for idx, p in enumerate(products, 1):
+        id_map[str(idx)] = p["id"]
+        lines.append("  #" + str(idx) + " " + p["name"])
+    context.user_data[state_key] = id_map
+    full = chr(10).join(lines)
+    if len(full) <= 4096:
+        update.message.reply_text(full)
+    else:
+        chunks = []
+        cur_chunk = []
+        cur_len = 0
+        for ln in lines:
+            if cur_len + len(ln) + 1 > 4000 and cur_chunk:
+                chunks.append(chr(10).join(cur_chunk))
+                cur_chunk = []
+                cur_len = 0
+            cur_chunk.append(ln)
+            cur_len += len(ln) + 1
+        if cur_chunk:
+            chunks.append(chr(10).join(cur_chunk))
+        for chunk in chunks:
+            update.message.reply_text(chunk)
+
+
+def _resolve_product_id(context, display_num, state_key="id_map"):
+    """Convert sequential display number to real DB ID."""
+    id_map = context.user_data.get(state_key, {})
+    real_id = id_map.get(str(display_num))
+    if real_id is None:
+        raise ValueError("رقم السلعة غير موجود: " + str(display_num))
+    return real_id
+
+
 # ═══════════════════════════════════════════════════════════
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════
@@ -1879,6 +1917,11 @@ async def process_edit_product(update, context, text, telegram_id):
         await update.message.reply_text(err_msg, reply_markup=get_input_keyboard())
         return
     product_id = int(parts[0])
+    try:
+        product_id = _resolve_product_id(context, product_id, "edit_id_map")
+    except ValueError as e:
+        await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+        return
     new_name = parts[1]
     if not new_name:
         await update.message.reply_text("❌ أرسل الاسم الجديد.", reply_markup=get_input_keyboard())
@@ -1904,6 +1947,11 @@ async def process_delete_product(update, context, text, telegram_id):
         return
     product_id = int(text)
     try:
+        product_id = _resolve_product_id(context, product_id, "delete_id_map")
+    except ValueError as e:
+        await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+        return
+    try:
         deleted = db_delete_product(product_id)
         if deleted:
             await update.message.reply_text("\u2705 \u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d.", reply_markup=get_admin_keyboard())
@@ -1924,34 +1972,37 @@ async def process_bulk_delete(update, context, text):
         )
         return
 
-    id_set = set()
+    display_nums = set()
     # Parse range format: "360-362"
     import re as _re
     range_match = _re.findall(r"(\d+)\s*-\s*(\d+)", text)
     for start_s, end_s in range_match:
-        start_id = int(start_s)
-        end_id = int(end_s)
-        for i in range(start_id, end_id + 1):
-            id_set.add(i)
+        for i in range(int(start_s), int(end_s) + 1):
+            display_nums.add(i)
     # Parse comma-separated: "5, 10, 15"
     comma_parts = _re.split(r"[,\s]+", text)
     for part in comma_parts:
         part = part.strip()
         if part.isdigit():
-            id_set.add(int(part))
+            display_nums.add(int(part))
 
-    if not id_set:
+    if not display_nums:
         await update.message.reply_text(
             "❌ لم يتم التعرف على أرقام صحيحة.\nمثال: 5, 10, 15 أو 360-362",
             reply_markup=get_input_keyboard(),
         )
         return
 
-    # Get current product IDs to validate
-    products = get_all_products()
-    existing_ids = {p["id"] for p in products}
-    to_delete = sorted(id_set & existing_ids)
-    not_found = sorted(id_set - existing_ids)
+    # Resolve display numbers to real DB IDs
+    bulk_map = context.user_data.get("bulk_id_map", {})
+    to_delete = []
+    not_found = []
+    for dn in sorted(display_nums):
+        real_id = bulk_map.get(str(dn))
+        if real_id:
+            to_delete.append(real_id)
+        else:
+            not_found.append(dn)
 
     if not to_delete:
         msg = "❌ لا توجد سلع بهذه الأرقام."
@@ -1961,12 +2012,13 @@ async def process_bulk_delete(update, context, text):
         return
 
     # Confirm before deleting
+    products = get_all_products()
     lines = ["⚠️ تأكيد الحذف الجماعي:" + chr(10)]
     lines.append("عدد السلع المراد حذفها: " + str(len(to_delete)) + chr(10))
     for pid in to_delete:
         for p in products:
             if p["id"] == pid:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
+                lines.append("  - " + p["name"])
                 break
     if not_found:
         lines.append(chr(10) + "⚠️ أرقام غير موجودة (تم تجاهلها): " + ", ".join(str(x) for x in not_found))
@@ -3651,27 +3703,7 @@ async def handle_admin_message(update, context):
             if not products:
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
-            full = chr(10).join(lines)
-            if len(full) <= 4096:
-                await update.message.reply_text(full)
-            else:
-                chunks = []
-                cur = []
-                cur_len = 0
-                for ln in lines:
-                    if cur_len + len(ln) + 1 > 4000 and cur:
-                        chunks.append(chr(10).join(cur))
-                        cur = []
-                        cur_len = 0
-                    cur.append(ln)
-                    cur_len += len(ln) + 1
-                if cur:
-                    chunks.append(chr(10).join(cur))
-                for chunk in chunks:
-                    await update.message.reply_text(chunk)
+            _send_product_list(update, products, context, "edit_id_map")
             context.user_data["state"] = STATE_EDIT_PRODUCT
             edit_prompt = ("\u270f\ufe0f تعديل سلعة" + chr(10) + chr(10)
                 + "أرسل: رقم_السلعة, الاسم الجديد" + chr(10) + chr(10)
@@ -3683,27 +3715,7 @@ async def handle_admin_message(update, context):
             if not products:
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
-            full = chr(10).join(lines)
-            if len(full) <= 4096:
-                await update.message.reply_text(full)
-            else:
-                chunks = []
-                cur = []
-                cur_len = 0
-                for ln in lines:
-                    if cur_len + len(ln) + 1 > 4000 and cur:
-                        chunks.append(chr(10).join(cur))
-                        cur = []
-                        cur_len = 0
-                    cur.append(ln)
-                    cur_len += len(ln) + 1
-                if cur:
-                    chunks.append(chr(10).join(cur))
-                for chunk in chunks:
-                    await update.message.reply_text(chunk)
+            _send_product_list(update, products, context, "delete_id_map")
             context.user_data["state"] = STATE_DELETE_PRODUCT
             del_prompt = ("\U0001f5d1\ufe0f حذف سلعة" + chr(10) + chr(10)
                 + "أرسل رقم السلعة فقط:" + chr(10)
@@ -3716,27 +3728,7 @@ async def handle_admin_message(update, context):
             if not products:
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
-            for p in products:
-                lines.append("  #" + str(p["id"]) + " " + p["name"])
-            full = chr(10).join(lines)
-            if len(full) <= 4096:
-                await update.message.reply_text(full)
-            else:
-                chunks = []
-                cur_chunk = []
-                cur_len = 0
-                for ln in lines:
-                    if cur_len + len(ln) + 1 > 4000 and cur_chunk:
-                        chunks.append(chr(10).join(cur_chunk))
-                        cur_chunk = []
-                        cur_len = 0
-                    cur_chunk.append(ln)
-                    cur_len += len(ln) + 1
-                if cur_chunk:
-                    chunks.append(chr(10).join(cur_chunk))
-                for chunk in chunks:
-                    await update.message.reply_text(chunk)
+            _send_product_list(update, products, context, "bulk_id_map")
             context.user_data["state"] = STATE_BULK_DELETE
             bulk_prompt = ("\U0001f5d1\ufe0f حذف جماعي" + chr(10) + chr(10)
                 + "أرسل أرقام السلع للحذف:" + chr(10)
