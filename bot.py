@@ -22,7 +22,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
-    JobQueue,
 )
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 1: EXTRACTION PERMISSION & REQUEST (Database Layer)
@@ -234,7 +233,7 @@ def get_connection():
     if _pool is None:
         init_pool()
     conn = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             conn = _pool.getconn()
             with conn.cursor() as cur:
@@ -242,17 +241,11 @@ def get_connection():
                 cur.execute("SET TIME ZONE 'Africa/Algiers'")
             return conn
         except Exception:
-            # Connection is dead — close it properly
             if conn is not None:
                 try:
                     conn.close()
                 except Exception:
                     pass
-            # On last attempt, wait a bit before retrying (Neon cold start)
-            if attempt < 2:
-                import time
-                time.sleep(min(2 * (attempt + 1), 5))
-    # All attempts failed — recreate the pool
     logging.warning("[DB] All pool connections dead, recreating pool...")
     try:
         _pool.closeall()
@@ -374,21 +367,8 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
 """
 
-def init_db(retries=3):
-    for attempt in range(retries):
-        try:
-            conn = get_connection()
-            break
-        except Exception as e:
-            if attempt < retries - 1:
-                import time
-                wait = min(3 * (attempt + 1), 10)
-                print("[DB] Connection failed (attempt " + str(attempt + 1) + "/" + str(retries) + "), retrying in " + str(wait) + "s...")
-                time.sleep(wait)
-            else:
-                raise
-    else:
-        raise RuntimeError("[DB] Failed to connect after " + str(retries) + " retries")
+def init_db():
+    conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
@@ -5553,7 +5533,7 @@ def _get_telegram_id(user_db_id):
 
 def build_application():
     global _bot_app
-    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     _bot_app = app  # Reference for diagnostic system
 
     # ── Middleware: تحديث بيانات المستخدم تلقائياً عند أي تفاعل ──
@@ -5696,14 +5676,6 @@ def _send_backup_email(backup_bytes, filename):
         logging.error("[BACKUP] Email failed: " + str(e), exc_info=True)
         return False
 
-async def _keep_alive(context):
-    """Keep database connection alive to prevent Neon cold start."""
-    try:
-        await asyncio.to_thread(_db_ping)
-        logging.debug("[KEEP-ALIVE] DB ping successful")
-    except Exception as e:
-        logging.warning("[KEEP-ALIVE] DB ping failed: " + str(e))
-
 async def _daily_backup(bot):
     global _last_backup_data
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
@@ -5721,24 +5693,6 @@ async def _daily_backup(bot):
             logging.warning("[BACKUP] Email not configured, backup saved in memory only")
     except Exception as e:
         logging.error("[BACKUP] Daily backup failed: " + str(e), exc_info=True)
-
-async def _register_jobs(application):
-    """Register background jobs: keep-alive + daily backup."""
-    # Keep-alive: ping DB every 4 minutes to prevent Neon cold start
-    application.job_queue.run_repeating(_keep_alive, interval=240, first=60)
-    # Daily backup: run at 3 AM Algeria time
-    import datetime as dt
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
-    target_3am = now.replace(hour=3, minute=0, second=0, microsecond=0)
-    if now.hour >= 3:
-        target_3am += dt.timedelta(days=1)
-    wait_seconds = int((target_3am - now).total_seconds())
-    application.job_queue.run_repeating(
-        lambda ctx: _daily_backup(ctx.bot),
-        interval=86400,  # 24 hours
-        first=wait_seconds,
-    )
-    logging.info("[JOBS] Registered: keep-alive (4min), daily backup (3 AM)")
 
 if __name__ == "__main__":
     init_db()
@@ -5761,10 +5715,6 @@ if __name__ == "__main__":
         print("[INIT] Low-stock init failed (non-fatal): " + str(e))
 
     tg_app = build_application()
-    # Register background jobs after app initializes (keep-alive + daily backup)
-    async def _post_init(application):
-        await _register_jobs(application)
-    tg_app.post_init = _post_init
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
         port = render_port or 10000
