@@ -5694,6 +5694,16 @@ async def _daily_backup(bot):
     except Exception as e:
         logging.error("[BACKUP] Daily backup failed: " + str(e), exc_info=True)
 
+async def _keep_alive_loop():
+    """Background loop: ping DB every 4 minutes to prevent Neon cold start."""
+    while True:
+        try:
+            await asyncio.sleep(240)  # every 4 minutes
+            await asyncio.to_thread(_db_ping)
+            logging.info("[KEEP-ALIVE] DB ping OK")
+        except Exception as e:
+            logging.warning("[KEEP-ALIVE] DB ping failed: " + str(e))
+
 if __name__ == "__main__":
     init_db()
 
@@ -5715,6 +5725,11 @@ if __name__ == "__main__":
         print("[INIT] Low-stock init failed (non-fatal): " + str(e))
 
     tg_app = build_application()
+    # Start keep-alive loop when app starts (prevents Neon cold start)
+    async def _post_init(application):
+        asyncio.create_task(_keep_alive_loop())
+        logging.info("[KEEP-ALIVE] Background loop scheduled (every 4 min)")
+    tg_app.post_init = _post_init
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
         port = render_port or 10000
