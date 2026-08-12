@@ -943,14 +943,14 @@ def search_products(query):
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT * FROM products WHERE name ILIKE %s ORDER BY id LIMIT 10",
+                "SELECT * FROM products WHERE name ILIKE %s ORDER BY id",
                 ("%" + query.strip() + "%",),
             )
             ilike_rows = cur.fetchall()
         conn.commit()
-        # If ILIKE found 3+ results, return them directly (fast, accurate)
+        # If ILIKE found results, return them directly (fast, accurate)
         ilike_results = [dict(r) for r in ilike_rows]
-        if len(ilike_results) >= 3:
+        if ilike_results:
             return ilike_results
     except Exception as e:
         conn.rollback()
@@ -985,17 +985,10 @@ def search_products(query):
             scored.append((s, p))
     # Sort by score descending, then by id ascending
     scored.sort(key=lambda x: (-x[0], x[1]["id"]))
-    # Determine the best score to filter low-quality matches
-    if scored:
-        best_score = scored[0][0]
-        # Keep results that are at least 70% of the best score (minimum 20)
-        threshold = max(20, best_score * 0.7)
-        scored = [(s, p) for s, p in scored if s >= threshold]
     # If the query is very short (1-2 chars), only return very good matches
     if len(query.strip()) <= 2:
         scored = [(s, p) for s, p in scored if s >= 30]
-    # Limit to top 10 results max
-    scored = scored[:10]
+    # Return all matched results (no limit)
     return [p for s, p in scored]
 
 def db_update_product(product_id, name=None, location=None, minimum_stock=None):
