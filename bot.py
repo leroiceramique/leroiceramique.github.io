@@ -1553,16 +1553,6 @@ def _db_fetch_worker_name(worker_id):
     finally:
         release_connection(conn)
 
-def _db_ping():
-    """Ping the database to keep the connection pool alive."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        conn.commit()
-    finally:
-        release_connection(conn)
-
 def _db_dedup_products():
     """Find and merge duplicate products (same name after normalization).
     Returns (merged_count, deleted_count, merge_details) or None if no duplicates.
@@ -2569,12 +2559,15 @@ def _fetch_movements_by_date(target_date):
         release_connection(conn)
 
 def _fetch_today_movements():
-    """Fetch today's movements from DB."""
-    return _fetch_movements_by_date(datetime.date.today())
+    """Fetch today's movements from DB (Algeria timezone)."""
+    algeria_tz = datetime.timezone(datetime.timedelta(hours=1))
+    now_algeria = datetime.datetime.now(algeria_tz)
+    return _fetch_movements_by_date(now_algeria.date())
 
 def _build_date_buttons():
     """Build list of date buttons for last 7 days (for inline keyboard)."""
-    today = datetime.date.today()
+    algeria_tz = datetime.timezone(datetime.timedelta(hours=1))
+    today = datetime.datetime.now(algeria_tz).date()
     buttons = []
     for d in range(6, -1, -1):
         day = today - datetime.timedelta(days=d)
@@ -5753,21 +5746,8 @@ if __name__ == "__main__":
 
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
-    if WEBHOOK_URL:
-        port = render_port or 10000
-        webhook_path = "/webhook"
-        url = WEBHOOK_URL + webhook_path
-        print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
-        webhook_app = web.Application()
-        async def health(request):
-            return web.Response(text='{"status":"ok"}', content_type="application/json")
-        webhook_app.router.add_get("/health", health)
-        webhook_app.router.add_get("/", health)
-        tg_app.run_webhook(
-            webhook_path=webhook_path, url=url, port=port,
-            drop_pending_updates=True, webhook_app=webhook_app,
-            secret_token=WEBHOOK_SECRET)
-    elif render_port:
+    # ── PRIORITY: Polling + Health first (keeps Render service alive naturally) ──
+    if render_port:
         health_app = web.Application()
         async def health(request):
             return web.Response(text='{"status":"ok"}', content_type="application/json")
@@ -5789,6 +5769,20 @@ if __name__ == "__main__":
         health_app.on_startup.append(on_startup)
         health_app.on_cleanup.append(on_cleanup)
         web.run_app(health_app, host="0.0.0.0", port=render_port, print=None, access_log=None)
+    elif WEBHOOK_URL:
+        port = 10000
+        webhook_path = "/webhook"
+        url = WEBHOOK_URL + webhook_path
+        print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
+        webhook_app = web.Application()
+        async def health(request):
+            return web.Response(text='{"status":"ok"}', content_type="application/json")
+        webhook_app.router.add_get("/health", health)
+        webhook_app.router.add_get("/", health)
+        tg_app.run_webhook(
+            webhook_path=webhook_path, url=url, port=port,
+            drop_pending_updates=True, webhook_app=webhook_app,
+            secret_token=WEBHOOK_SECRET)
     else:
         print("[BOT] Local polling mode")
         tg_app.run_polling(drop_pending_updates=True)
