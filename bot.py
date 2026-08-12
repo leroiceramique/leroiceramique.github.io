@@ -223,8 +223,13 @@ _pool = None
 
 def init_pool():
     global _pool
+    if _pool is not None:
+        try:
+            _pool.closeall()
+        except Exception:
+            pass
     _pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=1, maxconn=5, dsn=DATABASE_URL,
+        minconn=2, maxconn=10, dsn=DATABASE_URL,
         connection_factory=lambda: psycopg2.connect(DATABASE_URL, connect_timeout=10),
     )
     return _pool
@@ -246,10 +251,16 @@ def get_connection():
         except Exception:
             if conn is not None:
                 try:
-                    conn.close()
+                    try:
+                        _pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-    logging.warning("[DB] All pool connections dead, recreating pool...")
+                conn = None
+    # Pool may be exhausted (all connections in use) or all dead.
+    # SAFE recreation: only if we can confirm connections are actually dead.
+    logging.warning("[DB] Could not get healthy connection, recreating pool...")
     try:
         _pool.closeall()
     except Exception:
@@ -258,6 +269,7 @@ def get_connection():
     try:
         init_pool()
         conn = _pool.getconn()
+        conn.autocommit = False
         conn.set_session(connect_timeout=10, statement_timeout=15)
         with conn.cursor() as cur:
             cur.execute("SET TIME ZONE 'Africa/Algiers'")
@@ -1883,22 +1895,25 @@ def parse_qty_input(text):
 
 def get_bot_setting(key, default=None):
     """Get a bot setting value from bot_settings table."""
+    conn = None
     try:
         conn = get_connection()
         with conn.cursor() as cur:
             cur.execute("SELECT value FROM bot_settings WHERE key = %s", (key,))
             row = cur.fetchone()
         conn.commit()
-        release_connection(conn)
         if row:
             return row[0]
         return default
     except Exception as e:
         logging.warning("[SETTINGS] Get failed: " + str(e))
         return default
+    finally:
+        release_connection(conn)
 
 def set_bot_setting(key, value):
     """Set a bot setting value."""
+    conn = None
     try:
         conn = get_connection()
         with conn.cursor() as cur:
@@ -1907,9 +1922,10 @@ def set_bot_setting(key, value):
                 " ON CONFLICT (key) DO UPDATE SET value = %s",
                 (key, value, value))
         conn.commit()
-        release_connection(conn)
     except Exception as e:
         logging.warning("[SETTINGS] Set failed: " + str(e))
+    finally:
+        release_connection(conn)
 
 async def generate_weekly_report(bot):
     """Generate and send the weekly inventory report. Returns report text."""
@@ -2145,11 +2161,11 @@ async def callback_addtype_handler(update, context):
 async def callback_add_handler(update, context):
     """Handle inline button press for add confirmation."""
     query = update.callback_query
-    await query.answer()
     user_id = update.effective_user.id if update.effective_user else 0
     if not await asyncio.to_thread(is_admin, user_id):
         await query.answer("⛔ هذا الإجراء متاح للأدمن فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
     user_data = context.user_data
 
@@ -2423,8 +2439,7 @@ def _is_pcs_product(name):
         return False
     n = name.strip().lower()
     return (n.startswith("motif") or n.startswith("plante")
-            or n.startswith("120/60") or n.startswith("120x60")
-            or n.startswith("120x60"))
+            or n.startswith("120/60") or n.startswith("120x60"))
 
 def _invoice_product_type(name):
     """Detect invoice product type from name. Returns:
@@ -2435,7 +2450,7 @@ def _invoice_product_type(name):
     if not name or not isinstance(name, str):
         return "m2"
     n = name.strip().lower()
-    if n.startswith("motif") or n.startswith("120/60") or n.startswith("120x60") or n.startswith("120x60"):
+    if n.startswith("motif") or n.startswith("120/60") or n.startswith("120x60"):
         return "pcs"
     if n.startswith("plante"):
         return "plant"
@@ -3738,10 +3753,10 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
 async def callback_invoice_handler(update, context):
     """Handle invoice-related callback queries."""
     query = update.callback_query
-    await query.answer()
     if not await asyncio.to_thread(is_admin, query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
 
     if data == "invoice_review":
@@ -4840,10 +4855,10 @@ async def route_message(update, context):
 async def callback_extract_perm_handler(update, context):
     """Handle grant/revoke extraction permission from users list."""
     query = update.callback_query
-    await query.answer()
     if not await asyncio.to_thread(is_admin, query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
     try:
         if data.startswith("ext_grant_"):
@@ -4961,10 +4976,10 @@ async def callback_extract_request_handler(update, context):
 async def callback_extract_approve_handler(update, context):
     """Handle admin approve/reject extraction request."""
     query = update.callback_query
-    await query.answer()
     if not await asyncio.to_thread(is_admin, query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
     parts = data.split("_")
     action = parts[1]
@@ -5723,7 +5738,8 @@ if __name__ == "__main__":
     except Exception as e:
         print("[DB] Seed failed (non-fatal): " + str(e))
 
-    # init_db() already creates the pool via get_connection(), but ensure it's ready
+    # init_db() already creates the pool via get_connection(), ensure it's ready
+    # (init_pool safely closes and recreates if already exists)
     try:
         init_pool()
     except Exception as e:
