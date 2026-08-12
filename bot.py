@@ -22,6 +22,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
+    JobQueue,
 )
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 1: EXTRACTION PERMISSION & REQUEST (Database Layer)
@@ -5552,7 +5553,7 @@ def _get_telegram_id(user_db_id):
 
 def build_application():
     global _bot_app
-    app = Application.builder().token(BOT_TOKEN).job_queue("jobqueue").build()
+    app = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
     _bot_app = app  # Reference for diagnostic system
 
     # ── Middleware: تحديث بيانات المستخدم تلقائياً عند أي تفاعل ──
