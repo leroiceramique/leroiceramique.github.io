@@ -460,21 +460,6 @@ CREATE TABLE IF NOT EXISTS bot_settings (
         release_connection(conn)
 
 
-def seed_sample_products():
-    """Insert sample products if they don't exist (uses db_add_product for dedup)."""
-    samples = [
-        ("plante pcs", 0, "", 5),
-        ("120/60pcs", 0, "", 5),
-    ]
-    for name, qty, loc, min_stk in samples:
-        try:
-            product, is_new = db_add_product(name=name, quantity=qty, location=loc, minimum_stock=min_stk)
-            if is_new:
-                print("[DB] Seeded sample product: " + name)
-        except Exception as e:
-            print("[DB] Sample seed failed for " + name + ": " + str(e))
-
-
 # ═══════════════════════════════════════════════════════════
 #  USER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
@@ -2843,9 +2828,11 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, unit
         "unit_price": unit_price,
     }
     if ptype == "m2":
-        item["qty_m2"] = extra_info.get("qty_m2", qty) if extra_info else qty
+        # qty_m2 is the user-requested area; subtotal = area × price/m²
+        item["qty_m2"] = extra_info.get("requested_area", qty) if extra_info else qty
         item["box_area"] = extra_info.get("box_area", 1) if extra_info else 1
-        item["subtotal"] = qty * unit_price
+        item["num_boxes"] = extra_info.get("num_boxes", qty) if extra_info else qty
+        item["subtotal"] = item["qty_m2"] * unit_price
     elif ptype == "pcs":
         item["subtotal"] = qty * unit_price
     elif ptype == "plant":
@@ -2858,7 +2845,7 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, unit
     total = sum(i["subtotal"] for i in items)
     msg = "✅ تمت الإضافة (" + str(len(items)) + " عناصر)" + chr(10) + chr(10)
     if ptype == "m2":
-        msg += "📦 " + product_name + " → " + str(item.get("num_boxes", qty)) + " علبة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        msg += "📦 " + product_name + " → " + str(round(item["qty_m2"], 2)) + " m² × " + _fmt_price(unit_price) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "pcs":
         msg += "📦 " + product_name + " → " + str(qty) + " قطعة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "plant":
@@ -3068,9 +3055,13 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
             else:
+                qty_display = str(round(item.get("qty_m2", item["quantity"]), 2)) + " m²"
+                crt_info = item.get("num_boxes") and item.get("num_boxes") != item.get("qty_m2")
+                if crt_info:
+                    qty_display += " (" + str(item["num_boxes"]) + " crt)"
                 table_data.append([
                     Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item.get("qty_m2", item["quantity"])) + " m² (" + str(item["quantity"]) + " crt)", body_style),
+                    Paragraph(qty_display, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m²", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
@@ -3136,6 +3127,8 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             invoice = cur.fetchone()
             invoice_id = invoice["id"]
             for item in items:
+                # For m2 products, quantity is the area (m²); use num_boxes for stock deduction
+                stock_qty = item.get("num_boxes", item["quantity"]) if item.get("ptype") == "m2" else item["quantity"]
                 cur.execute(
                     "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
                     "VALUES (%s, %s, %s, %s, %s, %s)",
@@ -3145,12 +3138,12 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                 if item["product_id"]:
                     cur.execute(
                         "UPDATE products SET quantity = quantity - %s WHERE id = %s AND quantity >= %s",
-                        (item["quantity"], item["product_id"], item["quantity"])
+                        (stock_qty, item["product_id"], stock_qty)
                     )
                     # Log transaction
                     cur.execute(
                         "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
-                        (item["product_id"], item["quantity"], admin_db_id)
+                        (item["product_id"], stock_qty, admin_db_id)
                     )
 
         conn.commit()
@@ -3461,19 +3454,15 @@ async def callback_invoice_handler(update, context):
         product_id = context.user_data.get("invoice_tmp_pid")
         qty_m2 = context.user_data.get("invoice_tmp_qty", 0)
         price_m2 = context.user_data.get("invoice_tmp_price", 0)
-        # Calculate number of boxes (round up to nearest whole box)
+        # Calculate number of boxes (informational only)
         import math
         raw_boxes = qty_m2 / box_area
         num_boxes = math.ceil(raw_boxes)
-        # Actual area = num_boxes × box_area (customer pays for full boxes)
-        actual_area = num_boxes * box_area
-        total_price = actual_area * price_m2
+        # Subtotal = user-requested area × price/m² (exact)
+        total_price = qty_m2 * price_m2
         # Show summary and add item
         summary = "📦 " + product_name + chr(10) + chr(10)
         summary += "📐 المساحة المطلوبة: " + str(qty_m2) + " m²" + chr(10)
-        summary += "📏 مساحة العلبة: " + str(box_area) + " m²" + chr(10)
-        summary += "📦 عدد العلب: " + str(num_boxes) + " (" + str(raw_boxes) + " → تقريب للأعلى)" + chr(10)
-        summary += "📐 المساحة الفعلية: " + str(round(actual_area, 2)) + " m²" + chr(10)
         summary += "💰 السعر/m²: " + _fmt_price(price_m2) + " د.ج" + chr(10)
         summary += "━" * 20 + chr(10)
         summary += "💵 الإجمالي: " + _fmt_price(total_price) + " د.ج"
@@ -3481,8 +3470,8 @@ async def callback_invoice_handler(update, context):
             await query.edit_message_text(summary)
         except Exception:
             pass
-        await _invoice_add_item(update, context, product_id, product_name, num_boxes, price_m2, "m2",
-                                 extra_info={"qty_m2": actual_area, "box_area": box_area, "num_boxes": num_boxes})
+        await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, "m2",
+                                 extra_info={"requested_area": qty_m2, "box_area": box_area, "num_boxes": num_boxes})
 
     elif data.startswith("inv_worker_"):
         parts = data.split("_")
@@ -3851,10 +3840,10 @@ async def handle_admin_message(update, context):
         import math
         raw_boxes = qty_m2 / box_area
         num_boxes = math.ceil(raw_boxes)
-        actual_area = num_boxes * box_area
-        total_price = actual_area * price_m2
-        await _invoice_add_item(update, context, product_id, product_name, num_boxes, price_m2, "m2",
-                                 extra_info={"qty_m2": actual_area, "box_area": box_area, "num_boxes": num_boxes})
+        # Subtotal = user-requested area × price/m² (exact, not box-rounded)
+        total_price = qty_m2 * price_m2
+        await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, "m2",
+                                 extra_info={"requested_area": qty_m2, "box_area": box_area, "num_boxes": num_boxes})
         return
 
     if state == STATE_ADD_NAME:
@@ -4989,7 +4978,6 @@ async def _keep_alive(app):
 
 if __name__ == "__main__":
     init_db()
-    seed_sample_products()
     init_pool()
     _init_low_stock_ids()
     tg_app = build_application()
