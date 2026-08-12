@@ -23,6 +23,9 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 1: EXTRACTION PERMISSION & REQUEST (Database Layer)
@@ -480,9 +483,17 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 WHERE normalized_name IS NULL OR normalized_name = '';
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
-            -- Create unique index on normalized_name to prevent duplicates at DB level
+            -- Create unique index on normalized_name (skip NULLs) to prevent duplicates
             DO $$ BEGIN
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_products_normalized_name ON products (normalized_name);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_products_normalized_name
+                    ON products (normalized_name) WHERE normalized_name IS NOT NULL AND normalized_name != '';
+            EXCEPTION WHEN OTHERS THEN
+                RAISE WARNING '[DB] Could not create unique index on normalized_name (duplicates may exist). Run /dedup first.';
+            END $$;
+            -- Clean up NULL normalized_name values (should not happen after seed fix)
+            DO $$ BEGIN
+                UPDATE products SET normalized_name = LOWER(TRIM(REGEXP_REPLACE(name, '\\s+', ' ', 'g')))
+                WHERE normalized_name IS NULL OR normalized_name = '';
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             """)
@@ -497,28 +508,18 @@ CREATE TABLE IF NOT EXISTS bot_settings (
 
 
 def seed_sample_products():
-    """Insert sample products if they don't exist."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            samples = [
-                ("plante pcs", 0, "", 5),
-                ("120/60pcs", 0, "", 5),
-            ]
-            for name, qty, loc, min_stk in samples:
-                cur.execute(
-                    "INSERT INTO products (name, quantity, location, minimum_stock)"
-                    " VALUES (%s, %s, %s, %s)"
-                    " ON CONFLICT DO NOTHING",
-                    (name, qty, loc, min_stk),
-                )
-        conn.commit()
-        print("[DB] Sample products seeded.")
-    except Exception as e:
-        conn.rollback()
-        print("[DB] Sample seed failed: " + str(e))
-    finally:
-        release_connection(conn)
+    """Insert sample products if they don't exist (uses db_add_product for dedup)."""
+    samples = [
+        ("plante pcs", 0, "", 5),
+        ("120/60pcs", 0, "", 5),
+    ]
+    for name, qty, loc, min_stk in samples:
+        try:
+            product, is_new = db_add_product(name=name, quantity=qty, location=loc, minimum_stock=min_stk)
+            if is_new:
+                print("[DB] Seeded sample product: " + name)
+        except Exception as e:
+            print("[DB] Sample seed failed for " + name + ": " + str(e))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -597,9 +598,6 @@ def is_admin(telegram_id):
         return True
     user = get_user(telegram_id)
     return user is not None and user["role"] == "admin"
-
-
-# ═══════════════════════════════════════════════════════════
 
 
 def is_approved(telegram_id):
@@ -1274,7 +1272,6 @@ def get_transactions(limit=20, offset=0):
         release_connection(conn)
 
 
-
 def get_product_transactions(product_id, limit=15):
     conn = get_connection()
     try:
@@ -1806,7 +1803,6 @@ def format_product_customer(product):
         return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
 
 
-
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 11: BROADCAST & NOTIFICATION SYSTEM
 #  Functions: _broadcast_update_notification, _broadcast_to_all_users,
@@ -1992,7 +1988,6 @@ async def send_low_stock_list(update=None, context=None, bot=None):
         logging.warning("[LOW_STOCK_LIST] Error: " + str(e))
 
 
-
 # ── Input Parsing Helpers ──
 
 # ── Input Parsing Helpers ──
@@ -2120,29 +2115,17 @@ async def generate_weekly_report(bot):
         return None
 
 
-async def _weekly_report_loop(bot):
-    """Send weekly report every Sunday at 23:00 Algeria time (22:00 UTC)."""
-    last_report = ""
-    while True:
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
-        # Sunday = weekday 6, send at 22:00 UTC = 23:00 Algeria
-        today = now.strftime("%Y-%m-%d")
-        is_sunday = now.weekday() == 6
-        hour_ok = 22 <= now.hour < 23
-        enabled = await asyncio.to_thread(get_bot_setting, "weekly_report_enabled", "false") == "true"
-        if is_sunday and hour_ok and today != last_report and enabled:
-            await generate_weekly_report(bot)
-            last_report = today
-        await asyncio.sleep(60)
+async def _weekly_report_job(bot):
+    """APScheduled job: send weekly report every Sunday at 23:00 Algeria time."""
+    enabled = await asyncio.to_thread(get_bot_setting, "weekly_report_enabled", "false") == "true"
+    if enabled:
+        logging.info("[WEEKLY] Running scheduled weekly report...")
+        await generate_weekly_report(bot)
+    else:
+        logging.info("[WEEKLY] Weekly report disabled in settings, skipping.")
 
 # ═══════════════════════════════════════════════════════════
 
-
-
-# ═══════════════════════════════════════════════════════════════
-#  SECTION 13: KEYBOARD BUILDERS
-#  Functions: get_admin_keyboard, get_input_keyboard, get_customer_keyboard
-# ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 13: KEYBOARD BUILDERS
@@ -2187,9 +2170,6 @@ def get_admin_keyboard():
 
 def get_input_keyboard():
     return ReplyKeyboardMarkup([[BTN_CANCEL]], resize_keyboard=True)
-
-
-
 
 
 def get_customer_keyboard():
@@ -2266,6 +2246,10 @@ async def callback_addtype_handler(update, context):
     """Handle product type selection (motif vs other)."""
     query = update.callback_query
     await query.answer()
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not await asyncio.to_thread(is_admin, user_id):
+        await query.answer("⛔ هذا الإجراء متاح للأدمن فقط.", show_alert=True)
+        return
     data = query.data
     try:
         if data == "addtype_motif":
@@ -2322,7 +2306,10 @@ async def callback_add_handler(update, context):
     """Handle inline button press for add confirmation."""
     query = update.callback_query
     await query.answer()
-
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not await asyncio.to_thread(is_admin, user_id):
+        await query.answer("⛔ هذا الإجراء متاح للأدمن فقط.", show_alert=True)
+        return
     data = query.data
     user_data = context.user_data
 
@@ -2350,7 +2337,6 @@ async def callback_add_handler(update, context):
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=await asyncio.to_thread(get_admin_keyboard))
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2637,12 +2623,13 @@ async def _show_product_detail(update, context, product):
     pid = str(p["id"])
     user_id = update.effective_user.id if update.effective_user else 0
     admin_view = await asyncio.to_thread(is_admin, user_id)
-    keyboard = InlineKeyboardMarkup([
-        [
+    buttons = []
+    if admin_view:
+        buttons = [[
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-        ],
-    ])
+        ]]
+    keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
@@ -3052,6 +3039,11 @@ async def callback_product_action_handler(update, context):
     except ValueError:
         return
     user_id = update.effective_user.id if update.effective_user else 0
+    # Security: only admins can add/remove stock via callbacks
+    if action in ("add", "rem"):
+        if not await asyncio.to_thread(is_admin, user_id):
+            await query.answer("⛔ هذا الإجراء متاح للأدمن فقط.", show_alert=True)
+            return
     if action == "log":
         try:
             txns = await asyncio.to_thread(get_product_transactions, product_id, limit=15)
@@ -3193,7 +3185,6 @@ async def search_command(update, context):
         "\U0001f50d \u0627\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
         reply_markup=get_input_keyboard(),
     )
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -4311,7 +4302,7 @@ async def callback_invoice_handler(update, context):
             try:
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="❌ حدث خطأ أثناء إنشاء الفاتورة: " + str(e),
+                    text="❌ حدث خطأ أثناء إنشاء الفاتورة. تم تسجيل الخطأ.",
                     reply_markup=await asyncio.to_thread(get_admin_keyboard)
                 )
             except Exception:
@@ -4976,8 +4967,13 @@ async def handle_customer_message(update, context):
         )
         return
 
-    # State: waiting_pact_qty
+    # State: waiting_pact_qty (admin-only stock operations)
     if state == "waiting_pact_qty":
+        # Security: stock add/remove should only be done by admins
+        if not await asyncio.to_thread(is_admin, user.id):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ هذا الإجراء متاح للأدمن فقط.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
+            return
         product = context.user_data.get("cust_product")
         action = context.user_data.get("pact_action", "add")
         if action not in ("add", "remove"):
@@ -5447,8 +5443,11 @@ def _diag_find_source(error):
 
 
 async def report_diag(bot, chat_id, error, context_tag=""):
-    """Send a full diagnostic report to the admin.
+    """Send a full diagnostic report to the FIRST ADMIN (not to the requesting user).
     context_tag: short label like [MOVEMENTS] or [ADD_PRODUCT]."""
+    # Security: always send diagnostic to first admin, never to customer
+    if ADMIN_IDS:
+        chat_id = ADMIN_IDS[0]
     title, explanation, cause, suggestion = _diag_analyze(error)
     fname, lineno, func, code_line = _diag_find_source(error)
     err_type = type(error).__name__
@@ -5536,6 +5535,10 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 async def callback_admin_done_handler(update, context):
     query = update.callback_query
     await query.answer()
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not await asyncio.to_thread(is_admin, user_id):
+        await query.answer("⛔ هذا الإجراء متاح للأدمن فقط.", show_alert=True)
+        return
     try:
         await query.delete_message()
     except Exception:
@@ -5924,7 +5927,6 @@ def build_application():
 # ═══════════════════════════════════════════════════════════════
 
 
-
 def _fetch_latest_backup_from_email():
     """Fetch latest backup JSON from email via IMAP. Returns dict or None."""
     if not IMAP_HOST or not SMTP_EMAIL or not SMTP_PASSWORD:
@@ -6021,59 +6023,85 @@ async def _daily_backup(bot):
         logging.error("[BACKUP] Daily backup failed: " + str(e), exc_info=True)
 
 
-async def _daily_backup_loop(bot):
-    """Run daily backup at midnight Algeria time (UTC+1). Sleeps until next target."""
-    algeria_tz = datetime.timezone(datetime.timedelta(hours=1))
-    last_backup_date = ""
-    while True:
-        now = datetime.datetime.now(algeria_tz)
-        today = now.strftime("%Y-%m-%d")
-        # Target: 00:00 Algeria time. If we missed it, run immediately once, then wait for tomorrow.
-        if today != last_backup_date and now.hour == 0:
-            await _daily_backup(bot)
-            last_backup_date = today
-        # Sleep until next check: 1 minute if near midnight, 30 min otherwise
-        if now.hour == 23 or (now.hour == 0 and today == last_backup_date):
-            await asyncio.sleep(60)
-        else:
-            await asyncio.sleep(1800)
+async def _daily_backup_job(bot):
+    """APScheduled job: run daily backup at midnight Algeria time."""
+    logging.info("[BACKUP] Running scheduled daily backup...")
+    await _daily_backup(bot)
 
+_scheduler = None
 
-async def _keep_alive(app):
-    """Ping the external Render URL + Neon DB every 3 min to prevent spin-down."""
+def _start_scheduler(bot):
+    """Create and start APScheduler with all periodic jobs."""
+    global _scheduler
+    if _scheduler and _scheduler.running:
+        return
+    _scheduler = AsyncIOScheduler(timezone="Africa/Algiers")
+    # Daily backup at 00:00
+    _scheduler.add_job(_daily_backup_job, CronTrigger(hour=0, minute=0), args=[bot], id="daily_backup", replace_existing=True)
+    # Weekly report Sunday at 23:00
+    _scheduler.add_job(_weekly_report_job, CronTrigger(day_of_week="sun", hour=23, minute=0), args=[bot], id="weekly_report", replace_existing=True)
+    # Keep-alive every 3 minutes
+    _scheduler.add_job(_keep_alive_ping, IntervalTrigger(minutes=3), id="keep_alive", replace_existing=True)
+    _scheduler.start()
+    logging.info("[SCHEDULER] APScheduler started: daily_backup(00:00), weekly_report(Sun 23:00), keep_alive(3min)")
+
+async def _keep_alive_ping():
+    """APScheduled job: ping Render URL + Neon DB to prevent spin-down."""
     external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
     if not external_url:
         port = int(os.getenv("PORT", 10000))
         external_url = "http://127.0.0.1:" + str(port) + "/"
     ping_url = external_url.rstrip("/") + "/"
-    logging.info("[KEEP-ALIVE] Target: " + ping_url + " + Neon DB ping")
-    # Reuse one session instead of creating new each time
-    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
     try:
-        while True:
-            try:
-                # Ping Render health endpoint
-                async with session.get(ping_url) as r:
-                    if r.status != 200:
-                        logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
-                # Ping Neon database to prevent auto-suspend (cold start)
-                try:
-                    await asyncio.to_thread(_db_ping)
-                except Exception as db_err:
-                    logging.warning("[KEEP-ALIVE] DB ping failed: " + str(db_err))
-            except Exception as e:
-                logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
-            await asyncio.sleep(180)
-    finally:
-        await session.close()
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            async with session.get(ping_url) as r:
+                if r.status != 200:
+                    logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
+        await asyncio.to_thread(_db_ping)
+    except Exception as e:
+        logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
+
+
 
 
 
 if __name__ == "__main__":
-    init_db()
-    seed_sample_products()
-    init_pool()
-    _init_low_stock_ids()
+    import time
+    # ── Initialize database with retry (Neon cold-start can be slow) ──
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            print("[BOT] Initializing database (attempt " + str(attempt) + "/" + str(max_retries) + ")...")
+            init_db()
+            print("[DB] Schema initialized successfully.")
+            break
+        except Exception as e:
+            print("[DB] Schema init failed (attempt " + str(attempt) + "): " + str(e))
+            if attempt < max_retries:
+                wait = attempt * 3  # 3, 6, 9, 12 seconds
+                print("[DB] Retrying in " + str(wait) + "s...")
+                time.sleep(wait)
+            else:
+                print("[DB] FATAL: Could not initialize database after " + str(max_retries) + " attempts.")
+                raise
+
+    try:
+        seed_sample_products()
+    except Exception as e:
+        print("[DB] Seed failed (non-fatal): " + str(e))
+
+    # init_db() already creates the pool via get_connection(), but ensure it's ready
+    try:
+        init_pool()
+    except Exception as e:
+        print("[DB] Pool init failed: " + str(e))
+        raise
+
+    try:
+        _init_low_stock_ids()
+    except Exception as e:
+        print("[INIT] Low-stock init failed (non-fatal): " + str(e))
+
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
@@ -6086,6 +6114,13 @@ if __name__ == "__main__":
             return web.Response(text='{"status":"ok"}', content_type="application/json")
         webhook_app.router.add_get("/health", health)
         webhook_app.router.add_get("/", health)
+        # Block non-GET requests to avoid probe attempts
+        async def block_non_get(request):
+            return web.Response(status=405, text='{"status":"method_not_allowed"}', content_type="application/json")
+        for route_path in ["/health", "/"]:
+            webhook_app.router.add_route("POST", route_path, block_non_get)
+        # Start scheduler for periodic tasks in webhook mode
+        _start_scheduler(tg_app.bot)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
             drop_pending_updates=True, webhook_app=webhook_app,
@@ -6096,6 +6131,10 @@ if __name__ == "__main__":
             return web.Response(text='{"status":"ok"}', content_type="application/json")
         health_app.router.add_get("/health", health)
         health_app.router.add_get("/", health)
+        async def block_non_get(request):
+            return web.Response(status=405, text='{"status":"method_not_allowed"}', content_type="application/json")
+        for route_path in ["/health", "/"]:
+            health_app.router.add_route("POST", route_path, block_non_get)
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
@@ -6104,13 +6143,13 @@ if __name__ == "__main__":
             except Exception:
                 pass
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
-            asyncio.create_task(_keep_alive(aio_app))
-            asyncio.create_task(_daily_backup_loop(tg_app.bot))
-            asyncio.create_task(_weekly_report_loop(tg_app.bot))
-            print("[BOT] Weekly report scheduler enabled")
-            print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
-            print("[BOT] Polling + health + keep-alive on port " + str(render_port))
+            _start_scheduler(tg_app.bot)
+            print("[BOT] APScheduler enabled: daily_backup(00:00), weekly_report(Sun 23:00), keep_alive(3min)")
+            print("[BOT] Polling + health + scheduler on port " + str(render_port))
         async def on_cleanup(aio_app):
+            global _scheduler
+            if _scheduler:
+                _scheduler.shutdown(wait=False)
             await tg_app.updater.stop()
             await tg_app.stop()
             await tg_app.shutdown()
