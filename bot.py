@@ -2846,91 +2846,95 @@ def _build_mov_pagination_buttons(date_str, page, total_pages):
 
 
 async def _show_all_movements(update, context, admin_view=True):
-    """Show recent movements directly — single page sorted by time, no date picker."""
-    PER_PAGE = 15
+    """Show date picker for last 7 days — user picks a date to see movements."""
     try:
-        rows = await asyncio.to_thread(_fetch_recent_movements, limit=50)
-        user = update.effective_user
-        chat_id = update.effective_chat.id
-        bot = context.bot
-
-        if not rows:
-            text = "📋 لا توجد حركات مسجلة بعد."
-            await update.message.reply_text(text)
-            return
-
-        # Cache rows for pagination
-        context.user_data["_mov_rows"] = rows
-        body, total_pages = _build_movements_text(rows, admin_view=admin_view, start=0, per_page=PER_PAGE)
-        header = "📋 آخر الحركات:"
-        full_text = header + chr(10) + chr(10) + body
-        markup = _build_mov_pagination_buttons("recent", 0, total_pages)
-        await update.message.reply_text(full_text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        text = "📋 اختار التاريخ لعرض الحركة:"
+        markup = _build_date_picker_markup()
+        await update.message.reply_text(text, reply_markup=markup)
     except Exception as e:
-        logging.error("[MOVEMENTS] Error: " + str(e), exc_info=True)
+        logging.error("[MOVEMENTS_DATE] Error: " + str(e), exc_info=True)
         await report_diag(bot=context.bot, chat_id=update.effective_chat.id, error=e, context_tag="[MOVEMENTS-SHOW]")
         kb = await asyncio.to_thread(get_admin_keyboard) if admin_view else asyncio.to_thread(get_customer_keyboard)
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات. تم إرسال التشخيص.", reply_markup=kb)
 
 
 async def callback_mov_date_handler(update, context):
-    """Handle movement callbacks: pagination and back button."""
+    """Handle movement callbacks: date selection, today shortcut, back."""
     query = update.callback_query
     await query.answer()
     data = query.data
     admin_view = await asyncio.to_thread(is_admin, query.from_user.id)
     chat_id = query.message.chat.id
 
-    PER_PAGE = 15
-
-    # --- Pagination: movp_recent_pageNum or movp_YYYY-MM-DD_pageNum ---
-    if data.startswith("movp_"):
-        parts = data.split("_")
-        date_str = parts[1]
-        page = int(parts[2])
-
-        # Get cached rows
-        rows = context.user_data.get("_mov_rows", [])
-        if not rows:
-            await query.edit_message_text("❌ انتهت صلاحية البيانات. اضغط زر الحركة مرة أخرى.")
-            return
-
-        start = page * PER_PAGE
-        body, total_pages = _build_movements_text(rows, admin_view=admin_view, start=start, per_page=PER_PAGE)
-        if not body:
-            await query.edit_message_text("📋 لا توجد حركات.")
-            return
-
-        if date_str == "recent":
-            header = "📋 آخر الحركات:"
-        else:
-            try:
-                target_date = datetime.date.fromisoformat(date_str)
-                wd = target_date.weekday()
-                date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
-                header = "📋 حركة " + date_display + ":"
-            except ValueError:
-                header = "📋 الحركات:"
-
-        full_text = header + chr(10) + chr(10) + body
-        markup = _build_mov_pagination_buttons(date_str, page, total_pages)
-        await _delete_extra_chunks(context.bot, chat_id, context)
-        extra = await _safe_send_html(
-            chat_id=chat_id, text=full_text, bot=context.bot,
-            reply_markup=markup, edit_message=query.edit_message_text)
-        if extra:
-            context.user_data["_mov_chunks"] = extra
-        return
-
-    # --- Back button: delete message ---
+    # --- Back to date picker ---
     if data == "movd_back":
         await _delete_extra_chunks(context.bot, chat_id, context)
         context.user_data.pop("_mov_rows", None)
+        markup = _build_date_picker_markup()
         try:
-            await query.delete_message()
+            await query.edit_message_text(
+                "📋 اختار التاريخ لعرض الحركة:",
+                reply_markup=markup)
         except Exception:
-            pass
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="📋 اختار التاريخ لعرض الحركة:",
+                reply_markup=markup)
         return
+
+    # --- Today shortcut ---
+    if data == "movd_today":
+        target_date = datetime.date.today()
+    else:
+        # --- Date selected: movd_YYYY-MM-DD ---
+        date_str = data.replace("movd_", "")
+        try:
+            target_date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            await query.edit_message_text("❌ تاريخ غير صالح.")
+            return
+
+    # Fetch movements for the selected date
+    try:
+        rows = await asyncio.to_thread(_fetch_movements_by_date, target_date)
+    except Exception as e:
+        logging.error("[MOV_DATE_HANDLER] DB error: " + str(e), exc_info=True)
+        await report_diag(bot=context.bot, chat_id=chat_id, error=e, context_tag="[MOVEMENTS-DATE]")
+        try:
+            await query.edit_message_text("❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
+        except Exception:
+            await context.bot.send_message(chat_id=chat_id, text="❌ حدث خطأ في الاتصال بقاعدة البيانات. تم إرسال التشخيص.")
+        return
+
+    wd = target_date.weekday()
+    date_display = WEEKDAY_AR.get(wd, "") + " " + target_date.strftime("%d/%m/%Y")
+    back_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
+    ])
+
+    if not rows:
+        try:
+            await query.edit_message_text(
+                "📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
+                reply_markup=back_btn)
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="📋 حركة " + date_display + ":" + chr(10) + chr(10) + "لا توجد عمليات في هذا اليوم.",
+                reply_markup=back_btn)
+        return
+
+    # Show ALL movements in one page (no pagination)
+    body, _ = _build_movements_text(rows, admin_view=admin_view, start=0, per_page=999)
+    header = "📋 حركة " + date_display + ":"
+    full_text = header + chr(10) + chr(10) + body
+
+    await _delete_extra_chunks(context.bot, chat_id, context)
+    extra = await _safe_send_html(
+        chat_id=chat_id, text=full_text, bot=context.bot,
+        reply_markup=back_btn, edit_message=query.edit_message_text)
+    if extra:
+        context.user_data["_mov_chunks"] = extra
 
 
 async def callback_product_select_handler(update, context):
