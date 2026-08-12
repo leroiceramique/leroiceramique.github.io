@@ -732,7 +732,7 @@ def reject_user(telegram_id):
 
 
 def db_export_backup():
-    """Export all data as a dict (products + transactions + users)."""
+    """Export all data as a dict (products + transactions + users + invoices)."""
     import datetime as _dt
     conn = get_connection()
     try:
@@ -743,13 +743,19 @@ def db_export_backup():
             transactions = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT id, telegram_id, username, role, active, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM invoices ORDER BY id")
+            invoices = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM invoice_items ORDER BY id")
+            invoice_items = [dict(r) for r in cur.fetchall()]
         conn.commit()
         return {
-            "version": 2,
+            "version": 3,
             "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
             "products": products,
             "transactions": transactions,
             "users": users,
+            "invoices": invoices,
+            "invoice_items": invoice_items,
         }
     except Exception as e:
         conn.rollback()
@@ -763,6 +769,10 @@ def db_import_backup(data):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Delete in correct order to respect foreign key constraints
+            # invoice_items references invoices, invoices references users (admin_id NOT NULL)
+            cur.execute("DELETE FROM invoice_items")
+            cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             cur.execute("DELETE FROM users")
@@ -802,11 +812,40 @@ def db_import_backup(data):
                 max_tid = max(t["id"] for t in data.get("transactions", []))
                 cur.execute("SELECT setval('transactions_id_seq', %s)", (max_tid,))
 
+            # ── Import invoices (users already exist with correct ids) ──
+            inv_count = 0
+            for inv in data.get("invoices", []):
+                cur.execute(
+                    "INSERT INTO invoices (id, customer_name, worker_id, admin_id, total_amount, status, created_at, approved_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (inv["id"], inv["customer_name"], inv.get("worker_id"), inv.get("admin_id"),
+                     inv.get("total_amount", 0), inv.get("status", "approved"),
+                     inv.get("created_at"), inv.get("approved_at")))
+                inv_count += 1
+            if inv_count > 0:
+                max_iid = max(inv["id"] for inv in data.get("invoices", []))
+                cur.execute("SELECT setval('invoices_id_seq', %s)", (max_iid,))
+
+            # ── Import invoice_items (invoices already exist with correct ids) ──
+            ii_count = 0
+            for ii in data.get("invoice_items", []):
+                cur.execute(
+                    "INSERT INTO invoice_items (id, invoice_id, product_id, product_name, quantity, unit_price, subtotal) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (ii["id"], ii["invoice_id"], ii.get("product_id"), ii["product_name"],
+                     ii["quantity"], ii.get("unit_price", 0), ii.get("subtotal", 0)))
+                ii_count += 1
+            if ii_count > 0:
+                max_iiid = max(ii["id"] for ii in data.get("invoice_items", []))
+                cur.execute("SELECT setval('invoice_items_id_seq', %s)", (max_iiid,))
+
         conn.commit()
-        return ("✅ تم استيراد البيانات:\n"
+        summary = ("✅ تم استيراد البيانات:\n"
             "  المستخدمين: " + str(user_count) + "\n"
             "  السلع: " + str(prod_count) + "\n"
             "  العمليات: " + str(tx_count))
+        if inv_count > 0:
+            summary += "\n  الفواتير: " + str(inv_count)
+            summary += "\n  عناصر الفواتير: " + str(ii_count)
+        return summary
     except Exception as e:
         conn.rollback()
         raise
@@ -2639,7 +2678,7 @@ async def backup_command(update, context):
         ])
         await update.message.reply_document(
             document=InputFile(io.BytesIO(file_bytes), filename="backup_" + now_str + ".json"),
-            caption="💾 نسخة احتياطية كاملة\n" + "📄 السلع: " + str(len(backup["products"])) + "\n" + "📜 العمليات: " + str(len(backup["transactions"])) + "\n" + "👥 المستخدمين: " + str(len(backup["users"])) + "\n" + "💡 حفظ الملف. لإستيراد البيانات أرسله للبوت.",
+            caption="💾 نسخة احتياطية كاملة\n" + "📄 السلع: " + str(len(backup["products"])) + "\n" + "📜 العمليات: " + str(len(backup["transactions"])) + "\n" + "👥 المستخدمين: " + str(len(backup["users"])) + "\n" + "🧾 الفواتير: " + str(len(backup.get("invoices", []))) + "\n" + "💡 حفظ الملف. لإستيراد البيانات أرسله للبوت.",
             reply_markup=keyboard,
         )
     except Exception as e:
@@ -2669,12 +2708,17 @@ async def handle_backup_document(update, context):
         ])
         prod_count = len(data.get("products", []))
         tx_count = len(data.get("transactions", []))
-        await update.message.reply_text(
+        inv_count = len(data.get("invoices", []))
+        confirm_msg = (
             "⚠️ تأكيد استيراد البيانات:\n\n"
             "📦 السلع: " + str(prod_count) + "\n"
-            "📜 العمليات: " + str(tx_count) + "\n\n"
-
-            "\U0001f534 \u062a\u0646\u0628\u064a\u0647: \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a \u0627\u0644\u062d\u0627\u0644\u064a\u0629 \u0648\u0627\u0633\u062a\u0628\u062f\u0627\u0644\u0647\u0627!",
+            "📜 العمليات: " + str(tx_count) + "\n"
+        )
+        if inv_count > 0:
+            confirm_msg += "🧾 الفواتير: " + str(inv_count) + "\n"
+        confirm_msg += "\n\U0001f534 \u062a\u0646\u0628\u064a\u0647: \u0633\u064a\u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0628\u064a\u0627\u0646\u0627\u062a \u0627\u0644\u062d\u0627\u0644\u064a\u0629 \u0648\u0627\u0633\u062a\u0628\u062f\u0627\u0644\u0647\u0627!"
+        await update.message.reply_text(
+            confirm_msg,
             reply_markup=keyboard,
         )
     except Exception as e:
