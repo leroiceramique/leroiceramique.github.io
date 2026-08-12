@@ -2836,8 +2836,10 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, unit
     elif ptype == "pcs":
         item["subtotal"] = qty * unit_price
     elif ptype == "plant":
+        import math
         item["length_m"] = extra_info.get("length_m", 0.45) if extra_info else 0.45
         item["qty_m"] = qty
+        item["num_pieces"] = math.ceil(qty / item["length_m"])
         item["subtotal"] = qty * unit_price
     items.append(item)
     context.user_data["invoice_items"] = items
@@ -2849,7 +2851,7 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, unit
     elif ptype == "pcs":
         msg += "📦 " + product_name + " → " + str(qty) + " قطعة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "plant":
-        msg += "📦 " + product_name + " → " + str(qty) + " م.ط = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        msg += "📦 " + product_name + " → " + str(qty) + " م.ط = " + str(item["num_pieces"]) + " قطعة (" + str(item["length_m"]) + " م) = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     msg += chr(10) + "💰 الإجمالي الحالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة منتج جديد", callback_data="invoice_add_new")],
@@ -2892,7 +2894,7 @@ async def _invoice_show_review(update_or_query, context, from_callback=False):
             msg += "   📦 " + str(item["quantity"]) + " قطعة" + chr(10)
             msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/قطعة × " + str(item["quantity"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
         elif pt == "plant":
-            msg += "   📏 " + str(item.get("qty_m", item["quantity"])) + " م.ط (" + str(item.get("length_m", "")) + " م)" + chr(10)
+            msg += "   📏 " + str(item.get("qty_m", item["quantity"])) + " م.ط = " + str(item.get("num_pieces", "")) + " قطعة (" + str(item.get("length_m", "")) + " م)" + chr(10)
             msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/م.ط × " + str(item.get("qty_m", item["quantity"])) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     msg += "━" * 20 + chr(10)
     msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج"
@@ -3048,9 +3050,13 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
             elif pt == "plant":
+                n_pcs = item.get("num_pieces", "")
+                qty_txt = str(item.get("qty_m", item["quantity"])) + " m. lin."
+                if n_pcs:
+                    qty_txt += " (" + str(n_pcs) + " pcs)"
                 table_data.append([
                     Paragraph(item["product_name"], body_style),
-                    Paragraph(str(item.get("qty_m", item["quantity"])) + " m. lin.", body_style),
+                    Paragraph(qty_txt, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
