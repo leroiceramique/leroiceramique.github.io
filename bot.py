@@ -732,7 +732,7 @@ def reject_user(telegram_id):
 
 
 def db_export_backup():
-    """Export all data as a dict (products + transactions + users + invoices)."""
+    """Export ALL data as a dict for full backup/restore."""
     import datetime as _dt
     conn = get_connection()
     try:
@@ -741,21 +741,27 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoice_items ORDER BY id")
             invoice_items = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM extraction_requests ORDER BY id")
+            extraction_requests = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM incoming_orders ORDER BY id")
+            incoming_orders = [dict(r) for r in cur.fetchall()]
         conn.commit()
         return {
-            "version": 3,
+            "version": 4,
             "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
             "products": products,
             "transactions": transactions,
             "users": users,
             "invoices": invoices,
             "invoice_items": invoice_items,
+            "extraction_requests": extraction_requests,
+            "incoming_orders": incoming_orders,
         }
     except Exception as e:
         conn.rollback()
@@ -765,16 +771,30 @@ def db_export_backup():
 
 
 def db_import_backup(data):
-    """Restore data from a backup dict. Returns summary string."""
+    """Restore data from a backup dict. Returns summary string.
+
+    Handles all tables that reference users(id) with NOT NULL constraints:
+      - transactions.user_id NOT NULL
+      - extraction_requests.requester_id NOT NULL
+      - incoming_orders.requester_id NOT NULL
+      - invoices.admin_id NOT NULL
+    Must delete ALL dependent tables BEFORE deleting users.
+    Supports old backup versions (2,3) that lack some tables.
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # Delete in correct order to respect foreign key constraints
-            # invoice_items references invoices, invoices references users (admin_id NOT NULL)
+            # ── DELETE in reverse dependency order to avoid NOT NULL violations ──
+            # Level 1: tables that reference invoices
             cur.execute("DELETE FROM invoice_items")
+            # Level 2: tables that reference products AND/OR users
             cur.execute("DELETE FROM invoices")
+            cur.execute("DELETE FROM extraction_requests")
+            cur.execute("DELETE FROM incoming_orders")
             cur.execute("DELETE FROM transactions")
+            # Level 3: tables with no user-dependent FK
             cur.execute("DELETE FROM products")
+            # Level 4: users (no remaining FKs point here)
             cur.execute("DELETE FROM users")
 
             # ── Import users with their ORIGINAL ids ──
@@ -784,6 +804,11 @@ def db_import_backup(data):
                     "INSERT INTO users (id, telegram_id, username, role, active, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
                     (u["id"], u["telegram_id"], u.get("username"), u.get("role", "customer"),
                      u.get("active", True), u.get("created_at")))
+                # Restore can_extract and first_name if present (version 4+)
+                if "can_extract" in u:
+                    cur.execute("UPDATE users SET can_extract = %s WHERE id = %s", (u["can_extract"], u["id"]))
+                if "first_name" in u and u["first_name"] is not None:
+                    cur.execute("UPDATE users SET first_name = %s WHERE id = %s", (u["first_name"], u["id"]))
                 user_count += 1
             if user_count > 0:
                 max_uid = max(u["id"] for u in data.get("users", []))
@@ -837,6 +862,31 @@ def db_import_backup(data):
                 max_iiid = max(ii["id"] for ii in data.get("invoice_items", []))
                 cur.execute("SELECT setval('invoice_items_id_seq', %s)", (max_iiid,))
 
+            # ── Import extraction_requests (version 4+) ──
+            er_count = 0
+            for er in data.get("extraction_requests", []):
+                cur.execute(
+                    "INSERT INTO extraction_requests (id, product_id, quantity, requester_id, status, created_at, processed_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (er["id"], er["product_id"], er["quantity"], er.get("requester_id"),
+                     er.get("status", "pending"), er.get("created_at"), er.get("processed_at")))
+                er_count += 1
+            if er_count > 0:
+                max_erid = max(er["id"] for er in data.get("extraction_requests", []))
+                cur.execute("SELECT setval('extraction_requests_id_seq', %s)", (max_erid,))
+
+            # ── Import incoming_orders (version 4+) ──
+            io_count = 0
+            for io in data.get("incoming_orders", []):
+                cur.execute(
+                    "INSERT INTO incoming_orders (id, requester_id, product_name, quantity, status, photo_file_id, created_at, completed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (io["id"], io.get("requester_id"), io["product_name"], io["quantity"],
+                     io.get("status", "pending"), io.get("photo_file_id"),
+                     io.get("created_at"), io.get("completed_at")))
+                io_count += 1
+            if io_count > 0:
+                max_ioid = max(io["id"] for io in data.get("incoming_orders", []))
+                cur.execute("SELECT setval('incoming_orders_id_seq', %s)", (max_ioid,))
+
         conn.commit()
         summary = ("✅ تم استيراد البيانات:\n"
             "  المستخدمين: " + str(user_count) + "\n"
@@ -844,7 +894,12 @@ def db_import_backup(data):
             "  العمليات: " + str(tx_count))
         if inv_count > 0:
             summary += "\n  الفواتير: " + str(inv_count)
+        if ii_count > 0:
             summary += "\n  عناصر الفواتير: " + str(ii_count)
+        if er_count > 0:
+            summary += "\n  طلبات الاستخراج: " + str(er_count)
+        if io_count > 0:
+            summary += "\n  طلبات التوريد: " + str(io_count)
         return summary
     except Exception as e:
         conn.rollback()
@@ -2678,7 +2733,14 @@ async def backup_command(update, context):
         ])
         await update.message.reply_document(
             document=InputFile(io.BytesIO(file_bytes), filename="backup_" + now_str + ".json"),
-            caption="💾 نسخة احتياطية كاملة\n" + "📄 السلع: " + str(len(backup["products"])) + "\n" + "📜 العمليات: " + str(len(backup["transactions"])) + "\n" + "👥 المستخدمين: " + str(len(backup["users"])) + "\n" + "🧾 الفواتير: " + str(len(backup.get("invoices", []))) + "\n" + "💡 حفظ الملف. لإستيراد البيانات أرسله للبوت.",
+            caption=("💾 نسخة احتياطية كاملة\n"
+                + "📄 السلع: " + str(len(backup["products"]))
+                + "\n📜 العمليات: " + str(len(backup["transactions"]))
+                + "\n👥 المستخدمين: " + str(len(backup["users"]))
+                + "\n🧾 الفواتير: " + str(len(backup.get("invoices", [])))
+                + "\n🚚 طلبات التوريد: " + str(len(backup.get("incoming_orders", [])))
+                + "\n📤 طلبات الاستخراج: " + str(len(backup.get("extraction_requests", [])))
+                + "\n💡 حفظ الملف. لإستيراد البيانات أرسله للبوت."),
             reply_markup=keyboard,
         )
     except Exception as e:
