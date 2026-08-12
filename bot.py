@@ -464,21 +464,16 @@ CREATE TABLE IF NOT EXISTS bot_settings (
         release_connection(conn)
 
 def seed_sample_products():
-    """Insert sample products if they don't exist."""
+    """Insert sample products if they don't exist (uses db_add_product for dedup)."""
     samples = [
         ("plante pcs", 0, "", 5),
         ("120/60pcs", 0, "", 5),
     ]
     for name, qty, loc, min_stk in samples:
         try:
-            conn = get_connection()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO products (name, quantity, location, minimum_stock) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                    (name, qty, loc, min_stk))
-            conn.commit()
-            release_connection(conn)
-            print("[DB] Seeded sample product: " + name)
+            product, is_new = db_add_product(name=name, quantity=qty, location=loc, minimum_stock=min_stk)
+            if is_new:
+                print("[DB] Seeded sample product: " + name)
         except Exception as e:
             print("[DB] Sample seed failed for " + name + ": " + str(e))
 
@@ -797,11 +792,11 @@ def db_import_backup(data):
             prod_count = 0
             for p in data.get("products", []):
                 pname = p["name"]
-                norm_name = _normalize_product_name(pname) if pname else ""
                 cur.execute(
-                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, normalized_name) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at) VALUES (%s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, quantity = EXCLUDED.quantity",
                     (p["id"], pname, p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at"), norm_name))
+                     p.get("minimum_stock", 5), p.get("created_at")))
                 prod_count += 1
             if prod_count > 0:
                 max_pid = max(p["id"] for p in data.get("products", []))
@@ -885,7 +880,7 @@ def _normalize_text(text):
     text = re.sub(r"\s+", " ", text)
     # Normalize slashes: 60/60 -> 60x60
     text = text.replace("/", "x")
-    text = text.replace("×", "x")
+    text = text.replace("x", "x")
     return text
 
 def _levenshtein_distance(s1, s2):
@@ -1548,33 +1543,20 @@ def _db_ping():
         release_connection(conn)
 
 def _db_dedup_products():
-    """Find and merge duplicate products (same normalized_name).
+    """Find and merge duplicate products (same name after normalization).
     Returns (merged_count, deleted_count, merge_details) or None if no duplicates.
     Raises on DB error."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT normalized_name, COUNT(*) as cnt
+                SELECT LOWER(TRIM(name)) AS norm_name, COUNT(*) as cnt
                 FROM products
-                WHERE normalized_name IS NOT NULL AND normalized_name != ''
-                GROUP BY normalized_name
+                GROUP BY LOWER(TRIM(name))
                 HAVING COUNT(*) > 1
                 ORDER BY cnt DESC
             """)
             dup_groups = cur.fetchall()
-
-            # Also find duplicates with NULL normalized_name (legacy seed data)
-            cur.execute("""
-                SELECT LOWER(TRIM(name)) AS normalized_name, COUNT(*) as cnt
-                FROM products
-                WHERE normalized_name IS NULL OR normalized_name = ''
-                GROUP BY LOWER(TRIM(name))
-                HAVING COUNT(*) > 1
-                ORDER BY cnt DESC
-                """)
-            null_dups = cur.fetchall()
-            dup_groups.extend(null_dups)
 
         if not dup_groups:
             return None
@@ -1585,15 +1567,13 @@ def _db_dedup_products():
 
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             for group in dup_groups:
-                norm_name = group["normalized_name"]
+                norm_name = group["norm_name"]
                 cur.execute("""
                     SELECT * FROM products
-                    WHERE normalized_name = %s
-                       OR (normalized_name IS NULL AND LOWER(TRIM(name)) = %s)
+                    WHERE LOWER(TRIM(name)) = %s
                     ORDER BY created_at ASC, id ASC
-                """, (norm_name, norm_name))
+                """, (norm_name,))
                 rows = cur.fetchall()
-
                 keep = dict(rows[0])
                 merge_ids = [r["id"] for r in rows[1:]]
 
@@ -2358,7 +2338,7 @@ async def process_search(update, context, text, admin_view=False):
             msg = ("\U0001f50d لم يتم العثور على نتائج لـ " + text)
         else:
             msg = ("🔍 العنصر غير موجود." + chr(10) + chr(10)
-                + "💡 البحث الذكي يفهم الأخطاء الإملائية ويعامل / و × بشكل متساوٍ." + chr(10)
+                + "💡 البحث الذكي يفهم الأخطاء الإملائية ويعامل / و x بشكل متساوٍ." + chr(10)
                 + "جرّب البحث بكلمة واحدة أقصر (مثلاً: ceram أو 60x60 أو اسم المصنع).")
         reply_kb = get_input_keyboard() if admin_view else None
         await update.message.reply_text(msg, reply_markup=reply_kb)
@@ -2435,25 +2415,25 @@ def _is_pcs_product(name):
     n = name.strip().lower()
     return (n.startswith("motif") or n.startswith("plante")
             or n.startswith("120/60") or n.startswith("120x60")
-            or n.startswith("120×60"))
+            or n.startswith("120x60"))
 
 def _invoice_product_type(name):
     """Detect invoice product type from name. Returns:
-       'm2'    -> sold by m² with box area (باقي السلع)
+       'm2'    -> sold by m2 with box area.
        'pcs'   -> sold by piece with unit price (motif, 120/60)
        'plant' -> sold by linear meter with length choice (plante)
     """
     if not name or not isinstance(name, str):
         return "m2"
     n = name.strip().lower()
-    if n.startswith("motif") or n.startswith("120/60") or n.startswith("120x60") or n.startswith("120×60"):
+    if n.startswith("motif") or n.startswith("120/60") or n.startswith("120x60") or n.startswith("120x60"):
         return "pcs"
     if n.startswith("plante"):
         return "plant"
     return "m2"
 
 def _get_unit_code(product_name):
-    """Return unit code: 'pcs' for motif/plante/120x60 products, 'crt' for others."""
+    """Return unit code: pcs for motif/plante/120x60, crt for others."""
     return "pcs" if _is_pcs_product(product_name) else "crt"
 
 def _get_unit_ar(product_name):
@@ -2617,15 +2597,18 @@ async def _safe_send_html(chat_id, text, bot, reply_markup=None, edit_message=No
     if current_lines:
         chunks.append(chr(10).join(current_lines))
     extra_msgs = []
+    total_chunks = len(chunks)
     for i, chunk in enumerate(chunks):
+        is_last = (i == total_chunks - 1)
+        markup = reply_markup if is_last else None
         if i == 0 and edit_message:
             try:
-                await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                await edit_message(text=chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
             except Exception:
-                msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+                msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
                 extra_msgs.append(msg)
         else:
-            msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML)
+            msg = await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML, reply_markup=markup)
             extra_msgs.append(msg)
     return extra_msgs
 
@@ -2778,6 +2761,7 @@ async def callback_product_action_handler(update, context):
         product_id = int(parts[2])
     except ValueError:
         return
+    user_id = update.effective_user.id if update.effective_user else 0
     if action == "log":
         try:
             txns = await asyncio.to_thread(get_product_transactions, product_id, limit=15)
@@ -3233,8 +3217,10 @@ async def callback_add_notify_handler(update, context):
     actor = pending["user"]
     try:
         if reason == "silent":
-            # تصحيح المخزون — بدون إشعار وبدون تسجيل في سجل الحركة
-            confirm = "📝 تم تصحيح المخزون بنجاح (بدون إشعار وبدون تسجيل) ✅"
+            # تصحيح المخزون — بدون إشعار ولكن مع تسجيل في سجل الحركة
+            if actor:
+                await asyncio.to_thread(log_transaction, product["id"], "add", qty, actor["id"])
+            confirm = "📝 تم تصحيح المخزون بنجاح (بدون إشعار) ✅"
             await query.edit_message_text(confirm)
         else:
             # Log the transaction for real stock movements (truck/return)
@@ -3419,7 +3405,7 @@ async def _invoice_add_item(update, context, product_id, product_name, qty, unit
     msg = "✅ تمت الإضافة (" + str(len(items)) + " عناصر)" + chr(10) + chr(10)
     if ptype == "m2":
         msg += "📦 " + product_name + " → " + str(item.get("num_boxes", qty)) + " علبة" + chr(10)
-        msg += "📐 " + str(round(item.get("qty_m2", 0), 2)) + " م² × " + _fmt_price(item["unit_price"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+        msg += "📐 " + str(round(item.get("qty_m2", 0), 2)) + " م2 x " + _fmt_price(item["unit_price"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "pcs":
         msg += "📦 " + product_name + " → " + str(qty) + " قطعة = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     elif ptype == "plant":
@@ -3458,14 +3444,14 @@ async def _invoice_show_review(update_or_query, context, from_callback=False):
         msg += str(i) + ". " + item["product_name"] + chr(10)
         pt = item.get("ptype", "m2")
         if pt == "m2":
-            msg += "   📐 " + str(item.get("qty_m2", "")) + " m² → " + str(item["quantity"]) + " علبة" + chr(10)
-            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/m² × " + str(round(item.get("qty_m2", 0), 2)) + " m² = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+            msg += "   📐 " + str(item.get("qty_m2", "")) + " m2 → " + str(item["quantity"]) + " علبة" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/m2 x " + str(round(item.get("qty_m2", 0), 2)) + " m2 = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
         elif pt == "pcs":
             msg += "   📦 " + str(item["quantity"]) + " قطعة" + chr(10)
-            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/قطعة × " + str(item["quantity"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/قطعة x " + str(item["quantity"]) + " = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
         elif pt == "plant":
             msg += "   📏 " + str(item.get("qty_m", "")) + " م.ط (" + str(item.get("length_m", "")) + " م) → " + str(item.get("num_pieces", item["quantity"])) + " قطعة" + chr(10)
-            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/م.ط × " + str(round(item.get("qty_m", 0), 2)) + " م.ط = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
+            msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/م.ط x " + str(round(item.get("qty_m", 0), 2)) + " م.ط = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
     msg += "━" * 20 + chr(10)
     msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج"
     keyboard = InlineKeyboardMarkup([
@@ -3717,7 +3703,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             elif pt == "plant":
                 worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("num_pieces", item["quantity"])) + " قطعة (" + str(item.get("qty_m", "")) + " م.ط)" + chr(10)
             else:
-                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m2", "")) + "m² → " + str(item["quantity"]) + " علبة" + chr(10)
+                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m2", "")) + "m2 → " + str(item["quantity"]) + " علبة" + chr(10)
         worker_msg += "━" * 15 + chr(10)
         worker_msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
         worker_msg += "⚙️ يرجى تجهيز البضاعة فوراً"
@@ -3813,7 +3799,7 @@ async def callback_invoice_handler(update, context):
         elif ptype == "plant":
             q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
         else:
-            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل الكمية المطلوبة (m²):"
+            q_text = "📦 " + product_name + chr(10) + chr(10) + "🔢 أرسل الكمية المطلوبة (m2):"
         try:
             await query.edit_message_text(
                 q_text,
@@ -3873,7 +3859,7 @@ async def callback_invoice_handler(update, context):
             elif ptype == "plant":
                 q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
-                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل المساحة المطلوبة (m²):"
+                q_text = "✍️ إدخال يدوي: " + manual_name + chr(10) + chr(10) + "🔢 أرسل المساحة المطلوبة (m2):"
             try:
                 await query.edit_message_text(
                     q_text,
@@ -3913,7 +3899,7 @@ async def callback_invoice_handler(update, context):
             elif ptype == "plant":
                 q_text = "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
-                q_text = "🔢 أرسل المساحة المطلوبة (m²):"
+                q_text = "🔢 أرسل المساحة المطلوبة (m2):"
             try:
                 await query.edit_message_text(
                     "📦 " + prod["name"] + stock_info + chr(10) + chr(10) + q_text,
@@ -3979,16 +3965,16 @@ async def callback_invoice_handler(update, context):
         import math
         raw_boxes = qty_m2 / box_area
         num_boxes = math.ceil(raw_boxes)
-        # Actual area = num_boxes × box_area (customer pays for full boxes)
+        # Actual area = num_boxes x box_area (customer pays for full boxes)
         actual_area = num_boxes * box_area
         total_price = actual_area * price_m2
         # Show summary and add item
         summary = "📦 " + product_name + chr(10) + chr(10)
-        summary += "📐 المساحة المطلوبة: " + str(qty_m2) + " m²" + chr(10)
-        summary += "📏 مساحة العلبة: " + str(box_area) + " m²" + chr(10)
+        summary += "📐 المساحة المطلوبة: " + str(qty_m2) + " m2" + chr(10)
+        summary += "📏 مساحة العلبة: " + str(box_area) + " m2" + chr(10)
         summary += "📦 عدد العلب: " + str(num_boxes) + " (" + str(raw_boxes) + " → تقريب للأعلى)" + chr(10)
-        summary += "📐 المساحة الفعلية: " + str(round(actual_area, 2)) + " m²" + chr(10)
-        summary += "💰 السعر/m²: " + _fmt_price(price_m2) + " د.ج" + chr(10)
+        summary += "📐 المساحة الفعلية: " + str(round(actual_area, 2)) + " m2" + chr(10)
+        summary += "💰 السعر/m2: " + _fmt_price(price_m2) + " د.ج" + chr(10)
         summary += "━" * 20 + chr(10)
         summary += "💵 الإجمالي: " + _fmt_price(total_price) + " د.ج"
         try:
@@ -4062,7 +4048,7 @@ async def handle_admin_message(update, context):
             context.user_data["state"] = STATE_SEARCH_ADMIN
             context.user_data["state_set_at"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
             await update.message.reply_text(
-                "🔍 البحث الذكي" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:" + chr(10) + chr(10) + "💡 يفهم الأخطاء الإملائية" + chr(10) + "🔤 / و × متساويان (60/60 = 60x60)" + chr(10) + "🏭 ابحث بالمصنع أو المقاس",
+                "🔍 البحث الذكي" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:" + chr(10) + chr(10) + "💡 يفهم الأخطاء الإملائية" + chr(10) + "🔤 / و x متساويان (60/60 = 60x60)" + chr(10) + "🏭 ابحث بالمصنع أو المقاس",
                 reply_markup=get_input_keyboard())
             return
         if text == BTN_ADD_QTY:
@@ -4225,7 +4211,7 @@ async def handle_admin_message(update, context):
             elif ptype == "plant":
                 q = "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
-                q = "🔢 أرسل المساحة المطلوبة (m²):"
+                q = "🔢 أرسل المساحة المطلوبة (m2):"
             await update.message.reply_text(
                 "❓ \"" + product_name + "\" غير موجود في المخزون" + chr(10) + chr(10) + q,
                 reply_markup=InlineKeyboardMarkup([
@@ -4246,7 +4232,7 @@ async def handle_admin_message(update, context):
             elif ptype == "plant":
                 q = "🔢 أرسل المساحة التي طلبها الزبون (بالمتر):"
             else:
-                q = "🔢 أرسل المساحة المطلوبة (m²):"
+                q = "🔢 أرسل المساحة المطلوبة (m2):"
             await update.message.reply_text(
                 "📦 " + found["name"] + stock_info + chr(10) + chr(10) + q,
                 reply_markup=InlineKeyboardMarkup([
@@ -4284,7 +4270,7 @@ async def handle_admin_message(update, context):
             context.user_data["state"] = STATE_INVOICE_PRICE
             await update.message.reply_text(
                 "💰 أرسل سعر القطعة (د.ج):" + chr(10) + chr(10)
-                + "📦 " + product_name + " × " + str(int(qty)) + " قطعة",
+                + "📦 " + product_name + " x " + str(int(qty)) + " قطعة",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
@@ -4304,9 +4290,9 @@ async def handle_admin_message(update, context):
         else:
             context.user_data["state"] = STATE_INVOICE_PRICE
             await update.message.reply_text(
-                "💰 أرسل سعر المتر المربع (د.ج/m²):" + chr(10) + chr(10)
+                "💰 أرسل سعر المتر المربع (د.ج/m2):" + chr(10) + chr(10)
                 + "📦 " + product_name + chr(10)
-                + "📐 المساحة: " + str(qty) + " m²",
+                + "📐 المساحة: " + str(qty) + " m2",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
@@ -4396,9 +4382,9 @@ async def handle_admin_message(update, context):
             context.user_data["state"] = STATE_INVOICE_AREA
             await update.message.reply_text(
                 "📦 " + product_name + chr(10) + chr(10)
-                + "📐 المساحة: " + str(qty) + " m²" + chr(10)
-                + "💰 السعر: " + _fmt_price(price) + " د.ج/m²" + chr(10) + chr(10)
-                + "📏 أرسل مساحة العلبة (m²):",
+                + "📐 المساحة: " + str(qty) + " m2" + chr(10)
+                + "💰 السعر: " + _fmt_price(price) + " د.ج/m2" + chr(10) + chr(10)
+                + "📏 أرسل مساحة العلبة (m2):",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
@@ -4566,9 +4552,10 @@ async def handle_admin_message(update, context):
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
-            # After remove: ask for optional free-text reason
+            # After remove: log transaction FIRST, then ask for optional free-text reason
             elif action == "remove" and db_user:
-                context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
+                tx = await asyncio.to_thread(log_transaction, product["id"], "remove", qty, db_user["id"])
+                context.user_data["pending_remove_reason"] = {"tx_id": tx["id"], "product_id": product["id"], "user_id": db_user["id"]}
                 context.user_data["state"] = STATE_REMOVE_REASON
                 skip_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
@@ -4680,13 +4667,8 @@ async def handle_customer_message(update, context):
         )
         return
 
-    # State: waiting_pact_qty (admin-only stock operations)
+    # State: waiting_pact_qty (stock add/remove for all users)
     if state == "waiting_pact_qty":
-        # Security: stock add/remove should only be done by admins
-        if not await asyncio.to_thread(is_admin, user.id):
-            context.user_data.clear()
-            await update.message.reply_text("⛔ هذا الإجراء متاح للأدمن فقط.", reply_markup=await asyncio.to_thread(get_customer_keyboard))
-            return
         product = context.user_data.get("cust_product")
         action = context.user_data.get("pact_action", "add")
         if action not in ("add", "remove"):
@@ -4731,9 +4713,10 @@ async def handle_customer_message(update, context):
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
                 return  # Don't clear user_data yet — callback needs pending_add_notify
-            # After remove: ask for optional free-text reason
+            # After remove: log transaction FIRST, then ask for optional free-text reason
             elif action == "remove" and db_user:
-                context.user_data["pending_remove_reason"] = {"product_id": product["id"], "qty": qty, "user_id": db_user["id"]}
+                tx = await asyncio.to_thread(log_transaction, product["id"], "remove", qty, db_user["id"])
+                context.user_data["pending_remove_reason"] = {"tx_id": tx["id"], "product_id": product["id"], "user_id": db_user["id"]}
                 context.user_data["state"] = STATE_REMOVE_REASON
                 skip_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("⏭️ تخطي", callback_data="remskip")],
