@@ -1174,7 +1174,7 @@ def get_product_transactions(product_id, limit=15):
         release_connection(conn)
 
 
-def _send_product_list(update, products, context, state_key="id_map"):
+async def _send_product_list(update, products, context, state_key="id_map"):
     """Send product list with sequential numbering (#1, #2...) and store ID mapping."""
     id_map = {}
     lines = ["\U0001f4e6 قائمة السلع" + chr(10)]
@@ -1184,7 +1184,7 @@ def _send_product_list(update, products, context, state_key="id_map"):
     context.user_data[state_key] = id_map
     full = chr(10).join(lines)
     if len(full) <= 4096:
-        update.message.reply_text(full)
+        await update.message.reply_text(full)
     else:
         chunks = []
         cur_chunk = []
@@ -1199,7 +1199,7 @@ def _send_product_list(update, products, context, state_key="id_map"):
         if cur_chunk:
             chunks.append(chr(10).join(cur_chunk))
         for chunk in chunks:
-            update.message.reply_text(chunk)
+            await update.message.reply_text(chunk)
 
 
 def _resolve_product_id(context, display_num, state_key="id_map"):
@@ -1221,7 +1221,6 @@ STATE_EXISTING_ADD_QTY = "waiting_existing_add_qty"
 STATE_REMOVE_QTY = "waiting_remove_qty"
 STATE_EDIT_PRODUCT = "waiting_edit_product"
 STATE_DELETE_PRODUCT = "waiting_delete_product"
-STATE_BULK_DELETE = "waiting_bulk_delete"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
 STATE_CUST_ADD_QTY = "waiting_cust_add_qty"
 STATE_CUST_REMOVE_QTY = "waiting_cust_remove_qty"
@@ -1254,8 +1253,6 @@ BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 BTN_INCOMING = "🚚 طلبات التوريد"
 BTN_INVOICE = "🧾 إنشاء فاتورة"
-BTN_BULK_DELETE = "🗑 حذف جماعي"
-
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
@@ -1697,8 +1694,7 @@ def get_admin_keyboard():
             [BTN_ADD, BTN_SEARCH],
             [BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
-            [BTN_BULK_DELETE, users_btn],
-            [BTN_BACKUP, BTN_ALERT],
+            [users_btn, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
             [BTN_INVOICE, BTN_UPDATE, BTN_CANCEL],
         ],
@@ -1938,48 +1934,22 @@ async def process_edit_product(update, context, text, telegram_id):
     context.user_data.clear()
 
 async def process_delete_product(update, context, text, telegram_id):
-    text = text.strip()
-    if not text.isdigit():
-        await update.message.reply_text(
-            "\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0641\u0642\u0637.\n\u0645\u062b\u0627\u0644: 5",
-            reply_markup=get_input_keyboard(),
-        )
-        return
-    product_id = int(text)
-    try:
-        product_id = _resolve_product_id(context, product_id, "delete_id_map")
-    except ValueError as e:
-        await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
-        return
-    try:
-        deleted = db_delete_product(product_id)
-        if deleted:
-            await update.message.reply_text("\u2705 \u062a\u0645 \u062d\u0630\u0641 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d.", reply_markup=get_admin_keyboard())
-        else:
-            await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
-    except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
-
-
-async def process_bulk_delete(update, context, text):
-    """Process bulk delete: supports '1, 5, 10' or '360-362' or '1, 5, 360-362'."""
+    """Process delete: supports single (5) or bulk (5, 10, 15) or range (360-362)."""
     text = text.strip()
     if not text:
         await update.message.reply_text(
-            "❌ أرسل أرقام السلع للحذف.\nمثال: 5, 10, 15 أو 360-362",
+            "❌ أرسل رقم السلعة.\nمثال: 5 أو 5, 10, 15 أو 360-362",
             reply_markup=get_input_keyboard(),
         )
         return
 
+    # Parse display numbers from input
     display_nums = set()
-    # Parse range format: "360-362"
     import re as _re
     range_match = _re.findall(r"(\d+)\s*-\s*(\d+)", text)
     for start_s, end_s in range_match:
         for i in range(int(start_s), int(end_s) + 1):
             display_nums.add(i)
-    # Parse comma-separated: "5, 10, 15"
     comma_parts = _re.split(r"[,\s]+", text)
     for part in comma_parts:
         part = part.strip()
@@ -1988,17 +1958,17 @@ async def process_bulk_delete(update, context, text):
 
     if not display_nums:
         await update.message.reply_text(
-            "❌ لم يتم التعرف على أرقام صحيحة.\nمثال: 5, 10, 15 أو 360-362",
+            "❌ أرسل رقم صحيح.\nمثال: 5 أو 5, 10, 15 أو 360-362",
             reply_markup=get_input_keyboard(),
         )
         return
 
     # Resolve display numbers to real DB IDs
-    bulk_map = context.user_data.get("bulk_id_map", {})
+    delete_map = context.user_data.get("delete_id_map", {})
     to_delete = []
     not_found = []
     for dn in sorted(display_nums):
-        real_id = bulk_map.get(str(dn))
+        real_id = delete_map.get(str(dn))
         if real_id:
             to_delete.append(real_id)
         else:
@@ -2011,24 +1981,16 @@ async def process_bulk_delete(update, context, text):
         await update.message.reply_text(msg, reply_markup=get_input_keyboard())
         return
 
-    # Confirm before deleting
-    products = get_all_products()
-    lines = ["⚠️ تأكيد الحذف الجماعي:" + chr(10)]
-    lines.append("عدد السلع المراد حذفها: " + str(len(to_delete)) + chr(10))
-    for pid in to_delete:
-        for p in products:
-            if p["id"] == pid:
-                lines.append("  - " + p["name"])
-                break
-    if not_found:
-        lines.append(chr(10) + "⚠️ أرقام غير موجودة (تم تجاهلها): " + ", ".join(str(x) for x in not_found))
-    lines.append(chr(10) + "أرسل 'تأكيد' للحذف أو 'إلغاء' للتراجع.")
-    context.user_data["bulk_delete_ids"] = to_delete
-    context.user_data["state"] = "waiting_bulk_delete_confirm"
-    await update.message.reply_text(chr(10).join(lines), reply_markup=ReplyKeyboardMarkup(
-        [["تأكيد"], ["إلغاء"]],
-        resize_keyboard=True,
-    ))
+    # Delete all
+    deleted_count, _ = db_bulk_delete_products(to_delete)
+    if len(to_delete) == 1:
+        msg = "✅ تم حذف سلعة واحدة بنجاح."
+    else:
+        msg = "✅ تم حذف " + str(deleted_count) + " سلعة بنجاح."
+    await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+    context.user_data.clear()
+
+
 
 
 async def process_search(update, context, text, admin_view=False):
@@ -3671,7 +3633,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_BULK_DELETE]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
@@ -3703,7 +3665,7 @@ async def handle_admin_message(update, context):
             if not products:
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            _send_product_list(update, products, context, "edit_id_map")
+            await _send_product_list(update, products, context, "edit_id_map")
             context.user_data["state"] = STATE_EDIT_PRODUCT
             edit_prompt = ("\u270f\ufe0f تعديل سلعة" + chr(10) + chr(10)
                 + "أرسل: رقم_السلعة, الاسم الجديد" + chr(10) + chr(10)
@@ -3715,27 +3677,13 @@ async def handle_admin_message(update, context):
             if not products:
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
-            _send_product_list(update, products, context, "delete_id_map")
+            await _send_product_list(update, products, context, "delete_id_map")
             context.user_data["state"] = STATE_DELETE_PRODUCT
             del_prompt = ("\U0001f5d1\ufe0f حذف سلعة" + chr(10) + chr(10)
                 + "أرسل رقم السلعة فقط:" + chr(10)
                 + "مثال: 5" + chr(10) + chr(10)
                 + "\u26a0\ufe0f سيتم حذف السلعة وجميع سجلاتها نهائياً!")
             await update.message.reply_text(del_prompt, reply_markup=get_input_keyboard())
-            return
-        if text == BTN_BULK_DELETE:
-            products = get_all_products()
-            if not products:
-                await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
-                return
-            _send_product_list(update, products, context, "bulk_id_map")
-            context.user_data["state"] = STATE_BULK_DELETE
-            bulk_prompt = ("\U0001f5d1\ufe0f حذف جماعي" + chr(10) + chr(10)
-                + "أرسل أرقام السلع للحذف:" + chr(10)
-                + "مثال: 5, 10, 15" + chr(10)
-                + "أو نطاق: 360-362" + chr(10) + chr(10)
-                + "\u26a0\ufe0f سيتم حذف جميع السلع المحددة نهائياً!")
-            await update.message.reply_text(bulk_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_ALERT:
             context.user_data["state"] = STATE_ALERT_MSG
@@ -4014,20 +3962,6 @@ async def handle_admin_message(update, context):
         await process_edit_product(update, context, text, user.id)
     elif state == STATE_DELETE_PRODUCT:
         await process_delete_product(update, context, text, user.id)
-    elif state == STATE_BULK_DELETE:
-        await process_bulk_delete(update, context, text)
-    elif state == "waiting_bulk_delete_confirm":
-        if text.strip() == "تأكيد":
-            to_delete = context.user_data.get("bulk_delete_ids", [])
-            if to_delete:
-                deleted_count, not_found = db_bulk_delete_products(to_delete)
-                msg = "✅ تم حذف " + str(deleted_count) + " سلعة بنجاح."
-                await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-            else:
-                await update.message.reply_text("❌ لا توجد سلع للحذف.", reply_markup=get_admin_keyboard())
-        else:
-            await update.message.reply_text("❌ تم إلغاء الحذف الجماعي.", reply_markup=get_admin_keyboard())
-        context.user_data.clear()
     elif state == STATE_ADMIN_ADD_SEL:
         results = search_products(text)
         if not results:
