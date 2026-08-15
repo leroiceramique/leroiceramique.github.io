@@ -291,7 +291,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),
     quantity   INTEGER NOT NULL,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     date       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reason     VARCHAR(200)
 );
@@ -304,7 +304,7 @@ CREATE TABLE IF NOT EXISTS extraction_requests (
     id            SERIAL PRIMARY KEY,
     product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     quantity      INTEGER NOT NULL,
-    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     processed_at  TIMESTAMPTZ
@@ -315,7 +315,7 @@ CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id);
 
 CREATE TABLE IF NOT EXISTS incoming_orders (
     id             SERIAL PRIMARY KEY,
-    requester_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    requester_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     product_name   VARCHAR(500) NOT NULL,
     quantity       INTEGER NOT NULL DEFAULT 1,
     status         VARCHAR(12) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'received', 'completed')),
@@ -341,7 +341,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     id              SERIAL PRIMARY KEY,
     customer_name   VARCHAR(500) NOT NULL,
     worker_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    admin_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    admin_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     total_amount    NUMERIC(12,2) NOT NULL DEFAULT 0,
     status          VARCHAR(15) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','cancelled')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -403,7 +403,7 @@ def init_db():
                     id            SERIAL PRIMARY KEY,
                     product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
                     quantity      INTEGER NOT NULL,
-                    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+                    requester_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
                     status        VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
                     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     processed_at  TIMESTAMPTZ
@@ -447,6 +447,32 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             -- Migration: add reason column to transactions table
             DO $$ BEGIN
                 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reason VARCHAR(200);
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: fix contradictory FK constraints (NOT NULL + ON DELETE SET NULL → RESTRICT)
+            -- These require dropping and re-adding the FK constraint
+            DO $$ BEGIN
+                ALTER TABLE transactions DROP CONSTRAINT transactions_user_id_fkey;
+                ALTER TABLE transactions ADD CONSTRAINT transactions_user_id_fkey
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            DO $$ BEGIN
+                ALTER TABLE extraction_requests DROP CONSTRAINT extraction_requests_requester_id_fkey;
+                ALTER TABLE extraction_requests ADD CONSTRAINT extraction_requests_requester_id_fkey
+                    FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE RESTRICT;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            DO $$ BEGIN
+                ALTER TABLE incoming_orders DROP CONSTRAINT incoming_orders_requester_id_fkey;
+                ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_requester_id_fkey
+                    FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE RESTRICT;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            DO $$ BEGIN
+                ALTER TABLE invoices DROP CONSTRAINT invoices_admin_id_fkey;
+                ALTER TABLE invoices ADD CONSTRAINT invoices_admin_id_fkey
+                    FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE RESTRICT;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             """)
@@ -773,133 +799,147 @@ def db_export_backup():
 def db_import_backup(data):
     """Restore data from a backup dict. Returns summary string.
 
-    Handles all tables that reference users(id) with NOT NULL constraints:
-      - transactions.user_id NOT NULL
-      - extraction_requests.requester_id NOT NULL
-      - incoming_orders.requester_id NOT NULL
-      - invoices.admin_id NOT NULL
-    Must delete ALL dependent tables BEFORE deleting users.
+    Uses executemany for bulk inserts — much faster than row-by-row.
+    Handles all tables that reference users(id) with NOT NULL constraints.
     Supports old backup versions (2,3) that lack some tables.
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # ── DELETE in reverse dependency order to avoid NOT NULL violations ──
-            # Level 1: tables that reference invoices
+            # ── DELETE in reverse dependency order ──
             cur.execute("DELETE FROM invoice_items")
-            # Level 2: tables that reference products AND/OR users
             cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
             cur.execute("DELETE FROM transactions")
-            # Level 3: tables with no user-dependent FK
             cur.execute("DELETE FROM products")
-            # Level 4: users (no remaining FKs point here)
             cur.execute("DELETE FROM users")
 
-            # ── Import users with their ORIGINAL ids ──
-            user_count = 0
-            for u in data.get("users", []):
-                cur.execute(
-                    "INSERT INTO users (id, telegram_id, username, role, active, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (u["id"], u["telegram_id"], u.get("username"), u.get("role", "customer"),
-                     u.get("active", True), u.get("created_at")))
-                # Restore can_extract and first_name if present (version 4+)
-                if "can_extract" in u:
-                    cur.execute("UPDATE users SET can_extract = %s WHERE id = %s", (u["can_extract"], u["id"]))
-                if "first_name" in u and u["first_name"] is not None:
-                    cur.execute("UPDATE users SET first_name = %s WHERE id = %s", (u["first_name"], u["id"]))
-                user_count += 1
-            if user_count > 0:
-                max_uid = max(u["id"] for u in data.get("users", []))
+            # ── Import users (single INSERT with can_extract + first_name) ──
+            users = data.get("users", [])
+            if users:
+                rows = []
+                for u in users:
+                    rows.append((
+                        u["id"], u["telegram_id"], u.get("username"),
+                        u.get("role", "customer"), u.get("active", True),
+                        u.get("created_at"),
+                        u.get("can_extract", False),
+                        u.get("first_name"),
+                    ))
+                cur.executemany("""
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, first_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_uid = max(u["id"] for u in users)
                 cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
 
-            # ── Import products with their ORIGINAL ids ──
-            prod_count = 0
-            for p in data.get("products", []):
-                cur.execute(
-                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            # ── Import products ──
+            products = data.get("products", [])
+            if products:
+                rows = [
                     (p["id"], p["name"], p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at")))
-                prod_count += 1
-            if prod_count > 0:
-                max_pid = max(p["id"] for p in data.get("products", []))
+                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0))
+                    for p in products
+                ]
+                cur.executemany("""
+                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_pid = max(p["id"] for p in products)
                 cur.execute("SELECT setval('products_id_seq', %s)", (max_pid,))
 
-            # ── Import transactions (users & products already exist with correct ids) ──
-            tx_count = 0
-            for t in data.get("transactions", []):
-                cur.execute(
-                    "INSERT INTO transactions (id, product_id, type, quantity, user_id, date) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (t["id"], t["product_id"], t["type"], t["quantity"], t.get("user_id"), t.get("date")))
-                tx_count += 1
-            if tx_count > 0:
-                max_tid = max(t["id"] for t in data.get("transactions", []))
+            # ── Import transactions ──
+            transactions = data.get("transactions", [])
+            if transactions:
+                rows = [
+                    (t["id"], t["product_id"], t["type"], t["quantity"],
+                     t.get("user_id"), t.get("date"), t.get("reason"))
+                    for t in transactions
+                ]
+                cur.executemany("""
+                    INSERT INTO transactions (id, product_id, type, quantity, user_id, date, reason)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_tid = max(t["id"] for t in transactions)
                 cur.execute("SELECT setval('transactions_id_seq', %s)", (max_tid,))
 
-            # ── Import invoices (users already exist with correct ids) ──
-            inv_count = 0
-            for inv in data.get("invoices", []):
-                cur.execute(
-                    "INSERT INTO invoices (id, customer_name, worker_id, admin_id, total_amount, status, created_at, approved_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            # ── Import invoices ──
+            invoices = data.get("invoices", [])
+            if invoices:
+                rows = [
                     (inv["id"], inv["customer_name"], inv.get("worker_id"), inv.get("admin_id"),
                      inv.get("total_amount", 0), inv.get("status", "approved"),
-                     inv.get("created_at"), inv.get("approved_at")))
-                inv_count += 1
-            if inv_count > 0:
-                max_iid = max(inv["id"] for inv in data.get("invoices", []))
+                     inv.get("created_at"), inv.get("approved_at"))
+                    for inv in invoices
+                ]
+                cur.executemany("""
+                    INSERT INTO invoices (id, customer_name, worker_id, admin_id, total_amount, status, created_at, approved_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_iid = max(inv["id"] for inv in invoices)
                 cur.execute("SELECT setval('invoices_id_seq', %s)", (max_iid,))
 
-            # ── Import invoice_items (invoices already exist with correct ids) ──
-            ii_count = 0
-            for ii in data.get("invoice_items", []):
-                cur.execute(
-                    "INSERT INTO invoice_items (id, invoice_id, product_id, product_name, quantity, unit_price, subtotal) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            # ── Import invoice_items ──
+            invoice_items = data.get("invoice_items", [])
+            if invoice_items:
+                rows = [
                     (ii["id"], ii["invoice_id"], ii.get("product_id"), ii["product_name"],
-                     ii["quantity"], ii.get("unit_price", 0), ii.get("subtotal", 0)))
-                ii_count += 1
-            if ii_count > 0:
-                max_iiid = max(ii["id"] for ii in data.get("invoice_items", []))
+                     ii["quantity"], ii.get("unit_price", 0), ii.get("subtotal", 0))
+                    for ii in invoice_items
+                ]
+                cur.executemany("""
+                    INSERT INTO invoice_items (id, invoice_id, product_id, product_name, quantity, unit_price, subtotal)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_iiid = max(ii["id"] for ii in invoice_items)
                 cur.execute("SELECT setval('invoice_items_id_seq', %s)", (max_iiid,))
 
             # ── Import extraction_requests (version 4+) ──
-            er_count = 0
-            for er in data.get("extraction_requests", []):
-                cur.execute(
-                    "INSERT INTO extraction_requests (id, product_id, quantity, requester_id, status, created_at, processed_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            ext_reqs = data.get("extraction_requests", [])
+            if ext_reqs:
+                rows = [
                     (er["id"], er["product_id"], er["quantity"], er.get("requester_id"),
-                     er.get("status", "pending"), er.get("created_at"), er.get("processed_at")))
-                er_count += 1
-            if er_count > 0:
-                max_erid = max(er["id"] for er in data.get("extraction_requests", []))
+                     er.get("status", "pending"), er.get("created_at"), er.get("processed_at"))
+                    for er in ext_reqs
+                ]
+                cur.executemany("""
+                    INSERT INTO extraction_requests (id, product_id, quantity, requester_id, status, created_at, processed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_erid = max(er["id"] for er in ext_reqs)
                 cur.execute("SELECT setval('extraction_requests_id_seq', %s)", (max_erid,))
 
             # ── Import incoming_orders (version 4+) ──
-            io_count = 0
-            for io in data.get("incoming_orders", []):
-                cur.execute(
-                    "INSERT INTO incoming_orders (id, requester_id, product_name, quantity, status, photo_file_id, created_at, completed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            inc_orders = data.get("incoming_orders", [])
+            if inc_orders:
+                rows = [
                     (io["id"], io.get("requester_id"), io["product_name"], io["quantity"],
                      io.get("status", "pending"), io.get("photo_file_id"),
-                     io.get("created_at"), io.get("completed_at")))
-                io_count += 1
-            if io_count > 0:
-                max_ioid = max(io["id"] for io in data.get("incoming_orders", []))
+                     io.get("created_at"), io.get("completed_at"))
+                    for io in inc_orders
+                ]
+                cur.executemany("""
+                    INSERT INTO incoming_orders (id, requester_id, product_name, quantity, status, photo_file_id, created_at, completed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_ioid = max(io["id"] for io in inc_orders)
                 cur.execute("SELECT setval('incoming_orders_id_seq', %s)", (max_ioid,))
 
         conn.commit()
+
         summary = ("✅ تم استيراد البيانات:\n"
-            "  المستخدمين: " + str(user_count) + "\n"
-            "  السلع: " + str(prod_count) + "\n"
-            "  العمليات: " + str(tx_count))
-        if inv_count > 0:
-            summary += "\n  الفواتير: " + str(inv_count)
-        if ii_count > 0:
-            summary += "\n  عناصر الفواتير: " + str(ii_count)
-        if er_count > 0:
-            summary += "\n  طلبات الاستخراج: " + str(er_count)
-        if io_count > 0:
-            summary += "\n  طلبات التوريد: " + str(io_count)
+            "  المستخدمين: " + str(len(users)) + "\n"
+            "  السلع: " + str(len(products)) + "\n"
+            "  العمليات: " + str(len(transactions)))
+        if len(invoices) > 0:
+            summary += "\n  الفواتير: " + str(len(invoices))
+        if len(invoice_items) > 0:
+            summary += "\n  عناصر الفواتير: " + str(len(invoice_items))
+        if len(ext_reqs) > 0:
+            summary += "\n  طلبات الاستخراج: " + str(len(ext_reqs))
+        if len(inc_orders) > 0:
+            summary += "\n  طلبات التوريد: " + str(len(inc_orders))
         return summary
     except Exception as e:
         conn.rollback()
@@ -1205,10 +1245,10 @@ def log_transaction(product_id, transaction_type, quantity, user_id, reason=None
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, product_id, type, quantity, user_id, date
-            """, (product_id, transaction_type, quantity, user_id))
+            cur.execute("""\n                INSERT INTO transactions (product_id, type, quantity, user_id, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, product_id, type, quantity, user_id, date, reason
+            """, (product_id, transaction_type, quantity, user_id, reason))
             tx = cur.fetchone()
         conn.commit()
         return dict(tx)
@@ -1318,6 +1358,8 @@ STATE_DELETE_PRODUCT = "waiting_delete_product"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
 STATE_CUST_ADD_QTY = "waiting_cust_add_qty"
 STATE_CUST_REMOVE_QTY = "waiting_cust_remove_qty"
+STATE_WAITING_SELLER = "waiting_seller_name"
+STATE_SELLER_ACTION = "seller_action"  # stores 'add' or 'remove'
 STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
 STATE_ADD_TYPE = "waiting_add_type"
@@ -1331,6 +1373,7 @@ STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
+STATE_RESET_PIN = "waiting_reset_pin"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1339,6 +1382,7 @@ BTN_REMOVE_QTY = "\u2796 \u0625\u062e\u0631\u0627\u062c \u0643\u0645\u064a\u0629
 BTN_EDIT = "\u270f\ufe0f \u062a\u0639\u062f\u064a\u0644 \u0633\u0644\u0639\u0629"
 BTN_DELETE = "\U0001f5d1\ufe0f \u062d\u0630\u0641 \u0633\u0644\u0639\u0629"
 BTN_CANCEL = "\u274c \u0625\u0644\u063a\u0627\u0621"
+BTN_SKIP = "\u23ed \u062a\u062e\u0637\u064d"
 BTN_USERS = "⚙️ المستخدمين"
 BTN_BACKUP = "💾 نسخ احتياطي"
 BTN_ALERT = "🔔 تنبيه"
@@ -1347,6 +1391,7 @@ BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 BTN_INCOMING = "🚚 طلبات التوريد"
 BTN_INVOICE = "🧾 إنشاء فاتورة"
+BTN_RESET_STOCK = "🗑 تصفير المخزون"
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
@@ -1790,7 +1835,7 @@ def get_admin_keyboard():
             [BTN_EDIT, BTN_DELETE],
             [users_btn, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
-            [BTN_INVOICE, BTN_UPDATE, BTN_CANCEL],
+            [BTN_INVOICE, BTN_UPDATE, BTN_RESET_STOCK],
         ],
         resize_keyboard=True,
     )
@@ -1798,6 +1843,11 @@ def get_admin_keyboard():
 
 def get_input_keyboard():
     return ReplyKeyboardMarkup([[BTN_CANCEL]], resize_keyboard=True)
+
+
+def get_seller_keyboard():
+    """Keyboard with Skip button for optional seller name."""
+    return ReplyKeyboardMarkup([[BTN_SKIP], [BTN_CANCEL]], resize_keyboard=True)
 
 
 
@@ -1944,6 +1994,93 @@ async def callback_add_handler(update, context):
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
 
 
+def db_reset_all_stock():
+    """Delete all stock data: products, transactions, invoices, orders, extraction requests."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM invoice_items")
+            cur.execute("DELETE FROM invoices")
+            cur.execute("DELETE FROM extraction_requests")
+            cur.execute("DELETE FROM incoming_orders")
+            cur.execute("DELETE FROM transactions")
+            cur.execute("DELETE FROM products")
+            # Reset sequences
+            cur.execute("SELECT setval('products_id_seq', 1, false)")
+            cur.execute("SELECT setval('transactions_id_seq', 1, false)")
+            cur.execute("SELECT setval('invoices_id_seq', 1, false)")
+            cur.execute("SELECT setval('invoice_items_id_seq', 1, false)")
+            cur.execute("SELECT setval('extraction_requests_id_seq', 1, false)")
+            cur.execute("SELECT setval('incoming_orders_id_seq', 1, false)")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+async def process_reset_stock(update, context):
+    """Execute full stock reset after confirmation."""
+    try:
+        db_reset_all_stock()
+        await update.message.reply_text(
+            "✅ تم تصفير المخزون بالكامل.\n\n"
+            "📦 السلع: 0\n"
+            "📜 العمليات: 0\n"
+            "🧾 الفواتير: 0\n"
+            "🚚 طلبات التوريد: 0\n\n"
+            "يمكنك البدء بإضافة سلع جديدة.",
+            reply_markup=get_admin_keyboard(),
+        )
+    except Exception as e:
+        await update.message.reply_text("❌ فشل التصفير: " + str(e), reply_markup=get_admin_keyboard())
+    context.user_data.clear()
+
+
+async def process_seller_input(update, context, text):
+    """Handle optional seller name input, then execute the add/remove."""
+    text = text.strip()
+    # Handle skip/cancel buttons
+    if text == BTN_SKIP:
+        seller = None
+    elif text == BTN_CANCEL:
+        context.user_data.clear()
+        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+        return
+    else:
+        seller = text if text else None
+
+    action = context.user_data.get("seller_action")
+    product_id = context.user_data.get("seller_product_id")
+    qty = context.user_data.get("seller_qty")
+    user_id = context.user_data.get("seller_user_id")
+
+    if not product_id or not action or not user_id:
+        context.user_data.clear()
+        await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
+        return
+
+    try:
+        updated = db_update_quantity(product_id, qty, action)
+        log_transaction(product_id, action, qty, user_id, reason=seller)
+        unit = _get_unit_code(updated["name"])
+        if action == "add":
+            msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"]
+        else:
+            msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"]
+        if seller:
+            msg += "\n👤 البائع: " + seller
+        msg += "\n\n" + format_product_admin(updated)
+        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        await send_low_stock_alerts(context.bot)
+    except ValueError as e:
+        await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
+    except Exception as e:
+        await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+    context.user_data.clear()
+
+
 async def process_add_quantity(update, context, text, telegram_id):
     parsed = parse_qty_input(text)
     if not parsed:
@@ -1957,18 +2094,16 @@ async def process_add_quantity(update, context, text, telegram_id):
     if not db_user:
         await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.", reply_markup=get_input_keyboard())
         return
-    try:
-        updated = db_update_quantity(product_id, qty, "add")
-        log_transaction(product_id, "add", qty, db_user["id"])
-        unit = _get_unit_code(updated["name"])
-        msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-        await send_low_stock_alerts(context.bot)
-    except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
-    except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+    # Ask for optional seller name before executing
+    context.user_data["state"] = STATE_WAITING_SELLER
+    context.user_data["seller_action"] = "add"
+    context.user_data["seller_product_id"] = product_id
+    context.user_data["seller_qty"] = qty
+    context.user_data["seller_user_id"] = db_user["id"]
+    await update.message.reply_text(
+        "\U0001f3f4 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0628\u0627\u0626\u0639 (\u0627\u062e\u062a\u064a\u0627\u0631\u064a):",
+        reply_markup=get_seller_keyboard(),
+    )
 
 
 async def process_remove_quantity(update, context, text, telegram_id):
@@ -1984,18 +2119,16 @@ async def process_remove_quantity(update, context, text, telegram_id):
     if not db_user:
         await update.message.reply_text("\u274c \u0644\u0645 \u064a\u062a\u0645 \u0627\u0644\u0639\u062b\u0648\u0631 \u0639\u0644\u0649 \u062d\u0633\u0627\u0628\u0643.", reply_markup=get_input_keyboard())
         return
-    try:
-        updated = db_update_quantity(product_id, qty, "remove")
-        log_transaction(product_id, "remove", qty, db_user["id"])
-        unit = _get_unit_code(updated["name"])
-        msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"] + "\n\n" + format_product_admin(updated)
-        await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-        await send_low_stock_alerts(context.bot)
-    except ValueError as e:
-        await update.message.reply_text("\u274c " + str(e), reply_markup=get_input_keyboard())
-    except Exception as e:
-        await update.message.reply_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+    # Ask for optional seller name before executing
+    context.user_data["state"] = STATE_WAITING_SELLER
+    context.user_data["seller_action"] = "remove"
+    context.user_data["seller_product_id"] = product_id
+    context.user_data["seller_qty"] = qty
+    context.user_data["seller_user_id"] = db_user["id"]
+    await update.message.reply_text(
+        "\U0001f3f4 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0628\u0627\u0626\u0639 (\u0627\u062e\u062a\u064a\u0627\u0631\u064a):",
+        reply_markup=get_seller_keyboard(),
+    )
 
 
 async def process_edit_product(update, context, text, telegram_id):
@@ -2231,7 +2364,13 @@ def _build_movements_text(rows):
             user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
         else:
             user_link = user_name
-        lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str)
+        # If seller name (reason) exists, show it instead of operator
+        seller = r.get("reason")
+        if seller:
+            who = "👤 " + seller
+        else:
+            who = user_link
+        lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + who + " " + time_str)
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
@@ -2246,7 +2385,7 @@ def _fetch_today_movements():
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                "u.username AS user_name, u.telegram_id AS user_tid "
+                "u.username AS user_name, u.telegram_id AS user_tid, t.reason "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -2272,7 +2411,7 @@ def _fetch_movements_by_date(target_date):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                "u.username AS user_name, u.telegram_id AS user_tid "
+                "u.username AS user_name, u.telegram_id AS user_tid, t.reason "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -3739,7 +3878,7 @@ async def handle_admin_message(update, context):
     bot = context.bot
 
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
@@ -3826,6 +3965,21 @@ async def handle_admin_message(update, context):
         if text == BTN_BACKUP:
             await backup_command(update, context)
             return
+        if text == BTN_RESET_STOCK:
+            context.user_data["state"] = STATE_RESET_PIN
+            await update.message.reply_text(
+                "⚠️ تصفير المخزون\n\n"
+                "سيتم حذف:\n"
+                "  • جميع السلع (" + str(len(get_all_products())) + ")\n"
+                "  • جميع العمليات\n"
+                "  • جميع الفواتير\n"
+                "  • جميع طلبات التوريد والاستخراج\n\n"
+                "💾 نصيحة: صدّر نسخة احتياطية أولاً!\n\n"
+                "🔐 أرسل رمز PIN للتأكيد:\n"
+                "(أو أرسل ❌ للإلغاء)",
+                reply_markup=get_input_keyboard(),
+            )
+            return
         if text == BTN_CANCEL:
             await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
             return
@@ -3838,6 +3992,19 @@ async def handle_admin_message(update, context):
     if text == BTN_CANCEL:
         context.user_data.clear()
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
+        return
+
+    # ── Reset Stock PIN Confirmation ──
+    if state == STATE_RESET_PIN:
+        pin = text.strip()
+        if pin == BTN_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+        elif pin == "5614":
+            await process_reset_stock(update, context)
+        else:
+            await update.message.reply_text("❌ رمز PIN خاطئ. تم الإلغاء.", reply_markup=get_admin_keyboard())
+            context.user_data.clear()
         return
 
     # ── Invoice FSM States ──
@@ -4064,6 +4231,8 @@ async def handle_admin_message(update, context):
         await process_add_quantity(update, context, text, user.id)
     elif state == STATE_REMOVE_QTY:
         await process_remove_quantity(update, context, text, user.id)
+    elif state == STATE_WAITING_SELLER:
+        await process_seller_input(update, context, text)
     elif state == STATE_EDIT_PRODUCT:
         await process_edit_product(update, context, text, user.id)
     elif state == STATE_DELETE_PRODUCT:
