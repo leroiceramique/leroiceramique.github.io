@@ -2439,8 +2439,10 @@ async def _show_all_movements(update, context, admin_view=True):
         }
         for d in range(6, -1, -1):
             day = today - datetime.timedelta(days=d)
-            day_str = day.strftime("%Y-%m-%d")
             wd = day.weekday()
+            if wd == 4:  # skip Friday
+                continue
+            day_str = day.strftime("%Y-%m-%d")
             if d == 0:
                 label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
             else:
@@ -2472,8 +2474,10 @@ async def callback_mov_date_handler(update, context):
         }
         for d in range(6, -1, -1):
             day = today - datetime.timedelta(days=d)
-            day_str = day.strftime("%Y-%m-%d")
             wd = day.weekday()
+            if wd == 4:  # skip Friday
+                continue
+            day_str = day.strftime("%Y-%m-%d")
             if d == 0:
                 label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
             else:
