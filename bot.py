@@ -4305,10 +4305,14 @@ async def handle_admin_message(update, context):
             context.user_data.clear()
             await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
             return
+        if text == BTN_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+            return
         parsed = parse_crt_input(text)
         if parsed is None:
             unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_admin_keyboard())
             return
         qty = parsed
         try:
@@ -4461,10 +4465,14 @@ async def handle_customer_message(update, context):
             context.user_data.clear()
             await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
             return
+        if text == BTN_CUST_CANCEL or text == BTN_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            return
         parsed = parse_crt_input(text)
         if parsed is None:
             unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحا." + chr(10) + "مثال: 10 أو 10" + unit)
+            await update.message.reply_text("❌ أرسل عددا صحيحا." + chr(10) + "مثال: 10 أو 10" + unit, reply_markup=get_customer_keyboard())
             return
         qty = parsed
         try:
@@ -4499,48 +4507,6 @@ async def handle_customer_message(update, context):
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e))
-        context.user_data.clear()
-        return
-
-    # State: waiting_extract_qty
-    if state == "waiting_extract_qty":
-        product = context.user_data.get("cust_product")
-        if not product:
-            context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
-            return
-        parsed = parse_crt_input(text)
-        if parsed is None:
-            await update.message.reply_text("❌ أرسل عددا صحيحا.")
-            return
-        qty = parsed
-        if qty <= 0:
-            await update.message.reply_text("❌ الكمية يجب أن تكون أكبر من 0.")
-            return
-        db_user = get_user(user.id)
-        if not db_user:
-            await update.message.reply_text("❌ حسابك غير مسجل.")
-            return
-        try:
-            req = create_extraction_request(product["id"], qty, db_user["id"])
-            unit_ar = _get_unit_ar(product["name"])
-            msg = "📨 تم إرسال طلب الإخراج!" + chr(10) + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit_ar + chr(10) + chr(10) + "⏳ بانتظار موافقة المدير."
-            await update.message.reply_text(msg)
-            for admin_id in ADMIN_IDS:
-                try:
-                    requester_name = user.first_name or user.username or str(user.id)
-                    unit = _get_unit_code(product["name"])
-                    admin_msg = "🔔 طلب إخراج جديد:" + chr(10) + chr(10) + "👤 " + requester_name + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit + chr(10) + chr(10) + "موافقة على إلاخراج هذا الطلب؟"
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ موافقة", callback_data="ext_approve_" + str(req["id"])),
-                         InlineKeyboardButton("❌ رفض", callback_data="ext_reject_" + str(req["id"]))],
-                    ])
-                    await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=kb)
-                except Exception as e:
-                    logging.error("[EXTRACT] Notify admin failed: " + str(e))
-        except Exception as e:
-            logging.error("[EXTRACT] Request failed: " + str(e))
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
         return
@@ -4676,13 +4642,10 @@ async def _show_pending_extractions(update, context):
             pass
 
 async def callback_extract_request_handler(update, context):
-    """Handle member click on request extract button."""
+    """Handle member click on request extract button — direct execution, no approval needed."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    if not can_extract(user_id):
-        await query.answer("❌ ليس لديك صلاحية الإخراج.", show_alert=True)
-        return
     data = query.data
     try:
         product_id = int(data.split("_")[2])
@@ -4705,13 +4668,14 @@ async def callback_extract_request_handler(update, context):
         return
     product = dict(row)
     context.user_data["cust_product"] = product
-    _set_state(context, "waiting_extract_qty")
+    context.user_data["pact_action"] = "remove"
+    _set_state(context, "waiting_pact_qty")
     unit = _get_unit_code(product["name"])
     unit_ar = _get_unit_ar(product["name"])
     text = (
         "📦 " + product["name"]
         + " (المتوفر: " + str(product["quantity"]) + " " + unit + ")"
-        + "\n➖ طلب إخراج " + unit_ar
+        + "\n➖ إخراج " + unit_ar
         + "\nأرسل العدد (" + unit + "):"
     )
     try:
