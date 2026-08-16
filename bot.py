@@ -1569,8 +1569,21 @@ async def send_low_stock_alerts(bot):
         # Products that LEFT low stock (restocked)
         left_ids = set(_previously_low_stock.keys()) - set(current.keys())
         if left_ids:
+            # Fetch fresh data for restocked products (old cache has stale quantity)
+            fresh = {}
+            if left_ids:
+                conn = get_connection()
+                try:
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute("SELECT * FROM products WHERE id = ANY(%s)", (list(left_ids),))
+                        fresh = {r["id"]: dict(r) for r in cur.fetchall()}
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                finally:
+                    release_connection(conn)
             for pid in left_ids:
-                prod = _previously_low_stock[pid]
+                prod = fresh.get(pid) or _previously_low_stock[pid]
                 name = prod["name"]
                 lower_name = name.lower().strip()
                 if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
