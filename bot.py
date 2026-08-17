@@ -1634,6 +1634,20 @@ async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
     await _broadcast_to_all_users(bot, msg)
 
 
+async def _broadcast_remove_notification(bot, product, qty, actor, reason="sale"):
+    """Broadcast remove-notification to all users with reason (customer return or sale)."""
+    pname = product.get("name", "") if isinstance(product, dict) else str(product)
+    if reason == "return":
+        msg = ("↩️ إرجاع سلعة من زبون" + chr(10) + chr(10)
+               + "📦 " + pname + chr(10)
+               + "➖ الكمية: " + str(qty))
+    else:
+        msg = ("🚚 بيع لزبون" + chr(10) + chr(10)
+               + "📦 " + pname + chr(10)
+               + "➖ الكمية: " + str(qty))
+    await _broadcast_to_all_users(bot, msg)
+
+
 async def send_low_stock_alerts(bot):
     """Send individual alerts to ALL users when products enter or leave low-stock list."""
     try:
@@ -2091,11 +2105,25 @@ async def callback_add_handler(update, context):
             msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
             await query.edit_message_text(msg)
             await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
+            # Ask reason for notification after adding new product
+            db_user = get_user(telegram_id)
+            if db_user:
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
+                ])
+                user_data["pending_add_notify"] = {"product": dict(product), "qty": qty, "user": db_user}
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f",
+                    reply_markup=notify_kb,
+                )
         except Exception as e:
             await query.edit_message_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e))
-        user_data.clear()
+        # Don't clear user_data yet — callback needs pending_add_notify
+        return
 
-    elif data == "add_cancel":
+    if data == "add_cancel":
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
@@ -2181,11 +2209,30 @@ async def process_seller_input(update, context, text):
         msg += "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
+        # Ask reason for notification
+        db_user = get_user(telegram_id)
+        if db_user:
+            if action == "add":
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="addnotify_return")],
+                ])
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
+            else:
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="remnotify_return"),
+                     InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale")],
+                ])
+                context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
     except ValueError as e:
         await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+    # Don't clear if pending notify needs user_data
+    if not context.user_data.get("pending_add_notify") and not context.user_data.get("pending_rem_notify"):
+        context.user_data.clear()
 
 
 async def process_add_quantity(update, context, text, telegram_id):
@@ -3150,6 +3197,38 @@ async def callback_add_notify_handler(update, context):
         except Exception:
             pass
     context.user_data.pop("pending_add_notify", None)
+
+
+async def callback_rem_notify_handler(update, context):
+    """Handle the 'reason for remove' choice: customer return or sale."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "remnotify_return" or "remnotify_sale"
+    reason = "return" if data == "remnotify_return" else "sale"
+    pending = context.user_data.get("pending_rem_notify")
+    if not pending:
+        await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
+        context.user_data.clear()
+        return
+    product = pending["product"]
+    qty = pending["qty"]
+    actor = pending["user"]
+    try:
+        # Broadcast the notification with the chosen reason
+        await _broadcast_remove_notification(context.bot, product, qty, actor, reason=reason)
+        # Confirm to the user
+        if reason == "return":
+            confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+        else:
+            confirm = "🚚 تم إرسال تنبيه بيع لزبون للجميع ✅"
+        await query.edit_message_text(confirm)
+    except Exception as e:
+        logging.error("[REM_NOTIFY] Broadcast failed: " + str(e))
+        try:
+            await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
+        except Exception:
+            pass
+    context.user_data.pop("pending_rem_notify", None)
 
 
 async def callback_email_restore_handler(update, context):
@@ -4434,14 +4513,22 @@ async def handle_admin_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
-            # After add: ask reason for notification
-            if action == "add" and db_user:
-                notify_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0628\u0636\u0627\u0639\u0629 \u0645\u0646 \u0627\u0644\u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
-                     InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0633\u0644\u0639\u0629 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
-                ])
-                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
-                await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
+            # After action: ask reason for notification
+            if db_user:
+                if action == "add":
+                    notify_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚚 وصول بضاعة من الشاحنة", callback_data="addnotify_truck"),
+                         InlineKeyboardButton("↩️ إرجاع سلعة من زبون", callback_data="addnotify_return")],
+                    ])
+                    context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                    await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
+                else:
+                    notify_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="remnotify_return"),
+                         InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale")],
+                    ])
+                    context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                    await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -5217,6 +5304,7 @@ def build_application():
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
+    app.add_handler(CallbackQueryHandler(callback_rem_notify_handler, pattern="^remnotify_"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
