@@ -273,8 +273,10 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     first_name  VARCHAR(255),
     role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
     active      BOOLEAN NOT NULL DEFAULT TRUE,
-    can_extract   BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
+    can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE,
+    price_tier        VARCHAR(10) DEFAULT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS products (
@@ -283,6 +285,9 @@ CREATE TABLE IF NOT EXISTS products (
     quantity       INTEGER NOT NULL DEFAULT 0,
     location       VARCHAR(255) DEFAULT '',
     minimum_stock  INTEGER NOT NULL DEFAULT 5,
+    selling_price  NUMERIC(12,2) NOT NULL DEFAULT 0,
+    price_low      NUMERIC(12,2) NOT NULL DEFAULT 0,
+    price_high     NUMERIC(12,2) NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -435,6 +440,25 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 ALTER TABLE products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(12,2) NOT NULL DEFAULT 0;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
+            -- Migration: add price_low and price_high to products
+            DO $$ BEGIN
+                ALTER TABLE products ADD COLUMN IF NOT EXISTS price_low NUMERIC(12,2) NOT NULL DEFAULT 0;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            DO $$ BEGIN
+                ALTER TABLE products ADD COLUMN IF NOT EXISTS price_high NUMERIC(12,2) NOT NULL DEFAULT 0;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: add price_tier to users
+            DO $$ BEGIN
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS price_tier VARCHAR(10) DEFAULT NULL;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: add can_manage_prices to users
+            DO $$ BEGIN
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
             -- Migration: allow invoice_items.product_id to be NULL (for manual products)
             DO $$ BEGIN
                 ALTER TABLE invoice_items ALTER COLUMN product_id DROP NOT NULL;
@@ -476,6 +500,12 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             """)
+            # Migration: ensure all ADMIN_IDS users always get admin role
+            if ADMIN_IDS:
+                cur.execute(
+                    "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
+                    (list(ADMIN_IDS),)
+                )
         conn.commit()
         print("[DB] Schema initialized successfully.")
     except Exception as e:
@@ -767,7 +797,7 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -825,11 +855,13 @@ def db_import_backup(data):
                         u.get("role", "customer"), u.get("active", True),
                         u.get("created_at"),
                         u.get("can_extract", False),
+                        u.get("can_manage_prices", False),
                         u.get("first_name"),
+                        u.get("price_tier"),
                     ))
                 cur.executemany("""
-                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, first_name)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_manage_prices, first_name, price_tier)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, rows)
                 max_uid = max(u["id"] for u in users)
                 cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
@@ -839,12 +871,13 @@ def db_import_backup(data):
             if products:
                 rows = [
                     (p["id"], p["name"], p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0))
+                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0),
+                     p.get("price_low", 0), p.get("price_high", 0))
                     for p in products
                 ]
                 cur.executemany("""
-                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price, price_low, price_high)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, rows)
                 max_pid = max(p["id"] for p in products)
                 cur.execute("SELECT setval('products_id_seq', %s)", (max_pid,))
@@ -1170,6 +1203,64 @@ def db_update_quantity(product_id, change, transaction_type):
         release_connection(conn)
 
 
+def db_update_product_prices(product_id, price_low, price_high):
+    """Update price_low and price_high for a product."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE products SET price_low = %s, price_high = %s WHERE id = %s "
+                "RETURNING id, name, quantity, price_low, price_high",
+                (price_low, price_high, product_id))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("المنتج غير موجود.")
+            conn.commit()
+            return dict(row)
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def db_set_user_price_tier(telegram_id, tier):
+    """Set price_tier for a user. tier: 'low', 'high', or None to clear."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE users SET price_tier = %s WHERE telegram_id = %s RETURNING id, telegram_id, username, price_tier",
+                (tier, telegram_id))
+            row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def set_price_manager_permission(telegram_id, allowed):
+    """Grant or revoke price management permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET can_manage_prices = %s WHERE telegram_id = %s RETURNING id",
+                (allowed, telegram_id),
+            )
+            updated = cur.fetchone() is not None
+        conn.commit()
+        return updated
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def db_delete_product(product_id):
     conn = get_connection()
     try:
@@ -1374,6 +1465,8 @@ STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
 STATE_RESET_PIN = "waiting_reset_pin"
+STATE_WAITING_PRICE_LOW = "waiting_price_low"
+STATE_WAITING_PRICE_HIGH = "waiting_price_high"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1401,6 +1494,7 @@ BTN_CUST_MOVEMENTS = "📋 الحركة"
 BTN_CUST_CANCEL = "❌ إلغاء"
 BTN_CUST_ORDER = "📦 طلب توريد"
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
+BTN_CUST_PRICES = "💰 الأسعار"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2339,14 +2433,13 @@ async def _show_product_detail(update, context, product):
     unit_ar = _get_unit_ar(p["name"])
     text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " " + unit_ar + " " + icon
     pid = str(p["id"])
-    user_id = update.effective_user.id if update.effective_user else 0
-    admin_view = is_admin(user_id)
-    keyboard = InlineKeyboardMarkup([
+    buttons = [
         [
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
-    ])
+    ]
+    keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
@@ -2673,6 +2766,8 @@ async def callback_product_action_handler(update, context):
             await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
             pass
+
+
 #  SHOW PRODUCTS LIST
 # ═══════════════════════════════════════════════════════════
 
@@ -2866,7 +2961,6 @@ async def callback_promote_handler(update, context):
         logging.info("[USERS] " + action + " user " + str(target_id))
     else:
         await query.edit_message_text("⚠️ لم يتم تطبيق التغيير.")
-
 
 # ── Backup Command ─────────────────────────────────────
 
@@ -3145,13 +3239,16 @@ async def users_command(update, context):
     promote_buttons = []
     for u in approved:
         name = (u.get("first_name") or u.get("username") or str(u["telegram_id"]))[:18]
+        tid = u["telegram_id"]
         if u["role"] == "customer":
             promote_buttons.append([InlineKeyboardButton(
-                "👑 ترقية: " + name, callback_data="promote_" + str(u["telegram_id"])
+                "👑 ترقية: " + name,
+                callback_data="promote_" + str(tid)
             )])
-        elif u["role"] == "admin" and u["telegram_id"] not in ADMIN_IDS:
+        elif u["role"] == "admin" and tid not in ADMIN_IDS:
             promote_buttons.append([InlineKeyboardButton(
-                "👤 إزالة إدارة: " + name, callback_data="demote_" + str(u["telegram_id"])
+                "👤 إزالة إدارة: " + name,
+                callback_data="demote_" + str(tid)
             )])
 
     msg_lines = ["⚙️ إدارة المستخدمين\n"]
@@ -3167,8 +3264,8 @@ async def users_command(update, context):
     msg_lines.append("")
     msg_lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
     for u in approved:
-        role_icon = "👑" if u["role"] == "admin" else "👤"
         name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
+        role_icon = "👑" if u["role"] == "admin" else "👤"
         msg_lines.append("  " + role_icon + " " + name)
 
     # أزرار الترقية أسفل الرسالة
@@ -5127,6 +5224,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
+
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_revoke_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_pending_list$"))
