@@ -273,8 +273,10 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     first_name  VARCHAR(255),
     role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
     active      BOOLEAN NOT NULL DEFAULT TRUE,
-    can_extract   BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
+    can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE,
+    price_tier        VARCHAR(10) DEFAULT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS products (
@@ -283,6 +285,9 @@ CREATE TABLE IF NOT EXISTS products (
     quantity       INTEGER NOT NULL DEFAULT 0,
     location       VARCHAR(255) DEFAULT '',
     minimum_stock  INTEGER NOT NULL DEFAULT 5,
+    selling_price  NUMERIC(12,2) NOT NULL DEFAULT 0,
+    price_low      NUMERIC(12,2) NOT NULL DEFAULT 0,
+    price_high     NUMERIC(12,2) NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -435,6 +440,25 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 ALTER TABLE products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(12,2) NOT NULL DEFAULT 0;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
+            -- Migration: add price_low and price_high to products
+            DO $$ BEGIN
+                ALTER TABLE products ADD COLUMN IF NOT EXISTS price_low NUMERIC(12,2) NOT NULL DEFAULT 0;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            DO $$ BEGIN
+                ALTER TABLE products ADD COLUMN IF NOT EXISTS price_high NUMERIC(12,2) NOT NULL DEFAULT 0;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: add price_tier to users
+            DO $$ BEGIN
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS price_tier VARCHAR(10) DEFAULT NULL;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: add can_manage_prices to users
+            DO $$ BEGIN
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
             -- Migration: allow invoice_items.product_id to be NULL (for manual products)
             DO $$ BEGIN
                 ALTER TABLE invoice_items ALTER COLUMN product_id DROP NOT NULL;
@@ -476,6 +500,12 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             """)
+            # Migration: ensure all ADMIN_IDS users always get admin role
+            if ADMIN_IDS:
+                cur.execute(
+                    "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
+                    (list(ADMIN_IDS),)
+                )
         conn.commit()
         print("[DB] Schema initialized successfully.")
     except Exception as e:
@@ -767,7 +797,7 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -799,133 +829,150 @@ def db_export_backup():
 def db_import_backup(data):
     """Restore data from a backup dict. Returns summary string.
 
-    Handles all tables that reference users(id) with NOT NULL constraints:
-      - transactions.user_id NOT NULL
-      - extraction_requests.requester_id NOT NULL
-      - incoming_orders.requester_id NOT NULL
-      - invoices.admin_id NOT NULL
-    Must delete ALL dependent tables BEFORE deleting users.
+    Uses executemany for bulk inserts — much faster than row-by-row.
+    Handles all tables that reference users(id) with NOT NULL constraints.
     Supports old backup versions (2,3) that lack some tables.
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # ── DELETE in reverse dependency order to avoid NOT NULL violations ──
-            # Level 1: tables that reference invoices
+            # ── DELETE in reverse dependency order ──
             cur.execute("DELETE FROM invoice_items")
-            # Level 2: tables that reference products AND/OR users
             cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
             cur.execute("DELETE FROM transactions")
-            # Level 3: tables with no user-dependent FK
             cur.execute("DELETE FROM products")
-            # Level 4: users (no remaining FKs point here)
             cur.execute("DELETE FROM users")
 
-            # ── Import users with their ORIGINAL ids ──
-            user_count = 0
-            for u in data.get("users", []):
-                cur.execute(
-                    "INSERT INTO users (id, telegram_id, username, role, active, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (u["id"], u["telegram_id"], u.get("username"), u.get("role", "customer"),
-                     u.get("active", True), u.get("created_at")))
-                # Restore can_extract and first_name if present (version 4+)
-                if "can_extract" in u:
-                    cur.execute("UPDATE users SET can_extract = %s WHERE id = %s", (u["can_extract"], u["id"]))
-                if "first_name" in u and u["first_name"] is not None:
-                    cur.execute("UPDATE users SET first_name = %s WHERE id = %s", (u["first_name"], u["id"]))
-                user_count += 1
-            if user_count > 0:
-                max_uid = max(u["id"] for u in data.get("users", []))
+            # ── Import users (single INSERT with can_extract + first_name) ──
+            users = data.get("users", [])
+            if users:
+                rows = []
+                for u in users:
+                    rows.append((
+                        u["id"], u["telegram_id"], u.get("username"),
+                        u.get("role", "customer"), u.get("active", True),
+                        u.get("created_at"),
+                        u.get("can_extract", False),
+                        u.get("can_manage_prices", False),
+                        u.get("first_name"),
+                        u.get("price_tier"),
+                    ))
+                cur.executemany("""
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_manage_prices, first_name, price_tier)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_uid = max(u["id"] for u in users)
                 cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
 
-            # ── Import products with their ORIGINAL ids ──
-            prod_count = 0
-            for p in data.get("products", []):
-                cur.execute(
-                    "INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            # ── Import products ──
+            products = data.get("products", [])
+            if products:
+                rows = [
                     (p["id"], p["name"], p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0)))
-                prod_count += 1
-            if prod_count > 0:
-                max_pid = max(p["id"] for p in data.get("products", []))
+                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0),
+                     p.get("price_low", 0), p.get("price_high", 0))
+                    for p in products
+                ]
+                cur.executemany("""
+                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price, price_low, price_high)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_pid = max(p["id"] for p in products)
                 cur.execute("SELECT setval('products_id_seq', %s)", (max_pid,))
 
-            # ── Import transactions (users & products already exist with correct ids) ──
-            tx_count = 0
-            for t in data.get("transactions", []):
-                cur.execute(
-                    "INSERT INTO transactions (id, product_id, type, quantity, user_id, date, reason) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    (t["id"], t["product_id"], t["type"], t["quantity"], t.get("user_id"), t.get("date"), t.get("reason")))
-                tx_count += 1
-            if tx_count > 0:
-                max_tid = max(t["id"] for t in data.get("transactions", []))
+            # ── Import transactions ──
+            transactions = data.get("transactions", [])
+            if transactions:
+                rows = [
+                    (t["id"], t["product_id"], t["type"], t["quantity"],
+                     t.get("user_id"), t.get("date"), t.get("reason"))
+                    for t in transactions
+                ]
+                cur.executemany("""
+                    INSERT INTO transactions (id, product_id, type, quantity, user_id, date, reason)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_tid = max(t["id"] for t in transactions)
                 cur.execute("SELECT setval('transactions_id_seq', %s)", (max_tid,))
 
-            # ── Import invoices (users already exist with correct ids) ──
-            inv_count = 0
-            for inv in data.get("invoices", []):
-                cur.execute(
-                    "INSERT INTO invoices (id, customer_name, worker_id, admin_id, total_amount, status, created_at, approved_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            # ── Import invoices ──
+            invoices = data.get("invoices", [])
+            if invoices:
+                rows = [
                     (inv["id"], inv["customer_name"], inv.get("worker_id"), inv.get("admin_id"),
                      inv.get("total_amount", 0), inv.get("status", "approved"),
-                     inv.get("created_at"), inv.get("approved_at")))
-                inv_count += 1
-            if inv_count > 0:
-                max_iid = max(inv["id"] for inv in data.get("invoices", []))
+                     inv.get("created_at"), inv.get("approved_at"))
+                    for inv in invoices
+                ]
+                cur.executemany("""
+                    INSERT INTO invoices (id, customer_name, worker_id, admin_id, total_amount, status, created_at, approved_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_iid = max(inv["id"] for inv in invoices)
                 cur.execute("SELECT setval('invoices_id_seq', %s)", (max_iid,))
 
-            # ── Import invoice_items (invoices already exist with correct ids) ──
-            ii_count = 0
-            for ii in data.get("invoice_items", []):
-                cur.execute(
-                    "INSERT INTO invoice_items (id, invoice_id, product_id, product_name, quantity, unit_price, subtotal) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            # ── Import invoice_items ──
+            invoice_items = data.get("invoice_items", [])
+            if invoice_items:
+                rows = [
                     (ii["id"], ii["invoice_id"], ii.get("product_id"), ii["product_name"],
-                     ii["quantity"], ii.get("unit_price", 0), ii.get("subtotal", 0)))
-                ii_count += 1
-            if ii_count > 0:
-                max_iiid = max(ii["id"] for ii in data.get("invoice_items", []))
+                     ii["quantity"], ii.get("unit_price", 0), ii.get("subtotal", 0))
+                    for ii in invoice_items
+                ]
+                cur.executemany("""
+                    INSERT INTO invoice_items (id, invoice_id, product_id, product_name, quantity, unit_price, subtotal)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_iiid = max(ii["id"] for ii in invoice_items)
                 cur.execute("SELECT setval('invoice_items_id_seq', %s)", (max_iiid,))
 
             # ── Import extraction_requests (version 4+) ──
-            er_count = 0
-            for er in data.get("extraction_requests", []):
-                cur.execute(
-                    "INSERT INTO extraction_requests (id, product_id, quantity, requester_id, status, created_at, processed_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            ext_reqs = data.get("extraction_requests", [])
+            if ext_reqs:
+                rows = [
                     (er["id"], er["product_id"], er["quantity"], er.get("requester_id"),
-                     er.get("status", "pending"), er.get("created_at"), er.get("processed_at")))
-                er_count += 1
-            if er_count > 0:
-                max_erid = max(er["id"] for er in data.get("extraction_requests", []))
+                     er.get("status", "pending"), er.get("created_at"), er.get("processed_at"))
+                    for er in ext_reqs
+                ]
+                cur.executemany("""
+                    INSERT INTO extraction_requests (id, product_id, quantity, requester_id, status, created_at, processed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_erid = max(er["id"] for er in ext_reqs)
                 cur.execute("SELECT setval('extraction_requests_id_seq', %s)", (max_erid,))
 
             # ── Import incoming_orders (version 4+) ──
-            io_count = 0
-            for io in data.get("incoming_orders", []):
-                cur.execute(
-                    "INSERT INTO incoming_orders (id, requester_id, product_name, quantity, status, photo_file_id, created_at, completed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            inc_orders = data.get("incoming_orders", [])
+            if inc_orders:
+                rows = [
                     (io["id"], io.get("requester_id"), io["product_name"], io["quantity"],
                      io.get("status", "pending"), io.get("photo_file_id"),
-                     io.get("created_at"), io.get("completed_at")))
-                io_count += 1
-            if io_count > 0:
-                max_ioid = max(io["id"] for io in data.get("incoming_orders", []))
+                     io.get("created_at"), io.get("completed_at"))
+                    for io in inc_orders
+                ]
+                cur.executemany("""
+                    INSERT INTO incoming_orders (id, requester_id, product_name, quantity, status, photo_file_id, created_at, completed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_ioid = max(io["id"] for io in inc_orders)
                 cur.execute("SELECT setval('incoming_orders_id_seq', %s)", (max_ioid,))
 
         conn.commit()
+
         summary = ("✅ تم استيراد البيانات:\n"
-            "  المستخدمين: " + str(user_count) + "\n"
-            "  السلع: " + str(prod_count) + "\n"
-            "  العمليات: " + str(tx_count))
-        if inv_count > 0:
-            summary += "\n  الفواتير: " + str(inv_count)
-        if ii_count > 0:
-            summary += "\n  عناصر الفواتير: " + str(ii_count)
-        if er_count > 0:
-            summary += "\n  طلبات الاستخراج: " + str(er_count)
-        if io_count > 0:
-            summary += "\n  طلبات التوريد: " + str(io_count)
+            "  المستخدمين: " + str(len(users)) + "\n"
+            "  السلع: " + str(len(products)) + "\n"
+            "  العمليات: " + str(len(transactions)))
+        if len(invoices) > 0:
+            summary += "\n  الفواتير: " + str(len(invoices))
+        if len(invoice_items) > 0:
+            summary += "\n  عناصر الفواتير: " + str(len(invoice_items))
+        if len(ext_reqs) > 0:
+            summary += "\n  طلبات الاستخراج: " + str(len(ext_reqs))
+        if len(inc_orders) > 0:
+            summary += "\n  طلبات التوريد: " + str(len(inc_orders))
         return summary
     except Exception as e:
         conn.rollback()
@@ -1115,6 +1162,21 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
 
 
 def db_update_quantity(product_id, change, transaction_type):
+    """Update product quantity atomically to prevent race conditions.
+    
+    Instead of SELECT then UPDATE (unsafe), we use a single atomic UPDATE:
+    - ADD:  UPDATE ... SET quantity = quantity + X WHERE id = Y
+    - REMOVE: UPDATE ... SET quantity = quantity - X WHERE id = Y AND quantity >= X
+    
+    PostgreSQL guarantees the UPDATE executes as one indivisible operation.
+    If two users update the same product simultaneously, PostgreSQL serializes
+    them automatically — no Redis lock needed.
+    
+    Example race condition prevented:
+      Product has 10 units
+      User A: UPDATE ... quantity = quantity + 5  → 15
+      User B: UPDATE ... quantity = quantity - 3  → 12 (not 7!)
+    """
     if transaction_type not in ("add", "remove"):
         raise ValueError("transaction_type must be 'add' or 'remove'")
     conn = get_connection()
@@ -1122,33 +1184,109 @@ def db_update_quantity(product_id, change, transaction_type):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if transaction_type == "remove" and change < 0:
                 change = abs(change)
-            # Always fetch old quantity
-            cur.execute("SELECT quantity FROM products WHERE id = %s", (product_id,))
-            old_row = cur.fetchone()
-            old_qty = old_row["quantity"] if old_row else 0
             if transaction_type == "remove":
-                if old_row and old_qty < change:
+                # Atomic: check quantity AND update in a single statement
+                # If quantity < change, the WHERE clause fails → no row returned
+                cur.execute(
+                    "UPDATE products SET quantity = quantity - %s "
+                    "WHERE id = %s AND quantity >= %s "
+                    "RETURNING id, name, quantity, location, minimum_stock, created_at",
+                    (change, product_id, change),
+                )
+                product = cur.fetchone()
+                if product is None:
+                    # Product doesn't exist OR not enough stock — find out which
+                    cur.execute(
+                        "SELECT quantity FROM products WHERE id = %s",
+                        (product_id,),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise ValueError("السلعة غير موجودة.")
                     raise ValueError(
                         "العدد المطلوب ("
                         + str(change)
                         + ") أكبر من المتوفر ("
-                        + str(old_qty)
+                        + str(row["quantity"])
                         + ")"
                     )
-                new_qty_expr = "GREATEST(quantity - %s, 0)"
             else:
-                new_qty_expr = "quantity + %s"
-            cur.execute(
-                "UPDATE products SET quantity = "
-                + new_qty_expr
-                + " WHERE id = %s RETURNING id, name, quantity, location, minimum_stock, created_at",
-                (change, product_id),
-            )
-            product = cur.fetchone()
-        product = dict(product)
-        product["_old_qty"] = old_qty
+                # Atomic: increment in a single statement
+                cur.execute(
+                    "UPDATE products SET quantity = quantity + %s "
+                    "WHERE id = %s "
+                    "RETURNING id, name, quantity, location, minimum_stock, created_at",
+                    (change, product_id),
+                )
+                product = cur.fetchone()
+                if product is None:
+                    raise ValueError("السلعة غير موجودة.")
+            product = dict(product)
+            # Compute old quantity from the result (no separate SELECT needed)
+            if transaction_type == "add":
+                product["_old_qty"] = product["quantity"] - change
+            else:
+                product["_old_qty"] = product["quantity"] + change
         conn.commit()
         return product
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def db_update_product_prices(product_id, price_low, price_high):
+    """Update price_low and price_high for a product."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE products SET price_low = %s, price_high = %s WHERE id = %s "
+                "RETURNING id, name, quantity, price_low, price_high",
+                (price_low, price_high, product_id))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("المنتج غير موجود.")
+            conn.commit()
+            return dict(row)
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def db_set_user_price_tier(telegram_id, tier):
+    """Set price_tier for a user. tier: 'low', 'high', or None to clear."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE users SET price_tier = %s WHERE telegram_id = %s RETURNING id, telegram_id, username, price_tier",
+                (tier, telegram_id))
+            row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def set_price_manager_permission(telegram_id, allowed):
+    """Grant or revoke price management permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET can_manage_prices = %s WHERE telegram_id = %s RETURNING id",
+                (allowed, telegram_id),
+            )
+            updated = cur.fetchone() is not None
+        conn.commit()
+        return updated
     except Exception as e:
         conn.rollback()
         raise
@@ -1359,7 +1497,9 @@ STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
-STATE_RESET_CONFIRM = "waiting_reset_confirm"
+STATE_RESET_PIN = "waiting_reset_pin"
+STATE_WAITING_PRICE_LOW = "waiting_price_low"
+STATE_WAITING_PRICE_HIGH = "waiting_price_high"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -1526,6 +1666,20 @@ async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
     await _broadcast_to_all_users(bot, msg)
 
 
+async def _broadcast_remove_notification(bot, product, qty, actor, reason="sale"):
+    """Broadcast remove-notification to all users with reason (customer return or sale)."""
+    pname = product.get("name", "") if isinstance(product, dict) else str(product)
+    if reason == "return":
+        msg = ("↩️ إرجاع سلعة من زبون" + chr(10) + chr(10)
+               + "📦 " + pname + chr(10)
+               + "➖ الكمية: " + str(qty))
+    else:
+        msg = ("🚚 بيع لزبون" + chr(10) + chr(10)
+               + "📦 " + pname + chr(10)
+               + "➖ الكمية: " + str(qty))
+    await _broadcast_to_all_users(bot, msg)
+
+
 async def send_low_stock_alerts(bot):
     """Send individual alerts to ALL users when products enter or leave low-stock list."""
     try:
@@ -1555,8 +1709,21 @@ async def send_low_stock_alerts(bot):
         # Products that LEFT low stock (restocked)
         left_ids = set(_previously_low_stock.keys()) - set(current.keys())
         if left_ids:
+            # Fetch fresh data for restocked products (old cache has stale quantity)
+            fresh = {}
+            if left_ids:
+                conn = get_connection()
+                try:
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute("SELECT * FROM products WHERE id = ANY(%s)", (list(left_ids),))
+                        fresh = {r["id"]: dict(r) for r in cur.fetchall()}
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                finally:
+                    release_connection(conn)
             for pid in left_ids:
-                prod = _previously_low_stock[pid]
+                prod = fresh.get(pid) or _previously_low_stock[pid]
                 name = prod["name"]
                 lower_name = name.lower().strip()
                 if lower_name in ("plante pcs", "plante", "120/60pcs", "120/60 pcs", "120/60"):
@@ -1970,11 +2137,18 @@ async def callback_add_handler(update, context):
             msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
             await query.edit_message_text(msg)
             await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
+            # Auto-broadcast new product notification to all users
+            pname = product.get("name", "")
+            new_msg = ("\U0001f195 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629!" + chr(10) + chr(10)
+                      + "\U0001f4e6 " + pname + chr(10)
+                      + "\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty))
+            await _broadcast_to_all_users(context.bot, new_msg)
         except Exception as e:
             await query.edit_message_text("\u274c \u062d\u062f\u062b \u062e\u0637\u0623: " + str(e))
         user_data.clear()
+        return
 
-    elif data == "add_cancel":
+    if data == "add_cancel":
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
         await context.bot.send_message(chat_id=query.message.chat_id, text="\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
@@ -2060,11 +2234,31 @@ async def process_seller_input(update, context, text):
         msg += "\n\n" + format_product_admin(updated)
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
+        # Ask reason for notification
+        db_user = get_user(telegram_id)
+        if db_user:
+            if action == "add":
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
+                ])
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
+            else:
+                notify_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="remnotify_return"),
+                     InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale"),
+                     InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
+                ])
+                context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
     except ValueError as e:
         await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
-    context.user_data.clear()
+    # Don't clear if pending notify needs user_data
+    if not context.user_data.get("pending_add_notify") and not context.user_data.get("pending_rem_notify"):
+        context.user_data.clear()
 
 
 async def process_add_quantity(update, context, text, telegram_id):
@@ -2312,14 +2506,13 @@ async def _show_product_detail(update, context, product):
     unit_ar = _get_unit_ar(p["name"])
     text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " " + unit_ar + " " + icon
     pid = str(p["id"])
-    user_id = update.effective_user.id if update.effective_user else 0
-    admin_view = is_admin(user_id)
-    keyboard = InlineKeyboardMarkup([
+    buttons = [
         [
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
-    ])
+    ]
+    keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
@@ -2425,8 +2618,10 @@ async def _show_all_movements(update, context, admin_view=True):
         }
         for d in range(6, -1, -1):
             day = today - datetime.timedelta(days=d)
-            day_str = day.strftime("%Y-%m-%d")
             wd = day.weekday()
+            if wd == 4:  # skip Friday
+                continue
+            day_str = day.strftime("%Y-%m-%d")
             if d == 0:
                 label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
             else:
@@ -2458,8 +2653,10 @@ async def callback_mov_date_handler(update, context):
         }
         for d in range(6, -1, -1):
             day = today - datetime.timedelta(days=d)
-            day_str = day.strftime("%Y-%m-%d")
             wd = day.weekday()
+            if wd == 4:  # skip Friday
+                continue
+            day_str = day.strftime("%Y-%m-%d")
             if d == 0:
                 label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m") + " (اليوم)"
             else:
@@ -2642,6 +2839,8 @@ async def callback_product_action_handler(update, context):
             await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
             pass
+
+
 #  SHOW PRODUCTS LIST
 # ═══════════════════════════════════════════════════════════
 
@@ -2836,7 +3035,6 @@ async def callback_promote_handler(update, context):
     else:
         await query.edit_message_text("⚠️ لم يتم تطبيق التغيير.")
 
-
 # ── Backup Command ─────────────────────────────────────
 
 async def backup_command(update, context):
@@ -2999,8 +3197,8 @@ async def callback_add_notify_handler(update, context):
     """Handle the 'reason for add' choice: truck or customer return."""
     query = update.callback_query
     await query.answer()
-    data = query.data  # "addnotify_truck" or "addnotify_return"
-    reason = "truck" if data == "addnotify_truck" else "return"
+    data = query.data  # "addnotify_truck" or "addnotify_correction"
+    reason = "truck" if data == "addnotify_truck" else "correction"
     pending = context.user_data.get("pending_add_notify")
     if not pending:
         await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
@@ -3010,13 +3208,12 @@ async def callback_add_notify_handler(update, context):
     qty = pending["qty"]
     actor = pending["user"]
     try:
-        # Broadcast the notification with the chosen reason
-        await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-        # Confirm to the user
+        # Only broadcast if truck arrival
         if reason == "truck":
+            await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
             confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
         else:
-            confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+            confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
         await query.edit_message_text(confirm)
     except Exception as e:
         logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e))
@@ -3025,6 +3222,44 @@ async def callback_add_notify_handler(update, context):
         except Exception:
             pass
     context.user_data.pop("pending_add_notify", None)
+
+
+async def callback_rem_notify_handler(update, context):
+    """Handle the 'reason for remove' choice: customer return, sale, or correction."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data  # "remnotify_return" or "remnotify_sale" or "remnotify_correction"
+    if data == "remnotify_return":
+        reason = "return"
+    elif data == "remnotify_sale":
+        reason = "sale"
+    else:
+        reason = "correction"
+    pending = context.user_data.get("pending_rem_notify")
+    if not pending:
+        await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
+        context.user_data.clear()
+        return
+    product = pending["product"]
+    qty = pending["qty"]
+    actor = pending["user"]
+    try:
+        if reason == "correction":
+            confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
+        else:
+            await _broadcast_remove_notification(context.bot, product, qty, actor, reason=reason)
+            if reason == "return":
+                confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+            else:
+                confirm = "🚚 تم إرسال تنبيه بيع لزبون للجميع ✅"
+        await query.edit_message_text(confirm)
+    except Exception as e:
+        logging.error("[REM_NOTIFY] Broadcast failed: " + str(e))
+        try:
+            await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
+        except Exception:
+            pass
+    context.user_data.pop("pending_rem_notify", None)
 
 
 async def callback_email_restore_handler(update, context):
@@ -3114,13 +3349,16 @@ async def users_command(update, context):
     promote_buttons = []
     for u in approved:
         name = (u.get("first_name") or u.get("username") or str(u["telegram_id"]))[:18]
+        tid = u["telegram_id"]
         if u["role"] == "customer":
             promote_buttons.append([InlineKeyboardButton(
-                "👑 ترقية: " + name, callback_data="promote_" + str(u["telegram_id"])
+                "👑 ترقية: " + name,
+                callback_data="promote_" + str(tid)
             )])
-        elif u["role"] == "admin" and u["telegram_id"] not in ADMIN_IDS:
+        elif u["role"] == "admin" and tid not in ADMIN_IDS:
             promote_buttons.append([InlineKeyboardButton(
-                "👤 إزالة إدارة: " + name, callback_data="demote_" + str(u["telegram_id"])
+                "👤 إزالة إدارة: " + name,
+                callback_data="demote_" + str(tid)
             )])
 
     msg_lines = ["⚙️ إدارة المستخدمين\n"]
@@ -3136,8 +3374,8 @@ async def users_command(update, context):
     msg_lines.append("")
     msg_lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
     for u in approved:
-        role_icon = "👑" if u["role"] == "admin" else "👤"
         name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
+        role_icon = "👑" if u["role"] == "admin" else "👤"
         msg_lines.append("  " + role_icon + " " + name)
 
     # أزرار الترقية أسفل الرسالة
@@ -3952,7 +4190,7 @@ async def handle_admin_message(update, context):
             await backup_command(update, context)
             return
         if text == BTN_RESET_STOCK:
-            context.user_data["state"] = STATE_RESET_CONFIRM
+            context.user_data["state"] = STATE_RESET_PIN
             await update.message.reply_text(
                 "⚠️ تصفير المخزون\n\n"
                 "سيتم حذف:\n"
@@ -3961,7 +4199,8 @@ async def handle_admin_message(update, context):
                 "  • جميع الفواتير\n"
                 "  • جميع طلبات التوريد والاستخراج\n\n"
                 "💾 نصيحة: صدّر نسخة احتياطية أولاً!\n\n"
-                "أرسل ✅ للتأكيد أو ❌ للإلغاء:",
+                "🔐 أرسل رمز PIN للتأكيد:\n"
+                "(أو أرسل ❌ للإلغاء)",
                 reply_markup=get_input_keyboard(),
             )
             return
@@ -3979,13 +4218,17 @@ async def handle_admin_message(update, context):
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
         return
 
-    # ── Reset Stock Confirmation ──
-    if state == STATE_RESET_CONFIRM:
-        if text.strip() == "✅":
-            await process_reset_stock(update, context)
-        else:
+    # ── Reset Stock PIN Confirmation ──
+    if state == STATE_RESET_PIN:
+        pin = text.strip()
+        if pin == BTN_CANCEL:
             context.user_data.clear()
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+        elif pin == "5614":
+            await process_reset_stock(update, context)
+        else:
+            await update.message.reply_text("❌ رمز PIN خاطئ. تم الإلغاء.", reply_markup=get_admin_keyboard())
+            context.user_data.clear()
         return
 
     # ── Invoice FSM States ──
@@ -4269,10 +4512,14 @@ async def handle_admin_message(update, context):
             context.user_data.clear()
             await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
             return
+        if text == BTN_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+            return
         parsed = parse_crt_input(text)
         if parsed is None:
             unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_input_keyboard())
+            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_admin_keyboard())
             return
         qty = parsed
         try:
@@ -4297,14 +4544,23 @@ async def handle_admin_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
-            # After add: ask reason for notification
-            if action == "add" and db_user:
-                notify_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("\U0001f69a \u0648\u0635\u0648\u0644 \u0628\u0636\u0627\u0639\u0629 \u0645\u0646 \u0627\u0644\u0634\u0627\u062d\u0646\u0629", callback_data="addnotify_truck"),
-                     InlineKeyboardButton("\u21a9\ufe0f \u0625\u0631\u062c\u0627\u0639 \u0633\u0644\u0639\u0629 \u0645\u0646 \u0632\u0628\u0648\u0646", callback_data="addnotify_return")],
-                ])
-                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
-                await update.message.reply_text("\U0001f4e8 \u0645\u0627 \u0633\u0628\u0628 \u0627\u0644\u0625\u0636\u0627\u0641\u0629\u061f", reply_markup=notify_kb)
+            # After action: ask reason for notification
+            if db_user:
+                if action == "add":
+                    notify_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
+                         InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
+                    ])
+                    context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                    await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
+                else:
+                    notify_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="remnotify_return"),
+                         InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale"),
+                         InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
+                    ])
+                    context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
+                    await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
         except Exception as e:
@@ -4425,10 +4681,14 @@ async def handle_customer_message(update, context):
             context.user_data.clear()
             await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
             return
+        if text == BTN_CUST_CANCEL or text == BTN_CANCEL:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            return
         parsed = parse_crt_input(text)
         if parsed is None:
             unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحا." + chr(10) + "مثال: 10 أو 10" + unit)
+            await update.message.reply_text("❌ أرسل عددا صحيحا." + chr(10) + "مثال: 10 أو 10" + unit, reply_markup=get_customer_keyboard())
             return
         qty = parsed
         try:
@@ -4454,8 +4714,8 @@ async def handle_customer_message(update, context):
             # After add: ask reason for notification
             if action == "add" and db_user:
                 notify_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🚚 وصول بضاعة من الشاحنة", callback_data="addnotify_truck"),
-                     InlineKeyboardButton("↩️ إرجاع سلعة من زبون", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
+                     InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
@@ -4463,48 +4723,6 @@ async def handle_customer_message(update, context):
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e))
         except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e))
-        context.user_data.clear()
-        return
-
-    # State: waiting_extract_qty
-    if state == "waiting_extract_qty":
-        product = context.user_data.get("cust_product")
-        if not product:
-            context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
-            return
-        parsed = parse_crt_input(text)
-        if parsed is None:
-            await update.message.reply_text("❌ أرسل عددا صحيحا.")
-            return
-        qty = parsed
-        if qty <= 0:
-            await update.message.reply_text("❌ الكمية يجب أن تكون أكبر من 0.")
-            return
-        db_user = get_user(user.id)
-        if not db_user:
-            await update.message.reply_text("❌ حسابك غير مسجل.")
-            return
-        try:
-            req = create_extraction_request(product["id"], qty, db_user["id"])
-            unit_ar = _get_unit_ar(product["name"])
-            msg = "📨 تم إرسال طلب الإخراج!" + chr(10) + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit_ar + chr(10) + chr(10) + "⏳ بانتظار موافقة المدير."
-            await update.message.reply_text(msg)
-            for admin_id in ADMIN_IDS:
-                try:
-                    requester_name = user.first_name or user.username or str(user.id)
-                    unit = _get_unit_code(product["name"])
-                    admin_msg = "🔔 طلب إخراج جديد:" + chr(10) + chr(10) + "👤 " + requester_name + chr(10) + "📦 " + product["name"] + chr(10) + "📦 الكمية: " + str(qty) + " " + unit + chr(10) + chr(10) + "موافقة على إلاخراج هذا الطلب؟"
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ موافقة", callback_data="ext_approve_" + str(req["id"])),
-                         InlineKeyboardButton("❌ رفض", callback_data="ext_reject_" + str(req["id"]))],
-                    ])
-                    await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=kb)
-                except Exception as e:
-                    logging.error("[EXTRACT] Notify admin failed: " + str(e))
-        except Exception as e:
-            logging.error("[EXTRACT] Request failed: " + str(e))
             await update.message.reply_text("❌ حدث خطأ: " + str(e))
         context.user_data.clear()
         return
@@ -4640,13 +4858,10 @@ async def _show_pending_extractions(update, context):
             pass
 
 async def callback_extract_request_handler(update, context):
-    """Handle member click on request extract button."""
+    """Handle member click on request extract button — direct execution, no approval needed."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    if not can_extract(user_id):
-        await query.answer("❌ ليس لديك صلاحية الإخراج.", show_alert=True)
-        return
     data = query.data
     try:
         product_id = int(data.split("_")[2])
@@ -4669,13 +4884,14 @@ async def callback_extract_request_handler(update, context):
         return
     product = dict(row)
     context.user_data["cust_product"] = product
-    _set_state(context, "waiting_extract_qty")
+    context.user_data["pact_action"] = "remove"
+    _set_state(context, "waiting_pact_qty")
     unit = _get_unit_code(product["name"])
     unit_ar = _get_unit_ar(product["name"])
     text = (
         "📦 " + product["name"]
         + " (المتوفر: " + str(product["quantity"]) + " " + unit + ")"
-        + "\n➖ طلب إخراج " + unit_ar
+        + "\n➖ إخراج " + unit_ar
         + "\nأرسل العدد (" + unit + "):"
     )
     try:
@@ -5120,6 +5336,7 @@ def build_application():
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_email_handler, pattern="^restore_from_email$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
+    app.add_handler(CallbackQueryHandler(callback_rem_notify_handler, pattern="^remnotify_"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
@@ -5127,6 +5344,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
+
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_revoke_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_pending_list$"))
