@@ -2628,11 +2628,11 @@ def _build_movements_text(rows):
             if reason:
                 reason_part = " — " + html.escape(str(reason))
             if r["tx_type"] == "add":
-                # Bold style for additions
-                line = "<b>📥 " + prod + " " + str(qty) + " " + unit + "</b>" + reason_part + " — " + user_link + " " + time_str
+                # Green for additions
+                line = "🟢 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             else:
-                # Normal style for removals
-                line = "📤 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                # Red for removals
+                line = "🔴 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             lines.append(line)
         except Exception as e:
             logging.error("[BUILD_MOV] Error on row: " + str(e) + " row=" + str(r))
@@ -2640,7 +2640,7 @@ def _build_movements_text(rows):
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    lines.append(chr(10) + "<b>📥 " + str(add_count) + " إضافة</b>  |  📤 " + str(rem_count) + " إخراج")
+    lines.append(chr(10) + "🟢 " + str(add_count) + " إضافة  |  🔴 " + str(rem_count) + " إخراج")
     return chr(10).join(lines)
 
 def _fetch_today_movements():
@@ -5535,7 +5535,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
-    app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^mov[d,p]_"))
+    app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
     app.add_handler(CallbackQueryHandler(callback_mov_delete_handler, pattern="^movp_del_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
