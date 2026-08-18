@@ -2542,29 +2542,35 @@ def _build_movements_text(rows):
     lines = ["📋 حركة اليوم (" + str(len(rows)) + "):", ""]
     for r in rows:
         r = dict(r)
-        if r["tx_type"] == "add":
-            icon = "➕"
-        else:
-            icon = "➖"
-        time_str = r["date"].strftime("%H:%M")
-        prod = html.escape(str(r["product_name"] or ""))
-        qty = r["quantity"]
-        unit = _get_unit_code(str(r["product_name"] or ""))
-        # Build clickable user link
-        user_tid = r.get("user_tid")
-        user_name = str(r.get("user_name") or "مجهول")
-        if user_tid and user_name != "مجهول":
-            user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + html.escape(user_name) + "</a>"
-        else:
-            user_link = html.escape(user_name)
-        # Show reason (operation cause) if present
-        reason = r.get("reason")
-        if reason:
-            reason = html.escape(str(reason))
-            line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + reason + " — " + user_link + " " + time_str
-        else:
-            line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str
-        lines.append(line)
+        try:
+            if r["tx_type"] == "add":
+                icon = "➕"
+            else:
+                icon = "➖"
+            dt = r.get("date")
+            time_str = dt.strftime("%H:%M") if dt else "??"
+            prod_raw = str(r.get("product_name") or "")
+            prod = html.escape(prod_raw)
+            qty = r["quantity"]
+            unit = _get_unit_code(prod_raw)
+            # Build user display
+            user_tid = r.get("user_tid")
+            user_name = str(r.get("user_name") or "مجهول")
+            if user_tid and user_name != "مجهول":
+                user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + html.escape(user_name) + "</a>"
+            else:
+                user_link = html.escape(user_name)
+            # Show reason (operation cause) if present
+            reason = r.get("reason")
+            if reason:
+                reason = html.escape(str(reason))
+                line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + reason + " — " + user_link + " " + time_str
+            else:
+                line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str
+            lines.append(line)
+        except Exception as e:
+            logging.error("[BUILD_MOV] Error on row: " + str(e) + " row=" + str(r))
+            lines.append("❌ خطأ في عرض عملية")
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
@@ -2715,21 +2721,37 @@ async def callback_mov_date_handler(update, context):
             [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
         ])
 
-        if len(text) <= 4096:
-            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_button)
-        else:
-            await query.edit_message_text(text[:3900], parse_mode=ParseMode.HTML, reply_markup=back_button)
-            remaining = text[3900:]
-            while remaining:
-                chunk = remaining[:4096]
-                remaining = remaining[4096:]
-                await context.bot.send_message(
-                    chat_id=query.effective_chat.id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML)
+        # Try HTML first, fallback to plain text
+        try:
+            if len(text) <= 4096:
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_button)
+            else:
+                await query.edit_message_text(text[:3900], parse_mode=ParseMode.HTML, reply_markup=back_button)
+                remaining = text[3900:]
+                while remaining:
+                    chunk = remaining[:4096]
+                    remaining = remaining[4096:]
+                    await context.bot.send_message(
+                        chat_id=query.effective_chat.id,
+                        text=chunk,
+                        parse_mode=ParseMode.HTML)
+        except Exception:
+            # Fallback: strip HTML and send as plain text
+            plain = re.sub(r'<[^>]+>', '', text)
+            try:
+                if len(plain) <= 4096:
+                    await query.edit_message_text(plain, reply_markup=back_button)
+                else:
+                    await query.edit_message_text(plain[:4096], reply_markup=back_button)
+            except Exception as e2:
+                logging.error("[MOV_DATE_HANDLER] Fallback also failed: " + str(e2))
+                await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
     except Exception as e:
         logging.error("[MOV_DATE_HANDLER] Error: " + str(e))
-        await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
+        try:
+            await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
+        except Exception:
+            pass
 
 
 async def callback_product_select_handler(update, context):
