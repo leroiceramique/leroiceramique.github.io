@@ -1398,6 +1398,69 @@ def update_transaction_reason(tx_id, reason):
         release_connection(conn)
 
 
+def delete_transaction(tx_id, admin_tid):
+    """Delete a transaction and reverse its effect on product quantity.
+    Only allowed if the transaction belongs to the admin (by telegram_id).
+    Returns (success, message)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Get the transaction with user info
+            cur.execute(
+                "SELECT t.*, u.telegram_id AS user_tid "
+                "FROM transactions t "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "WHERE t.id = %s", (tx_id,))
+            tx = cur.fetchone()
+            if not tx:
+                return False, "❌ العملية غير موجودة."
+            tx = dict(tx)
+            # Only allow admin to delete their OWN transactions
+            if tx.get("user_tid") != admin_tid:
+                return False, "❌ لا يمكنك حذف عملية ليست لك."
+            # Reverse the quantity change on the product
+            if tx["type"] == "add":
+                new_qty_sql = "UPDATE products SET quantity = GREATEST(quantity - %s, 0) WHERE id = %s"
+            else:
+                new_qty_sql = "UPDATE products SET quantity = quantity + %s WHERE id = %s"
+            cur.execute(new_qty_sql, (tx["quantity"], tx["product_id"]))
+            # Delete the transaction
+            cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
+        conn.commit()
+        action = "إضافة" if tx["type"] == "add" else "إخراج"
+        return True, "✅ تم حذف عملية " + action + " " + str(tx["quantity"]) + " بنجاح وعكس الكمية."
+    except Exception as e:
+        conn.rollback()
+        logging.error("[DEL_TX] Failed to delete tx " + str(tx_id) + ": " + str(e))
+        return False, "❌ حدث خطأ في الحذف."
+    finally:
+        release_connection(conn)
+
+
+def get_admin_last_transaction(admin_tid):
+    """Get the admin's most recent transaction."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT t.id AS tx_id, t.type AS tx_type, t.quantity, t.date, t.reason, "
+                "p.name AS product_name, p.quantity AS current_qty "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "JOIN users u ON u.id = t.user_id "
+                "WHERE u.telegram_id = %s "
+                "ORDER BY t.date DESC LIMIT 1", (admin_tid,))
+            tx = cur.fetchone()
+        conn.commit()
+        return dict(tx) if tx else None
+    except Exception as e:
+        conn.rollback()
+        logging.error("[GET_LAST_TX] Error: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+
 def get_transactions(limit=20, offset=0):
     conn = get_connection()
     try:
@@ -2543,30 +2606,33 @@ def _build_movements_text(rows):
     for r in rows:
         r = dict(r)
         try:
-            if r["tx_type"] == "add":
-                icon = "➕"
-            else:
-                icon = "➖"
             dt = r.get("date")
             time_str = dt.strftime("%H:%M") if dt else "??"
             prod_raw = str(r.get("product_name") or "")
             prod = html.escape(prod_raw)
             qty = r["quantity"]
             unit = _get_unit_code(prod_raw)
-            # Build user display
+            # Build user display — use first_name as fallback when username is None
             user_tid = r.get("user_tid")
-            user_name = str(r.get("user_name") or "مجهول")
-            if user_tid and user_name != "مجهول":
-                user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + html.escape(user_name) + "</a>"
+            user_name = str(r.get("user_name") or "").strip()
+            user_fname = str(r.get("user_fname") or "").strip()
+            display_name = user_name if user_name else (user_fname if user_fname else "مجهول")
+            display_name_escaped = html.escape(display_name)
+            if user_tid:
+                user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + display_name_escaped + "</a>"
             else:
-                user_link = html.escape(user_name)
+                user_link = display_name_escaped
             # Show reason (operation cause) if present
             reason = r.get("reason")
+            reason_part = ""
             if reason:
-                reason = html.escape(str(reason))
-                line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + reason + " — " + user_link + " " + time_str
+                reason_part = " — " + html.escape(str(reason))
+            if r["tx_type"] == "add":
+                # Bold style for additions
+                line = "<b>📥 " + prod + " " + str(qty) + " " + unit + "</b>" + reason_part + " — " + user_link + " " + time_str
             else:
-                line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str
+                # Normal style for removals
+                line = "📤 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             lines.append(line)
         except Exception as e:
             logging.error("[BUILD_MOV] Error on row: " + str(e) + " row=" + str(r))
@@ -2574,7 +2640,7 @@ def _build_movements_text(rows):
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    lines.append(chr(10) + "➕ " + str(add_count) + " إضافة  |  ➖ " + str(rem_count) + " إخراج")
+    lines.append(chr(10) + "<b>📥 " + str(add_count) + " إضافة</b>  |  📤 " + str(rem_count) + " إخراج")
     return chr(10).join(lines)
 
 def _fetch_today_movements():
@@ -2583,8 +2649,8 @@ def _fetch_today_movements():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                "u.username AS user_name, u.telegram_id AS user_tid, t.reason "
+                "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
+                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -2609,8 +2675,8 @@ def _fetch_movements_by_date(target_date):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, p.name AS product_name, "
-                "u.username AS user_name, u.telegram_id AS user_tid, t.reason "
+                "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
+                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -2717,9 +2783,12 @@ async def callback_mov_date_handler(update, context):
         body_lines = text.split("\n")[2:]  # skip old header and blank line
         text = header + "\n" + "\n".join(body_lines)
 
-        back_button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]
-        ])
+        back_buttons = [[InlineKeyboardButton("🔙 رجوع للتواريخ", callback_data="movd_back")]]
+        # Add delete-last-movement button for admin only
+        caller_id = query.from_user.id
+        if is_admin(caller_id) and rows:
+            back_buttons.append([InlineKeyboardButton("🗑 حذف آخر حركتي", callback_data="movp_del_last")])
+        back_button = InlineKeyboardMarkup(back_buttons)
 
         # Try HTML first, fallback to plain text
         try:
@@ -2735,7 +2804,8 @@ async def callback_mov_date_handler(update, context):
                         chat_id=query.effective_chat.id,
                         text=chunk,
                         parse_mode=ParseMode.HTML)
-        except Exception:
+        except Exception as e:
+            logging.error("[MOV_DATE_HANDLER] HTML send failed: " + str(e))
             # Fallback: strip HTML and send as plain text
             plain = re.sub(r'<[^>]+>', '', text)
             try:
@@ -2752,6 +2822,60 @@ async def callback_mov_date_handler(update, context):
             await query.edit_message_text("❌ حدث خطأ في عرض الحركات.")
         except Exception:
             pass
+
+
+async def callback_mov_delete_handler(update, context):
+    """Handle admin request to delete last own movement."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    caller_id = query.from_user.id
+
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الخيار للمدير فقط.", show_alert=True)
+        return
+
+    if data == "movp_del_last":
+        # Show confirmation with last transaction details
+        tx = get_admin_last_transaction(caller_id)
+        if not tx:
+            await query.answer("❌ لا توجد حركات لك.", show_alert=True)
+            return
+        tx_type_ar = "إضافة" if tx["tx_type"] == "add" else "إخراج"
+        reason_txt = " (" + tx.get("reason", "") + ")" if tx.get("reason") else ""
+        confirm_text = (
+            "⚠️ تأكيد حذف آخر حركة:\n\n"
+            "📦 " + str(tx["product_name"]) + "\n"
+            "🏷 " + tx_type_ar + ": " + str(tx["quantity"]) + "\n"
+            + reason_txt + "\n\n"
+            "سيتم عكس الكمية تلقائياً.\n"
+            "هل تريد الحذف؟"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ نعم، احذف", callback_data="movp_del_confirm_" + str(tx["tx_id"]))],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="movp_del_cancel")]
+        ])
+        try:
+            await query.edit_message_text(confirm_text, reply_markup=markup)
+        except Exception:
+            await query.message.reply_text(confirm_text, reply_markup=markup)
+        return
+
+    if data.startswith("movp_del_confirm_"):
+        try:
+            tx_id = int(data.split("_")[-1])
+        except (IndexError, ValueError):
+            await query.answer("❌ خطأ في رقم العملية.", show_alert=True)
+            return
+        success, msg = delete_transaction(tx_id, caller_id)
+        await query.answer(msg, show_alert=True)
+        if success:
+            await query.edit_message_text(msg)
+        return
+
+    if data == "movp_del_cancel":
+        await query.edit_message_text("✅ تم الإلغاء.")
+        return
 
 
 async def callback_product_select_handler(update, context):
@@ -5412,6 +5536,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
     app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^mov[d,p]_"))
+    app.add_handler(CallbackQueryHandler(callback_mov_delete_handler, pattern="^movp_del_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_area_"))
