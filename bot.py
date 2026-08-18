@@ -1383,20 +1383,6 @@ def log_transaction(product_id, transaction_type, quantity, user_id, reason=None
         release_connection(conn)
 
 
-def update_transaction_reason(tx_id, reason):
-    """Update the reason field of an existing transaction."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE transactions SET reason = %s WHERE id = %s", (reason, tx_id))
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logging.error("[TX] Failed to update reason for tx " + str(tx_id) + ": " + str(e))
-    finally:
-        release_connection(conn)
-
-
 def get_transactions(limit=20, offset=0):
     conn = get_connection()
     try:
@@ -2237,8 +2223,7 @@ async def process_seller_input(update, context, text):
 
     try:
         updated = db_update_quantity(product_id, qty, action)
-        tx = log_transaction(product_id, action, qty, user_id, reason=seller)
-        tx_id = tx["id"] if tx else None
+        log_transaction(product_id, action, qty, user_id, reason=seller)
         unit = _get_unit_code(updated["name"])
         if action == "add":
             msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"]
@@ -2257,7 +2242,7 @@ async def process_seller_input(update, context, text):
                     [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
                      InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                 ])
-                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id, "seller": seller}
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
             else:
                 notify_kb = InlineKeyboardMarkup([
@@ -2265,7 +2250,7 @@ async def process_seller_input(update, context, text):
                      InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale"),
                      InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
                 ])
-                context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id, "seller": seller}
+                context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
     except ValueError as e:
         await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
@@ -2535,7 +2520,7 @@ async def _show_product_detail(update, context, product):
 
 
 def _build_movements_text(rows):
-    """Build formatted movements text from transaction rows. Shows reason, operator, and time."""
+    """Build formatted movements text from transaction rows. Usernames are clickable Telegram links."""
     if not rows:
         return None
     lines = ["📋 حركة اليوم (" + str(len(rows)) + "):", ""]
@@ -2543,8 +2528,10 @@ def _build_movements_text(rows):
         r = dict(r)
         if r["tx_type"] == "add":
             icon = "➕"
+            action = "إضافة"
         else:
             icon = "➖"
+            action = "إخراج"
         time_str = r["date"].strftime("%H:%M")
         prod = str(r["product_name"] or "")
         qty = r["quantity"]
@@ -2556,13 +2543,13 @@ def _build_movements_text(rows):
             user_link = "<a href=\"tg://user?id=" + str(user_tid) + "\">" + user_name + "</a>"
         else:
             user_link = user_name
-        # Show reason (operation cause) if present
-        reason = r.get("reason")
-        if reason:
-            line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + reason + " — " + user_link + " " + time_str
+        # If seller name (reason) exists, show it instead of operator
+        seller = r.get("reason")
+        if seller:
+            who = "👤 " + seller
         else:
-            line = icon + " " + prod + " " + str(qty) + " " + unit + " — " + user_link + " " + time_str
-        lines.append(line)
+            who = user_link
+        lines.append(icon + " " + prod + " " + str(qty) + " " + unit + " — " + who + " " + time_str)
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
@@ -3207,10 +3194,10 @@ async def callback_restore_last_handler(update, context):
 
 
 async def callback_add_notify_handler(update, context):
-    """Handle the 'reason for add' choice: truck or correction."""
+    """Handle the 'reason for add' choice: truck or customer return."""
     query = update.callback_query
     await query.answer()
-    data = query.data
+    data = query.data  # "addnotify_truck" or "addnotify_correction"
     reason = "truck" if data == "addnotify_truck" else "correction"
     pending = context.user_data.get("pending_add_notify")
     if not pending:
@@ -3220,16 +3207,8 @@ async def callback_add_notify_handler(update, context):
     product = pending["product"]
     qty = pending["qty"]
     actor = pending["user"]
-    tx_id = pending.get("tx_id")
-    seller = pending.get("seller")
-    # Build reason label for movements log
-    reason_label = "🚚 وصول شاحنة" if reason == "truck" else "📝 تصحيح مخزون"
-    if seller:
-        reason_label = reason_label + " — " + seller
-    # Update transaction reason in DB
-    if tx_id:
-        update_transaction_reason(tx_id, reason_label)
     try:
+        # Only broadcast if truck arrival
         if reason == "truck":
             await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
             confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
@@ -3249,7 +3228,7 @@ async def callback_rem_notify_handler(update, context):
     """Handle the 'reason for remove' choice: customer return, sale, or correction."""
     query = update.callback_query
     await query.answer()
-    data = query.data
+    data = query.data  # "remnotify_return" or "remnotify_sale" or "remnotify_correction"
     if data == "remnotify_return":
         reason = "return"
     elif data == "remnotify_sale":
@@ -3264,16 +3243,6 @@ async def callback_rem_notify_handler(update, context):
     product = pending["product"]
     qty = pending["qty"]
     actor = pending["user"]
-    tx_id = pending.get("tx_id")
-    seller = pending.get("seller")
-    # Build reason label for movements log
-    reason_labels = {"return": "↩️ إرجاع من زبون", "sale": "🚚 بيع لزبون", "correction": "📝 تصحيح مخزون"}
-    reason_label = reason_labels.get(reason, "")
-    if seller:
-        reason_label = reason_label + " — " + seller
-    # Update transaction reason in DB
-    if tx_id:
-        update_transaction_reason(tx_id, reason_label)
     try:
         if reason == "correction":
             confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
@@ -4557,8 +4526,7 @@ async def handle_admin_message(update, context):
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
             if db_user:
-                tx = log_transaction(product["id"], action, qty, db_user["id"])
-            tx_id = tx["id"] if tx else None
+                log_transaction(product["id"], action, qty, db_user["id"])
             icon = _product_status_icon(updated)
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
@@ -4583,7 +4551,7 @@ async def handle_admin_message(update, context):
                         [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
                          InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                     ])
-                    context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id}
+                    context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                     await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
                 else:
                     notify_kb = InlineKeyboardMarkup([
@@ -4591,7 +4559,7 @@ async def handle_admin_message(update, context):
                          InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale"),
                          InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
                     ])
-                    context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id}
+                    context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                     await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
         except ValueError as e:
             await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
@@ -4728,8 +4696,7 @@ async def handle_customer_message(update, context):
             db_user = get_user(user.id)
             if db_user:
                 log_transaction(product["id"], action, qty, db_user["id"])
-                tx = log_transaction(product["id"], action, qty, db_user["id"])
-            tx_id = tx["id"] if tx else None
+            icon = _product_status_icon(updated)
             unit = _get_unit_code(updated["name"])
             unit_ar = _get_unit_ar(updated["name"])
             if action == "add":
@@ -4750,7 +4717,7 @@ async def handle_customer_message(update, context):
                     [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
                      InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                 ])
-                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id}
+                context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
                 return  # Don't clear user_data yet — callback needs pending_add_notify
         except ValueError as e:
