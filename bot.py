@@ -2319,7 +2319,8 @@ async def process_seller_input(update, context, text):
             if action == "add":
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
-                     InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
+                     InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id, "seller": seller}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
@@ -3354,11 +3355,16 @@ async def callback_restore_last_handler(update, context):
 
 
 async def callback_add_notify_handler(update, context):
-    """Handle the 'reason for add' choice: truck or correction."""
+    """Handle the 'reason for add' choice: truck, customer return, or correction."""
     query = update.callback_query
     await query.answer()
     data = query.data
-    reason = "truck" if data == "addnotify_truck" else "correction"
+    if data == "addnotify_truck":
+        reason = "truck"
+    elif data == "addnotify_return":
+        reason = "return"
+    else:
+        reason = "correction"
     pending = context.user_data.get("pending_add_notify")
     if not pending:
         await query.edit_message_text("❌ انتهت صلاحية هذا الاختيار.")
@@ -3370,18 +3376,22 @@ async def callback_add_notify_handler(update, context):
     tx_id = pending.get("tx_id")
     seller = pending.get("seller")
     # Build reason label for movements log
-    reason_label = "🚚 وصول شاحنة" if reason == "truck" else "📝 تصحيح مخزون"
+    reason_labels = {"truck": "🚚 وصول شاحنة", "return": "↩️ إرجاع من زبون", "correction": "📝 تصحيح مخزون"}
+    reason_label = reason_labels.get(reason, "")
     if seller:
         reason_label = reason_label + " — " + seller
     # Update transaction reason in DB
     if tx_id:
         update_transaction_reason(tx_id, reason_label)
     try:
-        if reason == "truck":
-            await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-            confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
-        else:
+        if reason == "correction":
             confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
+        else:
+            await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+            if reason == "return":
+                confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+            else:
+                confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
         await query.edit_message_text(confirm)
     except Exception as e:
         logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e))
@@ -4896,7 +4906,8 @@ async def handle_customer_message(update, context):
             if action == "add" and db_user:
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
-                     InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
+                     InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="addnotify_return")],
+                    [InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                 ])
                 context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id}
                 await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
