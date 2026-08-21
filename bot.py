@@ -5044,7 +5044,6 @@ async def callback_extract_request_handler(update, context):
     """Handle member click on request extract button — direct execution, no approval needed."""
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
     data = query.data
     try:
         product_id = int(data.split("_")[2])
