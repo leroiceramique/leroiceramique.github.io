@@ -19,7 +19,6 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    ContextTypes,
     filters,
 )
 
@@ -58,7 +57,7 @@ def set_extract_permission(telegram_id, allowed):
             updated = cur.fetchone() is not None
         conn.commit()
         return updated
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -78,7 +77,7 @@ def create_extraction_request(product_id, quantity, requester_id):
             row = cur.fetchone()
         conn.commit()
         return dict(row)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -101,7 +100,7 @@ def get_pending_extraction_requests():
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -150,7 +149,7 @@ def process_extraction_request(request_id, approved, admin_id):
             return True, "✅ تم الموافقة على إخراج " + str(qty) + " من " + pname
         else:
             return True, "❌ تم رفض طلب الإخراج."
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -540,7 +539,7 @@ def register_user(telegram_id, username=None, first_name=None):
             user = cur.fetchone()
         conn.commit()
         return dict(user)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -592,7 +591,7 @@ def get_user(telegram_id):
             row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -633,7 +632,7 @@ def create_incoming_order(requester_id, product_name, quantity, photo_file_id=No
             order = cur.fetchone()
         conn.commit()
         return dict(order)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -654,7 +653,7 @@ def get_pending_incoming_orders():
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -673,7 +672,7 @@ def get_user_pending_orders(user_db_id):
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -693,7 +692,7 @@ def complete_incoming_order(order_id):
             order = cur.fetchone()
         conn.commit()
         return dict(order) if order else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -713,7 +712,7 @@ def receive_incoming_order(order_id):
             order = cur.fetchone()
         conn.commit()
         return dict(order) if order else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -733,7 +732,7 @@ def complete_all_pending_orders():
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -748,7 +747,7 @@ def get_pending_users():
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -766,7 +765,7 @@ def approve_user(telegram_id):
             row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -781,7 +780,7 @@ def reject_user(telegram_id):
             deleted = cur.rowcount > 0
         conn.commit()
         return deleted
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -820,7 +819,7 @@ def db_export_backup():
             "extraction_requests": extraction_requests,
             "incoming_orders": incoming_orders,
         }
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -975,7 +974,7 @@ def db_import_backup(data):
         if len(inc_orders) > 0:
             summary += "\n  طلبات التوريد: " + str(len(inc_orders))
         return summary
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1013,7 +1012,7 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
                 return dict(updated), False
             conn.commit()
             raise ValueError("Could not add or find product: " + clean_name)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1112,7 +1111,7 @@ def search_products(query):
             all_rows = cur.fetchall()
         conn.commit()
         all_products = [dict(r) for r in all_rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1155,7 +1154,7 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
             product = cur.fetchone()
         conn.commit()
         return dict(product)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1230,7 +1229,7 @@ def db_update_quantity(product_id, change, transaction_type):
                 product["_old_qty"] = product["quantity"] + change
         conn.commit()
         return product
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1251,7 +1250,7 @@ def db_update_product_prices(product_id, price_low, price_high):
                 raise ValueError("المنتج غير موجود.")
             conn.commit()
             return dict(row)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1269,7 +1268,7 @@ def db_set_user_price_tier(telegram_id, tier):
             row = cur.fetchone()
             conn.commit()
             return dict(row) if row else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1288,7 +1287,7 @@ def set_price_manager_permission(telegram_id, allowed):
             updated = cur.fetchone() is not None
         conn.commit()
         return updated
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1303,7 +1302,7 @@ def db_delete_product(product_id):
             deleted = cur.fetchone() is not None
         conn.commit()
         return deleted
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1325,7 +1324,7 @@ def db_bulk_delete_products(id_list):
                     not_found.append(pid)
         conn.commit()
         return deleted_count, not_found
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1340,7 +1339,7 @@ def get_low_stock_products():
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1355,7 +1354,7 @@ def get_all_products():
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1377,7 +1376,7 @@ def log_transaction(product_id, transaction_type, quantity, user_id, reason=None
             tx = cur.fetchone()
         conn.commit()
         return dict(tx)
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1478,7 +1477,7 @@ def get_transactions(limit=20, offset=0):
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1503,7 +1502,7 @@ def get_product_transactions(product_id, limit=15):
             rows = cur.fetchall()
         conn.commit()
         return [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -1614,8 +1613,6 @@ BTN_CUST_MY_ORDERS = "📋 طلباتي"
 
 def format_product_admin(product):
     qty = product["quantity"]
-    min_stock = product["minimum_stock"]
-    status = "🔴" if qty <= min_stock else "🟢"
     unit = _get_unit_code(product["name"])
     return (
         "\U0001f4e6 " + product["name"] + "\n"
@@ -1956,7 +1953,7 @@ async def generate_weekly_report(bot):
                 cur.execute(
                     "SELECT COUNT(*) as cnt FROM transactions"
                     " WHERE date >= NOW() - INTERVAL '7 days'")
-                week_transactions = cur.fetchone()["cnt"]
+                cur.fetchone()["cnt"]
 
                 # Adds vs removes this week
                 cur.execute(
@@ -2209,7 +2206,6 @@ async def callback_add_handler(update, context):
     if data == "add_confirm":
         name = user_data.get("add_name", "")
         qty = user_data.get("add_qty", 0)
-        telegram_id = query.from_user.id
         try:
             product, _ = db_add_product(name=name, quantity=qty)
             msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
@@ -2251,7 +2247,7 @@ def db_reset_all_stock():
             cur.execute("SELECT setval('extraction_requests_id_seq', 1, false)")
             cur.execute("SELECT setval('incoming_orders_id_seq', 1, false)")
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -2314,7 +2310,7 @@ async def process_seller_input(update, context, text):
         await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
         await send_low_stock_alerts(context.bot)
         # Ask reason for notification
-        db_user = get_user(telegram_id)
+        db_user = get_user(update.effective_user.id)
         if db_user:
             if action == "add":
                 notify_kb = InlineKeyboardMarkup([
@@ -2661,7 +2657,7 @@ def _fetch_today_movements():
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.commit()
         return rows
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -2688,7 +2684,7 @@ def _fetch_movements_by_date(target_date):
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.commit()
         return rows
-    except Exception as e:
+    except Exception:
         conn.rollback()
         raise
     finally:
@@ -2924,7 +2920,6 @@ async def callback_product_action_handler(update, context):
         product_id = int(parts[2])
     except ValueError:
         return
-    user_id = update.effective_user.id if update.effective_user else 0
     if action == "log":
         try:
             txns = get_product_transactions(product_id, limit=15)
@@ -3714,7 +3709,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
     """Generate a professional PDF invoice file. Returns file path."""
     try:
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import mm, cm
+        from reportlab.lib.units import mm
         from reportlab.lib import colors
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -4286,9 +4281,6 @@ async def handle_admin_message(update, context):
     state = context.user_data.get("state")
     text = update.message.text.strip()
     user = update.effective_user
-    chat_id = update.effective_chat.id
-    bot = context.bot
-
     # In a state - if user clicks an admin button, clear state first
     admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
@@ -4596,7 +4588,6 @@ async def handle_admin_message(update, context):
         raw_boxes = qty_m2 / box_area
         num_boxes = math.ceil(raw_boxes)
         # Subtotal = user-requested area × price/m² (exact, not box-rounded)
-        total_price = qty_m2 * price_m2
         await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, "m2",
                                  extra_info={"requested_area": qty_m2, "box_area": box_area, "num_boxes": num_boxes})
         return
