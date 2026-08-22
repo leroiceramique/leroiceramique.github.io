@@ -1742,16 +1742,18 @@ async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
 
 
 async def _broadcast_remove_notification(bot, product, qty, actor, reason="sale"):
-    """Broadcast remove-notification to all users with reason (customer return or sale)."""
+    """Broadcast remove-notification to all users with reason."""
     pname = product.get("name", "") if isinstance(product, dict) else str(product)
-    if reason == "return":
-        msg = ("↩️ إرجاع سلعة من زبون" + chr(10) + chr(10)
-               + "📦 " + pname + chr(10)
-               + "➖ الكمية: " + str(qty))
-    else:
-        msg = ("🚚 بيع لزبون" + chr(10) + chr(10)
-               + "📦 " + pname + chr(10)
-               + "➖ الكمية: " + str(qty))
+    reason_msgs = {
+        "return": "↩️ إرجاع سلعة من زبون",
+        "sale": "🚚 بيع لزبون",
+        "saoula": "🏪 بيع لرابح Saoula",
+        "carthago": "🏪 بيع لحسان Carthago",
+    }
+    reason_text = reason_msgs.get(reason, "🚚 بيع لزبون")
+    msg = (reason_text + chr(10) + chr(10)
+           + "📦 " + pname + chr(10)
+           + "➖ الكمية: " + str(qty))
     await _broadcast_to_all_users(bot, msg)
 
 
@@ -2323,8 +2325,10 @@ async def process_seller_input(update, context, text):
             else:
                 notify_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="remnotify_return"),
-                     InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale"),
-                     InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
+                     InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale")],
+                    [InlineKeyboardButton("🏪 بيع لرابح Saoula", callback_data="remnotify_saoula"),
+                     InlineKeyboardButton("🏪 بيع لحسان Carthago", callback_data="remnotify_carthago")],
+                    [InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
                 ])
                 context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id, "seller": seller}
                 await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
@@ -3398,7 +3402,7 @@ async def callback_add_notify_handler(update, context):
 
 
 async def callback_rem_notify_handler(update, context):
-    """Handle the 'reason for remove' choice: customer return, sale, or correction."""
+    """Handle the 'reason for remove' choice."""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -3406,6 +3410,10 @@ async def callback_rem_notify_handler(update, context):
         reason = "return"
     elif data == "remnotify_sale":
         reason = "sale"
+    elif data == "remnotify_saoula":
+        reason = "saoula"
+    elif data == "remnotify_carthago":
+        reason = "carthago"
     else:
         reason = "correction"
     pending = context.user_data.get("pending_rem_notify")
@@ -3419,7 +3427,13 @@ async def callback_rem_notify_handler(update, context):
     tx_id = pending.get("tx_id")
     seller = pending.get("seller")
     # Build reason label for movements log
-    reason_labels = {"return": "↩️ إرجاع من زبون", "sale": "🚚 بيع لزبون", "correction": "📝 تصحيح مخزون"}
+    reason_labels = {
+        "return": "↩️ إرجاع من زبون",
+        "sale": "🚚 بيع لزبون",
+        "saoula": "🏪 بيع لرابح Saoula",
+        "carthago": "🏪 بيع لحسان Carthago",
+        "correction": "📝 تصحيح مخزون",
+    }
     reason_label = reason_labels.get(reason, "")
     if seller:
         reason_label = reason_label + " — " + seller
@@ -3433,6 +3447,10 @@ async def callback_rem_notify_handler(update, context):
             await _broadcast_remove_notification(context.bot, product, qty, actor, reason=reason)
             if reason == "return":
                 confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+            elif reason == "saoula":
+                confirm = "🏪 تم تسجيل بيع لرابح Saoula وإرسال تنبيه للجميع ✅"
+            elif reason == "carthago":
+                confirm = "🏪 تم تسجيل بيع لحسان Carthago وإرسال تنبيه للجميع ✅"
             else:
                 confirm = "🚚 تم إرسال تنبيه بيع لزبون للجميع ✅"
         await query.edit_message_text(confirm)
