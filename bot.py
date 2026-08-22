@@ -4747,15 +4747,18 @@ async def handle_admin_message(update, context):
                 if action == "add":
                     notify_kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton("🚚 وصول شاحنة", callback_data="addnotify_truck"),
-                         InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
+                         InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="addnotify_return")],
+                        [InlineKeyboardButton("📝 تصحيح مخزون", callback_data="addnotify_correction")],
                     ])
                     context.user_data["pending_add_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id}
                     await update.message.reply_text("📤 ما سبب الإضافة؟", reply_markup=notify_kb)
                 else:
                     notify_kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton("↩️ إرجاع من زبون", callback_data="remnotify_return"),
-                         InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale"),
-                         InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
+                         InlineKeyboardButton("🚚 بيع لزبون", callback_data="remnotify_sale")],
+                        [InlineKeyboardButton("🏪 بيع لرابح Saoula", callback_data="remnotify_saoula"),
+                         InlineKeyboardButton("🏪 بيع لحسان Carthago", callback_data="remnotify_carthago")],
+                        [InlineKeyboardButton("📝 تصحيح مخزون", callback_data="remnotify_correction")],
                     ])
                     context.user_data["pending_rem_notify"] = {"product": dict(updated), "qty": qty, "user": db_user, "tx_id": tx_id}
                     await update.message.reply_text("📤 ما سبب الإخراج؟", reply_markup=notify_kb)
