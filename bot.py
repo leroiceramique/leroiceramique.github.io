@@ -1847,7 +1847,6 @@ BTN_RESET_STOCK = "🗑 تصفير المخزون"
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
 BTN_CUST_REMOVE = "➖ إخراج"
-BTN_CUST_SEARCH = "🔍 بحث"
 BTN_CUST_MOVEMENTS = "📋 الحركة"
 BTN_CUST_CANCEL = "❌ إلغاء"
 BTN_CUST_ORDER = "📦 طلب توريد"
@@ -2315,8 +2314,7 @@ def get_admin_keyboard():
 
     return ReplyKeyboardMarkup(
         [
-            [BTN_ADD, BTN_SEARCH],
-            [BTN_ADD_QTY, BTN_REMOVE_QTY],
+            [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY],
             [BTN_EDIT, BTN_DELETE],
             [users_btn, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
@@ -2342,7 +2340,7 @@ def get_seller_keyboard():
 def get_customer_keyboard():
     return ReplyKeyboardMarkup(
         [
-            [BTN_CUST_SEARCH, BTN_CUST_REMOVE, BTN_CUST_ADD],
+            [BTN_CUST_ADD, BTN_CUST_REMOVE],
             [BTN_CUST_ORDER],
             [BTN_CUST_MY_ORDERS, BTN_CUST_PENDING],
             [BTN_CUST_ALERT],
@@ -4605,7 +4603,7 @@ async def handle_admin_message(update, context):
     text = update.message.text.strip()
     user = update.effective_user
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
@@ -4615,12 +4613,6 @@ async def handle_admin_message(update, context):
     if not state:
         if text == BTN_ADD:
             await ask_add_name(update, context)
-            return
-        if text == BTN_SEARCH:
-            context.user_data["state"] = STATE_SEARCH_ADMIN
-            await update.message.reply_text(
-                "🔍 البحث الذكي" + chr(10) + chr(10) + "أرسل اسم أو جزء من اسم السلعة:" + chr(10) + chr(10) + "💡 يفهم الأخطاء الإملائية" + chr(10) + "🔤 / و × متساويان (60/60 = 60x60)" + chr(10) + "🏭 ابحث بالمصنع أو المقاس",
-                reply_markup=get_input_keyboard())
             return
         if text == BTN_ADD_QTY:
             context.user_data["state"] = STATE_ADMIN_ADD_SEL
@@ -5126,7 +5118,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -5157,7 +5149,7 @@ async def handle_customer_message(update, context):
             await _show_pending_customer(update, context)
             return
 
-        if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
+        if text in (BTN_CUST_ADD, BTN_CUST_REMOVE):
             _set_state(context, "waiting_cust_search")
             await update.message.reply_text("🔍 اكتب اسم السلعة:")
             return
