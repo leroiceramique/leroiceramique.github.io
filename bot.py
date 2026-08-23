@@ -213,7 +213,7 @@ _pool = None
 def init_pool():
     global _pool
     _pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=1, maxconn=5, dsn=DATABASE_URL,
+        minconn=2, maxconn=20, dsn=DATABASE_URL,
     )
     return _pool
 
@@ -245,10 +245,13 @@ def get_connection():
         pass
     _pool = None
     init_pool()
-    conn = _pool.getconn()
-    with conn.cursor() as cur:
-        cur.execute("SET TIME ZONE 'Africa/Algiers'")
-    return conn
+    try:
+        conn = _pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute("SET TIME ZONE 'Africa/Algiers'")
+        return conn
+    except Exception:
+        raise
 
 
 def release_connection(conn):
@@ -532,6 +535,9 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             -- Seed: add negative inventory update notification
             INSERT INTO bot_updates (description) VALUES
             ('✅ نظام المخزون السالب (الطلبيات المعلقة)' || chr(10) || chr(10) || '🔴 يمكن الآن البيع حتى لو الكمية غير كافية وتظهر بالسالب' || chr(10) || '⏳ كل زبون يرى طلباته المعلقة خاصة به' || chr(10) || '🟢 عند دخول بضاعة جديدة يتم التسوية التلقائية للعجز' || chr(10) || '📱 إشعار تلقائي للزبون عند تغطية طلبه')
+            INSERT INTO bot_updates (description) VALUES
+            ('🔍 بحث تلقائي: اكتب أي اسم سلعة مباشرة وسيتم البحث تلقائياً' || chr(10) || chr(10) || '⚙️ تحسينات: زيادة سرعة الاستجابة وإصلاح مشكلة الاتصال')
+            ON CONFLICT DO NOTHING;
             ON CONFLICT DO NOTHING;
             """)
             # Migration: ensure all ADMIN_IDS users always get admin role
@@ -4706,6 +4712,10 @@ async def handle_admin_message(update, context):
         if text == BTN_CANCEL:
             await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
             return
+        # Auto-search: any text without active state = search
+        if text and not text.startswith('/'):
+            await process_search(update, context, text, admin_view=True)
+            return
         await update.message.reply_text(
             "استخدم الأزرار أدناه أو الأوامر:" + chr(10) + "/add, /search",
             reply_markup=get_admin_keyboard())
@@ -5294,16 +5304,20 @@ async def route_message(update, context):
     user = update.effective_user
     text = update.message.text.strip()
     # ── Efficient: check role with single DB call instead of 4 ──
+    db_error = False
     try:
         db_user = await asyncio.to_thread(get_user, user.id)
         is_adm = user.id in ADMIN_IDS or (db_user and db_user.get('role') == 'admin')
         is_appr = is_adm or (db_user and db_user.get("role") in ("admin", "customer"))
     except Exception as e:
         logging.error("[ROUTE] DB check failed: " + str(e))
-        is_adm = False
-        is_appr = False
+        db_error = True
+        is_adm = user.id in ADMIN_IDS
+        is_appr = is_adm
     if not is_adm and not is_appr:
-        if text == "/cancel":
+        if db_error:
+            await update.message.reply_text("حاول مرة ثانية")
+        elif text == "/cancel":
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         elif text != "/start":
             await update.message.reply_text("\u23f3 \u062d\u0633\u0627\u0628\u0643 \u0642\u064a\u062f \u0627\u0644\u0645\u0631\u0627\u062c\u0639\u0629.\n\u064a\u062c\u0628 \u0627\u0644\u0627\u0646\u062a\u0638\u0627\u0631 \u062d\u062a\u0649 \u064a\u0641\u0639\u0644\u0643 \u0627\u0644\u0645\u062f\u064a\u0631.")
