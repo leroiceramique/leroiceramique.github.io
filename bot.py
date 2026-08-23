@@ -294,7 +294,7 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS transactions (
     id         SERIAL PRIMARY KEY,
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove')),
+    type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove', 'reconcile')),
     quantity   INTEGER NOT NULL,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     date       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -365,6 +365,18 @@ CREATE TABLE IF NOT EXISTS invoice_items (
 
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
+
+CREATE TABLE IF NOT EXISTS pending_deliveries (
+    id            SERIAL PRIMARY KEY,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    pending_qty   INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fulfilled_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_pending_deliveries_product ON pending_deliveries(product_id);
+CREATE INDEX IF NOT EXISTS idx_pending_deliveries_user ON pending_deliveries(user_id);
+CREATE INDEX IF NOT EXISTS idx_pending_deliveries_pending ON pending_deliveries(product_id) WHERE pending_qty > 0;
 """
 
 
@@ -499,6 +511,28 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                     FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE RESTRICT;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
+            -- Migration: add 'reconcile' type to transactions
+            DO $$ BEGIN
+                ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            ALTER TABLE transactions ADD CONSTRAINT transactions_type_check
+                CHECK (type IN ('add', 'remove', 'reconcile'));
+            -- Migration: create pending_deliveries table
+            CREATE TABLE IF NOT EXISTS pending_deliveries (
+                id            SERIAL PRIMARY KEY,
+                user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                pending_qty   INTEGER NOT NULL DEFAULT 0,
+                created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                fulfilled_at  TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_deliveries_product ON pending_deliveries(product_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_deliveries_user ON pending_deliveries(user_id);
+            -- Seed: add negative inventory update notification
+            INSERT INTO bot_updates (description) VALUES
+            ('✅ نظام المخزون السالب (الطلبيات المعلقة)' || chr(10) || chr(10) || '🔴 يمكن الآن البيع حتى لو الكمية غير كافية وتظهر بالسالب' || chr(10) || '⏳ كل زبون يرى طلباته المعلقة خاصة به' || chr(10) || '🟢 عند دخول بضاعة جديدة يتم التسوية التلقائية للعجز' || chr(10) || '📱 إشعار تلقائي للزبون عند تغطية طلبه')
+            ON CONFLICT DO NOTHING;
             """)
             # Migration: ensure all ADMIN_IDS users always get admin role
             if ADMIN_IDS:
@@ -1185,31 +1219,16 @@ def db_update_quantity(product_id, change, transaction_type):
             if transaction_type == "remove" and change < 0:
                 change = abs(change)
             if transaction_type == "remove":
-                # Atomic: check quantity AND update in a single statement
-                # If quantity < change, the WHERE clause fails → no row returned
+                # Allow negative inventory — no quantity check
                 cur.execute(
                     "UPDATE products SET quantity = quantity - %s "
-                    "WHERE id = %s AND quantity >= %s "
+                    "WHERE id = %s "
                     "RETURNING id, name, quantity, location, minimum_stock, created_at",
-                    (change, product_id, change),
+                    (change, product_id),
                 )
                 product = cur.fetchone()
                 if product is None:
-                    # Product doesn't exist OR not enough stock — find out which
-                    cur.execute(
-                        "SELECT quantity FROM products WHERE id = %s",
-                        (product_id,),
-                    )
-                    row = cur.fetchone()
-                    if row is None:
-                        raise ValueError("السلعة غير موجودة.")
-                    raise ValueError(
-                        "العدد المطلوب ("
-                        + str(change)
-                        + ") أكبر من المتوفر ("
-                        + str(row["quantity"])
-                        + ")"
-                    )
+                    raise ValueError("السلعة غير موجودة.")
             else:
                 # Atomic: increment in a single statement
                 cur.execute(
@@ -1414,15 +1433,31 @@ def delete_transaction(tx_id, admin_tid):
             if not tx:
                 return False, "❌ العملية غير موجودة."
             tx = dict(tx)
+            if tx["type"] == "reconcile":
+                return False, "❌ لا يمكن حذف عملية تسوية تلقائية."
             # Only allow admin to delete their OWN transactions
             if tx.get("user_tid") != admin_tid:
                 return False, "❌ لا يمكنك حذف عملية ليست لك."
             # Reverse the quantity change on the product
             if tx["type"] == "add":
-                new_qty_sql = "UPDATE products SET quantity = GREATEST(quantity - %s, 0) WHERE id = %s"
+                cur.execute("UPDATE products SET quantity = quantity - %s WHERE id = %s", (tx["quantity"], tx["product_id"]))
             else:
-                new_qty_sql = "UPDATE products SET quantity = quantity + %s WHERE id = %s"
-            cur.execute(new_qty_sql, (tx["quantity"], tx["product_id"]))
+                cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s", (tx["quantity"], tx["product_id"]))
+                # Reverse pending delivery: reduce or delete the most recent pending for this user+product
+                if tx["type"] == "remove":
+                    cur.execute(
+                        "SELECT id, pending_qty FROM pending_deliveries "
+                        "WHERE user_id = %s AND product_id = %s AND pending_qty > 0 "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (tx["user_id"], tx["product_id"]),
+                    )
+                    pd = cur.fetchone()
+                    if pd:
+                        new_pending = pd["pending_qty"] - tx["quantity"]
+                        if new_pending <= 0:
+                            cur.execute("DELETE FROM pending_deliveries WHERE id = %s", (pd["id"],))
+                        else:
+                            cur.execute("UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s", (new_pending, pd["id"]))
             # Delete the transaction
             cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
         conn.commit()
@@ -1436,8 +1471,214 @@ def delete_transaction(tx_id, admin_tid):
         release_connection(conn)
 
 
+# ═══════════════════════════════════════════════════════════
+#  PENDING DELIVERIES (المخزون السالب)
+# ═══════════════════════════════════════════════════════════
+
+def create_pending_delivery(user_id, product_id, pending_qty):
+    """Create a pending delivery record when a sale exceeds available stock."""
+    if pending_qty <= 0:
+        return None
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "INSERT INTO pending_deliveries (user_id, product_id, pending_qty) "
+                "VALUES (%s, %s, %s) "
+                "RETURNING id, user_id, product_id, pending_qty, created_at",
+                (user_id, product_id, pending_qty),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def auto_reconcile_product(product_id, added_qty, admin_user_id):
+    """Auto-reconcile pending deliveries when new stock is added.
+    
+    Calculates how much of the addition covers existing deficits,
+    fulfills pending deliveries FIFO, creates reconcile transactions,
+    and returns info about fulfilled deliveries for notifications.
+    
+    Returns dict with:
+      - product_name: str
+      - total_covered: int
+      - fulfilled: list of {user_tid, user_name, product_name, qty, fully}
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Get current product state
+            cur.execute(
+                "SELECT id, name, quantity FROM products WHERE id = %s",
+                (product_id,),
+            )
+            product = cur.fetchone()
+            if not product:
+                return None
+
+            new_qty = product["quantity"]
+            old_qty = new_qty - added_qty
+
+            # How much deficit was covered by this addition?
+            deficit_before = max(0, -old_qty)
+            deficit_after = max(0, -new_qty)
+            covered = deficit_before - deficit_after
+
+            if covered <= 0:
+                return None
+
+            # Get pending deliveries for this product, oldest first
+            cur.execute(
+                "SELECT pd.*, u.telegram_id AS user_tid, u.first_name AS user_fname, u.username AS user_name "
+                "FROM pending_deliveries pd "
+                "LEFT JOIN users u ON u.id = pd.user_id "
+                "WHERE pd.product_id = %s AND pd.pending_qty > 0 "
+                "ORDER BY pd.created_at ASC",
+                (product_id,),
+            )
+            pendings = cur.fetchall()
+
+            if not pendings:
+                return None
+
+            # Fulfill FIFO
+            remaining_cover = covered
+            fulfilled_list = []
+            total_reconciled = 0
+
+            for pd in pendings:
+                if remaining_cover <= 0:
+                    break
+                pd = dict(pd)
+                fulfill_amount = min(pd["pending_qty"], remaining_cover)
+                new_pending = pd["pending_qty"] - fulfill_amount
+
+                if new_pending <= 0:
+                    # Fully fulfilled
+                    cur.execute(
+                        "UPDATE pending_deliveries SET pending_qty = 0, fulfilled_at = NOW() WHERE id = %s",
+                        (pd["id"],),
+                    )
+                    fully = True
+                else:
+                    # Partially fulfilled
+                    cur.execute(
+                        "UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s",
+                        (new_pending, pd["id"]),
+                    )
+                    fully = False
+
+                remaining_cover -= fulfill_amount
+                total_reconciled += fulfill_amount
+
+                user_display = pd.get("user_fname") or pd.get("user_name") or "مجهول"
+                fulfilled_list.append({
+                    "user_tid": pd.get("user_tid"),
+                    "user_name": user_display,
+                    "product_name": product["name"],
+                    "qty": fulfill_amount,
+                    "fully": fully,
+                    "remaining": new_pending if not fully else 0,
+                })
+
+            # Create a reconcile transaction for the movements log
+            if total_reconciled > 0:
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                    "VALUES (%s, 'reconcile', %s, %s, %s)",
+                    (product_id, total_reconciled, admin_user_id, "تسوية عجز تلقائية"),
+                )
+
+        conn.commit()
+        return {
+            "product_name": product["name"],
+            "total_covered": total_reconciled,
+            "fulfilled": fulfilled_list,
+            "remaining_deficit": max(0, -new_qty),
+        }
+    except Exception as e:
+        conn.rollback()
+        logging.error("[RECONCILE] Failed for product " + str(product_id) + ": " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+
+def get_all_pending_deliveries():
+    """Get all pending deliveries grouped by product for admin view."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT pd.id, pd.product_id, pd.user_id, pd.pending_qty, pd.created_at, "
+                "p.name AS product_name, p.quantity AS product_qty, "
+                "u.telegram_id AS user_tid, u.first_name AS user_fname, u.username AS user_name "
+                "FROM pending_deliveries pd "
+                "JOIN products p ON p.id = pd.product_id "
+                "LEFT JOIN users u ON u.id = pd.user_id "
+                "WHERE pd.pending_qty > 0 "
+                "ORDER BY p.name ASC, pd.created_at ASC"
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return rows
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def get_user_pending_deliveries(user_db_id):
+    """Get pending deliveries for a specific user (customer view)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT pd.id, pd.product_id, pd.pending_qty, pd.created_at, "
+                "p.name AS product_name, p.quantity AS product_qty "
+                "FROM pending_deliveries pd "
+                "JOIN products p ON p.id = pd.product_id "
+                "WHERE pd.user_id = %s AND pd.pending_qty > 0 "
+                "ORDER BY pd.created_at DESC",
+                (user_db_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return rows
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def get_pending_deliveries_count():
+    """Get count of products with pending deliveries."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0"
+            )
+            count = cur.fetchone()[0]
+        conn.commit()
+        return count
+    except Exception:
+        conn.rollback()
+        return 0
+    finally:
+        release_connection(conn)
+
+
 def get_admin_last_transaction(admin_tid):
-    """Get the admin's most recent transaction."""
+    """Get the admin's most recent non-reconcile transaction."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1447,7 +1688,7 @@ def get_admin_last_transaction(admin_tid):
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "JOIN users u ON u.id = t.user_id "
-                "WHERE u.telegram_id = %s "
+                "WHERE u.telegram_id = %s AND t.type != 'reconcile' "
                 "ORDER BY t.date DESC LIMIT 1", (admin_tid,))
             tx = cur.fetchone()
         conn.commit()
@@ -1604,6 +1845,8 @@ BTN_CUST_MOVEMENTS = "📋 الحركة"
 BTN_CUST_CANCEL = "❌ إلغاء"
 BTN_CUST_ORDER = "📦 طلب توريد"
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
+BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
+BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2038,6 +2281,7 @@ def get_admin_keyboard():
     """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين."""
     # عداد طلبات التوريد المعلّقة
     incoming_count = 0
+    pending_deliveries_count = 0
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -2047,16 +2291,20 @@ def get_admin_keyboard():
             incoming_count += cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM users WHERE role = 'pending'")
             pending_users_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0")
+            pending_deliveries_count = cur.fetchone()[0]
         conn.commit()
     except Exception:
         conn.rollback()
         pending_users_count = 0
+        pending_deliveries_count = 0
     finally:
         release_connection(conn)
 
     # نص الأزرار مع العدادات
     users_btn = ("⚙️ المستخدمين (" + str(pending_users_count) + ")") if pending_users_count > 0 else BTN_USERS
     incoming_btn = ("🚚 طلبات التوريد (" + str(incoming_count) + ")") if incoming_count > 0 else BTN_INCOMING
+    pending_btn = ("🔴 الطلبات المعلقة (" + str(pending_deliveries_count) + ")") if pending_deliveries_count > 0 else BTN_PENDING_ADMIN
 
     return ReplyKeyboardMarkup(
         [
@@ -2065,7 +2313,8 @@ def get_admin_keyboard():
             [BTN_EDIT, BTN_DELETE],
             [users_btn, BTN_BACKUP, BTN_ALERT],
             [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
-            [BTN_INVOICE, BTN_UPDATE, BTN_RESET_STOCK],
+            [BTN_INVOICE, pending_btn, BTN_UPDATE],
+            [BTN_RESET_STOCK],
         ],
         resize_keyboard=True,
     )
@@ -2088,7 +2337,7 @@ def get_customer_keyboard():
         [
             [BTN_CUST_SEARCH, BTN_CUST_REMOVE, BTN_CUST_ADD],
             [BTN_CUST_ORDER],
-            [BTN_CUST_MY_ORDERS],
+            [BTN_CUST_MY_ORDERS, BTN_CUST_PENDING],
             [BTN_CUST_ALERT],
             [BTN_CUST_MOVEMENTS],
             [BTN_CUST_CANCEL],
@@ -2306,6 +2555,16 @@ async def process_seller_input(update, context, text):
             msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"]
         else:
             msg = "✅ تم إخراج " + str(qty) + " " + unit + " من " + updated["name"]
+            # Check if this created a deficit (negative stock)
+            old_qty = updated.get("_old_qty", 0)
+            new_qty = updated["quantity"]
+            additional_deficit = max(0, -new_qty) - max(0, -old_qty)
+            if additional_deficit > 0:
+                try:
+                    create_pending_delivery(user_id, product_id, additional_deficit)
+                    msg += "\n\n⚠️ الكمية أصبحت سالبة — تم تسجيل " + str(additional_deficit) + " وحدة كطلب معلق"
+                except Exception as e:
+                    logging.error("[PENDING] Failed to create: " + str(e))
         if seller:
             msg += "\n👤 البائع: " + seller
         msg += "\n\n" + format_product_admin(updated)
@@ -2630,10 +2889,13 @@ def _build_movements_text(rows):
                 reason_part = " — " + html.escape(str(reason))
             if r["tx_type"] == "add":
                 # Green for additions
-                line = "🟢 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                line = "🟢 " + prod + " +" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+            elif r["tx_type"] == "reconcile":
+                # Blue for reconciliation
+                line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             else:
                 # Red for removals
-                line = "🔴 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                line = "🔴 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             lines.append(line)
         except Exception as e:
             logging.error("[BUILD_MOV] Error on row: " + str(e) + " row=" + str(r))
@@ -3387,6 +3649,42 @@ async def callback_add_notify_handler(update, context):
             confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
         else:
             await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+            # Auto-reconcile pending deliveries for truck/return
+            reconcile_result = None
+            if reason in ("truck", "return") and actor:
+                reconcile_result = await asyncio.to_thread(
+                    auto_reconcile_product, product["id"], qty, actor["id"]
+                )
+            if reconcile_result and reconcile_result["fulfilled"]:
+                pname = reconcile_result["product_name"]
+                covered = reconcile_result["total_covered"]
+                remaining = reconcile_result["remaining_deficit"]
+                # Notify each customer
+                for f in reconcile_result["fulfilled"]:
+                    if f["user_tid"]:
+                        try:
+                            if f["fully"]:
+                                notif = (
+                                    "✅ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
+                                    + "⏳ طلبك المعلق تم تغطيته بالكامل ✓"
+                                )
+                            else:
+                                notif = (
+                                    "⏳ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
+                                    + "📏 المتبقي: " + str(f["remaining"]) + " وحدة"
+                                )
+                            await context.bot.send_message(chat_id=f["user_tid"], text=notif)
+                        except Exception:
+                            pass
+                # Broadcast reconciliation to all users
+                recon_msg = (
+                    "🟢 تسوية عجز تلقائية" + chr(10) + chr(10)
+                    + "📦 " + pname + chr(10)
+                    + "➖ تمت تغطية: " + str(covered) + " وحدة"
+                )
+                if remaining > 0:
+                    recon_msg += chr(10) + "⚠️ العجز المتبقي: " + str(remaining) + " وحدة"
+                await _broadcast_to_all_users(context.bot, recon_msg)
             if reason == "return":
                 confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
             else:
@@ -4300,7 +4598,7 @@ async def handle_admin_message(update, context):
     text = update.message.text.strip()
     user = update.effective_user
     # In a state - if user clicks an admin button, clear state first
-    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK]
+    admin_buttons = [BTN_ADD, BTN_SEARCH, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
@@ -4379,6 +4677,9 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_INCOMING or text.startswith(BTN_INCOMING):
             await _show_admin_incoming_orders(update, context)
+            return
+        if text == BTN_PENDING_ADMIN or text.startswith(BTN_PENDING_ADMIN):
+            await _show_pending_admin(update, context)
             return
 
         if text == BTN_USERS or text.startswith(BTN_USERS):
@@ -4814,7 +5115,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -4839,6 +5140,10 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_MY_ORDERS:
             await _show_customer_orders(update, context)
+            return
+
+        if text == BTN_CUST_PENDING:
+            await _show_pending_customer(update, context)
             return
 
         if text in (BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_SEARCH):
@@ -4943,6 +5248,16 @@ async def handle_customer_message(update, context):
                 msg = "✅ تمت الإضافة!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             else:
                 msg = "✅ تم إخراج!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+                # Check if this created a deficit (negative stock)
+                old_qty = updated.get("_old_qty", 0)
+                new_qty = updated["quantity"]
+                additional_deficit = max(0, -new_qty) - max(0, -old_qty)
+                if additional_deficit > 0 and db_user:
+                    try:
+                        create_pending_delivery(db_user["id"], updated["id"], additional_deficit)
+                        msg += chr(10) + chr(10) + "⚠️ الكمية أصبحت سالبة — تم تسجيل " + str(additional_deficit) + " وحدة كطلب معلق"
+                    except Exception as e:
+                        logging.error("[PENDING] Failed to create: " + str(e))
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
@@ -5276,6 +5591,94 @@ async def callback_go_start_handler(update, context):
             )
         except Exception:
             await query.message.reply_text("🔄 اضغط /start", reply_markup=get_customer_keyboard())
+
+
+# ═══════════════════════════════════════════════════════════
+#  PENDING DELIVERIES DISPLAY
+# ═══════════════════════════════════════════════════════════
+
+async def _show_pending_admin(update, context):
+    """عرض كل السلع ذات العجز مع تفاصيل الزبائن المنتظرين — للمدير."""
+    pendings = get_all_pending_deliveries()
+    if not pendings:
+        await update.message.reply_text(
+            "✅ لا توجد سلع ذات عجز حالياً.",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+    # Group by product
+    from collections import OrderedDict
+    grouped = OrderedDict()
+    for p in pendings:
+        pid = p["product_id"]
+        if pid not in grouped:
+            grouped[pid] = {
+                "name": p["product_name"],
+                "product_qty": p["product_qty"],
+                "customers": [],
+            }
+        cust_name = p.get("user_fname") or p.get("user_name") or "مجهول"
+        grouped[pid]["customers"].append({
+            "name": cust_name,
+            "qty": p["pending_qty"],
+            "user_tid": p.get("user_tid"),
+            "date": p["created_at"].strftime("%d/%m %H:%M") if p.get("created_at") else "",
+        })
+    lines = ["🔴 السلع المطلوبة للزبائن المنتظرين (" + str(len(grouped)) + ")\n"]
+    for pid, info in grouped.items():
+        total_pending = sum(c["qty"] for c in info["customers"])
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(
+            "📦 " + info["name"]
+            + " — العجز: " + str(info["product_qty"])
+            + " (معلق: " + str(total_pending) + ")"
+        )
+        for c in info["customers"]:
+            lines.append("   ├─ 👤 " + c["name"] + ": منتظر " + str(c["qty"]) + " وحدة  ⏰ " + c["date"])
+    lines.append("")
+    lines.append("💡 عند دخول بضاعة جديدة يتم التسوية التلقائية FIFO")
+    text = "\n".join(lines)
+    # Split if too long for Telegram
+    if len(text) > 4000:
+        chunks = [lines[0] + "\n"]
+        for ln in lines[1:]:
+            if len("\n".join(chunks[-1])) + len("\n" + ln) > 3900:
+                chunks.append(["🔴 تابع السلع المطلوبة\n"])
+            chunks[-1].append(ln)
+        for chunk in chunks:
+            await update.message.reply_text("\n".join(chunk))
+        await update.message.reply_text("📤 " + str(len(grouped)) + " سلعة ذات عجز", reply_markup=get_admin_keyboard())
+    else:
+        await update.message.reply_text(text, reply_markup=get_admin_keyboard())
+
+
+async def _show_pending_customer(update, context):
+    """عرض طلبات الزبون المعلقة فقط — للزبون."""
+    user = update.effective_user
+    db_user = get_user(user.id)
+    if not db_user:
+        await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+        return
+    pendings = get_user_pending_deliveries(db_user["id"])
+    if not pendings:
+        await update.message.reply_text(
+            "✅ لا توجد طلبات معلقة حالياً.",
+            reply_markup=get_customer_keyboard(),
+        )
+        return
+    lines = ["⏳ طلباتي المعلقة (" + str(len(pendings)) + ")\n"]
+    lines.append("━━━━━━━━━━━━━━━━━━━━━")
+    for p in pendings:
+        unit = _get_unit_ar(p["product_name"])
+        date_str = p["created_at"].strftime("%d/%m %H:%M") if p.get("created_at") else ""
+        lines.append(
+            "📌 " + p["product_name"]
+            + "\n   └─ منتظر: " + str(p["pending_qty"]) + " " + unit
+            + "  |  ⏰ " + date_str
+        )
+    lines.append("")
+    lines.append("💡 سيتم إشعارك تلقائياً عند توفر البضاعة")
+    await update.message.reply_text("\n".join(lines), reply_markup=get_customer_keyboard())
 
 
 # ═══════════════════════════════════════════════════════════
