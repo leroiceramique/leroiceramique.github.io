@@ -4831,7 +4831,8 @@ async def handle_customer_message(update, context):
             _set_state(context, "waiting_order_photo")
             await update.message.reply_text(
                 "📦 طلب توريد جديد\n\n"
-                "📷 صوّر الوصل وأرسله مباشرة",
+                "📷 صوّر الوصل وأرسله مباشرة\n"
+                "✏️ أو اكتب تفاصيل الطلب كنص",
                 reply_markup=get_input_keyboard(),
             )
             return
@@ -4859,17 +4860,53 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         return
 
-    # State: waiting_order_photo - صورة وصل فقط
+    # State: waiting_order_photo - صورة وصل أو كتابة نص
     if state in ("waiting_order_photo", "waiting_order_input", "waiting_order_name"):
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
             return
-        await update.message.reply_text(
-            "📷 يرجى إرسال صورة الوصل فقط.\n"
-            "أو اضغط ❌ إلغاء.",
-            reply_markup=get_input_keyboard(),
-        )
+        # Accept text as order description
+        user = update.effective_user
+        db_user = get_user(user.id)
+        if not db_user:
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+            context.user_data.clear()
+            return
+        try:
+            req_name = html.escape(user.first_name or user.username or str(user.id))
+            order_text = html.escape(text.strip())
+            order = create_incoming_order(db_user["id"], text.strip(), 0)
+            order_id = order["id"]
+            caption = (
+                "🚚 طلب توريد جديد!\n\n"
+                "👤 من: <b>" + req_name + "</b>\n"
+                "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
+                "✏️ الطلب:\n" + order_text
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=caption,
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                "✅ تم تسجيل طلب التوريد!\n\n"
+                "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n"
+                "⏳ الحالة: <b>قيد التوريد</b>\n\n"
+                "📡 سيتم إشعارك تلقائياً عند التحديث.\n"
+                "تابع طلبك من 📋 طلباتي",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_customer_keyboard(),
+            )
+            logging.info("[INCOMING] Text order #" + str(order_id) + " by user " + str(user.id))
+        except Exception as e:
+            logging.error("[INCOMING] Failed text order: " + str(e))
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
+        context.user_data.clear()
         return
 
     # State: waiting_pact_qty
@@ -5337,7 +5374,7 @@ async def handle_receipt_photo(update, context):
     if not photo:
         return
     file_id = photo[-1].file_id
-    req_name = user.first_name or user.username or str(user.id)
+    req_name = html.escape(user.first_name or user.username or str(user.id))
 
     if state not in ("waiting_order_photo", "waiting_order_input", "waiting_order_name"):
         return
@@ -5353,7 +5390,8 @@ async def handle_receipt_photo(update, context):
         caption = (
             "🚚 طلب توريد جديد!\n\n"
             "👤 من: <b>" + req_name + "</b>\n"
-            "📋 رقم الطلب: <b>#" + str(order_id) + "</b>"
+            "📋 رقم الطلب: <b>#" + str(order_id) + "</b>\n\n"
+            "📷 وصل مرفق"
         )
         for admin_id in ADMIN_IDS:
             try:
