@@ -4605,7 +4605,7 @@ async def handle_admin_message(update, context):
     # In a state - if user clicks an admin button, clear state first
     admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
-    dynamic_prefixes = [BTN_USERS, BTN_INCOMING]
+    dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
         context.user_data.clear()
         state = None
