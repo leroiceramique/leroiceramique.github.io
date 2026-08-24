@@ -4599,18 +4599,18 @@ async def callback_invoice_handler(update, context):
 
 async def handle_admin_message(update, context):
 
-    state = context.user_data.get("state")
     text = update.message.text.strip()
     user = update.effective_user
-    # In a state - if user clicks an admin button, clear state first
     admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
-    if text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes):
-        context.user_data.clear()
-        state = None
+    is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
 
-    if not state:
+    # ═══════════════════════════════════════════════════════════
+    #  Handle admin buttons FIRST — before any state handler
+    # ═══════════════════════════════════════════════════════════
+    if is_admin_btn:
+        context.user_data.clear()
         if text == BTN_ADD:
             await ask_add_name(update, context)
             return
@@ -4702,22 +4702,27 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard(),
             )
             return
-        if text == BTN_CANCEL:
-            await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
-            return
-        # Auto-search: any text without active state = search
-        if text and not text.startswith('/'):
-            await process_search(update, context, text, admin_view=True)
-            return
-        await update.message.reply_text(
-            "استخدم الأزرار أدناه أو الأوامر:" + chr(10) + "/add, /search",
-            reply_markup=get_admin_keyboard())
+        # Fallback — shouldn't reach here
         return
 
+    # ═══════════════════════════════════════════════════════════
+    #  No admin button pressed → handle cancel, state, or auto-search
+    # ═══════════════════════════════════════════════════════════
+    state = context.user_data.get("state")
     # State handlers
     if text == BTN_CANCEL:
         context.user_data.clear()
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
+        return
+
+    # No active state → auto-search or help
+    if not state:
+        if text and not text.startswith('/'):
+            await process_search(update, context, text, admin_view=True)
+            return
+        await update.message.reply_text(
+            "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:" + chr(10) + "/add, /search",
+            reply_markup=get_admin_keyboard())
         return
 
     # ── Reset Stock PIN Confirmation ──
@@ -5110,7 +5115,7 @@ async def handle_admin_message(update, context):
     else:
         context.user_data.clear()
         await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
-
+        return
 
 async def handle_customer_message(update, context):
     text = update.message.text.strip()
