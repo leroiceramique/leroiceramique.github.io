@@ -361,6 +361,7 @@ def _execute_queued_op(op):
 
 def _retry_pending_operations(bot=None):
     """Retry all pending operations. Called by background task."""
+    global _offline_queue
     with _offline_queue_lock:
         if not _offline_queue:
             return 0
@@ -6204,8 +6205,14 @@ def _get_telegram_id(user_db_id):
         release_connection(conn)
 
 
+async def _on_app_post_init(application):
+    """Start background tasks after the app is initialized (works for both webhook and polling)."""
+    asyncio.create_task(_offline_retry_loop(application.bot))
+    logging.info("[BOT] Offline retry task started via post_init")
+
+
 def build_application():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_on_app_post_init).build()
 
     # ── Middleware: تحديث بيانات المستخدم تلقائياً عند أي تفاعل ──
     async def auto_sync_user(update, context):
@@ -6421,6 +6428,7 @@ async def _keep_alive(app):
 if __name__ == "__main__":
     init_db()
     init_pool()
+    _load_offline_queue()
     _init_low_stock_ids()
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
@@ -6439,8 +6447,6 @@ if __name__ == "__main__":
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
             drop_pending_updates=True, webhook_app=webhook_app)
-        asyncio.create_task(_offline_retry_loop(tg_app.bot))
-        print("[BOT] Offline retry task started (webhook)")
     elif render_port:
         health_app = web.Application()
         async def health(request):
@@ -6460,9 +6466,7 @@ if __name__ == "__main__":
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
             asyncio.create_task(_weekly_report_loop(tg_app.bot))
-            asyncio.create_task(_offline_retry_loop(tg_app.bot))
             print("[BOT] Weekly report scheduler enabled")
-            print("[BOT] Offline retry task started")
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
