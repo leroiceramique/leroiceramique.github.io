@@ -5318,6 +5318,67 @@ async def handle_admin_message(update, context):
 
     elif state == STATE_SEARCH_ADMIN:
         await process_search(update, context, text, admin_view=True)
+    elif state == "waiting_provide_qty":
+        product = context.user_data.get("provide_product")
+        if not product:
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
+            return
+        parsed = parse_crt_input(text)
+        if parsed is None:
+            unit = _get_unit_code(product["name"])
+            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_input_keyboard())
+            return
+        qty = parsed
+        try:
+            admin_db = get_user(user.id)
+            admin_id = admin_db["id"] if admin_db else None
+            updated = await asyncio.to_thread(db_update_quantity, product["id"], qty, "add")
+            if admin_db:
+                tx = log_transaction(product["id"], "add", qty, admin_db["id"], reason="توفير من الطلبات المعلقة")
+            icon = _product_status_icon(updated)
+            unit_ar = _get_unit_ar(updated["name"])
+            msg = (
+                "✅ تم توفير " + str(qty) + " " + unit_ar + " من " + updated["name"] + chr(10)
+                + "📦 المخزون الجديد: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+            )
+            # Auto-reconcile pending deliveries
+            reconcile_result = await asyncio.to_thread(
+                auto_reconcile_product, product["id"], qty, admin_id
+            )
+            if reconcile_result and reconcile_result["fulfilled"]:
+                pname = reconcile_result["product_name"]
+                covered = reconcile_result["total_covered"]
+                remaining = reconcile_result["remaining_deficit"]
+                msg += chr(10) + chr(10) + "🔄 تمت تسوية العجز تلقائياً:"
+                msg += chr(10) + "   ✅ تم تغطية " + str(covered) + " وحدة"
+                if remaining > 0:
+                    msg += chr(10) + "   ⚠️ متبقي عجز: " + str(remaining)
+                else:
+                    msg += chr(10) + "   🎉 تم تغطية العجز بالكامل!"
+                # Notify customers
+                for f in reconcile_result["fulfilled"]:
+                    if f["user_tid"]:
+                        try:
+                            if f["fully"]:
+                                notif = (
+                                    "✅ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
+                                    + "⏳ طلبك المعلق تم تغطيته بالكامل ✓"
+                                )
+                            else:
+                                notif = (
+                                    "⏳ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
+                                    + "📏 المتبقي: " + str(f["remaining"]) + " وحدة"
+                                )
+                            await context.bot.send_message(chat_id=f["user_tid"], text=notif)
+                        except Exception:
+                            pass
+            await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+            await send_low_stock_alerts(context.bot)
+            _invalidate_product_cache()
+        except Exception as e:
+            await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+        return
     elif state == STATE_ALERT_MSG:
         alert_text = text.strip()
         if not alert_text:
@@ -5851,8 +5912,33 @@ async def callback_go_start_handler(update, context):
 #  PENDING DELIVERIES DISPLAY
 # ═══════════════════════════════════════════════════════════
 
+async def callback_provide_handler(update, context):
+    """Handle 'provide_<product_id>' — ask admin for quantity to add directly."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if not data.startswith("provide_"):
+        return
+    product_id = int(data.split("_")[1])
+    product = get_product_by_id(product_id)
+    if not product:
+        await query.message.reply_text("❌ السلعة غير موجودة.", reply_markup=get_admin_keyboard())
+        return
+    context.user_data.clear()
+    context.user_data["state"] = "waiting_provide_qty"
+    context.user_data["provide_product"] = dict(product)
+    unit_ar = _get_unit_ar(product["name"])
+    msg = (
+        "📦 توفير: " + product["name"] + chr(10)
+        + "📊 المخزون الحالي: " + str(product["quantity"]) + " " + unit_ar + chr(10)
+        + chr(10)
+        + "أرسل الكمية الواردة:"
+    )
+    await query.message.reply_text(msg, reply_markup=get_input_keyboard())
+
+
 async def _show_pending_admin(update, context):
-    """عرض كل السلع ذات العجز مع تفاصيل الزبائن المنتظرين — للمدير."""
+    """عرض كل السلع ذات العجز مع أزرار توفير مباشرة — للمدير."""
     pendings = get_all_pending_deliveries()
     if not pendings:
         await update.message.reply_text(
@@ -5869,6 +5955,7 @@ async def _show_pending_admin(update, context):
             grouped[pid] = {
                 "name": p["product_name"],
                 "product_qty": p["product_qty"],
+                "product_id": pid,
                 "customers": [],
             }
         cust_name = p.get("user_fname") or p.get("user_name") or "مجهول"
@@ -5878,6 +5965,15 @@ async def _show_pending_admin(update, context):
             "user_tid": p.get("user_tid"),
             "date": p["created_at"].strftime("%d/%m %H:%M") if p.get("created_at") else "",
         })
+    # Build inline buttons for each product: [توفير الآن]
+    provide_buttons = []
+    for pid, info in grouped.items():
+        total_pending = sum(c["qty"] for c in info["customers"])
+        label = "📦 " + info["name"] + " (" + str(total_pending) + ")"
+        provide_buttons.append([InlineKeyboardButton(label, callback_data="provide_" + str(pid))])
+    # Back to main keyboard
+    provide_buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")])
+    # Build text
     lines = ["🔴 السلع المطلوبة للزبائن المنتظرين (" + str(len(grouped)) + ")\n"]
     for pid, info in grouped.items():
         total_pending = sum(c["qty"] for c in info["customers"])
@@ -5890,7 +5986,7 @@ async def _show_pending_admin(update, context):
         for c in info["customers"]:
             lines.append("   ├─ 👤 " + c["name"] + ": منتظر " + str(c["qty"]) + " وحدة  ⏰ " + c["date"])
     lines.append("")
-    lines.append("💡 عند دخول بضاعة جديدة يتم التسوية التلقائية FIFO")
+    lines.append("💡 اضغط زر السلعة بالأسفل لتوفيرها مباشرة")
     text = "\n".join(lines)
     # Split if too long for Telegram
     if len(text) > 4000:
@@ -5901,9 +5997,12 @@ async def _show_pending_admin(update, context):
             chunks[-1].append(ln)
         for chunk in chunks:
             await update.message.reply_text("\n".join(chunk))
-        await update.message.reply_text("📤 " + str(len(grouped)) + " سلعة ذات عجز", reply_markup=get_admin_keyboard())
+        await update.message.reply_text(
+            "📤 " + str(len(grouped)) + " سلعة ذات عجز — اختر سلعة للتوفير:",
+            reply_markup=InlineKeyboardMarkup(provide_buttons),
+        )
     else:
-        await update.message.reply_text(text, reply_markup=get_admin_keyboard())
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(provide_buttons))
 
 
 async def _show_pending_customer(update, context):
@@ -6246,6 +6345,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
+    app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
 
