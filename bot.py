@@ -6,6 +6,9 @@ import datetime
 import logging
 import asyncio
 import unicodedata
+import time
+import hashlib
+import threading
 import aiohttp
 from aiohttp import web
 import psycopg2
@@ -267,6 +270,234 @@ def release_connection(conn):
                 conn.close()
             except Exception:
                 pass
+
+# ═══════════════════════════════════════════════════════════
+#  OFFLINE MODE + SYNC SYSTEM
+# ═══════════════════════════════════════════════════════════
+#  1. Operation Queue (WAL) — saves failed writes, retries later
+#  2. Message Deduplication — prevents double-processing
+#  3. Read Cache — serves cached data when DB is down
+
+_OFFLINE_QUEUE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_offline_queue.json")
+_offline_queue = []
+_offline_queue_lock = threading.Lock()
+_processed_update_ids = {}
+_DEDUP_MAX = 5000
+_PRODUCT_CACHE = {}
+_PRODUCT_CACHE_TIME = 0
+_PRODUCT_CACHE_TTL = 120  # seconds
+_cache_lock = threading.Lock()
+
+
+def _load_offline_queue():
+    """Load persisted queue from disk on startup."""
+    global _offline_queue
+    try:
+        if os.path.exists(_OFFLINE_QUEUE_PATH):
+            with open(_OFFLINE_QUEUE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                _offline_queue = [op for op in data if isinstance(op, dict) and op.get("retries", 0) < 15]
+                logging.info("[OFFLINE] Loaded " + str(len(_offline_queue)) + " pending ops from disk")
+    except Exception as e:
+        logging.error("[OFFLINE] Failed to load queue: " + str(e))
+        _offline_queue = []
+
+
+def _save_offline_queue():
+    """Persist queue to disk."""
+    try:
+        with open(_OFFLINE_QUEUE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_offline_queue, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        logging.error("[OFFLINE] Failed to save queue: " + str(e))
+
+
+def queue_operation(op_type, data, description=""):
+    """Add a failed DB operation to the retry queue."""
+    with _offline_queue_lock:
+        op = {
+            "id": hashlib.md5((op_type + str(data) + str(time.time())).encode()).hexdigest()[:12],
+            "type": op_type,
+            "data": data,
+            "desc": description or op_type,
+            "retries": 0,
+            "created_at": time.time(),
+        }
+        _offline_queue.append(op)
+        _save_offline_queue()
+        count = len(_offline_queue)
+    logging.warning("[OFFLINE] Queued: " + op["desc"] + " (queue: " + str(count) + ")")
+    return op["id"]
+
+
+def _execute_queued_op(op):
+    """Execute a single queued operation. Returns True on success."""
+    op_type = op["type"]
+    data = op["data"]
+    try:
+        if op_type == "add_qty":
+            db_update_quantity(data["product_id"], data["qty"], "add")
+            if data.get("user_id"):
+                log_transaction(data["product_id"], "add", data["qty"], data["user_id"], reason=data.get("reason"))
+        elif op_type == "remove_qty":
+            db_update_quantity(data["product_id"], data["qty"], "remove")
+            if data.get("user_id"):
+                log_transaction(data["product_id"], "remove", data["qty"], data["user_id"], reason=data.get("reason"))
+        elif op_type == "add_product":
+            db_add_product(data["name"], data.get("quantity", 0), data.get("location", ""), data.get("minimum_stock", 5))
+        elif op_type == "register_user":
+            register_user(data["telegram_id"], data.get("username"), data.get("first_name"))
+        elif op_type == "log_transaction":
+            log_transaction(data["product_id"], data["type"], data["quantity"], data["user_id"], reason=data.get("reason"))
+        else:
+            logging.warning("[OFFLINE] Unknown op type: " + op_type)
+            return False
+        return True
+    except Exception as e:
+        logging.warning("[OFFLINE] Retry failed for " + op["desc"] + ": " + str(e))
+        return False
+
+
+def _retry_pending_operations(bot=None):
+    """Retry all pending operations. Called by background task."""
+    with _offline_queue_lock:
+        if not _offline_queue:
+            return 0
+        remaining = []
+        succeeded = 0
+        failed_permanent = []
+        for op in _offline_queue:
+            op["retries"] += 1
+            if _execute_queued_op(op):
+                succeeded += 1
+                logging.info("[OFFLINE] Recovered: " + op["desc"])
+            elif op["retries"] >= 15:
+                failed_permanent.append(op)
+                logging.error("[OFFLINE] Permanently failed: " + op["desc"])
+            else:
+                remaining.append(op)
+        _offline_queue = remaining
+        _save_offline_queue()
+    # Notify admin about permanent failures
+    if failed_permanent and bot:
+        for admin_id in ADMIN_IDS:
+            try:
+                msg = "\u26a0\ufe0f \u0639\u0645\u0644\u064a\u0627\u062a \u0644\u0645 \u062a\u0646\u062c\u062d \u0628\u0639\u062f \u0639\u062f\u0629 \u0645\u062d\u0627\u0648\u0644\u0627\u062a:\n\n"
+                for op in failed_permanent:
+                    age_min = int((time.time() - op["created_at"]) / 60)
+                    msg += "\u2022 " + op["desc"] + " (" + str(age_min) + " \u062f\u0642\u064a\u0642\u0629)\n"
+                msg += "\n\U0001f4cb \u064a\u0631\u062c\u0649 \u0627\u0644\u062a\u062d\u0642\u0642 \u064a\u062f\u0648\u064a\u0627\u064b"
+                asyncio.ensure_future(bot.send_message(chat_id=admin_id, text=msg))
+            except Exception:
+                pass
+    return succeeded
+
+
+async def _offline_retry_loop(bot):
+    """Background loop: retry queued operations every 30 seconds."""
+    await asyncio.sleep(10)  # Wait for bot to fully start
+    while True:
+        try:
+            count = await asyncio.to_thread(_retry_pending_operations, bot)
+            if count > 0:
+                logging.info("[OFFLINE] Recovered " + str(count) + " operations")
+                _invalidate_product_cache()
+        except Exception as e:
+            logging.error("[OFFLINE] Retry loop error: " + str(e))
+        await asyncio.sleep(30)
+
+
+# ── Message Deduplication ──
+
+def is_duplicate_update(update):
+    """Check if this update was already processed. Returns True if duplicate."""
+    try:
+        uid = update.update_id
+        if uid is None:
+            return False
+        if uid in _processed_update_ids:
+            return True
+        _processed_update_ids[uid] = time.time()
+        # Evict old entries
+        if len(_processed_update_ids) > _DEDUP_MAX:
+            cutoff = time.time() - 3600
+            expired = [k for k, v in _processed_update_ids.items() if v < cutoff]
+            for k in expired:
+                del _processed_update_ids[k]
+            if len(_processed_update_ids) > _DEDUP_MAX:
+                sorted_keys = sorted(_processed_update_ids, key=_processed_update_ids.get)
+                for k in sorted_keys[:len(_processed_update_ids) - _DEDUP_MAX + 1000]:
+                    del _processed_update_ids[k]
+        return False
+    except Exception:
+        return False
+
+
+# ── Product Read Cache ──
+
+def _refresh_product_cache():
+    """Fetch all products from DB and cache them."""
+    global _PRODUCT_CACHE, _PRODUCT_CACHE_TIME
+    try:
+        products = get_all_products()
+        with _cache_lock:
+            _PRODUCT_CACHE = {p["id"]: p for p in products}
+            _PRODUCT_CACHE_TIME = time.time()
+        return True
+    except Exception as e:
+        logging.warning("[CACHE] Refresh failed: " + str(e))
+        return False
+
+
+def _invalidate_product_cache():
+    """Mark cache as stale."""
+    global _PRODUCT_CACHE_TIME
+    _PRODUCT_CACHE_TIME = 0
+
+
+def get_cached_products():
+    """Get products from cache if fresh, otherwise from DB."""
+    with _cache_lock:
+        if _PRODUCT_CACHE and (time.time() - _PRODUCT_CACHE_TIME) < _PRODUCT_CACHE_TTL:
+            return list(_PRODUCT_CACHE.values())
+    if _refresh_product_cache():
+        with _cache_lock:
+            return list(_PRODUCT_CACHE.values())
+    return []
+
+
+def search_products_cached(query):
+    """Search products using cache when DB is unavailable."""
+    if not query or not query.strip():
+        return []
+    try:
+        return search_products(query)
+    except Exception as e:
+        logging.warning("[CACHE] DB search failed, using cache: " + str(e))
+    products = get_cached_products()
+    if not products:
+        return []
+    q = query.strip().lower()
+    q_norm = unicodedata.normalize("NFKD", q)
+    results = []
+    seen = set()
+    for p in products:
+        if p["id"] in seen:
+            continue
+        name = (p.get("name") or "").lower()
+        name_norm = unicodedata.normalize("NFKD", name)
+        if q in name or q_norm in name_norm or q in name_norm or q_norm in name:
+            results.append(p)
+            seen.add(p["id"])
+    return results
+
+
+def get_offline_queue_count():
+    """Return number of pending operations in queue."""
+    with _offline_queue_lock:
+        return len(_offline_queue)
+
 
 
 SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
@@ -2555,6 +2786,7 @@ async def process_seller_input(update, context, text):
         updated = db_update_quantity(product_id, qty, action)
         tx = log_transaction(product_id, action, qty, user_id, reason=seller)
         tx_id = tx["id"] if tx else None
+        _invalidate_product_cache()
         unit = _get_unit_code(updated["name"])
         if action == "add":
             msg = "✅ تمت إضافة " + str(qty) + " " + unit + " لـ " + updated["name"]
@@ -2599,7 +2831,13 @@ async def process_seller_input(update, context, text):
     except ValueError as e:
         await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
-        await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
+        # ── Offline fallback: queue operation for retry ──
+        logging.error("[OFFLINE] DB write failed: " + str(e))
+        _desc = ("\u0625\u0636\u0627\u0641\u0629" if action == "add" else "\u0625\u062e\u0631\u0627\u062c") + " " + str(qty) + " \u0648\u062d\u062f\u0629"
+        queue_operation(action + "_qty", {"product_id": product_id, "qty": qty, "user_id": user_id, "reason": seller}, description=_desc)
+        _invalidate_product_cache()
+        await update.message.reply_text("\u26a0\ufe0f \u062a\u0645 \u062d\u0641\u0638 \u0627\u0644\u0639\u0645\u0644\u064a\u0629 \u0648\u0633\u064a\u062a\u0645 \u062a\u0646\u0641\u064a\u0630\u0647\u0627 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b.\n\n\U0001f4cb \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a \u0627\u0644\u0645\u0639\u0644\u0642\u0629: " + str(get_offline_queue_count()), reply_markup=get_admin_keyboard())
+        context.user_data.clear()
     # Don't clear if pending notify needs user_data
     if not context.user_data.get("pending_add_notify") and not context.user_data.get("pending_rem_notify"):
         context.user_data.clear()
@@ -5299,6 +5537,9 @@ async def handle_customer_message(update, context):
 
 
 async def route_message(update, context):
+    # Deduplication: skip already-processed updates
+    if is_duplicate_update(update):
+        return
     user = update.effective_user
     text = update.message.text.strip()
     # ── Efficient: check role with single DB call instead of 4 ──
@@ -6190,16 +6431,22 @@ if __name__ == "__main__":
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
         webhook_app = web.Application()
         async def health(request):
-            return web.Response(text='{"status":"ok"}', content_type="application/json")
+            qcount = get_offline_queue_count()
+            status = "degraded" if qcount > 0 else "ok"
+            return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
         webhook_app.router.add_get("/health", health)
         webhook_app.router.add_get("/", health)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
             drop_pending_updates=True, webhook_app=webhook_app)
+        asyncio.create_task(_offline_retry_loop(tg_app.bot))
+        print("[BOT] Offline retry task started (webhook)")
     elif render_port:
         health_app = web.Application()
         async def health(request):
-            return web.Response(text='{"status":"ok"}', content_type="application/json")
+            qcount = get_offline_queue_count()
+            status = "degraded" if qcount > 0 else "ok"
+            return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
         health_app.router.add_get("/health", health)
         health_app.router.add_get("/", health)
         async def on_startup(aio_app):
@@ -6213,7 +6460,9 @@ if __name__ == "__main__":
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
             asyncio.create_task(_weekly_report_loop(tg_app.bot))
+            asyncio.create_task(_offline_retry_loop(tg_app.bot))
             print("[BOT] Weekly report scheduler enabled")
+            print("[BOT] Offline retry task started")
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
