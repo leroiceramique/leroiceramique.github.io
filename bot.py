@@ -48,6 +48,22 @@ def can_extract(telegram_id):
         release_connection(conn)
 
 
+def get_product_by_id(product_id):
+    """Fetch a single product by ID. Returns dict or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def set_extract_permission(telegram_id, allowed):
     """Grant or revoke extraction permission."""
     conn = get_connection()
@@ -235,7 +251,7 @@ def get_connection():
     if _pool is None:
         init_pool()
     conn = None
-    for attempt in range(2):
+    for _ in range(2):  # attempt counter not used; retry twice on dead connection
         try:
             conn = _pool.getconn()
             with conn.cursor() as cur:
@@ -368,8 +384,12 @@ def _execute_queued_op(op):
         return False
 
 
-def _retry_pending_operations(bot=None):
-    """Retry all pending operations. Called by background task."""
+def _retry_pending_operations(bot=None, loop=None):
+    """Retry all pending operations. Called by background task.
+    `loop` is the main asyncio event loop, needed to schedule admin
+    notifications from this synchronous thread via
+    run_coroutine_threadsafe.
+    """
     global _offline_queue
     with _offline_queue_lock:
         if not _offline_queue:
@@ -390,15 +410,28 @@ def _retry_pending_operations(bot=None):
         _offline_queue = remaining
         _save_offline_queue()
     # Notify admin about permanent failures
-    if failed_permanent and bot:
+    if failed_permanent and bot and loop is not None:
         for admin_id in ADMIN_IDS:
             try:
                 msg = "\u26a0\ufe0f \u0639\u0645\u0644\u064a\u0627\u062a \u0644\u0645 \u062a\u0646\u062c\u062d \u0628\u0639\u062f \u0639\u062f\u0629 \u0645\u062d\u0627\u0648\u0644\u0627\u062a:\n\n"
                 for op in failed_permanent:
                     age_min = int((time.time() - op["created_at"]) / 60)
                     msg += "\u2022 " + op["desc"] + " (" + str(age_min) + " \u062f\u0642\u064a\u0642\u0629)\n"
-                msg += "\n\U0001f4cb \u064a\u0631\u062c\u0649 \u0627\u0644\u062a\u062d\u0642\u0642 \u064a\u062f\u0648\u064a\u0627\u064b"
-                asyncio.ensure_future(bot.send_message(chat_id=admin_id, text=msg))
+                msg += "\n\U0001f4cb \u064a\u0631\u062c\u0649 \u0627\u0644\u062a\u062d\u0642\u0642 \u062a\u062f\u0648\u064a\u0627\u064b"
+                # run_coroutine_threadsafe schedules the coroutine on the
+                # main event loop (which lives in the main thread). Calling
+                # asyncio.ensure_future here would raise RuntimeError because
+                # this function runs inside asyncio.to_thread().
+                future = asyncio.run_coroutine_threadsafe(
+                    bot.send_message(chat_id=admin_id, text=msg),
+                    loop,
+                )
+                def _log_notify_err(fut, _aid=admin_id):
+                    try:
+                        fut.result()
+                    except Exception as exc:
+                        logging.warning("[OFFLINE] Failed to notify admin " + str(_aid) + ": " + str(exc))
+                future.add_done_callback(_log_notify_err)
             except Exception:
                 pass
     return succeeded
@@ -407,9 +440,10 @@ def _retry_pending_operations(bot=None):
 async def _offline_retry_loop(bot):
     """Background loop: retry queued operations every 30 seconds."""
     await asyncio.sleep(10)  # Wait for bot to fully start
+    loop = asyncio.get_running_loop()
     while True:
         try:
-            count = await asyncio.to_thread(_retry_pending_operations, bot)
+            count = await asyncio.to_thread(_retry_pending_operations, bot, loop)
             if count > 0:
                 logging.info("[OFFLINE] Recovered " + str(count) + " operations")
                 _invalidate_product_cache()
@@ -686,7 +720,7 @@ def init_db():
                     processed_at  TIMESTAMPTZ
                 );
                 CREATE INDEX IF NOT EXISTS idx_extraction_requests_status ON extraction_requests (status);
-            -- Migration: create bot_settings table
+            -- Migration: bot_updates table (also declared in SCHEMA_SQL above; idempotent)
             
 CREATE TABLE IF NOT EXISTS bot_updates (
     id          SERIAL PRIMARY KEY,
@@ -3029,7 +3063,7 @@ async def process_seller_input(update, context, text):
         seller = None
     elif text == BTN_CANCEL:
         context.user_data.clear()
-        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(user.id))
+        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(update.effective_user.id if update.effective_user else None))
         return
     else:
         seller = text if text else None
@@ -4323,7 +4357,7 @@ async def callback_email_restore_handler(update, context):
 async def callback_restore_last_confirm_handler(update, context):
     query = update.callback_query
     await query.answer()
-    global _last_backup_data
+    # _last_backup_data is only read here, not assigned; no `global` declaration needed.
     data = query.data
     if data == "last_restore_confirm":
         if not _last_backup_data:
@@ -5614,6 +5648,7 @@ async def handle_admin_message(update, context):
         try:
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
+            tx = None
             if db_user:
                 tx = log_transaction(product["id"], action, qty, db_user["id"])
             tx_id = tx["id"] if tx else None
@@ -5772,7 +5807,7 @@ async def handle_admin_message(update, context):
             return
         context.user_data["calc_data"]["width"] = parsed
         size_btns = []
-        for label, w, h in TILE_SIZES:
+        for label, _w, _h in TILE_SIZES:
             size_btns.append([InlineKeyboardButton(label + " \u0633\u0645", callback_data="calcsize_" + label)])
         size_btns.append([InlineKeyboardButton("\U0001f4d0 \u062d\u062c\u0645 \u0645\u062e\u0635\u0635", callback_data="calcsize_custom")])
         await update.message.reply_text("\U0001f4d0 \u062d\u062c\u0645 \u0627\u0644\u0628\u0644\u0627\u0637?", reply_markup=InlineKeyboardMarkup(size_btns))
@@ -7208,8 +7243,10 @@ async def _keep_alive(app):
 
 
 if __name__ == "__main__":
+    # init_db() calls get_connection() which lazily creates the pool via
+    # init_pool(), so an explicit init_pool() here would leak the previous
+    # pool's connections.
     init_db()
-    init_pool()
     _load_offline_queue()
     _init_low_stock_ids()
     tg_app = build_application()
