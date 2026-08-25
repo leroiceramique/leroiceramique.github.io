@@ -2238,13 +2238,14 @@ def get_transactions(limit=20, offset=0):
 
 
 
-def get_product_transactions(product_id, limit=15):
+def get_product_transactions(product_id, limit=30):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT
                     t.id, t.type AS tx_type, t.quantity, t.date,
+                    t.reason,
                     u.username AS operator_name
                 FROM transactions t
                 LEFT JOIN users u ON u.id = t.user_id
@@ -3391,6 +3392,7 @@ async def _show_product_detail(update, context, product):
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
+        [InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)],
     ]
     keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
@@ -3790,7 +3792,7 @@ async def callback_product_action_handler(update, context):
         return
     if action == "log":
         try:
-            txns = get_product_transactions(product_id, limit=15)
+            txns = get_product_transactions(product_id, limit=30)
             conn = get_connection()
             try:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -3803,22 +3805,24 @@ async def callback_product_action_handler(update, context):
             finally:
                 release_connection(conn)
             product_name = dict(row)["name"] if row else "?"
+            unit = _get_unit_ar(product_name)
             if not txns:
-                text = "📜 لا توجد حركات مسجلة لـ\n" + product_name
+                text = "📜 لا توجد حركات مسجلة لـ" + product_name
             else:
-                tx_lines = ["📜 آخر حركات - " + product_name + "\n"]
+                tx_lines = ["📜 سجل حركات — " + product_name + " (" + str(len(txns)) + ")"]
                 for tx in txns:
-                    icon = "📥" if tx["tx_type"] == "add" else "📤"
-                    date_str = tx["date"].strftime("%m/%d %H:%M")
+                    icon = "🟢" if tx["tx_type"] == "add" else "🔴"
+                    date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
                     op = tx.get("operator_name") or "مجهول"
                     sign = "+" if tx["tx_type"] == "add" else "-"
-                    unit = _get_unit_code(product_name)
+                    reason = tx.get("reason") or ""
+                    if reason:
+                        reason = " | " + reason
                     tx_lines.append(
-                        icon + " " + sign + str(tx["quantity"]) + " " + unit + " | "
-                        + op + " | " + date_str
+                        icon + " " + date_str + " — " + sign + str(tx["quantity"]) + " " + unit
+                        + " | " + op + reason
                     )
                 text = "\n".join(tx_lines)
-            await query.edit_message_text(text)
         except Exception as e:
             logging.error("[PACT_LOG] Error: " + str(e))
             try:
@@ -6174,6 +6178,7 @@ async def handle_customer_message(update, context):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
                  InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid)],
+                [InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)],
             ])
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
