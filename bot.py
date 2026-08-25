@@ -193,6 +193,15 @@ if not DATABASE_URL:
 if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
+_raw_owner_ids = os.getenv("OWNER_IDS", "")
+OWNER_IDS: list = [
+    int(uid.strip())
+    for uid in _raw_owner_ids.split(",")
+    if uid.strip().isdigit()
+]
+if not OWNER_IDS:
+    OWNER_IDS = [ADMIN_IDS[0]]
+
 _previously_low_stock = {}  # {product_id: product_dict}
 
 def _init_low_stock_ids():
@@ -612,6 +621,22 @@ CREATE TABLE IF NOT EXISTS pending_deliveries (
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_product ON pending_deliveries(product_id);
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_user ON pending_deliveries(user_id);
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_pending ON pending_deliveries(product_id) WHERE pending_qty > 0;
+
+CREATE TABLE IF NOT EXISTS unshipped_sales (
+    id            SERIAL PRIMARY KEY,
+    transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_name  VARCHAR(500) NOT NULL,
+    quantity      INTEGER NOT NULL,
+    sold_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    seller_name   VARCHAR(255),
+    sold_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    shipped       BOOLEAN NOT NULL DEFAULT FALSE,
+    shipped_at    TIMESTAMPTZ,
+    shipped_by    INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_unshipped_sales_product ON unshipped_sales(product_id);
+CREATE INDEX IF NOT EXISTS idx_unshipped_sales_unshipped ON unshipped_sales(product_id) WHERE shipped = FALSE;
 """
 
 
@@ -772,6 +797,28 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             INSERT INTO bot_updates (description) VALUES
             ('🔍 بحث تلقائي: اكتب أي اسم سلعة مباشرة وسيتم البحث تلقائياً' || chr(10) || chr(10) || '⚙️ تحسينات: زيادة سرعة الاستجابة وإصلاح مشكلة الاتصال')
             ON CONFLICT DO NOTHING;
+            -- Migration: create unshipped_sales table
+            DO $$ BEGIN
+                CREATE TABLE IF NOT EXISTS unshipped_sales (
+                    id            SERIAL PRIMARY KEY,
+                    transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+                    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    product_name  VARCHAR(500) NOT NULL,
+                    quantity      INTEGER NOT NULL,
+                    sold_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                    seller_name   VARCHAR(255),
+                    sold_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    shipped       BOOLEAN NOT NULL DEFAULT FALSE,
+                    shipped_at    TIMESTAMPTZ,
+                    shipped_by    INTEGER REFERENCES users(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_unshipped_sales_product ON unshipped_sales(product_id);
+                CREATE INDEX IF NOT EXISTS idx_unshipped_sales_unshipped ON unshipped_sales(product_id) WHERE shipped = FALSE;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            INSERT INTO bot_updates (description) VALUES
+            ('📤 تتبع الشحن: السلع المباعة تظهر في قائمة غير المشحونة' || chr(10) || chr(10) || '📤 زر جديد: غير المشحونة' || chr(10) || '✅ عند البيع يتم تسجيل السلعة تلقائياً' || chr(10) || '📦 اضغط تم الشحن عندما يتم إخراجها من المخزن')
+            ON CONFLICT DO NOTHING;
             """)
             # Migration: ensure all ADMIN_IDS users always get admin role
             if ADMIN_IDS:
@@ -879,6 +926,11 @@ def is_admin(telegram_id):
 
 
 # ═══════════════════════════════════════════════════════════
+
+
+def is_owner(telegram_id):
+    """Check if user is the bot owner."""
+    return telegram_id in OWNER_IDS
 
 
 def is_approved(telegram_id):
@@ -1080,6 +1132,8 @@ def db_export_backup():
             extraction_requests = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM incoming_orders ORDER BY id")
             incoming_orders = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM unshipped_sales ORDER BY id")
+            unshipped_sales = [dict(r) for r in cur.fetchall()]
         conn.commit()
         return {
             "version": 4,
@@ -1091,6 +1145,7 @@ def db_export_backup():
             "invoice_items": invoice_items,
             "extraction_requests": extraction_requests,
             "incoming_orders": incoming_orders,
+            "unshipped_sales": unshipped_sales,
         }
     except Exception:
         conn.rollback()
@@ -1114,6 +1169,7 @@ def db_import_backup(data):
             cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
+            cur.execute("DELETE FROM unshipped_sales")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             cur.execute("DELETE FROM users")
@@ -1231,6 +1287,23 @@ def db_import_backup(data):
                 """, rows)
                 max_ioid = max(io["id"] for io in inc_orders)
                 cur.execute("SELECT setval('incoming_orders_id_seq', %s)", (max_ioid,))
+
+            # ── Import unshipped_sales ──
+            unshipped = data.get("unshipped_sales", [])
+            if unshipped:
+                rows = [
+                    (us["id"], us.get("transaction_id"), us["product_id"], us["product_name"],
+                     us["quantity"], us.get("sold_by"), us.get("seller_name"),
+                     us.get("shipped", False), us.get("shipped_at"), us.get("shipped_by"),
+                     us.get("sold_at"))
+                    for us in unshipped
+                ]
+                cur.executemany("""
+                    INSERT INTO unshipped_sales (id, transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped, shipped_at, shipped_by, sold_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_usid = max(us["id"] for us in unshipped)
+                cur.execute("SELECT setval('unshipped_sales_id_seq', %s)", (max_usid,))
 
         conn.commit()
 
@@ -1916,6 +1989,118 @@ def get_pending_deliveries_count():
         release_connection(conn)
 
 
+# ═══════════════════════════════════════════════════════════
+#  UNSHIPPED SALES (تتبع الشحن)
+# ═══════════════════════════════════════════════════════════
+
+def create_unshipped_sale(transaction_id, product_id, product_name, quantity, sold_by, seller_name=None, shipped=False, shipped_by=None):
+    """Create a sale record. shipped=True means already shipped (owner sale), False means pending shipment."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if shipped:
+                cur.execute(
+                    "INSERT INTO unshipped_sales (transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped, shipped_at, shipped_by) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW(), %s) RETURNING *",
+                    (transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped_by),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO unshipped_sales (transaction_id, product_id, product_name, quantity, sold_by, seller_name) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+                    (transaction_id, product_id, product_name, quantity, sold_by, seller_name),
+                )
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logging.error("[UNSHIPPED] Failed to create: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+
+def get_unshipped_sales():
+    """Get all unshipped sales ordered by sold_at ASC."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT us.*, u.first_name AS seller_first_name, u.username AS seller_username "
+                "FROM unshipped_sales us "
+                "JOIN users u ON u.id = us.sold_by "
+                "WHERE us.shipped = FALSE "
+                "ORDER BY us.sold_at ASC"
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception:
+        conn.rollback()
+        return []
+    finally:
+        release_connection(conn)
+
+
+def get_unshipped_count():
+    """Get count of unshipped sale records."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM unshipped_sales WHERE shipped = FALSE")
+            count = cur.fetchone()[0]
+        conn.commit()
+        return count
+    except Exception:
+        conn.rollback()
+        return 0
+    finally:
+        release_connection(conn)
+
+
+def mark_shipped_product(product_id, shipped_by):
+    """Mark all unshipped sales for a product as shipped. Returns count marked."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE unshipped_sales SET shipped = TRUE, shipped_at = NOW(), shipped_by = %s "
+                "WHERE product_id = %s AND shipped = FALSE",
+                (shipped_by, product_id),
+            )
+            count = cur.rowcount
+        conn.commit()
+        return count
+    except Exception as e:
+        conn.rollback()
+        logging.error("[UNSHIPPED] mark_shipped failed: " + str(e))
+        return 0
+    finally:
+        release_connection(conn)
+
+
+def mark_all_shipped(shipped_by):
+    """Mark ALL unshipped sales as shipped. Returns count marked."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE unshipped_sales SET shipped = TRUE, shipped_at = NOW(), shipped_by = %s "
+                "WHERE shipped = FALSE",
+                (shipped_by,),
+            )
+            count = cur.rowcount
+        conn.commit()
+        return count
+    except Exception as e:
+        conn.rollback()
+        logging.error("[UNSHIPPED] mark_all_shipped failed: " + str(e))
+        return 0
+    finally:
+        release_connection(conn)
+
+
 def get_admin_last_transaction(admin_tid):
     """Get the admin's most recent non-reconcile transaction."""
     conn = get_connection()
@@ -2085,6 +2270,21 @@ BTN_CUST_ORDER = "📦 طلب توريد"
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
+BTN_CALC = "🧮 حاسبة الكميات"
+BTN_UNSHIPPED = "📤 غير المشحونة"
+
+# Tile sizes: (label, cm_w, cm_h)
+TILE_SIZES = [
+    ("20×20", 20, 20),
+    ("25×25", 25, 25),
+    ("30×30", 30, 30),
+    ("40×40", 40, 40),
+    ("60×60", 60, 60),
+    ("80×80", 80, 80),
+]
+
+# Space type waste percentages
+SPACE_WASTE = {"bathroom": 15, "kitchen": 10, "floor": 8, "custom": 10}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2515,11 +2715,12 @@ async def _weekly_report_loop(bot):
 # ═══════════════════════════════════════════════════════════
 
 
-def get_admin_keyboard():
+def get_admin_keyboard(user_id=None):
     """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين."""
     # عداد طلبات التوريد المعلّقة
     incoming_count = 0
     pending_deliveries_count = 0
+    unshipped_count = 0
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -2531,11 +2732,14 @@ def get_admin_keyboard():
             pending_users_count = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0")
             pending_deliveries_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM unshipped_sales WHERE shipped = FALSE")
+            unshipped_count = cur.fetchone()[0]
         conn.commit()
     except Exception:
         conn.rollback()
         pending_users_count = 0
         pending_deliveries_count = 0
+        unshipped_count = 0
     finally:
         release_connection(conn)
 
@@ -2543,18 +2747,19 @@ def get_admin_keyboard():
     users_btn = ("⚙️ المستخدمين (" + str(pending_users_count) + ")") if pending_users_count > 0 else BTN_USERS
     incoming_btn = ("🚚 طلبات التوريد (" + str(incoming_count) + ")") if incoming_count > 0 else BTN_INCOMING
     pending_btn = ("🔴 الطلبات المعلقة (" + str(pending_deliveries_count) + ")") if pending_deliveries_count > 0 else BTN_PENDING_ADMIN
+    unshipped_btn = ("📤 غير المشحونة (" + str(unshipped_count) + ")") if unshipped_count > 0 else BTN_UNSHIPPED
 
-    return ReplyKeyboardMarkup(
-        [
-            [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY],
-            [BTN_EDIT, BTN_DELETE],
-            [users_btn, BTN_BACKUP, BTN_ALERT],
-            [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
-            [BTN_INVOICE, pending_btn, BTN_UPDATE],
-            [BTN_RESET_STOCK],
-        ],
-        resize_keyboard=True,
-    )
+    rows = [
+        [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY],
+        [BTN_EDIT, BTN_DELETE],
+        [users_btn, BTN_BACKUP, BTN_ALERT],
+        [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
+        [BTN_INVOICE, pending_btn, BTN_UPDATE],
+        [unshipped_btn, BTN_RESET_STOCK],
+    ]
+    if user_id and is_owner(user_id):
+        rows.insert(-1, [BTN_CALC])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def get_input_keyboard():
@@ -2725,6 +2930,7 @@ def db_reset_all_stock():
             cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
+            cur.execute("DELETE FROM unshipped_sales")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             # Reset sequences
@@ -2734,6 +2940,7 @@ def db_reset_all_stock():
             cur.execute("SELECT setval('invoice_items_id_seq', 1, false)")
             cur.execute("SELECT setval('extraction_requests_id_seq', 1, false)")
             cur.execute("SELECT setval('incoming_orders_id_seq', 1, false)")
+            cur.execute("SELECT setval('unshipped_sales_id_seq', 1, false)")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2768,7 +2975,7 @@ async def process_seller_input(update, context, text):
         seller = None
     elif text == BTN_CANCEL:
         context.user_data.clear()
-        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(user.id))
         return
     else:
         seller = text if text else None
@@ -3161,7 +3368,7 @@ def _fetch_today_movements():
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= CURRENT_DATE "
+                "WHERE t.date >= CURRENT_DATE AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC")
             col_names = [desc[0] for desc in cur.description]
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
@@ -3187,7 +3394,7 @@ def _fetch_movements_by_date(target_date):
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= %s AND t.date < %s "
+                "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (target_date, target_date + datetime.timedelta(days=1)))
             col_names = [desc[0] for desc in cur.description]
@@ -3729,6 +3936,7 @@ async def backup_command(update, context):
                 + "\n🧾 الفواتير: " + str(len(backup.get("invoices", [])))
                 + "\n🚚 طلبات التوريد: " + str(len(backup.get("incoming_orders", [])))
                 + "\n📤 طلبات الاستخراج: " + str(len(backup.get("extraction_requests", [])))
+                + "\n📦 غير المشحونة: " + str(len(backup.get("unshipped_sales", [])))
                 + "\n💡 حفظ الملف. لإستيراد البيانات أرسله للبوت."),
             reply_markup=keyboard,
         )
@@ -3969,19 +4177,37 @@ async def callback_rem_notify_handler(update, context):
     tx_id = pending.get("tx_id")
     seller = pending.get("seller")
     # Build reason label for movements log
-    reason_labels = {
+    reason_labels_rem = {
         "return": "↩️ إرجاع من زبون",
         "sale": "🚚 بيع لزبون",
         "saoula": "🏪 بيع لرابح Saoula",
         "carthago": "🏪 بيع لحسان Carthago",
         "correction": "📝 تصحيح مخزون",
     }
-    reason_label = reason_labels.get(reason, "")
+    reason_label = reason_labels_rem.get(reason, "")
     if seller:
         reason_label = reason_label + " — " + seller
     # Update transaction reason in DB
     if tx_id:
         update_transaction_reason(tx_id, reason_label)
+    # Track sale record: owner = auto-shipped, others = pending shipment
+    if reason in ("sale", "saoula", "carthago"):
+        try:
+            sold_by = actor["id"] if actor else None
+            actor_tid = actor.get("telegram_id") if actor else None
+            owner_sold = is_owner(actor_tid) if actor_tid else False
+            create_unshipped_sale(
+                transaction_id=tx_id,
+                product_id=product["id"],
+                product_name=product["name"],
+                quantity=qty,
+                sold_by=sold_by,
+                seller_name=seller,
+                shipped=owner_sold,
+                shipped_by=sold_by if owner_sold else None,
+            )
+        except Exception as e:
+            logging.error("[UNSHIPPED] Failed to track sale: " + str(e))
     try:
         if reason == "correction":
             confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
@@ -4840,9 +5066,9 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_CALC, BTN_UNSHIPPED]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
-    dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
+    dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
 
     # ═══════════════════════════════════════════════════════════
@@ -4919,6 +5145,9 @@ async def handle_admin_message(update, context):
         if text == BTN_PENDING_ADMIN or text.startswith(BTN_PENDING_ADMIN):
             await _show_pending_admin(update, context)
             return
+        if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
+            await _show_unshipped_sales(update, context)
+            return
 
         if text == BTN_USERS or text.startswith(BTN_USERS):
             await users_command(update, context)
@@ -4941,7 +5170,21 @@ async def handle_admin_message(update, context):
                 reply_markup=get_input_keyboard(),
             )
             return
-        # Fallback — shouldn't reach here
+        if text == BTN_CALC:
+            if not is_owner(user.id):
+                return
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚿 حمام", callback_data="calcspace_bathroom")],
+                [InlineKeyboardButton("🍳 مطبخ", callback_data="calcspace_kitchen")],
+                [InlineKeyboardButton("🏠 أرضية", callback_data="calcspace_floor")],
+                [InlineKeyboardButton("📐 مخصص", callback_data="calcspace_custom")],
+            ])
+            await update.message.reply_text(
+                "🧮 حاسبة الكميات\n📏 نوع المساحة?",
+                reply_markup=kb,
+            )
+            return
+        # Fallback — should not reach here
         return
 
     # ═══════════════════════════════════════════════════════════
@@ -4969,7 +5212,7 @@ async def handle_admin_message(update, context):
         pin = text.strip()
         if pin == BTN_CANCEL:
             context.user_data.clear()
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(user.id))
         elif pin == "5614":
             await process_reset_stock(update, context)
         else:
@@ -5259,7 +5502,7 @@ async def handle_admin_message(update, context):
             return
         if text == BTN_CANCEL:
             context.user_data.clear()
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(user.id))
             return
         parsed = parse_crt_input(text)
         if parsed is None:
@@ -5412,6 +5655,36 @@ async def handle_admin_message(update, context):
         context.user_data.clear()
         return
     
+    elif state == "calc_length":
+        parsed = parse_crt_input(text)
+        if parsed is None or parsed <= 0:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645\u0627 \u0635\u062d\u064a\u062d\u0627 \u0644\u0644\u0645\u062a\u0631 (\u0645\u062b\u0627\u0644: 4)", reply_markup=get_input_keyboard())
+            return
+        context.user_data["calc_data"]["length"] = parsed
+        context.user_data["state"] = "calc_width"
+        await update.message.reply_text("\U0001f4cf \u0623\u0631\u0633\u0644 \u0627\u0644\u0639\u0631\u0636 \u0628\u0627\u0644\u0645\u062a\u0631:", reply_markup=get_input_keyboard())
+        return
+    elif state == "calc_width":
+        parsed = parse_crt_input(text)
+        if parsed is None or parsed <= 0:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645\u0627 \u0635\u062d\u064a\u062d\u0627 \u0644\u0644\u0645\u062a\u0631 (\u0645\u062b\u0627\u0644: 3)", reply_markup=get_input_keyboard())
+            return
+        context.user_data["calc_data"]["width"] = parsed
+        size_btns = []
+        for label, w, h in TILE_SIZES:
+            size_btns.append([InlineKeyboardButton(label + " \u0633\u0645", callback_data="calcsize_" + label)])
+        size_btns.append([InlineKeyboardButton("\U0001f4d0 \u062d\u062c\u0645 \u0645\u062e\u0635\u0635", callback_data="calcsize_custom")])
+        await update.message.reply_text("\U0001f4d0 \u062d\u062c\u0645 \u0627\u0644\u0628\u0644\u0627\u0637?", reply_markup=InlineKeyboardMarkup(size_btns))
+        return
+    elif state == "calc_custom_size":
+        parsed = parse_crt_input(text)
+        if parsed is None or parsed <= 0:
+            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645\u0627 \u0628\u0627\u0644\u0633\u0646\u062a\u064a\u0645\u062a\u0631 (\u0645\u062b\u0627\u0644: 60)", reply_markup=get_input_keyboard())
+            return
+        context.user_data["calc_data"]["tile_w"] = parsed
+        context.user_data["calc_data"]["tile_h"] = parsed
+        await _show_calc_result(update, context)
+        return
     else:
         context.user_data.clear()
         await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
@@ -5848,6 +6121,133 @@ async def error_handler(update, context):
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 
+# ═══════════════════════════════════════════════════════════
+#  UNSHIPPED SALES DISPLAY & SHIPPING
+# ═══════════════════════════════════════════════════════════
+
+async def _show_unshipped_sales(update, context):
+    """عرض السلع المباعة غير المشحونة مع أزرار الشحن."""
+    sales = get_unshipped_sales()
+    if not sales:
+        await update.message.reply_text(
+            "✅ لا توجد سلع غير مشحونة.",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+
+    # Group by product
+    from collections import OrderedDict
+    grouped = OrderedDict()
+    for s in sales:
+        pid = s["product_id"]
+        if pid not in grouped:
+            grouped[pid] = {
+                "name": s["product_name"],
+                "total_qty": 0,
+                "items": [],
+            }
+        grouped[pid]["total_qty"] += s["quantity"]
+        grouped[pid]["items"].append(s)
+
+    # Build message
+    lines = ["📤 السلع غير المشحونة (" + str(len(sales)) + ")"]
+    lines.append("")
+    for pid, info in grouped.items():
+        unit = _get_unit_ar(info["name"])
+        lines.append(
+            "📦 " + info["name"]
+            + " — " + str(info["total_qty"]) + " " + unit
+        )
+        for item in info["items"]:
+            seller = item.get("seller_name") or item.get("seller_first_name") or item.get("seller_username") or ""
+            date_str = item["sold_at"].strftime("%d/%m %H:%M") if item.get("sold_at") else ""
+            lines.append(
+                "   └─ " + str(item["quantity"]) + " " + unit
+                + "  |  👤 " + seller
+                + "  |  ⏰ " + date_str
+            )
+        lines.append("")
+
+    # Build inline buttons: one per product + "ship all" button
+    ship_buttons = []
+    for pid, info in grouped.items():
+        unit = _get_unit_ar(info["name"])
+        label = "✅ شحن: " + info["name"] + " (" + str(info["total_qty"]) + " " + unit + ")"
+        ship_buttons.append([InlineKeyboardButton(label, callback_data="ship_" + str(pid))])
+    ship_buttons.append([InlineKeyboardButton("✅ شحن الكل", callback_data="ship_all")])
+    ship_buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")])
+
+    text = chr(10).join(lines)
+    if len(text) > 4000:
+        # Split message if too long
+        parts = []
+        current = [lines[0], lines[1]]
+        for ln in lines[2:]:
+            if len(chr(10).join(current)) + len(chr(10) + ln) > 3900:
+                parts.append(chr(10).join(current))
+                current = ["📤 تابع السلع غير المشحونة"]
+            current.append(ln)
+        if current:
+            parts.append(chr(10).join(current))
+        for part in parts:
+            await update.message.reply_text(part)
+        await update.message.reply_text(
+            "📤 " + str(len(grouped)) + " سلعة — اختر للتشحن:",
+            reply_markup=InlineKeyboardMarkup(ship_buttons),
+        )
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(ship_buttons))
+
+
+async def callback_ship_handler(update, context):
+    """Handle ship_ and ship_all callbacks for marking items as shipped."""
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        return
+
+    data = query.data
+    db_user = get_user(query.from_user.id)
+    shipped_by = db_user["id"] if db_user else 0
+
+    if data == "ship_all":
+        count = mark_all_shipped(shipped_by)
+        if count > 0:
+            await query.edit_message_text(
+                "✅ تم شحن " + str(count) + " سلعة بنجاح!"
+            )
+        else:
+            await query.edit_message_text("📭 لا توجد سلع للشحن.")
+        return
+
+    if data.startswith("ship_"):
+        try:
+            product_id = int(data.split("_")[1])
+        except (IndexError, ValueError):
+            return
+        count = mark_shipped_product(product_id, shipped_by)
+        if count > 0:
+            # Get product name for message
+            conn = get_connection()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
+                    row = cur.fetchone()
+                conn.commit()
+                pname = dict(row)["name"] if row else ""
+            except Exception:
+                pname = ""
+            finally:
+                release_connection(conn)
+            await query.edit_message_text(
+                "✅ تم شحن " + pname + " (" + str(count) + " عملية)"
+            )
+        else:
+            await query.edit_message_text("📭 لا توجد عمليات غير مشحونة لهذه السلعة.")
+        return
+
+
 async def callback_admin_done_handler(update, context):
     query = update.callback_query
     await query.answer()
@@ -5906,6 +6306,144 @@ async def callback_go_start_handler(update, context):
             )
         except Exception:
             await query.message.reply_text("🔄 اضغط /start", reply_markup=get_customer_keyboard())
+
+
+# ═══════════════════════════════════════════════════════════
+#  CERAMIC QUANTITY CALCULATOR (Owner-only)
+# ═══════════════════════════════════════════════════════════
+
+async def callback_calc_space_handler(update, context):
+    """Handle space type selection for calculator."""
+    query = update.callback_query
+    await query.answer()
+    if not is_owner(query.from_user.id):
+        return
+    space_type = query.data.replace("calcspace_", "")
+    context.user_data["calc_data"] = {"space_type": space_type}
+    context.user_data["state"] = "calc_length"
+    labels = {"bathroom": "\U0001f6bf حمام", "kitchen": "\U0001f373 مطبخ", "floor": "\U0001f3e0 أرضية", "custom": "\U0001f4d0 مخصص"}
+    await query.message.reply_text(
+        "\U0001f9ee حاسبة الكميات — " + labels.get(space_type, "") + chr(10) + chr(10) + "\U0001f4cf أرسل الطول بالمتر:",
+        reply_markup=get_input_keyboard(),
+    )
+
+
+async def callback_calc_size_handler(update, context):
+    """Handle tile size selection for calculator."""
+    query = update.callback_query
+    await query.answer()
+    if not is_owner(query.from_user.id):
+        return
+    data = query.data
+    if data == "calcsize_custom":
+        context.user_data["state"] = "calc_custom_size"
+        await query.message.reply_text(
+            "\U0001f4cf أرسل طول البلاطة بالسنتيمتر (مثال: 60):",
+            reply_markup=get_input_keyboard(),
+        )
+        return
+    size_str = data.replace("calcsize_", "")
+    for label, w, h in TILE_SIZES:
+        if label == size_str:
+            context.user_data["calc_data"]["tile_w"] = w
+            context.user_data["calc_data"]["tile_h"] = h
+            break
+    await _show_calc_result(update, context)
+
+
+def _do_calc(data):
+    """Perform the tile calculation."""
+    length = data["length"]
+    width = data["width"]
+    tile_w = data["tile_w"]
+    tile_h = data["tile_h"]
+    space_type = data.get("space_type", "custom")
+    waste_pct = SPACE_WASTE.get(space_type, 10)
+
+    area = length * width
+    tile_area_m2 = (tile_w * tile_h) / 10000.0
+    tiles_exact = area / tile_area_m2
+    tiles_with_waste = tiles_exact * (1 + waste_pct / 100.0)
+    tiles_needed = int(tiles_with_waste) + (1 if tiles_with_waste % 1 > 0 else 0)
+    tiles_without_waste = int(tiles_exact) + (1 if tiles_exact % 1 > 0 else 0)
+
+    return {
+        "area": area,
+        "tile_w": tile_w,
+        "tile_h": tile_h,
+        "tiles_without_waste": tiles_without_waste,
+        "tiles_needed": tiles_needed,
+        "waste_pct": waste_pct,
+        "space_type": space_type,
+    }
+
+
+async def _show_calc_result(update, context):
+    """Show calculation result + matching products from stock."""
+    data = context.user_data.get("calc_data", {})
+    r = _do_calc(data)
+    space_labels = {"bathroom": "\U0001f6bf حمام", "kitchen": "\U0001f373 مطبخ", "floor": "\U0001f3e0 أرضية", "custom": "\U0001f4d0 مخصص"}
+    space_label = space_labels.get(r["space_type"], "")
+
+    lines = [
+        "\U0001f9ee نتيجة الحساب — " + space_label,
+        "━" * 22,
+        "\U0001f4cf المساحة: " + "{:.2f}".format(r["area"]) + " م\u00b2",
+        "\U0001f4d0 حجم البلاط: " + str(r["tile_w"]) + "×" + str(r["tile_h"]) + " سم",
+        "",
+        "\U0001f535 بدون هدر: " + str(r["tiles_without_waste"]) + " قطعة",
+        "\U0001f7e2 مع هدر " + str(r["waste_pct"]) + "%: " + str(r["tiles_needed"]) + " قطعة",
+    ]
+
+    # Search products matching this tile size
+    size_num = str(r["tile_w"])
+    all_products = get_all_products()
+    matching = [p for p in all_products if size_num in p["name"]]
+
+    if matching:
+        lines.append("")
+        lines.append("\U0001f4e6 منتجات مطابقة (" + str(r["tile_w"]) + "×" + str(r["tile_h"]) + "):")
+        lines.append("━" * 22)
+        for p in matching[:8]:
+            icon = "\u2705" if p["quantity"] > 0 else "\u274c"
+            lines.append(icon + " " + p["name"] + " — " + str(p["quantity"]))
+    else:
+        lines.append("")
+        lines.append("\U0001f4e6 لا توجد منتجات مطابقة في المخزن")
+
+    product_buttons = []
+    for p in matching[:6]:
+        icon = "\u2705" if p["quantity"] > 0 else "\u274c"
+        label = p["name"] + " — " + str(p["quantity"]) + " " + icon
+        product_buttons.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
+
+    product_buttons.append([InlineKeyboardButton("\U0001f504 حساب جديد", callback_data="calc_restart")])
+    product_buttons.append([InlineKeyboardButton("\U0001f3e0 القائمة الرئيسية", callback_data="admin_done")])
+
+    await update.message.reply_text(
+        chr(10).join(lines),
+        reply_markup=InlineKeyboardMarkup(product_buttons),
+    )
+    context.user_data["state"] = None
+
+
+async def callback_calc_restart_handler(update, context):
+    """Restart the calculator."""
+    query = update.callback_query
+    await query.answer()
+    if not is_owner(query.from_user.id):
+        return
+    context.user_data.clear()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("\U0001f6bf حمام", callback_data="calcspace_bathroom")],
+        [InlineKeyboardButton("\U0001f373 مطبخ", callback_data="calcspace_kitchen")],
+        [InlineKeyboardButton("\U0001f3e0 أرضية", callback_data="calcspace_floor")],
+        [InlineKeyboardButton("\U0001f4d0 مخصص", callback_data="calcspace_custom")],
+    ])
+    await query.message.reply_text(
+        "\U0001f9ee حاسبة الكميات\n\U0001f4cf نوع المساحة?",
+        reply_markup=kb,
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -6345,7 +6883,11 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
+    app.add_handler(CallbackQueryHandler(callback_calc_space_handler, pattern="^calcspace_"))
+    app.add_handler(CallbackQueryHandler(callback_calc_size_handler, pattern="^calcsize_"))
+    app.add_handler(CallbackQueryHandler(callback_calc_restart_handler, pattern="^calc_restart$"))
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
+    app.add_handler(CallbackQueryHandler(callback_ship_handler, pattern="^ship(_|all)"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
 
