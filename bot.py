@@ -3368,7 +3368,7 @@ def _fetch_today_movements():
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= CURRENT_DATE AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
+                "WHERE t.date >= CURRENT_DATE AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
                 "ORDER BY t.date DESC")
             col_names = [desc[0] for desc in cur.description]
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
@@ -3394,7 +3394,7 @@ def _fetch_movements_by_date(target_date):
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
+                "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
                 "ORDER BY t.date DESC",
                 (target_date, target_date + datetime.timedelta(days=1)))
             col_names = [desc[0] for desc in cur.description]
