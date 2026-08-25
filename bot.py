@@ -4103,7 +4103,7 @@ async def backup_test_command(update, context):
         await update.message.reply_text("❌ للمديرين فقط.")
         return
     await update.message.reply_text("⏳ جاري تنفيذ نسخة اختبارية الآن...")
-    result = await _daily_backup(update.effective_user, label="test")
+    result = await _daily_backup(context.bot, label="test")
     # Build report
     lines = ["🧪 تقرير النسخة الاختبارية:", ""]
     lines.append("💾 الذاكرة: " + ("✅ نعم" if result["memory"] else "❌ فشل"))
@@ -6623,9 +6623,28 @@ async def callback_ship_handler(update, context):
         unit = _get_unit_ar(pname)
         await query.edit_message_text(
             "📤 شحن: " + pname + " (" + str(total_unshipped) + " " + unit + ")" + chr(10) + chr(10)
-            + "كم الكمية المطلوب شحنها?"
+            + "كم الكمية المطلوب شحنها?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="ship_cancel")]
+            ]),
         )
         return
+
+
+async def callback_ship_cancel_handler(update, context):
+    """إلغاء عملية الشحن والرجوع لقائمة السلع غير المشحونة."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("state", None)
+    context.user_data.pop("ship_product_id", None)
+    context.user_data.pop("ship_product_name", None)
+    context.user_data.pop("ship_total", None)
+    await query.edit_message_text(
+        "❌ تم إلغاء عملية الشحن.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")]
+        ]),
+    )
 
 
 async def callback_admin_done_handler(update, context):
@@ -7268,6 +7287,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_calc_restart_handler, pattern="^calc_restart$"))
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
     app.add_handler(CallbackQueryHandler(callback_ship_handler, pattern="^ship(_|all)"))
+    app.add_handler(CallbackQueryHandler(callback_ship_cancel_handler, pattern="^ship_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
 
