@@ -2309,8 +2309,8 @@ def get_product_transactions(product_id, limit=30):
 
 
 def _filter_test_pairs(txns):
-    """Filter out test movement pairs: add + remove of same product, same quantity, within 5 minutes.
-    These are considered test operations and should not appear in movement logs."""
+    """Filter out test/undo movement pairs: remove then add of same product, same quantity, within 5 minutes.
+    Only filters remove→add (test or undo). Does NOT filter add→remove (legitimate sale after restock)."""
     if not txns or len(txns) < 2:
         return txns
     # Normalize id key (date-based queries use tx_id, product queries use id)
@@ -2333,8 +2333,9 @@ def _filter_test_pairs(txns):
             a, b = sorted_txns[i], sorted_txns[j]
             pid_a = a.get("product_id") or a.get("product_name", "")
             pid_b = b.get("product_id") or b.get("product_name", "")
+            # Only filter: remove THEN add (test/undo), NOT add THEN remove (legitimate)
             if (pid_a == pid_b
-                    and a["tx_type"] != b["tx_type"]
+                    and a["tx_type"] == "remove" and b["tx_type"] == "add"
                     and a["quantity"] == b["quantity"]):
                 excluded_ids.add(a["id"])
                 excluded_ids.add(b["id"])
