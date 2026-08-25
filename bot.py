@@ -2080,6 +2080,58 @@ def mark_shipped_product(product_id, shipped_by):
         release_connection(conn)
 
 
+def mark_shipped_partial(product_id, ship_qty, shipped_by):
+    """Mark up to ship_qty as shipped FIFO. Returns (shipped_count, shipped_qty_actual)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Get unshipped records for this product ordered by sold_at ASC (FIFO)
+            cur.execute(
+                "SELECT * FROM unshipped_sales WHERE product_id = %s AND shipped = FALSE ORDER BY sold_at ASC",
+                (product_id,)
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+            remaining = ship_qty
+            shipped_count = 0
+            for row in rows:
+                if remaining <= 0:
+                    break
+                if row["quantity"] <= remaining:
+                    # Ship entire record
+                    cur.execute(
+                        "UPDATE unshipped_sales SET shipped = TRUE, shipped_at = NOW(), shipped_by = %s WHERE id = %s",
+                        (shipped_by, row["id"]),
+                    )
+                    remaining -= row["quantity"]
+                    shipped_count += 1
+                else:
+                    # Partial: reduce quantity, create shipped record for the shipped portion
+                    new_qty = row["quantity"] - remaining
+                    cur.execute(
+                        "UPDATE unshipped_sales SET quantity = %s WHERE id = %s",
+                        (new_qty, row["id"]),
+                    )
+                    # Insert shipped portion
+                    cur.execute(
+                        "INSERT INTO unshipped_sales (transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped, shipped_at, shipped_by, sold_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW(), %s, %s)",
+                        (row["transaction_id"], row["product_id"], row["product_name"],
+                         remaining, row["sold_by"], row["seller_name"], shipped_by, row["sold_at"]),
+                    )
+                    shipped_count += 1
+                    remaining = 0
+
+        conn.commit()
+        return shipped_count, ship_qty - remaining
+    except Exception as e:
+        conn.rollback()
+        logging.error("[UNSHIPPED] mark_shipped_partial failed: " + str(e))
+        return 0, 0
+    finally:
+        release_connection(conn)
+
+
 def mark_all_shipped(shipped_by):
     """Mark ALL unshipped sales as shipped. Returns count marked."""
     conn = get_connection()
@@ -2228,6 +2280,7 @@ STATE_WAITING_SELLER = "waiting_seller_name"
 STATE_SELLER_ACTION = "seller_action"  # stores 'add' or 'remove'
 STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
+STATE_SHIP_QTY = "waiting_ship_qty"
 STATE_ADD_TYPE = "waiting_add_type"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
@@ -5206,6 +5259,45 @@ async def handle_admin_message(update, context):
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
         return
 
+    # State: waiting for ship quantity
+    if state == STATE_SHIP_QTY:
+        try:
+            qty = int(text.strip())
+        except ValueError:
+            await update.message.reply_text("❌ أرسل رقم صحيح.")
+            return
+        product_id = context.user_data.get("ship_product_id")
+        pname = context.user_data.get("ship_product_name", "")
+        total = context.user_data.get("ship_total", 0)
+        if qty <= 0:
+            await update.message.reply_text("❌ الكمية يجب أن تكون أكبر من 0.")
+            return
+        if qty > total:
+            unit = _get_unit_ar(pname)
+            await update.message.reply_text(
+                "❌ الكمية المطلوبة (" + str(qty) + ") أكبر من المعلق (" + str(total) + " " + unit + ")."
+            )
+            return
+        db_user = get_user(user.id)
+        shipped_by = db_user["id"] if db_user else 0
+        if qty == total:
+            count = mark_shipped_product(product_id, shipped_by)
+            unit = _get_unit_ar(pname)
+            await update.message.reply_text(
+                "✅ تم شحن " + pname + " (" + str(qty) + " " + unit + ") — " + str(count) + " عملية",
+                reply_markup=get_admin_keyboard(),
+            )
+        else:
+            count, shipped_actual = mark_shipped_partial(product_id, qty, shipped_by)
+            unit = _get_unit_ar(pname)
+            remaining = total - shipped_actual
+            msg = "✅ تم شحن " + str(shipped_actual) + " " + unit + " من " + pname
+            if remaining > 0:
+                msg += chr(10) + "📤 المتبقي معلّق: " + str(remaining) + " " + unit
+            await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        context.user_data.clear()
+        return
+
     # No active state → auto-search or help
     if not state:
         if text and not text.startswith('/'):
@@ -6232,7 +6324,7 @@ async def _show_unshipped_sales(update, context, admin_view=True):
 
 
 async def callback_ship_handler(update, context):
-    """Handle ship_ and ship_all callbacks for marking items as shipped."""
+    """Handle ship_ and ship_all callbacks — ask for quantity first."""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
@@ -6240,10 +6332,10 @@ async def callback_ship_handler(update, context):
         return
 
     data = query.data
-    db_user = get_user(query.from_user.id)
-    shipped_by = db_user["id"] if db_user else 0
 
     if data == "ship_all":
+        db_user = get_user(query.from_user.id)
+        shipped_by = db_user["id"] if db_user else 0
         count = mark_all_shipped(shipped_by)
         if count > 0:
             await query.edit_message_text(
@@ -6258,25 +6350,41 @@ async def callback_ship_handler(update, context):
             product_id = int(data.split("_")[1])
         except (IndexError, ValueError):
             return
-        count = mark_shipped_product(product_id, shipped_by)
-        if count > 0:
-            # Get product name for message
-            conn = get_connection()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
-                    row = cur.fetchone()
-                conn.commit()
-                pname = dict(row)["name"] if row else ""
-            except Exception:
-                pname = ""
-            finally:
-                release_connection(conn)
-            await query.edit_message_text(
-                "✅ تم شحن " + pname + " (" + str(count) + " عملية)"
-            )
-        else:
+
+        # Get total unshipped qty for this product
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COALESCE(SUM(quantity), 0) FROM unshipped_sales WHERE product_id = %s AND shipped = FALSE",
+                    (product_id,)
+                )
+                total_unshipped = cur.fetchone()[0]
+                cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
+                row = cur.fetchone()
+            conn.commit()
+            pname = row[0] if row else ""
+        except Exception:
+            pname = ""
+            total_unshipped = 0
+        finally:
+            release_connection(conn)
+
+        if total_unshipped == 0:
             await query.edit_message_text("📭 لا توجد عمليات غير مشحونة لهذه السلعة.")
+            return
+
+        # Save state and ask for quantity
+        context.user_data["state"] = STATE_SHIP_QTY
+        context.user_data["ship_product_id"] = product_id
+        context.user_data["ship_product_name"] = pname
+        context.user_data["ship_total"] = total_unshipped
+
+        unit = _get_unit_ar(pname)
+        await query.edit_message_text(
+            "📤 شحن: " + pname + " (" + str(total_unshipped) + " " + unit + ")" + chr(10) + chr(10)
+            + "كم الكمية المطلوب شحنها?"
+        )
         return
 
 
