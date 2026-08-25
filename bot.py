@@ -304,6 +304,7 @@ def release_connection(conn):
 #  3. Read Cache — serves cached data when DB is down
 
 _OFFLINE_QUEUE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_offline_queue.json")
+_BACKUP_DISK_PATH = "/tmp/backup_last.json"  # Render writable; survives within instance lifetime
 _offline_queue = []
 _offline_queue_lock = threading.Lock()
 _processed_update_ids = {}
@@ -3433,9 +3434,13 @@ def _build_movements_text(rows):
                 # Blue for reconciliation
                 line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             else:
-                # Red for removals: - only for unshipped/pending items
-                is_pending = r.get("is_unshipped")
-                if is_pending:
+                # Blue 🔵 if this product has unfulfilled pending deliveries (deficit),
+                # red 🔴 otherwise. The "- quantity" sign is shown only for unshipped sales.
+                is_pending_unshipped = r.get("is_unshipped")
+                has_pending_deficit = r.get("has_pending_deficit")
+                if has_pending_deficit:
+                    line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                elif is_pending_unshipped:
                     line = "🔴 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
                 else:
                     line = "🔴 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
@@ -3446,7 +3451,11 @@ def _build_movements_text(rows):
 
     add_count = sum(1 for r in rows if r["tx_type"] == "add")
     rem_count = sum(1 for r in rows if r["tx_type"] == "remove")
-    lines.append(chr(10) + "🟢 " + str(add_count) + " إضافة  |  🔴 " + str(rem_count) + " إخراج")
+    pending_count = sum(1 for r in rows if r.get("has_pending_deficit") and r["tx_type"] == "remove")
+    summary = chr(10) + "🟢 " + str(add_count) + " إضافة  |  🔴 " + str(rem_count) + " إخراج"
+    if pending_count > 0:
+        summary += "  |  🔵 " + str(pending_count) + " طلب معلق"
+    lines.append(summary)
     return chr(10).join(lines)
 
 def _fetch_today_movements():
@@ -3457,7 +3466,8 @@ def _fetch_today_movements():
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
                 "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped "
+                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped, "
+                "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0)) AS has_pending_deficit "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -3485,7 +3495,8 @@ def _fetch_movements_by_date(target_date):
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
                 "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped "
+                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped, "
+                "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0)) AS has_pending_deficit "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -3493,6 +3504,34 @@ def _fetch_movements_by_date(target_date):
                 "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (target_date, target_date + datetime.timedelta(days=1)))
+            col_names = [desc[0] for desc in cur.description]
+            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
+        conn.commit()
+        return rows
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+def _fetch_movements_by_range(start_date, end_date):
+    """Fetch movements between start_date (inclusive) and end_date (inclusive).
+    end_date is treated as end-of-day (so end_date+1 day exclusive upper bound).
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
+                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
+                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
+                "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
+                "ORDER BY t.date DESC",
+                (start_date, end_date + datetime.timedelta(days=1)))
             col_names = [desc[0] for desc in cur.description]
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.commit()
@@ -3524,6 +3563,8 @@ async def _show_all_movements(update, context, admin_view=True):
                 label = "📅 " + weekday_ar.get(wd, "") + " " + day.strftime("%d/%m")
             buttons.append([InlineKeyboardButton(label, callback_data="movd_" + day_str)])
 
+        # Add custom range button at the bottom
+        buttons.append([InlineKeyboardButton("📅 نطاق مخصص (من - إلى)", callback_data="movd_range")])
         text = "📋 اختار التاريخ لعرض الحركة:"
         markup = InlineKeyboardMarkup(buttons)
         await update.message.reply_text(text, reply_markup=markup)
@@ -3538,6 +3579,19 @@ async def callback_mov_date_handler(update, context):
     query = update.callback_query
     await query.answer()
     data = query.data  # "movd_2025-01-15"
+
+    # ── Custom range entry: prompt user for from-date ──
+    if data == "movd_range":
+        context.user_data.clear()
+        context.user_data["state"] = "waiting_mov_range_from"
+        await query.edit_message_text(
+            "📅 نطاق مخصص للحركة\n\n"
+            "اكتب تاريخ البداية بالصيغة:\n"
+            "<code>YYYY-MM-DD</code> (مثال: 2026-08-01)\n\n"
+            "أو أرسل ❌ للإلغاء.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     # Back button
     if data == "movd_back":
@@ -4038,6 +4092,36 @@ async def backup_command(update, context):
         )
     except Exception as e:
         await update.message.reply_text("❌ فشل النسخ الاحتياطي: " + str(e))
+
+
+async def backup_test_command(update, context):
+    """Force a backup NOW and report success/failure for each channel (memory/disk/email).
+    Admin-only. Use this to verify the email backup system is actually working.
+    """
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ للمديرين فقط.")
+        return
+    await update.message.reply_text("⏳ جاري تنفيذ نسخة اختبارية الآن...")
+    result = await _daily_backup(update.effective_user, label="test")
+    # Build report
+    lines = ["🧪 تقرير النسخة الاختبارية:", ""]
+    lines.append("💾 الذاكرة: " + ("✅ نعم" if result["memory"] else "❌ فشل"))
+    lines.append("💿 القرص: " + ("✅ نعم" if result["disk"] else "❌ فشل"))
+    email_status = "✅ نجح الإرسال" if result["email"] else "❌ فشل الإرسال"
+    if not (SMTP_EMAIL and SMTP_PASSWORD and BACKUP_EMAIL and SMTP_HOST):
+        email_status = "⚠️ غير مُعدّ (SMTP_HOST/SMTP_EMAIL/SMTP_PASSWORD/BACKUP_EMAIL ناقصة)"
+    lines.append("✉️ البريد: " + email_status)
+    lines.append("📦 الحجم: " + str(result["bytes"]) + " bytes")
+    lines.append("")
+    if result["error"]:
+        lines.append("❌ خطأ: " + str(result["error"]))
+    elif not result["email"]:
+        lines.append("💡 تحقق من متغيرات البيئة في Render:")
+        lines.append("   SMTP_HOST, SMTP_EMAIL, SMTP_PASSWORD, BACKUP_EMAIL, IMAP_HOST")
+        lines.append("💡 راجع سجلات Render للتفاصيل الكاملة")
+    else:
+        lines.append("✅ كل القنوات تعمل بنجاح! تحقق من بريدك: " + BACKUP_EMAIL)
+    await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
 
 
 async def handle_backup_document(update, context):
@@ -5158,6 +5242,87 @@ async def callback_invoice_handler(update, context):
 #  MESSAGE ROUTER
 # ═══════════════════════════════════════════════════════════
 
+async def _process_mov_range_input(update, context, text, is_admin):
+    """Shared handler for date-range input states (waiting_mov_range_from / _to)."""
+    state = context.user_data.get("state")
+    text = text.strip()
+    if text == "❌" or text == BTN_CANCEL or text == BTN_CUST_CANCEL:
+        context.user_data.clear()
+        kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=kb)
+        return True
+    try:
+        parsed_date = datetime.date.fromisoformat(text)
+    except ValueError:
+        await update.message.reply_text(
+            "❌ صيغة التاريخ غير صحيحة. اكتبها هكذا:\n"
+            "<code>YYYY-MM-DD</code> (مثال: 2026-08-01)",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_input_keyboard(),
+        )
+        return True
+    if state == "waiting_mov_range_from":
+        context.user_data["mov_range_from"] = parsed_date
+        context.user_data["state"] = "waiting_mov_range_to"
+        await update.message.reply_text(
+            "✅ تاريخ البداية: " + parsed_date.strftime("%Y-%m-%d") + "\n\n"
+            "الآن اكتب تاريخ النهاية بنفس الصيغة:",
+            reply_markup=get_input_keyboard(),
+        )
+        return True
+    if state == "waiting_mov_range_to":
+        start_date = context.user_data.get("mov_range_from")
+        if not start_date:
+            context.user_data.clear()
+            kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+            await update.message.reply_text("❌ فُقدت بيانات البداية. حاول مرة أخرى.", reply_markup=kb)
+            return True
+        if parsed_date < start_date:
+            await update.message.reply_text(
+                "❌ تاريخ النهاية يجب أن يكون بعد تاريخ البداية (" + start_date.strftime("%Y-%m-%d") + ").",
+                reply_markup=get_input_keyboard(),
+            )
+            return True
+        try:
+            rows = _fetch_movements_by_range(start_date, parsed_date)
+            date_display = start_date.strftime("%Y-%m-%d") + " ← " + parsed_date.strftime("%Y-%m-%d")
+            if not rows:
+                await update.message.reply_text(
+                    "📋 حركة " + date_display + ":\n\nلا توجد عمليات في هذا النطاق.",
+                    reply_markup=get_admin_keyboard() if is_admin else get_customer_keyboard(),
+                )
+                context.user_data.clear()
+                return True
+            text_out = _build_movements_text(rows)
+            header = "📋 حركة " + date_display + " (" + str(len(rows)) + "):"
+            body_lines = text_out.split("\n")[2:]
+            final_text = header + "\n" + "\n".join(body_lines)
+            kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+            try:
+                if len(final_text) <= 4096:
+                    await update.message.reply_text(final_text, parse_mode=ParseMode.HTML, reply_markup=kb)
+                else:
+                    # Send in chunks
+                    await update.message.reply_text(final_text[:3900], parse_mode=ParseMode.HTML)
+                    remaining = final_text[3900:]
+                    while remaining:
+                        chunk = remaining[:4096]
+                        remaining = remaining[4096:]
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=chunk, parse_mode=ParseMode.HTML)
+                    await update.message.reply_text("📋 انتهت قائمة الحركات", reply_markup=kb)
+            except Exception as e:
+                logging.error("[MOV_RANGE] HTML send failed: " + str(e))
+                plain = re.sub(r"<[^>]+>", "", final_text)
+                await update.message.reply_text(plain[:4096], reply_markup=kb)
+        except Exception as e:
+            logging.error("[MOV_RANGE] fetch failed: " + str(e))
+            kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+            await update.message.reply_text("❌ فشل جلب الحركات: " + str(e), reply_markup=kb)
+        context.user_data.clear()
+        return True
+    return False
+
+
 async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
@@ -5574,7 +5739,13 @@ async def handle_admin_message(update, context):
         product_name = context.user_data.get("add_name", "")
         is_motif = context.user_data.get("add_is_motif", False)
         await confirm_add_product(update, context, product_name, qty, is_motif=is_motif)
-    elif state == STATE_EXISTING_ADD_QTY:
+    # ── Custom date range for movements ──
+    if state in ("waiting_mov_range_from", "waiting_mov_range_to"):
+        handled = await _process_mov_range_input(update, context, text, is_admin=True)
+        if handled:
+            return
+
+    if state == STATE_EXISTING_ADD_QTY:
         await process_add_quantity(update, context, text, user.id)
     elif state == STATE_REMOVE_QTY:
         await process_remove_quantity(update, context, text, user.id)
@@ -5876,7 +6047,13 @@ async def handle_customer_message(update, context):
             await _show_unshipped_sales(update, context, admin_view=False)
             return
 
-    # State: waiting for product name from button
+    # ── Custom date range for movements ──
+    if state in ("waiting_mov_range_from", "waiting_mov_range_to"):
+        handled = await _process_mov_range_input(update, context, text, is_admin=False)
+        if handled:
+            return
+
+        # State: waiting for product name from button
     if state == "waiting_cust_search":
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
@@ -7104,6 +7281,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
     app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("backup_test", backup_test_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.UpdateType.EDITED, handle_receipt_photo))
@@ -7160,7 +7338,11 @@ def _fetch_latest_backup_from_email():
         return None
 
 def _send_backup_email(backup_bytes, filename):
+    """Send backup JSON to configured email. Returns True on success, False otherwise."""
     if not SMTP_EMAIL or not SMTP_PASSWORD or not BACKUP_EMAIL:
+        return False
+    if not SMTP_HOST:
+        logging.error("[BACKUP] SMTP_HOST not configured")
         return False
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -7184,7 +7366,7 @@ def _send_backup_email(backup_bytes, filename):
         encoders.encode_base64(part)
         part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
             server.starttls()
             server.login(SMTP_EMAIL, SMTP_PASSWORD)
             server.sendmail(SMTP_EMAIL, BACKUP_EMAIL, msg.as_string())
@@ -7195,34 +7377,96 @@ def _send_backup_email(backup_bytes, filename):
         return False
 
 
-async def _daily_backup(bot):
+def _send_backup_email_with_retry(backup_bytes, filename, max_attempts=3, delay_sec=300):
+    """Retry email send up to max_attempts times with delay_sec between attempts.
+    Synchronous — must be called from a thread (use asyncio.to_thread).
+    """
+    import time as _time
+    for attempt in range(1, max_attempts + 1):
+        if _send_backup_email(backup_bytes, filename):
+            return True
+        if attempt < max_attempts:
+            logging.warning("[BACKUP] Email attempt " + str(attempt) + "/" + str(max_attempts) + " failed, retrying in " + str(delay_sec) + "s...")
+            _time.sleep(delay_sec)
+        else:
+            logging.error("[BACKUP] All " + str(max_attempts) + " email attempts failed")
+    return False
+
+
+def _save_backup_to_disk(backup_bytes):
+    """Save backup to local disk as a fallback. Returns True on success."""
+    try:
+        with open(_BACKUP_DISK_PATH, "wb") as f:
+            f.write(backup_bytes)
+        logging.info("[BACKUP] Saved to disk: " + _BACKUP_DISK_PATH)
+        return True
+    except Exception as e:
+        logging.warning("[BACKUP] Disk save failed: " + str(e))
+        return False
+
+
+def _load_backup_from_disk():
+    """Load last backup from disk into memory. Used at startup."""
+    try:
+        if os.path.exists(_BACKUP_DISK_PATH):
+            with open(_BACKUP_DISK_PATH, "rb") as f:
+                data = json.loads(f.read().decode("utf-8"))
+            logging.info("[BACKUP] Loaded backup from disk (" + str(data.get("date", "?")) + ")")
+            return data
+    except Exception as e:
+        logging.warning("[BACKUP] Disk load failed: " + str(e))
+    return None
+
+
+async def _daily_backup(bot, label="auto"):
+    """Take a full backup. Save to memory, disk, and email (with retry).
+    `label` is used in logs ("auto" for scheduled, "test" for /backup_test).
+    Returns dict {"memory": bool, "disk": bool, "email": bool, "bytes": int}."""
     global _last_backup_data
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
+    result = {"memory": False, "disk": False, "email": False, "bytes": 0, "error": None}
     try:
         backup = db_export_backup()
         _last_backup_data = backup
+        result["memory"] = True
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
+        result["bytes"] = len(file_bytes)
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         filename = "backup_" + now_str + ".json"
-        sent = _send_backup_email(file_bytes, filename)
-        if sent:
-            logging.info("[BACKUP] Daily backup sent to email (" + today + ")")
+        # 1) Save to disk as fallback (always, even if email succeeds)
+        result["disk"] = _save_backup_to_disk(file_bytes)
+        # 2) Send email with retry (3 attempts, 5 min apart) — runs in thread to avoid blocking loop
+        if SMTP_EMAIL and SMTP_PASSWORD and BACKUP_EMAIL and SMTP_HOST:
+            result["email"] = await asyncio.to_thread(
+                _send_backup_email_with_retry, file_bytes, filename
+            )
         else:
-            logging.warning("[BACKUP] Email not configured, backup saved in memory only")
+            logging.warning("[BACKUP] Email not configured (SMTP_HOST/SMTP_EMAIL/SMTP_PASSWORD/BACKUP_EMAIL missing) — backup saved to memory + disk only")
+        logging.info("[BACKUP] " + label + " backup done: memory=1 disk=" + str(int(result["disk"])) + " email=" + str(int(result["email"])) + " (" + str(result["bytes"]) + " bytes, " + today + ")")
     except Exception as e:
-        logging.error("[BACKUP] Daily backup failed: " + str(e))
+        result["error"] = str(e)
+        logging.error("[BACKUP] " + label + " backup failed: " + str(e))
+    return result
 
 
 async def _daily_backup_loop(bot):
-    last_backup = ""
+    """Run scheduled backups at midnight AND noon (Algeria time).
+    Window is the full hour to be resilient to short outages.
+    """
+    # Track last backup per slot to avoid duplicates: "2026-08-25_midnight" / "2026-08-25_noon"
+    last_slots = {"midnight": "", "noon": ""}
     while True:
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
         today = now.strftime("%Y-%m-%d")
-        # 5-minute window (23:00-23:04 UTC = midnight Algeria)
-        if today != last_backup and 23 <= now.hour <= 23 and now.minute < 5:
-            await _daily_backup(bot)
-            last_backup = today
+        # Midnight slot: hour == 0 (Algeria time)
+        # Noon slot: hour == 12
+        for hour, slot_name in [(0, "midnight"), (12, "noon")]:
+            slot_key = today + "_" + slot_name
+            if now.hour == hour and last_slots[slot_name] != slot_key:
+                logging.info("[BACKUP] Starting " + slot_name + " scheduled backup...")
+                await _daily_backup(bot, label=slot_name)
+                last_slots[slot_name] = slot_key
         await asyncio.sleep(60)
 
 
@@ -7268,6 +7512,12 @@ if __name__ == "__main__":
     init_db()
     _load_offline_queue()
     _init_low_stock_ids()
+    # Restore last backup from disk into memory (if any) so /backup → restore_last works
+    # immediately after a Render restart, even before the next scheduled backup runs.
+    if _last_backup_data is None:
+        _loaded = _load_backup_from_disk()
+        if _loaded:
+            _last_backup_data = _loaded
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
