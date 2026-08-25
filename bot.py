@@ -191,6 +191,7 @@ SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")       # sender email
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # app password
 BACKUP_EMAIL = os.getenv("BACKUP_EMAIL", "")     # recipient email
 IMAP_HOST = os.getenv("IMAP_HOST", "")  # e.g. imap.gmail.com
+BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID", "")  # Telegram channel ID for backup files (e.g. "-1001234567890")
 
 _last_backup_data = None  # keeps latest backup dict in memory
 
@@ -4107,20 +4108,28 @@ async def backup_test_command(update, context):
     lines = ["🧪 تقرير النسخة الاختبارية:", ""]
     lines.append("💾 الذاكرة: " + ("✅ نعم" if result["memory"] else "❌ فشل"))
     lines.append("💿 القرص: " + ("✅ نعم" if result["disk"] else "❌ فشل"))
+    channel_status = "✅ نجح الإرسال" if result["channel"] else "❌ فشل الإرسال"
+    if not BACKUP_CHANNEL_ID:
+        channel_status = "⚠️ غير مُعدّ (BACKUP_CHANNEL_ID غير موجود في متغيرات البيئة)"
+    lines.append("📡 القناة: " + channel_status)
     email_status = "✅ نجح الإرسال" if result["email"] else "❌ فشل الإرسال"
     if not (SMTP_EMAIL and SMTP_PASSWORD and BACKUP_EMAIL and SMTP_HOST):
-        email_status = "⚠️ غير مُعدّ (SMTP_HOST/SMTP_EMAIL/SMTP_PASSWORD/BACKUP_EMAIL ناقصة)"
+        email_status = "⚠️ غير مُعدّ (SMTP ناقص)"
     lines.append("✉️ البريد: " + email_status)
     lines.append("📦 الحجم: " + str(result["bytes"]) + " bytes")
     lines.append("")
     if result["error"]:
         lines.append("❌ خطأ: " + str(result["error"]))
-    elif not result["email"]:
-        lines.append("💡 تحقق من متغيرات البيئة في Render:")
-        lines.append("   SMTP_HOST, SMTP_EMAIL, SMTP_PASSWORD, BACKUP_EMAIL, IMAP_HOST")
-        lines.append("💡 راجع سجلات Render للتفاصيل الكاملة")
+    elif result["channel"]:
+        lines.append("✅ تم إرسال النسخة للقناة بنجاح!")
     else:
-        lines.append("✅ كل القنوات تعمل بنجاح! تحقق من بريدك: " + BACKUP_EMAIL)
+        lines.append("💡 لتشغيل نسخ القناة:")
+        lines.append("   1. أنشئ قناة خاصة في تيليغرام")
+        lines.append("   2. أضف البوت كمسؤول في القناة")
+        lines.append("   3. أرسل رسالة في القناة")
+        lines.append("   4. أضف BACKUP_CHANNEL_ID في Render (مثل: -1001234567890)")
+        lines.append("   💡 للحصول على ID القناة: أرسل رسالة ثم افتح:")
+        lines.append("   https://api.telegram.org/bot<TOKEN>/getUpdates")
     await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
 
 
@@ -7418,13 +7427,41 @@ def _load_backup_from_disk():
     return None
 
 
+async def _send_backup_to_channel(bot, file_bytes, filename, label="auto"):
+    """Send backup JSON file to the configured Telegram channel.
+    Returns True on success, False otherwise.
+    """
+    if not BACKUP_CHANNEL_ID:
+        return False
+    try:
+        from io import BytesIO
+        from telegram.constants import ParseMode
+        now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d %H:%M")
+        caption = (
+            "\U0001f4be نسخة احتياطية (" + label + ")\n"
+            "\U0001f4c5 " + now_str + "\n"
+            "\U0001f4e6 " + str(len(file_bytes)) + " bytes"
+        )
+        await bot.send_document(
+            chat_id=BACKUP_CHANNEL_ID,
+            document=BytesIO(file_bytes),
+            filename=filename,
+            caption=caption,
+        )
+        logging.info("[BACKUP] Sent to channel " + BACKUP_CHANNEL_ID)
+        return True
+    except Exception as e:
+        logging.error("[BACKUP] Channel send failed: " + str(e))
+        return False
+
+
 async def _daily_backup(bot, label="auto"):
     """Take a full backup. Save to memory, disk, and email (with retry).
     `label` is used in logs ("auto" for scheduled, "test" for /backup_test).
     Returns dict {"memory": bool, "disk": bool, "email": bool, "bytes": int}."""
     global _last_backup_data
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
-    result = {"memory": False, "disk": False, "email": False, "bytes": 0, "error": None}
+    result = {"memory": False, "disk": False, "email": False, "channel": False, "bytes": 0, "error": None}
     try:
         backup = db_export_backup()
         _last_backup_data = backup
@@ -7436,14 +7473,16 @@ async def _daily_backup(bot, label="auto"):
         filename = "backup_" + now_str + ".json"
         # 1) Save to disk as fallback (always, even if email succeeds)
         result["disk"] = _save_backup_to_disk(file_bytes)
-        # 2) Send email with retry (3 attempts, 5 min apart) — runs in thread to avoid blocking loop
+        # 2) Send to Telegram channel (works on Render free tier)
+        result["channel"] = await _send_backup_to_channel(bot, file_bytes, filename, label)
+        # 3) Send email with retry (3 attempts, 5 min apart) — runs in thread to avoid blocking loop
         if SMTP_EMAIL and SMTP_PASSWORD and BACKUP_EMAIL and SMTP_HOST:
             result["email"] = await asyncio.to_thread(
                 _send_backup_email_with_retry, file_bytes, filename
             )
         else:
-            logging.warning("[BACKUP] Email not configured (SMTP_HOST/SMTP_EMAIL/SMTP_PASSWORD/BACKUP_EMAIL missing) — backup saved to memory + disk only")
-        logging.info("[BACKUP] " + label + " backup done: memory=1 disk=" + str(int(result["disk"])) + " email=" + str(int(result["email"])) + " (" + str(result["bytes"]) + " bytes, " + today + ")")
+            logging.warning("[BACKUP] Email not configured (SMTP_HOST/SMTP_EMAIL/SMTP_PASSWORD/BACKUP_EMAIL missing) — backup saved to memory + disk + channel only")
+        logging.info("[BACKUP] " + label + " backup done: memory=1 disk=" + str(int(result["disk"])) + " channel=" + str(int(result["channel"])) + " email=" + str(int(result["email"])) + " (" + str(result["bytes"]) + " bytes, " + today + ")")
     except Exception as e:
         result["error"] = str(e)
         logging.error("[BACKUP] " + label + " backup failed: " + str(e))
