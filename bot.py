@@ -5969,6 +5969,25 @@ async def handle_customer_message(update, context):
                 msg = "✅ تمت الإضافة!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             else:
                 msg = "✅ تم إخراج!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+                # ── Register as an unshipped sale (shipped=False) so the admin can
+                #    mark it as shipped later via BTN_UNSHIPPED. This closes the gap
+                #    where customer sales disappeared from the unshipped tracking.
+                #    Customers are never owners, so shipped=False by definition.
+                if db_user:
+                    try:
+                        seller_label = (db_user.get("first_name") or db_user.get("username") or None)
+                        create_unshipped_sale(
+                            transaction_id=tx_id,
+                            product_id=updated["id"],
+                            product_name=updated["name"],
+                            quantity=qty,
+                            sold_by=db_user["id"],
+                            seller_name=seller_label,
+                            shipped=False,
+                        )
+                        msg += chr(10) + chr(10) + "📤 تم تسجيل البيع في قائمة غير المشحونة"
+                    except Exception as e:
+                        logging.error("[UNSHIPPED] Failed to track customer sale: " + str(e))
                 # Check if this created a deficit (negative stock)
                 old_qty = updated.get("_old_qty", 0)
                 new_qty = updated["quantity"]
