@@ -3602,12 +3602,52 @@ async def callback_mov_product_handler(update, context):
         await query.edit_message_text("❌ السلعة غير موجودة.")
         return
     product = dict(row)
-    unit_ar = _get_unit_ar(product["name"])
-    icon = _product_status_icon(product)
     await query.edit_message_text(
         "⏳ جارٍ تحميل حركات " + product["name"] + "..."
     )
-    await _show_product_movements(update, context, product)
+    try:
+        txns = get_product_transactions(product["id"], limit=200)
+        unit = _get_unit_ar(product["name"])
+        if not txns:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="📜 لا توجد حركات مسجلة لـ" + chr(10) + product["name"],
+            )
+            return
+        lines = ["📜 سجل حركات — " + product["name"] + " (" + str(len(txns)) + ")"]
+        for tx in txns:
+            icon = "\U0001f7e2" if tx["tx_type"] == "add" else "\U0001f534"
+            date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
+            op = tx.get("operator_name") or "مجهول"
+            sign = "+" if tx["tx_type"] == "add" else "-"
+            reason = tx.get("reason") or ""
+            if reason:
+                reason = " | " + reason
+            lines.append(
+                icon + " " + date_str + " — " + sign + str(tx["quantity"]) + " " + unit
+                + " | " + op + reason
+            )
+        text_out = "\n".join(lines)
+        if len(text_out) > 4000:
+            parts = []
+            current = [lines[0]]
+            for ln in lines[1:]:
+                if len("\n".join(current)) + len("\n" + ln) > 3900:
+                    parts.append("\n".join(current))
+                    current = ["📜 تابع حركات — " + product["name"]]
+                current.append(ln)
+            if current:
+                parts.append("\n".join(current))
+            for part in parts:
+                await context.bot.send_message(chat_id=query.message.chat_id, text=part)
+        else:
+            await context.bot.send_message(chat_id=query.message.chat_id, text=text_out)
+    except Exception as e:
+        logging.error("[MOVP] Error: " + str(e), exc_info=True)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="❌ حدث خطأ في تحميل الحركات: " + str(e),
+        )
 
 
 async def callback_mov_date_handler(update, context):
