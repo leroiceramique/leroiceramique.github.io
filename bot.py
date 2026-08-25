@@ -3578,6 +3578,38 @@ async def _show_all_movements(update, context, admin_view=True):
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
 
 
+async def callback_mov_product_handler(update, context):
+    """Handle product selection from movement product picker."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        product_id = int(query.data.split("_")[1])
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ خطأ في الاختيار.")
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    if not row:
+        await query.edit_message_text("❌ السلعة غير موجودة.")
+        return
+    product = dict(row)
+    unit_ar = _get_unit_ar(product["name"])
+    icon = _product_status_icon(product)
+    await query.edit_message_text(
+        "⏳ جارٍ تحميل حركات " + product["name"] + "..."
+    )
+    await _show_product_movements(update, context, product)
+
+
 async def callback_mov_date_handler(update, context):
     """Handle date selection from movements date picker."""
     query = update.callback_query
@@ -5258,7 +5290,7 @@ async def callback_invoice_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def _process_mov_product_input(update, context, text, is_admin=True):
-    """Handle product name input for product-specific movement view."""
+    """Handle product name input — show matching products as buttons."""
     text = text.strip()
     if text == "❌" or text == BTN_CANCEL or text == BTN_CUST_CANCEL:
         context.user_data.clear()
@@ -5274,15 +5306,27 @@ async def _process_mov_product_input(update, context, text, is_admin=True):
             ]),
         )
         return
-    product = results[0]
-    pid = product["id"]
-    txns = get_product_transactions(pid, limit=50)
+    # Show matching products as buttons
+    buttons = []
+    for p in results:
+        unit_ar = _get_unit_ar(p["name"])
+        icon = _product_status_icon(p)
+        label = p["name"] + " — " + str(p["quantity"]) + " " + unit_ar + " " + icon
+        buttons.append([InlineKeyboardButton(label, callback_data="movp_" + str(p["id"]))])
+    buttons.append([InlineKeyboardButton("❌ إلغاء", callback_data="movd_back")])
+    await update.message.reply_text(
+        "📦 اختر السلعة لعرض حركاتها:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _show_product_movements(update, context, product):
+    """Display movement history for a specific product."""
+    txns = get_product_transactions(product["id"], limit=200)
     unit = _get_unit_ar(product["name"])
-    context.user_data.clear()
     if not txns:
         await update.message.reply_text(
-            "📜 لا توجد حركات مسجلة لـ\n" + product["name"],
-            reply_markup=kb if is_admin else get_customer_keyboard(),
+            "📜 لا توجد حركات مسجلة لـ\n" + product["name"]
         )
         return
     lines = ["📜 سجل حركات — " + product["name"] + " (" + str(len(txns)) + ")"]
@@ -7374,6 +7418,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_notready_"))
     app.add_handler(CallbackQueryHandler(callback_go_start_handler, pattern="^go_start$"))
+    app.add_handler(CallbackQueryHandler(callback_mov_product_handler, pattern=r"^movp_\d+$"))
     app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
     app.add_handler(CallbackQueryHandler(callback_mov_delete_handler, pattern="^movp_del_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
