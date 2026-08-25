@@ -2782,6 +2782,7 @@ def get_customer_keyboard():
             [BTN_CUST_MY_ORDERS, BTN_CUST_PENDING],
             [BTN_CUST_ALERT],
             [BTN_CUST_MOVEMENTS],
+            [BTN_UNSHIPPED],
             [BTN_CUST_CANCEL],
         ],
         resize_keyboard=True,
@@ -3345,8 +3346,12 @@ def _build_movements_text(rows):
                 # Blue for reconciliation
                 line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             else:
-                # Red for removals
-                line = "🔴 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                # Red for removals: - only for unshipped/pending items
+                is_pending = r.get("is_unshipped")
+                if is_pending:
+                    line = "🔴 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                else:
+                    line = "🔴 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             lines.append(line)
         except Exception as e:
             logging.error("[BUILD_MOV] Error on row: " + str(e) + " row=" + str(r))
@@ -3364,10 +3369,12 @@ def _fetch_today_movements():
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
-                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason "
+                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
+                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
+                "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
                 "WHERE t.date >= CURRENT_DATE AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
                 "ORDER BY t.date DESC")
             col_names = [desc[0] for desc in cur.description]
@@ -3390,10 +3397,12 @@ def _fetch_movements_by_date(target_date):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
-                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason "
+                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
+                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
+                "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
                 "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (target_date, target_date + datetime.timedelta(days=1)))
@@ -5696,7 +5705,7 @@ async def handle_customer_message(update, context):
     user = update.effective_user
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING, BTN_UNSHIPPED]
     if text in cust_buttons:
         context.user_data.clear()
         state = None
@@ -5734,6 +5743,10 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=False)
+            return
+
+        if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
+            await _show_unshipped_sales(update, context, admin_view=False)
             return
 
     # State: waiting for product name from button
@@ -6125,13 +6138,14 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 #  UNSHIPPED SALES DISPLAY & SHIPPING
 # ═══════════════════════════════════════════════════════════
 
-async def _show_unshipped_sales(update, context):
-    """عرض السلع المباعة غير المشحونة مع أزرار الشحن."""
+async def _show_unshipped_sales(update, context, admin_view=True):
+    """عرض السلع المباعة غير المشحونة. admin_view=True يعرض أزرار الشحن."""
     sales = get_unshipped_sales()
+    kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
     if not sales:
         await update.message.reply_text(
             "✅ لا توجد سلع غير مشحونة.",
-            reply_markup=get_admin_keyboard(),
+            reply_markup=kb,
         )
         return
 
@@ -6168,7 +6182,27 @@ async def _show_unshipped_sales(update, context):
             )
         lines.append("")
 
-    # Build inline buttons: one per product + "ship all" button
+    text = chr(10).join(lines)
+
+    if not admin_view:
+        # Dry page for sellers - no shipping buttons
+        if len(text) > 4000:
+            parts = []
+            current = [lines[0], lines[1]]
+            for ln in lines[2:]:
+                if len(chr(10).join(current)) + len(chr(10) + ln) > 3900:
+                    parts.append(chr(10).join(current))
+                    current = ["📤 تابع السلع غير المشحونة"]
+                current.append(ln)
+            if current:
+                parts.append(chr(10).join(current))
+            for part in parts:
+                await update.message.reply_text(part)
+        else:
+            await update.message.reply_text(text)
+        return
+
+    # Admin: show shipping buttons
     ship_buttons = []
     for pid, info in grouped.items():
         unit = _get_unit_ar(info["name"])
@@ -6177,9 +6211,7 @@ async def _show_unshipped_sales(update, context):
     ship_buttons.append([InlineKeyboardButton("✅ شحن الكل", callback_data="ship_all")])
     ship_buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")])
 
-    text = chr(10).join(lines)
     if len(text) > 4000:
-        # Split message if too long
         parts = []
         current = [lines[0], lines[1]]
         for ln in lines[2:]:
