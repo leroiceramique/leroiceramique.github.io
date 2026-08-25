@@ -3392,7 +3392,6 @@ async def _show_product_detail(update, context, product):
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
-        [InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)],
     ]
     keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
@@ -3568,7 +3567,9 @@ async def _show_all_movements(update, context, admin_view=True):
 
         # Add custom range button at the bottom
         buttons.append([InlineKeyboardButton("📅 نطاق مخصص (من - إلى)", callback_data="movd_range")])
-        text = "📋 اختار التاريخ لعرض الحركة:"
+        # Add product-specific movement button
+        buttons.append([InlineKeyboardButton("📦 حركة سلعة محددة", callback_data="movd_product")])
+        text = "📋 اختار طريقة عرض الحركة:"
         markup = InlineKeyboardMarkup(buttons)
         await update.message.reply_text(text, reply_markup=markup)
     except Exception as e:
@@ -3593,6 +3594,21 @@ async def callback_mov_date_handler(update, context):
             "<code>YYYY-MM-DD</code> (مثال: 2026-08-01)\n\n"
             "أو أرسل ❌ للإلغاء.",
             parse_mode=ParseMode.HTML
+        )
+        return
+
+    # ── Product-specific movement: ask for product name ──
+    if data == "movd_product":
+        context.user_data.clear()
+        context.user_data["state"] = "waiting_mov_product"
+        await query.edit_message_text(
+            "📦 حركة سلعة محددة\n\n"
+            "اكتب اسم أو جزء من اسم السلعة:\n\n"
+            "أو أرسل ❌ للإلغاء.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="movd_back")]
+            ])
         )
         return
 
@@ -5241,6 +5257,65 @@ async def callback_invoice_handler(update, context):
 #  MESSAGE ROUTER
 # ═══════════════════════════════════════════════════════════
 
+async def _process_mov_product_input(update, context, text, is_admin=True):
+    """Handle product name input for product-specific movement view."""
+    text = text.strip()
+    if text == "❌" or text == BTN_CANCEL or text == BTN_CUST_CANCEL:
+        context.user_data.clear()
+        kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+        await update.message.reply_text("❌ تم الإلغاء.", reply_markup=kb)
+        return
+    results = search_products(text)
+    if not results:
+        await update.message.reply_text(
+            "❌ لا توجد نتائج لـ '" + text + "'\n\nجرب اسم آخر أو أرسل ❌ للإلغاء.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="movd_back")]
+            ]),
+        )
+        return
+    product = results[0]
+    pid = product["id"]
+    txns = get_product_transactions(pid, limit=50)
+    unit = _get_unit_ar(product["name"])
+    context.user_data.clear()
+    if not txns:
+        await update.message.reply_text(
+            "📜 لا توجد حركات مسجلة لـ\n" + product["name"],
+            reply_markup=kb if is_admin else get_customer_keyboard(),
+        )
+        return
+    lines = ["📜 سجل حركات — " + product["name"] + " (" + str(len(txns)) + ")"]
+    for tx in txns:
+        icon = "\U0001f7e2" if tx["tx_type"] == "add" else "\U0001f534"
+        date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
+        op = tx.get("operator_name") or "مجهول"
+        sign = "+" if tx["tx_type"] == "add" else "-"
+        reason = tx.get("reason") or ""
+        if reason:
+            reason = " | " + reason
+        lines.append(
+            icon + " " + date_str + " — " + sign + str(tx["quantity"]) + " " + unit
+            + " | " + op + reason
+        )
+    text_out = "\n".join(lines)
+    # Split if too long
+    if len(text_out) > 4000:
+        parts = []
+        current = [lines[0]]
+        for ln in lines[1:]:
+            if len("\n".join(current)) + len("\n" + ln) > 3900:
+                parts.append("\n".join(current))
+                current = ["📜 تابع حركات — " + product["name"]]
+            current.append(ln)
+        if current:
+            parts.append("\n".join(current))
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(text_out)
+
+
 async def _process_mov_range_input(update, context, text, is_admin):
     """Shared handler for date-range input states (waiting_mov_range_from / _to)."""
     state = context.user_data.get("state")
@@ -5743,6 +5818,10 @@ async def handle_admin_message(update, context):
         handled = await _process_mov_range_input(update, context, text, is_admin=True)
         if handled:
             return
+    # ── Product-specific movement ──
+    if state == "waiting_mov_product":
+        await _process_mov_product_input(update, context, text, is_admin=True)
+        return
 
     if state == STATE_EXISTING_ADD_QTY:
         await process_add_quantity(update, context, text, user.id)
@@ -6051,6 +6130,10 @@ async def handle_customer_message(update, context):
         handled = await _process_mov_range_input(update, context, text, is_admin=False)
         if handled:
             return
+    # ── Product-specific movement ──
+    if state == "waiting_mov_product":
+        await _process_mov_product_input(update, context, text, is_admin=False)
+        return
 
         # State: waiting for product name from button
     if state == "waiting_cust_search":
