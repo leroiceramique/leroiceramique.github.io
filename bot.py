@@ -2310,7 +2310,7 @@ def get_unshipped_sales():
             cur.execute(
                 "SELECT us.*, u.first_name AS seller_first_name, u.username AS seller_username "
                 "FROM unshipped_sales us "
-                "JOIN users u ON u.id = us.sold_by "
+                "LEFT JOIN users u ON u.id = us.sold_by "
                 "WHERE us.shipped = FALSE "
                 "ORDER BY us.sold_at ASC"
             )
@@ -2918,7 +2918,7 @@ async def send_low_stock_list(update=None, context=None, bot=None):
 def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
-    if cleaned.isdigit() and int(cleaned) >= 0:
+    if cleaned.isdigit() and int(cleaned) > 0:
         return int(cleaned)
     return None
 
@@ -3183,7 +3183,7 @@ async def ask_add_name(update, context):
 
 async def ask_add_qty(update, context, product_name, is_motif=False):
     """Step 2: Ask for quantity."""
-    context.user_data["state"] = STATE_ADD_QTY
+    _set_state(context, STATE_ADD_QTY)
     context.user_data["add_name"] = product_name
     context.user_data["add_is_motif"] = is_motif
     unit = "pcs" if is_motif else "crt"
@@ -3219,7 +3219,7 @@ async def callback_addtype_handler(update, context):
     data = query.data
     try:
         if data == "addtype_motif":
-            context.user_data["state"] = STATE_ADD_NAME_MOTIF
+            _set_state(context, STATE_ADD_NAME_MOTIF)
             await query.edit_message_text(
                 "🎨 موتيف (قطع pcs)\n\nأرسل اسم السلعة:",
             )
@@ -3229,7 +3229,7 @@ async def callback_addtype_handler(update, context):
                 reply_markup=get_input_keyboard(),
             )
         elif data == "addtype_12060":
-            context.user_data["state"] = STATE_ADD_NAME_12060
+            _set_state(context, STATE_ADD_NAME_12060)
             await query.edit_message_text("🎨 120/60 (قطع pcs)\n\nأرسل اسم السلعة:")
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
@@ -3237,7 +3237,7 @@ async def callback_addtype_handler(update, context):
                 reply_markup=get_input_keyboard(),
             )
         elif data == "addtype_plante":
-            context.user_data["state"] = STATE_ADD_NAME_PLANTE
+            _set_state(context, STATE_ADD_NAME_PLANTE)
             await query.edit_message_text("🌿 plante (قطع pcs)\n\nأرسل اسم السلعة:")
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
@@ -3245,7 +3245,7 @@ async def callback_addtype_handler(update, context):
                 reply_markup=get_input_keyboard(),
             )
         elif data == "addtype_other":
-            context.user_data["state"] = STATE_ADD_NAME
+            _set_state(context, STATE_ADD_NAME)
             await query.edit_message_text(
                 "📦 باقي السلع (كرتون crt)\n\nأرسل اسم السلعة:",
             )
@@ -4331,7 +4331,7 @@ async def search_command(update, context):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("\u274c \u0647\u0630\u0627 \u0627\u0644\u0623\u0645\u0631 \u0644\u0644\u0645\u062f\u064a\u0631\u064a\u0646 \u0641\u0642\u0637.")
         return
-    context.user_data["state"] = STATE_SEARCH_ADMIN
+    _set_state(context, STATE_SEARCH_ADMIN)
     await update.message.reply_text(
         "\U0001f50d \u0627\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646\n\n\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0623\u0648 \u062c\u0632\u0621 \u0645\u0646 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629:",
         reply_markup=get_input_keyboard(),
@@ -4681,6 +4681,9 @@ async def callback_add_notify_handler(update, context):
         except Exception:
             pass
     context.user_data.pop("pending_add_notify", None)
+    context.user_data.pop("cust_product", None)
+    context.user_data.pop("pact_action", None)
+    context.user_data["state"] = None
 
 
 async def callback_rem_notify_handler(update, context):
@@ -4753,6 +4756,9 @@ async def callback_rem_notify_handler(update, context):
         except Exception:
             pass
     context.user_data.pop("pending_rem_notify", None)
+    context.user_data.pop("cust_product", None)
+    context.user_data.pop("pact_action", None)
+    context.user_data["state"] = None
 
 
 async def callback_email_restore_handler(update, context):
@@ -5339,7 +5345,7 @@ async def callback_invoice_handler(update, context):
         )
 
     elif data == "invoice_back_customer":
-        context.user_data["state"] = STATE_INVOICE_CUSTOMER
+        _set_state(context, STATE_INVOICE_CUSTOMER)
         context.user_data.pop("invoice_customer", None)
         try:
             await query.edit_message_text(
@@ -5785,12 +5791,12 @@ async def handle_admin_message(update, context):
             await ask_add_name(update, context)
             return
         if text == BTN_ADD_QTY:
-            context.user_data["state"] = STATE_ADMIN_ADD_SEL
+            _set_state(context, STATE_ADMIN_ADD_SEL)
             msg = "➕ إضافة علب" + chr(10) + chr(10) + "أرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
         if text == BTN_REMOVE_QTY:
-            context.user_data["state"] = STATE_ADMIN_REM_SEL
+            _set_state(context, STATE_ADMIN_REM_SEL)
             msg = "➖ إخراج علب" + chr(10) + chr(10) + "أرسل اسم السلعة:"
             await update.message.reply_text(msg, reply_markup=get_input_keyboard())
             return
@@ -5800,7 +5806,7 @@ async def handle_admin_message(update, context):
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
             await _send_product_list(update, products, context, "edit_id_map")
-            context.user_data["state"] = STATE_EDIT_PRODUCT
+            _set_state(context, STATE_EDIT_PRODUCT)
             edit_prompt = ("\u270f\ufe0f تعديل سلعة" + chr(10) + chr(10)
                 + "أرسل: رقم_السلعة, الاسم الجديد" + chr(10) + chr(10)
                 + "مثال: 1, زيت 5 لتر")
@@ -5812,7 +5818,7 @@ async def handle_admin_message(update, context):
                 await update.message.reply_text("\U0001f4ed لا توجد سلع.", reply_markup=get_admin_keyboard())
                 return
             await _send_product_list(update, products, context, "delete_id_map")
-            context.user_data["state"] = STATE_DELETE_PRODUCT
+            _set_state(context, STATE_DELETE_PRODUCT)
             del_prompt = ("\U0001f5d1\ufe0f حذف سلعة" + chr(10) + chr(10)
                 + "أرسل رقم السلعة فقط:" + chr(10)
                 + "مثال: 5" + chr(10) + chr(10)
@@ -5820,7 +5826,7 @@ async def handle_admin_message(update, context):
             await update.message.reply_text(del_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_ALERT:
-            context.user_data["state"] = STATE_ALERT_MSG
+            _set_state(context, STATE_ALERT_MSG)
             alert_prompt = ("\U0001f514 أرسل نص التنبيه:" + chr(10) + chr(10)
                 + "سيتم إرساله لجميع المستخدمين.")
             await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
@@ -5835,7 +5841,7 @@ async def handle_admin_message(update, context):
             await _show_all_movements(update, context, admin_view=True)
             return
         if text == BTN_INVOICE:
-            context.user_data["state"] = STATE_INVOICE_CUSTOMER
+            _set_state(context, STATE_INVOICE_CUSTOMER)
             context.user_data["invoice_items"] = []
             await update.message.reply_text(
                 "\U0001f9fe \u0625\u0646\u0634\u0627\u0621 \u0641\u0627\u062a\u0648\u0631\u0629" + chr(10) + chr(10)
@@ -5861,7 +5867,7 @@ async def handle_admin_message(update, context):
             await backup_command(update, context)
             return
         if text == BTN_RESET_STOCK:
-            context.user_data["state"] = STATE_RESET_PIN
+            _set_state(context, STATE_RESET_PIN)
             await update.message.reply_text(
                 "⚠️ تصفير المخزون\n\n"
                 "سيتم حذف:\n"
@@ -5896,6 +5902,12 @@ async def handle_admin_message(update, context):
     #  No admin button pressed → handle cancel, state, or auto-search
     # ═══════════════════════════════════════════════════════════
     state = context.user_data.get("state")
+    # Check state timeout (10 minutes)
+    if state and _is_state_expired(context):
+        logging.info("[ADMIN] State expired: " + str(state) + " for user " + str(user.id))
+        context.user_data.clear()
+        await update.message.reply_text("⏰ انتهت مهلة العملية.", reply_markup=get_admin_keyboard())
+        return
     # State handlers
     if text == BTN_CANCEL:
         context.user_data.clear()
@@ -6319,6 +6331,8 @@ async def handle_admin_message(update, context):
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
             # After action: ask reason for notification
+            # CRITICAL: clear the qty state first to prevent ghost-state repeat
+            context.user_data["state"] = None
             if db_user:
                 if action == "add":
                     notify_kb = InlineKeyboardMarkup([
@@ -6346,6 +6360,7 @@ async def handle_admin_message(update, context):
 
     elif state == STATE_SEARCH_ADMIN:
         await process_search(update, context, text, admin_view=True)
+        return
     elif state == "waiting_provide_qty":
         product = context.user_data.get("provide_product")
         if not product:
@@ -6471,6 +6486,8 @@ async def handle_admin_message(update, context):
         await _show_calc_result(update, context)
         return
     else:
+        # Unknown state — log and clear safely instead of silent data destruction
+        logging.warning("[ADMIN] Unhandled state: " + str(state) + " for user " + str(user.id))
         context.user_data.clear()
         await update.message.reply_text("\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647.", reply_markup=get_admin_keyboard())
         return
@@ -6479,6 +6496,12 @@ async def handle_customer_message(update, context):
     text = update.message.text.strip()
     state = context.user_data.get("state")
     user = update.effective_user
+
+    # Check state timeout (10 minutes)
+    if state and _is_state_expired(context):
+        logging.info("[CUST] State expired: " + str(state) + " for user " + str(user.id))
+        context.user_data.clear()
+        state = None
 
     # Handle customer buttons (clear state first)
     cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING, BTN_UNSHIPPED]
@@ -6536,7 +6559,6 @@ async def handle_customer_message(update, context):
         await _process_mov_product_input(update, context, text, is_admin=False)
         return
 
-        # State: waiting for product name from button
     if state == "waiting_cust_search":
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
@@ -6667,6 +6689,8 @@ async def handle_customer_message(update, context):
             context.user_data["cust_product"] = dict(updated)
             await update.message.reply_text(msg, reply_markup=keyboard)
             await send_low_stock_alerts(context.bot)
+            # CRITICAL: clear the qty state first to prevent ghost-state repeat
+            context.user_data["state"] = None
             # After add: ask reason for notification
             if action == "add" and db_user:
                 notify_kb = InlineKeyboardMarkup([
@@ -6684,7 +6708,12 @@ async def handle_customer_message(update, context):
         context.user_data.clear()
         return
 
-    # Default: treat as search query
+    # Default: treat as search query (only if no active state)
+    if state:
+        logging.warning("[CUST] Unhandled state reached default: " + str(state) + " for user " + str(user.id))
+        context.user_data.clear()
+        await update.message.reply_text("استخدم الأزرار أدناه.", reply_markup=get_customer_keyboard())
+        return
     if not text:
         await update.message.reply_text("أرسل اسم السلعة لمعرفة إذا كانت متوفرة.")
         return
@@ -7095,7 +7124,7 @@ async def callback_ship_handler(update, context):
     data = query.data
 
     if data == "ship_all":
-        context.user_data["state"] = STATE_SHIP_ALL_CODE
+        _set_state(context, STATE_SHIP_ALL_CODE)
         await query.edit_message_text(
             "🔒 أدخل كود الأمان لشحن الكل:",
             reply_markup=InlineKeyboardMarkup([
@@ -7123,7 +7152,9 @@ async def callback_ship_handler(update, context):
                 row = cur.fetchone()
             conn.commit()
             pname = row[0] if row else ""
-        except Exception:
+        except Exception as e:
+            conn.rollback()
+            logging.error("[SHIP] DB query failed: " + str(e))
             pname = ""
             total_unshipped = 0
         finally:
@@ -7134,7 +7165,7 @@ async def callback_ship_handler(update, context):
             return
 
         # Save state and ask for quantity
-        context.user_data["state"] = STATE_SHIP_QTY
+        _set_state(context, STATE_SHIP_QTY)
         context.user_data["ship_product_id"] = product_id
         context.user_data["ship_product_name"] = pname
         context.user_data["ship_total"] = total_unshipped
