@@ -216,7 +216,6 @@ def process_extraction_request(request_id, approved, admin_id):
 load_dotenv()
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
 
@@ -241,8 +240,6 @@ ADMIN_IDS: list = [
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set.")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set.")
 if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
@@ -269,26 +266,200 @@ def _init_low_stock_ids():
         logging.warning("[INIT] Failed to init low-stock IDs: " + str(e))
 
 # ═══════════════════════════════════════════════════════════
-#  DATABASE
+#  DATABASE — MULTI-URL FALLBACK SYSTEM
 # ═══════════════════════════════════════════════════════════
+#  Supports DATABASE_URLS (comma-separated) for automatic failover.
+#  Only ONE database is active at a time — others stay idle (0 compute).
+#  When the active DB hits its quota, the system automatically:
+#    1. Tries to export a backup from the failing DB
+#    2. Switches to the next available DB
+#    3. Imports the backup into the new DB
+#    4. Notifies admins about the switch
 
 _pool = None
+_active_db_index = 0
+_db_urls = []
+_db_switching_lock = threading.Lock()
 
 
-def init_pool():
+def _init_db_urls():
+    """Parse DATABASE_URLS (comma-separated) or fall back to DATABASE_URL.
+    Sets _db_urls list and validates at least one URL exists."""
+    global _db_urls, _active_db_index
+    raw = os.getenv("DATABASE_URLS", "").strip()
+    if raw:
+        _db_urls = [u.strip() for u in raw.split(",") if u.strip()]
+    # Fallback to single DATABASE_URL for backwards compatibility
+    if not _db_urls:
+        single = os.getenv("DATABASE_URL", "").strip()
+        if single:
+            _db_urls = [single]
+    if not _db_urls:
+        raise RuntimeError("DATABASE_URL or DATABASE_URLS is not set.")
+    _active_db_index = 0
+    logging.info("[DB] Initialized with " + str(len(_db_urls)) + " database URL(s). Active: #1")
+
+
+def get_active_db_url():
+    """Return the currently active database URL."""
+    if not _db_urls:
+        _init_db_urls()
+    return _db_urls[_active_db_index % len(_db_urls)]
+
+
+def init_pool(url=None):
+    """Create connection pool for the given URL (or active DB)."""
     global _pool
+    dsn = url or get_active_db_url()
     _pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=2, maxconn=20, dsn=DATABASE_URL,
+        minconn=2, maxconn=20, dsn=dsn,
     )
     return _pool
 
 
+def _try_single_connection(url):
+    """Test if a single DB URL is reachable. Returns (conn, True) or (None, False)."""
+    conn = None
+    try:
+        conn = psycopg2.connect(dsn=url)
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.execute("SET TIME ZONE 'Africa/Algiers'")
+        conn.commit()
+        return conn, True
+    except Exception as e:
+        logging.warning("[DB] Connection test failed: " + str(e)[:200])
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return None, False
+
+
+def _emergency_full_backup(url):
+    """Attempt a FULL backup from a DB URL using a direct connection.
+    Returns backup dict or None. Used during failover to preserve all data."""
+    conn = None
+    try:
+        conn = psycopg2.connect(dsn=url)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            import datetime as _dt
+            cur.execute("SELECT * FROM products ORDER BY id")
+            products = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM transactions ORDER BY id")
+            transactions = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
+            users = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM invoices ORDER BY id")
+            invoices = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM invoice_items ORDER BY id")
+            invoice_items = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM extraction_requests ORDER BY id")
+            extraction_requests = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM incoming_orders ORDER BY id")
+            incoming_orders = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM unshipped_sales ORDER BY id")
+            unshipped_sales = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
+            pending_deliveries = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        backup = {
+            "version": 5,
+            "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
+            "products": products,
+            "transactions": transactions,
+            "users": users,
+            "invoices": invoices,
+            "invoice_items": invoice_items,
+            "extraction_requests": extraction_requests,
+            "incoming_orders": incoming_orders,
+            "unshipped_sales": unshipped_sales,
+            "pending_deliveries": pending_deliveries,
+        }
+        logging.info("[DB] FULL emergency backup from " + url[:50] + "... (" + str(len(products)) + " products, " + str(len(transactions)) + " txns)")
+        return backup
+    except Exception as e:
+        logging.warning("[DB] Emergency full backup failed: " + str(e))
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _switch_to_next_db(reason="connection failure"):
+    """Switch to the next available DB URL (circular).
+    Returns True if switch succeeded, False if all DBs are down.
+    
+    Circular behavior: DB#1 → DB#2 → DB#3 → DB#1 → ...
+    When DB#1's monthly quota resets, it will be picked up automatically.
+    
+    Emergency backup: Before EVERY switch (including back to DB#1),
+    the system tries to grab a full backup from the current active DB.
+    This ensures no data is lost when moving between databases."""
+    global _pool, _active_db_index, _last_backup_data
+    with _db_switching_lock:
+        old_index = _active_db_index
+        old_url = _db_urls[old_index % len(_db_urls)]
+        n = len(_db_urls)
+        
+        # Step 1: Always try to grab a fresh full backup from current DB
+        backup_data = None
+        # First try direct connection to old DB for fresh backup
+        fresh_backup = _emergency_full_backup(old_url)
+        if fresh_backup:
+            backup_data = fresh_backup
+            _last_backup_data = fresh_backup  # keep in memory for next switch
+        elif _last_backup_data is not None:
+            # Fall back to in-memory backup if direct connection failed
+            backup_data = _last_backup_data
+            logging.info("[DB] Using in-memory backup for switch (" + str(len(backup_data.get("products", []))) + " products)")
+
+        # Step 2: Close old pool
+        if _pool is not None:
+            try:
+                _pool.closeall()
+            except Exception:
+                pass
+            _pool = None
+
+        # Step 3: Try each DB URL in circular order (including old one)
+        for attempt in range(1, n + 1):
+            candidate_index = (old_index + attempt) % n
+            candidate_url = _db_urls[candidate_index]
+            logging.info("[DB] Trying DB #" + str(candidate_index + 1) + "/" + str(n) + " (" + candidate_url[:60] + "...)")
+            conn, ok = _try_single_connection(candidate_url)
+            if ok:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _active_db_index = candidate_index
+                _pool = None
+                init_pool(candidate_url)
+                logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
+                # Step 4: Import backup into new DB
+                if backup_data and len(backup_data.get("products", [])) > 0:
+                    try:
+                        db_import_backup(backup_data)
+                        logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1))
+                    except Exception as e:
+                        logging.error("[DB] Failed to restore backup into new DB: " + str(e))
+                return True
+
+        logging.error("[DB] ALL " + str(n) + " databases are unreachable!")
+        return False
+
+
 def get_connection():
-    global _pool
+    global _pool, _active_db_index
     if _pool is None:
         init_pool()
     conn = None
-    for _ in range(2):  # attempt counter not used; retry twice on dead connection
+    for _ in range(2):  # retry twice on dead connection
         try:
             conn = _pool.getconn()
             with conn.cursor() as cur:
@@ -296,14 +467,23 @@ def get_connection():
                 cur.execute("SET TIME ZONE 'Africa/Algiers'")
             return conn
         except Exception:
-            # Connection is dead — close it properly
             if conn is not None:
                 try:
                     conn.close()
                 except Exception:
                     pass
-    # All attempts failed — recreate the pool
-    logging.warning("[DB] All pool connections dead, recreating pool...")
+    # All attempts failed with current pool — try failover to next DB
+    logging.warning("[DB] Current DB #" + str(_active_db_index + 1) + " failed, attempting failover...")
+    if len(_db_urls) > 1 and _switch_to_next_db():
+        try:
+            conn = _pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("SET TIME ZONE 'Africa/Algiers'")
+            return conn
+        except Exception:
+            pass
+    # Last resort: recreate current pool (single-DB or all multi-DBs failed)
+    logging.warning("[DB] Recreating pool for current DB...")
     try:
         _pool.closeall()
     except Exception:
@@ -7899,6 +8079,9 @@ async def _keep_alive(app):
 
 
 if __name__ == "__main__":
+    # Initialize multi-DB URLs before anything else
+    _init_db_urls()
+    logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
     # init_db() calls get_connection() which lazily creates the pool via
     # init_pool(), so an explicit init_pool() here would leak the previous
     # pool's connections.
