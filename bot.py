@@ -6176,6 +6176,7 @@ async def handle_admin_message(update, context):
             await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
             return
         await ask_add_qty(update, context, product_name, is_motif=False)
+        return
     elif state == STATE_ADD_NAME_MOTIF:
         product_name = text.strip()
         if not product_name:
@@ -6184,6 +6185,7 @@ async def handle_admin_message(update, context):
         if not product_name.lower().startswith("motif"):
             product_name = "motif " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
+        return
     elif state == STATE_ADD_NAME_12060:
         product_name = text.strip()
         if not product_name:
@@ -6192,6 +6194,7 @@ async def handle_admin_message(update, context):
         if not product_name.lower().startswith("120/60") and not product_name.lower().startswith("120x60"):
             product_name = "120/60 " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
+        return
     elif state == STATE_ADD_NAME_PLANTE:
         product_name = text.strip()
         if not product_name:
@@ -6200,6 +6203,7 @@ async def handle_admin_message(update, context):
         if not product_name.lower().startswith("plante"):
             product_name = "plante " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
+        return
     elif state == STATE_ADD_QTY:
         qty = parse_crt_input(text)
         if qty is None:
@@ -6208,6 +6212,7 @@ async def handle_admin_message(update, context):
         product_name = context.user_data.get("add_name", "")
         is_motif = context.user_data.get("add_is_motif", False)
         await confirm_add_product(update, context, product_name, qty, is_motif=is_motif)
+        return
     # ── Custom date range for movements ──
     if state in ("waiting_mov_range_from", "waiting_mov_range_to"):
         handled = await _process_mov_range_input(update, context, text, is_admin=True)
