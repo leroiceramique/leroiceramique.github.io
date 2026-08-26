@@ -83,6 +83,42 @@ def set_extract_permission(telegram_id, allowed):
         release_connection(conn)
 
 
+def can_ship(telegram_id):
+    """Check if user has shipping permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT can_ship FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return bool(row and row["can_ship"])
+    except Exception as e:
+        conn.rollback()
+        logging.error("[DB] can_ship check failed: " + str(e), exc_info=True)
+        return False
+    finally:
+        release_connection(conn)
+
+
+def set_ship_permission(telegram_id, allowed):
+    """Grant or revoke shipping permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET can_ship = %s WHERE telegram_id = %s RETURNING id",
+                (allowed, telegram_id),
+            )
+            updated = cur.fetchone() is not None
+        conn.commit()
+        return updated
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def create_extraction_request(product_id, quantity, requester_id):
     """Create a new extraction request (status: pending)."""
     conn = get_connection()
@@ -554,6 +590,7 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
+    can_ship         BOOLEAN NOT NULL DEFAULT FALSE,
     can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE,
     price_tier        VARCHAR(10) DEFAULT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -692,6 +729,11 @@ def init_db():
                 -- Migration: add can_extract column
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                -- Migration: add can_ship column
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_ship BOOLEAN NOT NULL DEFAULT FALSE;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
                 -- Migration: add first_name column for auto-update display names
@@ -1158,7 +1200,7 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -1170,9 +1212,11 @@ def db_export_backup():
             incoming_orders = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM unshipped_sales ORDER BY id")
             unshipped_sales = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
+            pending_deliveries = [dict(r) for r in cur.fetchall()]
         conn.commit()
         return {
-            "version": 4,
+            "version": 5,
             "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
             "products": products,
             "transactions": transactions,
@@ -1182,6 +1226,7 @@ def db_export_backup():
             "extraction_requests": extraction_requests,
             "incoming_orders": incoming_orders,
             "unshipped_sales": unshipped_sales,
+            "pending_deliveries": pending_deliveries,
         }
     except Exception:
         conn.rollback()
@@ -1206,11 +1251,12 @@ def db_import_backup(data):
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
             cur.execute("DELETE FROM unshipped_sales")
+            cur.execute("DELETE FROM pending_deliveries")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             cur.execute("DELETE FROM users")
 
-            # ── Import users (single INSERT with can_extract + first_name) ──
+            # ── Import users (single INSERT with can_extract + can_ship + first_name) ──
             users = data.get("users", [])
             if users:
                 rows = []
@@ -1220,13 +1266,14 @@ def db_import_backup(data):
                         u.get("role", "customer"), u.get("active", True),
                         u.get("created_at"),
                         u.get("can_extract", False),
+                        u.get("can_ship", False),
                         u.get("can_manage_prices", False),
                         u.get("first_name"),
                         u.get("price_tier"),
                     ))
                 cur.executemany("""
-                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_manage_prices, first_name, price_tier)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_ship, can_manage_prices, first_name, price_tier)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, rows)
                 max_uid = max(u["id"] for u in users)
                 cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
@@ -1341,6 +1388,21 @@ def db_import_backup(data):
                 max_usid = max(us["id"] for us in unshipped)
                 cur.execute("SELECT setval('unshipped_sales_id_seq', %s)", (max_usid,))
 
+            # ── Import pending_deliveries ──
+            pend_delivs = data.get("pending_deliveries", [])
+            if pend_delivs:
+                rows = [
+                    (pd["id"], pd.get("user_id"), pd["product_id"], pd.get("pending_qty", 0),
+                     pd.get("created_at"), pd.get("fulfilled_at"))
+                    for pd in pend_delivs
+                ]
+                cur.executemany("""
+                    INSERT INTO pending_deliveries (id, user_id, product_id, pending_qty, created_at, fulfilled_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, rows)
+                max_pdid = max(pd["id"] for pd in pend_delivs)
+                cur.execute("SELECT setval('pending_deliveries_id_seq', %s)", (max_pdid,))
+
         conn.commit()
 
         summary = ("✅ تم استيراد البيانات:\n"
@@ -1355,6 +1417,8 @@ def db_import_backup(data):
             summary += "\n  طلبات الاستخراج: " + str(len(ext_reqs))
         if len(inc_orders) > 0:
             summary += "\n  طلبات التوريد: " + str(len(inc_orders))
+        if len(pend_delivs) > 0:
+            summary += "\n  الطلبات المعلقة: " + str(len(pend_delivs))
         return summary
     except Exception:
         conn.rollback()
@@ -1487,6 +1551,7 @@ def search_products(query):
     finally:
         release_connection(conn)
     # ── SLOW PATH: Fuzzy matching (full scan, typo tolerance) ──
+    conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM products ORDER BY id")
@@ -2245,11 +2310,13 @@ def get_product_transactions(product_id, limit=30):
             cur.execute("""
                 SELECT
                     t.id, t.type AS tx_type, t.quantity, t.date,
-                    t.reason,
+                    t.reason, t.product_id,
                     u.username AS operator_name
                 FROM transactions t
                 LEFT JOIN users u ON u.id = t.user_id
                 WHERE t.product_id = %s
+                  AND t.type != 'reconcile'
+                  AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%')
                 ORDER BY t.date DESC
                 LIMIT %s
             """, (product_id, limit))
@@ -2261,6 +2328,43 @@ def get_product_transactions(product_id, limit=30):
         raise
     finally:
         release_connection(conn)
+
+
+def _filter_test_pairs(txns):
+    """Filter out test/undo movement pairs: remove then add of same product, same quantity, within 5 minutes.
+    Only filters remove→add (test or undo). Does NOT filter add→remove (legitimate sale after restock)."""
+    if not txns or len(txns) < 2:
+        return txns
+    # Normalize id key (date-based queries use tx_id, product queries use id)
+    for t in txns:
+        if "id" not in t and "tx_id" in t:
+            t["id"] = t["tx_id"]
+    # Work on copies sorted ascending by date for pair detection
+    sorted_txns = sorted(txns, key=lambda t: t["date"])
+    excluded_ids = set()
+    max_gap = datetime.timedelta(minutes=5)
+    for i in range(len(sorted_txns)):
+        if sorted_txns[i]["id"] in excluded_ids:
+            continue
+        for j in range(i + 1, len(sorted_txns)):
+            if sorted_txns[j]["id"] in excluded_ids:
+                continue
+            # Stop if time gap is too large (list is sorted ascending)
+            if sorted_txns[j]["date"] - sorted_txns[i]["date"] > max_gap:
+                break
+            a, b = sorted_txns[i], sorted_txns[j]
+            pid_a = a.get("product_id") or a.get("product_name", "")
+            pid_b = b.get("product_id") or b.get("product_name", "")
+            # Only filter: remove THEN add (test/undo), NOT add THEN remove (legitimate)
+            if (pid_a == pid_b
+                    and a["tx_type"] == "remove" and b["tx_type"] == "add"
+                    and a["quantity"] == b["quantity"]):
+                excluded_ids.add(a["id"])
+                excluded_ids.add(b["id"])
+                break
+    if not excluded_ids:
+        return txns
+    return [t for t in txns if t["id"] not in excluded_ids]
 
 
 async def _send_product_list(update, products, context, state_key="id_map"):
@@ -2318,6 +2422,7 @@ STATE_SELLER_ACTION = "seller_action"  # stores 'add' or 'remove'
 STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
 STATE_SHIP_QTY = "waiting_ship_qty"
+STATE_SHIP_ALL_CODE = "waiting_ship_all_code"
 STATE_ADD_TYPE = "waiting_add_type"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
@@ -2661,34 +2766,38 @@ def parse_qty_input(text):
 
 def get_bot_setting(key, default=None):
     """Get a bot setting value from bot_settings table."""
+    conn = get_connection()
     try:
-        conn = get_connection()
         with conn.cursor() as cur:
             cur.execute("SELECT value FROM bot_settings WHERE key = %s", (key,))
             row = cur.fetchone()
         conn.commit()
-        release_connection(conn)
         if row:
             return row[0]
         return default
     except Exception as e:
+        conn.rollback()
         logging.warning("[SETTINGS] Get failed: " + str(e))
         return default
+    finally:
+        release_connection(conn)
 
 
 def set_bot_setting(key, value):
     """Set a bot setting value."""
+    conn = get_connection()
     try:
-        conn = get_connection()
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO bot_settings (key, value) VALUES (%s, %s)"
                 " ON CONFLICT (key) DO UPDATE SET value = %s",
                 (key, value, value))
         conn.commit()
-        release_connection(conn)
     except Exception as e:
+        conn.rollback()
         logging.warning("[SETTINGS] Set failed: " + str(e))
+    finally:
+        release_connection(conn)
 
 
 async def generate_weekly_report(bot):
@@ -2726,7 +2835,7 @@ async def generate_weekly_report(bot):
                 cur.execute(
                     "SELECT COUNT(*) as cnt FROM transactions"
                     " WHERE date >= NOW() - INTERVAL '7 days'")
-                cur.fetchone()["cnt"]
+                weekly_tx_count = cur.fetchone()["cnt"]
 
                 # Adds vs removes this week
                 cur.execute(
@@ -2939,7 +3048,7 @@ async def callback_addtype_handler(update, context):
                 text="🎨 أرسل اسم السلعة (موتيف):",
                 reply_markup=get_input_keyboard(),
             )
-        if data == "addtype_12060":
+        elif data == "addtype_12060":
             context.user_data["state"] = STATE_ADD_NAME_12060
             await query.edit_message_text("🎨 120/60 (قطع pcs)\n\nأرسل اسم السلعة:")
             await context.bot.send_message(
@@ -3022,6 +3131,7 @@ def db_reset_all_stock():
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
             cur.execute("DELETE FROM unshipped_sales")
+            cur.execute("DELETE FROM pending_deliveries")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             # Reset sequences
@@ -3032,6 +3142,7 @@ def db_reset_all_stock():
             cur.execute("SELECT setval('extraction_requests_id_seq', 1, false)")
             cur.execute("SELECT setval('incoming_orders_id_seq', 1, false)")
             cur.execute("SELECT setval('unshipped_sales_id_seq', 1, false)")
+            cur.execute("SELECT setval('pending_deliveries_id_seq', 1, false)")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -3474,7 +3585,7 @@ def _fetch_today_movements():
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
                 "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
-                "WHERE t.date >= CURRENT_DATE AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
+                "WHERE t.date >= CURRENT_DATE AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
                 "ORDER BY t.date DESC")
             col_names = [desc[0] for desc in cur.description]
             rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
@@ -3503,7 +3614,7 @@ def _fetch_movements_by_date(target_date):
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
                 "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
-                "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
+                "WHERE t.date >= %s AND t.date < %s AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (target_date, target_date + datetime.timedelta(days=1)))
             col_names = [desc[0] for desc in cur.description]
@@ -3531,7 +3642,7 @@ def _fetch_movements_by_range(start_date, end_date):
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
                 "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
-                "WHERE t.date >= %s AND t.date < %s AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
+                "WHERE t.date >= %s AND t.date < %s AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (start_date, end_date + datetime.timedelta(days=1)))
             col_names = [desc[0] for desc in cur.description]
@@ -3607,6 +3718,7 @@ async def callback_mov_product_handler(update, context):
     )
     try:
         txns = get_product_transactions(product["id"], limit=200)
+        txns = _filter_test_pairs(txns)
         unit = _get_unit_ar(product["name"])
         if not txns:
             await context.bot.send_message(
@@ -3717,6 +3829,7 @@ async def callback_mov_date_handler(update, context):
 
     try:
         rows = _fetch_movements_by_date(target_date)
+        rows = _filter_test_pairs(rows)
         weekday_ar = {
             0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء",
             3: "الخميس", 4: "الجمعة", 5: "السبت", 6: "الأحد"
@@ -3881,6 +3994,7 @@ async def callback_product_action_handler(update, context):
     if action == "log":
         try:
             txns = get_product_transactions(product_id, limit=30)
+            txns = _filter_test_pairs(txns)
             conn = get_connection()
             try:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -4365,54 +4479,25 @@ async def callback_add_notify_handler(update, context):
         update_transaction_reason(tx_id, reason_label)
     try:
         if reason == "correction":
-            confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
+            confirm = "📝 تم تصحيح المخزون ✅"
         else:
-            await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-            # Auto-reconcile pending deliveries for truck/return
-            reconcile_result = None
+            # Broadcast only for truck arrival and customer return
+            if reason in ("truck", "return"):
+                await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
+            # Auto-reconcile pending deliveries silently (no broadcast)
             if reason in ("truck", "return") and actor:
-                reconcile_result = await asyncio.to_thread(
+                await asyncio.to_thread(
                     auto_reconcile_product, product["id"], qty, actor["id"]
                 )
-            if reconcile_result and reconcile_result["fulfilled"]:
-                pname = reconcile_result["product_name"]
-                covered = reconcile_result["total_covered"]
-                remaining = reconcile_result["remaining_deficit"]
-                # Notify each customer
-                for f in reconcile_result["fulfilled"]:
-                    if f["user_tid"]:
-                        try:
-                            if f["fully"]:
-                                notif = (
-                                    "✅ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
-                                    + "⏳ طلبك المعلق تم تغطيته بالكامل ✓"
-                                )
-                            else:
-                                notif = (
-                                    "⏳ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
-                                    + "📏 المتبقي: " + str(f["remaining"]) + " وحدة"
-                                )
-                            await context.bot.send_message(chat_id=f["user_tid"], text=notif)
-                        except Exception:
-                            pass
-                # Broadcast reconciliation to all users
-                recon_msg = (
-                    "🟢 تسوية عجز تلقائية" + chr(10) + chr(10)
-                    + "📦 " + pname + chr(10)
-                    + "➖ تمت تغطية: " + str(covered) + " وحدة"
-                )
-                if remaining > 0:
-                    recon_msg += chr(10) + "⚠️ العجز المتبقي: " + str(remaining) + " وحدة"
-                await _broadcast_to_all_users(context.bot, recon_msg)
             if reason == "return":
-                confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
+                confirm = "↩️ تم إرسال تنبيه إرجاع للجميع ✅"
             else:
-                confirm = "🚚 تم إرسال تنبيه وصول بضاعة من الشاحنة للجميع ✅"
+                confirm = "🚚 تم إرسال تنبيه وصول بضاعة للجميع ✅"
         await query.edit_message_text(confirm)
     except Exception as e:
-        logging.error("[ADD_NOTIFY] Broadcast failed: " + str(e))
+        logging.error("[ADD_NOTIFY] Confirm failed: " + str(e))
         try:
-            await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
+            await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
             pass
     context.user_data.pop("pending_add_notify", None)
@@ -4477,22 +4562,14 @@ async def callback_rem_notify_handler(update, context):
             logging.error("[UNSHIPPED] Failed to track sale: " + str(e))
     try:
         if reason == "correction":
-            confirm = "📝 تم تصحيح المخزون بدون إرسال تنبيه ✅"
+            confirm = "📝 تم تصحيح المخزون ✅"
         else:
-            await _broadcast_remove_notification(context.bot, product, qty, actor, reason=reason)
-            if reason == "return":
-                confirm = "↩️ تم إرسال تنبيه إرجاع سلعة من زبون للجميع ✅"
-            elif reason == "saoula":
-                confirm = "🏪 تم تسجيل بيع لرابح Saoula وإرسال تنبيه للجميع ✅"
-            elif reason == "carthago":
-                confirm = "🏪 تم تسجيل بيع لحسان Carthago وإرسال تنبيه للجميع ✅"
-            else:
-                confirm = "🚚 تم إرسال تنبيه بيع لزبون للجميع ✅"
+            confirm = "✅ تم التسجيل في سجل الحركة"
         await query.edit_message_text(confirm)
     except Exception as e:
-        logging.error("[REM_NOTIFY] Broadcast failed: " + str(e))
+        logging.error("[REM_NOTIFY] Confirm failed: " + str(e))
         try:
-            await query.edit_message_text("❌ حدث خطأ في إرسال التنبيه.")
+            await query.edit_message_text("❌ حدث خطأ.")
         except Exception:
             pass
     context.user_data.pop("pending_rem_notify", None)
@@ -4581,7 +4658,7 @@ async def users_command(update, context):
                 InlineKeyboardButton("❌", callback_data="reject_" + str(u["telegram_id"])),
             ])
 
-    # أزرار الترقية/الإزالة للمفعلين
+    # أزرار الترقية/الإزالة والمشاركة للمفعلين
     promote_buttons = []
     for u in approved:
         name = (u.get("first_name") or u.get("username") or str(u["telegram_id"]))[:18]
@@ -4591,11 +4668,33 @@ async def users_command(update, context):
                 "👑 ترقية: " + name,
                 callback_data="promote_" + str(tid)
             )])
+            # Ship permission buttons for customers
+            if u.get("can_ship"):
+                promote_buttons.append([InlineKeyboardButton(
+                    "📤 سحب شحن: " + name,
+                    callback_data="ship_revoke_" + str(tid)
+                )])
+            else:
+                promote_buttons.append([InlineKeyboardButton(
+                    "📤 منح شحن: " + name,
+                    callback_data="ship_grant_" + str(tid)
+                )])
         elif u["role"] == "admin" and tid not in ADMIN_IDS:
             promote_buttons.append([InlineKeyboardButton(
                 "👤 إزالة إدارة: " + name,
                 callback_data="demote_" + str(tid)
             )])
+            # Ship permission buttons for non-env admins
+            if u.get("can_ship"):
+                promote_buttons.append([InlineKeyboardButton(
+                    "📤 سحب شحن: " + name,
+                    callback_data="ship_revoke_" + str(tid)
+                )])
+            else:
+                promote_buttons.append([InlineKeyboardButton(
+                    "📤 منح شحن: " + name,
+                    callback_data="ship_grant_" + str(tid)
+                )])
 
     msg_lines = ["⚙️ إدارة المستخدمين\n"]
     if pending:
@@ -4955,6 +5054,8 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                         "UPDATE products SET quantity = quantity - %s WHERE id = %s AND quantity >= %s",
                         (stock_qty, item["product_id"], stock_qty)
                     )
+                    if cur.rowcount == 0:
+                        logging.warning("[INVOICE] Insufficient stock for product %s (need %s)", item["product_id"], stock_qty)
                     # Log transaction
                     cur.execute(
                         "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
@@ -4967,6 +5068,8 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         logging.error("[INVOICE] DB save failed: " + str(e))
         await _send("❌ حدث خطأ في حفظ الفاتورة: " + str(e), get_admin_keyboard())
         return
+    finally:
+        release_connection(conn)
 
     # Generate PDF
     pdf_path = _generate_invoice_pdf(invoice_id, customer, items, total, worker_name)
@@ -5363,11 +5466,13 @@ async def _process_mov_product_input(update, context, text, is_admin=True):
 async def _show_product_movements(update, context, product):
     """Display movement history for a specific product."""
     txns = get_product_transactions(product["id"], limit=200)
+    txns = _filter_test_pairs(txns)
     unit = _get_unit_ar(product["name"])
     if not txns:
-        await update.message.reply_text(
-            "📜 لا توجد حركات مسجلة لـ\n" + product["name"]
-        )
+        if update.message:
+            await update.message.reply_text("📜 لا توجد حركات مسجلة لـ\n" + product["name"])
+        else:
+            await update.get_bot().send_message(chat_id=update.effective_chat.id, text="📜 لا توجد حركات مسجلة لـ\n" + product["name"])
         return
     lines = ["📜 سجل حركات — " + product["name"] + " (" + str(len(txns)) + ")"]
     for tx in txns:
@@ -5443,6 +5548,7 @@ async def _process_mov_range_input(update, context, text, is_admin):
             return True
         try:
             rows = _fetch_movements_by_range(start_date, parsed_date)
+            rows = _filter_test_pairs(rows)
             date_display = start_date.strftime("%Y-%m-%d") + " ← " + parsed_date.strftime("%Y-%m-%d")
             if not rows:
                 await update.message.reply_text(
@@ -5614,6 +5720,31 @@ async def handle_admin_message(update, context):
     if text == BTN_CANCEL:
         context.user_data.clear()
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
+        return
+
+    # State: waiting for ship-all security code
+    if state == STATE_SHIP_ALL_CODE:
+        code = text.strip()
+        context.user_data.clear()
+        if code == "0000":
+            db_user = get_user(update.effective_user.id)
+            shipped_by = db_user["id"] if db_user else 0
+            count = mark_all_shipped(shipped_by)
+            if count > 0:
+                await update.message.reply_text(
+                    "✅ تم شحن " + str(count) + " سلعة بنجاح!",
+                    reply_markup=get_admin_keyboard(),
+                )
+            else:
+                await update.message.reply_text(
+                    "📭 لا توجد سلع للشحن.",
+                    reply_markup=get_admin_keyboard(),
+                )
+        else:
+            await update.message.reply_text(
+                "❌ كود الأمان خاطئ.",
+                reply_markup=get_admin_keyboard(),
+            )
         return
 
     # State: waiting for ship quantity
@@ -6206,7 +6337,8 @@ async def handle_customer_message(update, context):
             return
 
         if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
-            await _show_unshipped_sales(update, context, admin_view=False)
+            ship_view = can_ship(update.effective_user.id)
+            await _show_unshipped_sales(update, context, admin_view=ship_view)
             return
 
     # ── Custom date range for movements ──
@@ -6402,7 +6534,7 @@ async def route_message(update, context):
     if text == "/cancel":
         context.user_data.clear()
         if is_adm:
-            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=await asyncio.to_thread(get_admin_keyboard))
+            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=await asyncio.to_thread(lambda: get_admin_keyboard(update.effective_user.id)))
         else:
             await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         return
@@ -6435,7 +6567,7 @@ async def callback_extract_perm_handler(update, context):
             try:
                 await context.bot.send_message(
                     chat_id=tid,
-                    text="\🛑 تم منحك صلاحية طلب إخراج السلع.\nابحث عن سلعة واضغط طلب إخراج.",
+                    text="🛑 تم منحك صلاحية طلب إخراج السلع.\nابحث عن سلعة واضغط طلب إخراج.",
                 )
             except Exception as e:
                 logging.error("[EXTRACT] Notify user failed: " + str(e))
@@ -6456,6 +6588,50 @@ async def callback_extract_perm_handler(update, context):
             await _show_pending_extractions(update, context)
     except Exception as e:
         logging.error("[EXTRACT_PERM] Error: " + str(e))
+        try:
+            await query.edit_message_text("❌ خطأ: " + str(e))
+        except Exception:
+            pass
+
+
+async def callback_ship_perm_handler(update, context):
+    """Handle grant/revoke shipping permission from users list."""
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        return
+    data = query.data
+    try:
+        if data.startswith("ship_grant_"):
+            tid = int(data.split("_")[2])
+            set_ship_permission(tid, True)
+            db_u = get_user(tid)
+            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
+            await query.edit_message_text("✅ تم منح صلاحية الشحن لـ " + uname)
+            try:
+                await context.bot.send_message(
+                    chat_id=tid,
+                    text="📤 تم منحك صلاحية شحن السلع غير المشحونة."
+                          "\nاضغط على \"غير المشحونة\" للتحكم.",
+                )
+            except Exception as e:
+                logging.error("[SHIP_PERM] Notify user failed: " + str(e))
+        elif data.startswith("ship_revoke_"):
+            tid = int(data.split("_")[2])
+            set_ship_permission(tid, False)
+            db_u = get_user(tid)
+            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
+            await query.edit_message_text("❌ تم سحب صلاحية الشحن من " + uname)
+            try:
+                await context.bot.send_message(
+                    chat_id=tid,
+                    text="❌ تم سحب صلاحية شحن السلع.",
+                )
+            except Exception as e:
+                logging.error("[SHIP_PERM] Notify user failed: " + str(e))
+    except Exception as e:
+        logging.error("[SHIP_PERM] Error: " + str(e))
         try:
             await query.edit_message_text("❌ خطأ: " + str(e))
         except Exception:
@@ -6567,23 +6743,25 @@ async def callback_extract_approve_handler(update, context):
         if success:
             try:
                 conn = get_connection()
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute(
-                        "SELECT er.requester_id, u.telegram_id, p.name AS product_name, er.quantity "
-                        "FROM extraction_requests er "
-                        "JOIN users u ON u.id = er.requester_id "
-                        "JOIN products p ON p.id = er.product_id "
-                        "WHERE er.id = %s",
-                        (request_id,),
-                    )
-                    req_info = cur.fetchone()
-                conn.commit()
-                release_connection(conn)
+                try:
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute(
+                            "SELECT er.requester_id, u.telegram_id, p.name AS product_name, er.quantity "
+                            "FROM extraction_requests er "
+                            "JOIN users u ON u.id = er.requester_id "
+                            "JOIN products p ON p.id = er.product_id "
+                            "WHERE er.id = %s",
+                            (request_id,),
+                        )
+                        req_info = cur.fetchone()
+                    conn.commit()
+                finally:
+                    release_connection(conn)
                 if req_info:
                     unit_ar = _get_unit_ar(req_info["product_name"])
                     if action == "approve":
                         notify_text = (
-                            "\✅ تم الموافقة على طلبك!\n\n"
+                            "✅ تم الموافقة على طلبك!\n\n"
                             + "📦 " + req_info["product_name"] + "\n"
                             + "📦 الكمية: " + str(req_info["quantity"]) + " " + unit_ar
                         )
@@ -6725,22 +6903,20 @@ async def callback_ship_handler(update, context):
     """Handle ship_ and ship_all callbacks — ask for quantity first."""
     query = update.callback_query
     await query.answer()
-    if not is_admin(query.from_user.id):
+    if not is_admin(query.from_user.id) and not can_ship(query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
 
     data = query.data
 
     if data == "ship_all":
-        db_user = get_user(query.from_user.id)
-        shipped_by = db_user["id"] if db_user else 0
-        count = mark_all_shipped(shipped_by)
-        if count > 0:
-            await query.edit_message_text(
-                "✅ تم شحن " + str(count) + " سلعة بنجاح!"
-            )
-        else:
-            await query.edit_message_text("📭 لا توجد سلع للشحن.")
+        context.user_data["state"] = STATE_SHIP_ALL_CODE
+        await query.edit_message_text(
+            "🔒 أدخل كود الأمان لشحن الكل:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="ship_cancel")]
+            ]),
+        )
         return
 
     if data.startswith("ship_"):
@@ -7445,14 +7621,14 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_calc_restart_handler, pattern="^calc_restart$"))
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
     app.add_handler(CallbackQueryHandler(callback_ship_cancel_handler, pattern="^ship_cancel$"))
+    app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_grant_"))
+    app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_revoke_"))
     app.add_handler(CallbackQueryHandler(callback_ship_handler, pattern="^ship(_|all)"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
-
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_revoke_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_pending_list$"))
-    app.add_handler(CallbackQueryHandler(callback_extract_request_handler, pattern="^req_ext_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
@@ -7569,13 +7745,12 @@ def _send_backup_email_with_retry(backup_bytes, filename, max_attempts=3, delay_
     """Retry email send up to max_attempts times with delay_sec between attempts.
     Synchronous — must be called from a thread (use asyncio.to_thread).
     """
-    import time as _time
     for attempt in range(1, max_attempts + 1):
         if _send_backup_email(backup_bytes, filename):
             return True
         if attempt < max_attempts:
             logging.warning("[BACKUP] Email attempt " + str(attempt) + "/" + str(max_attempts) + " failed, retrying in " + str(delay_sec) + "s...")
-            _time.sleep(delay_sec)
+            time.sleep(delay_sec)
         else:
             logging.error("[BACKUP] All " + str(max_attempts) + " email attempts failed")
     return False
@@ -7614,7 +7789,6 @@ async def _send_backup_to_channel(bot, file_bytes, filename, label="auto"):
         return False
     try:
         from io import BytesIO
-        from telegram.constants import ParseMode
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d %H:%M")
         caption = (
             "\U0001f4be نسخة احتياطية (" + label + ")\n"
@@ -7711,6 +7885,7 @@ async def _keep_alive(app):
                     try:
                         with conn.cursor() as cur:
                             cur.execute("SELECT 1")
+                        conn.commit()
                     finally:
                         release_connection(conn)
                 except Exception as db_err:
