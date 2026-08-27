@@ -5624,8 +5624,11 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     finally:
         release_connection(conn)
 
-    # Generate PDF
-    pdf_path = _generate_invoice_pdf(invoice_id, customer, items, total, worker_name)
+    # Generate PDF — reportlab مكلف CPU/IO، نشغّله في thread حتى لا تتجمد
+    # بقية المستخدمين لحظة إنشاء الفاتورة (الحلقة تبقى حرة).
+    pdf_path = await asyncio.to_thread(
+        _generate_invoice_pdf, invoice_id, customer, items, total, worker_name
+    )
 
     # Send PDF to admin
     if pdf_path:
