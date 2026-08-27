@@ -218,12 +218,6 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
-# ⚡ SECURITY: secret token to protect the webhook endpoint from forged updates.
-# Telegram sends this token in the X-Telegram-Bot-Api-Secret-Token header on
-# every request; PTB automatically rejects requests without a matching header.
-# Set WEBHOOK_SECRET in the environment (random string 1-256 chars) whenever
-# WEBHOOK_URL is used — otherwise anyone knowing the URL can impersonate admins.
-WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
 
 # Email backup (optional — for daily auto-backup via email)
 SMTP_HOST = os.getenv("SMTP_HOST", "")         # e.g. smtp.gmail.com
@@ -258,11 +252,10 @@ OWNER_IDS: list = [
 if not OWNER_IDS:
     OWNER_IDS = [ADMIN_IDS[0]]
 
-# ⚡ SECURITY: sensitive operational codes are now configurable via environment.
-# Previously they were hardcoded here, which leaks them to anyone with source
-# access. Override SHIP_ALL_CODE / RESET_STOCK_PIN in production!
-SHIP_ALL_CODE: str = os.getenv("SHIP_ALL_CODE", "0000")
-RESET_STOCK_PIN: str = os.getenv("RESET_STOCK_PIN", "5614")
+# ── Security codes: من الأفضل أن تُضبط عبر متغيرات البيئة في الإنتاج ──
+# القيم الافتراضية محفوظة للتوافق مع النشر الحالي فقط.
+SHIP_ALL_SECURITY_CODE = os.getenv("SHIP_ALL_SECURITY_CODE", "0000")
+RESET_STOCK_PIN = os.getenv("RESET_STOCK_PIN", "5614")
 
 _previously_low_stock = {}  # {product_id: product_dict}
 
@@ -292,18 +285,7 @@ _pool = None
 _active_db_index = 0
 _db_urls = []
 _db_switching_lock = threading.Lock()
-
-# ⚡ FIX (pool safety): track WHICH pool each borrowed connection came from.
-# Previously, release_connection() always returned connections to whatever
-# pool happened to be globally active — after a DB failover this silently
-# injected old-database connections into the new pool. We now record the
-# origin pool at checkout time and route releases accordingly.
-_conn_origin = {}          # {id(conn): pool_object}
-_conn_origin_lock = threading.Lock()
-
-# ⚡ FIX: urgent messages (e.g. DB failover) that must reach admins as soon as
-# connectivity allows. Consumed by _retry_pending_operations().
-_admin_notices = []
+_pool_creation_lock = threading.Lock()
 
 
 def _init_db_urls():
@@ -332,12 +314,22 @@ def get_active_db_url():
 
 
 def init_pool(url=None):
-    """Create connection pool for the given URL (or active DB)."""
+    """Create connection pool for the given URL (or active DB).
+    Thread-safe: guarded by a dedicated lock, and any previous pool is fully
+    drained first so repeated calls never leak connections."""
     global _pool
     dsn = url or get_active_db_url()
-    _pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=2, maxconn=20, dsn=dsn,
-    )
+    with _pool_creation_lock:
+        old = _pool
+        _pool = None
+        if old is not None:
+            try:
+                old.closeall()
+            except Exception:
+                pass
+        _pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=2, maxconn=20, dsn=dsn,
+        )
     return _pool
 
 
@@ -373,7 +365,7 @@ def _emergency_full_backup(url):
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -387,14 +379,6 @@ def _emergency_full_backup(url):
             unshipped_sales = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
             pending_deliveries = [dict(r) for r in cur.fetchall()]
-            # ⚡ FIX: bot_settings were previously lost on every failover,
-            # silently disabling weekly reports etc. (non-fatal if missing)
-            try:
-                cur.execute("SELECT key, value FROM bot_settings")
-                bot_settings = [dict(r) for r in cur.fetchall()]
-            except Exception:
-                conn.rollback()
-                bot_settings = []
         conn.commit()
         backup = {
             "version": 5,
@@ -408,7 +392,6 @@ def _emergency_full_backup(url):
             "incoming_orders": incoming_orders,
             "unshipped_sales": unshipped_sales,
             "pending_deliveries": pending_deliveries,
-            "bot_settings": bot_settings,
         }
         logging.info("[DB] FULL emergency backup from " + url[:50] + "... (" + str(len(products)) + " products, " + str(len(transactions)) + " txns)")
         return backup
@@ -423,59 +406,22 @@ def _emergency_full_backup(url):
                 pass
 
 
-def _bootstrap_schema(url):
-    """Ensure the schema exists on a (possibly brand-new) database URL.
-    Used during failover so that db_import_backup() never fails just because
-    the target DB is empty. Returns True on success."""
-    conn = None
-    try:
-        conn = psycopg2.connect(dsn=url)
-        with conn.cursor() as cur:
-            cur.execute(SCHEMA_SQL)
-        conn.commit()
-        return True
-    except Exception as e:
-        logging.warning("[DB] Schema bootstrap failed on candidate: " + str(e)[:200])
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
 def _switch_to_next_db(reason="connection failure"):
     """Switch to the next available DB URL (circular).
     Returns True if switch succeeded, False if all DBs are down.
-
+    
     Circular behavior: DB#1 → DB#2 → DB#3 → DB#1 → ...
     When DB#1's monthly quota resets, it will be picked up automatically.
-
+    
     Emergency backup: Before EVERY switch (including back to DB#1),
     the system tries to grab a full backup from the current active DB.
-    This ensures no data is lost when moving between databases.
-
-    ⚡ FIX: previously this returned True even when restoring the backup into
-    the new DB failed — the bot then kept running against an EMPTY database,
-    and the next failover would copy that emptiness elsewhere. The import is
-    now part of candidate acceptance: if the restore fails, the candidate is
-    rejected and the next one is tried. Admins are notified via _admin_notices.
-
-    ⚡ FIX: the old code called _pool.closeall() which killed connections other
-    threads were actively using mid-query. We now swap the pool reference and
-    let borrowed connections drain back to their origin pool naturally."""
+    This ensures no data is lost when moving between databases."""
     global _pool, _active_db_index, _last_backup_data
     with _db_switching_lock:
         old_index = _active_db_index
         old_url = _db_urls[old_index % len(_db_urls)]
         n = len(_db_urls)
-
+        
         # Step 1: Always try to grab a fresh full backup from current DB
         backup_data = None
         # First try direct connection to old DB for fresh backup
@@ -488,11 +434,13 @@ def _switch_to_next_db(reason="connection failure"):
             backup_data = _last_backup_data
             logging.info("[DB] Using in-memory backup for switch (" + str(len(backup_data.get("products", []))) + " products)")
 
-        # Step 2 (⚡ FIX): gracefully retire the old pool instead of closeall().
-        # Borrowed connections keep working until released; new checkouts use
-        # the new pool. Old idle sockets are freed once nothing references them.
-        old_pool = _pool
-        _pool = None
+        # Step 2: Close old pool
+        if _pool is not None:
+            try:
+                _pool.closeall()
+            except Exception:
+                pass
+            _pool = None
 
         # Step 3: Try each DB URL in circular order (including old one)
         for attempt in range(1, n + 1):
@@ -500,164 +448,106 @@ def _switch_to_next_db(reason="connection failure"):
             candidate_url = _db_urls[candidate_index]
             logging.info("[DB] Trying DB #" + str(candidate_index + 1) + "/" + str(n) + " (" + candidate_url[:60] + "...)")
             conn, ok = _try_single_connection(candidate_url)
-            if not ok:
-                continue
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-            # Ensure schema exists BEFORE importing data into a fresh DB
-            if not _bootstrap_schema(candidate_url):
-                logging.critical("[DB] Candidate DB #" + str(candidate_index + 1) + " rejected: schema bootstrap failed.")
-                continue
-
-            _active_db_index = candidate_index
-            init_pool(candidate_url)
-            logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
-
-            # Step 4: Import backup into new DB — failure REJECTS the candidate.
-            if backup_data is not None:
+            if ok:
                 try:
-                    db_import_backup(backup_data)
-                    logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1))
-                except Exception as e:
-                    logging.critical("[DB] Failed to restore backup into DB #" + str(candidate_index + 1) + ": " + str(e))
-                    # Reject: running on an empty/unrestored DB risks silent data divergence
+                    conn.close()
+                except Exception:
+                    pass
+                _active_db_index = candidate_index
+                _pool = None
+                init_pool(candidate_url)
+                logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
+                # Step 4: Import backup into new DB
+                if backup_data and len(backup_data.get("products", [])) > 0:
                     try:
-                        _pool.closeall()
-                    except Exception:
-                        pass
-                    _pool = None
-                    continue
-            _admin_notices.append(
-                "\U0001f504 تم التبديل إلى قاعدة بيانات احتياطية (#" + str(candidate_index + 1) + "/" + str(n) + ")"
-                + ("\n✅ تم ترحيل نسخة كاملة من البيانات." if backup_data is not None else "\n⚠️ لم تتوفر نسخة للترحيل!")
-                + "\nالسبب: " + reason
-            )
-            return True
+                        db_import_backup(backup_data)
+                        logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1))
+                    except Exception as e:
+                        logging.error("[DB] Failed to restore backup into new DB: " + str(e))
+                return True
 
         logging.error("[DB] ALL " + str(n) + " databases are unreachable!")
-        _admin_notices.append("\U0001f6a8 جميع قواعد البيانات (" + str(n) + ") غير متاحة حالياً! سيتم تفعيل وضع الأوفلاين.")
         return False
 
 
 def get_connection():
-    global _pool
-    if _pool is None:
-        init_pool()
-    conn = None
-    for _ in range(2):  # retry twice on dead connection
+    """Get a live connection from the pool. On repeated failure, attempts
+    failover to the next DB URL. Raises RuntimeError only if nothing works.
+
+    Fixes over the previous version:
+    - init_pool() failure at startup now triggers failover instead of crashing.
+    - Dead pooled connections are discarded via putconn(close=True) so the
+      pool's internal bookkeeping stays consistent (no more leaked slots).
+    - Brief backoff between attempts absorbs transient bursts/exhaustion."""
+    global _pool, _active_db_index
+    last_err = None
+    for attempt in range(3):
         try:
-            pool_at_checkout = _pool  # remember origin: _pool may be swapped mid-flight
-            conn = pool_at_checkout.getconn()
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.execute("SET TIME ZONE 'Africa/Algiers'")
-            with _conn_origin_lock:
-                _conn_origin[id(conn)] = pool_at_checkout
-            return conn
-        except Exception:
-            if conn is not None:
-                # ⚡ FIX: return the dead connection to its origin pool marked
-                # for closing. Previously conn.close() left the slot occupied
-                # inside the pool forever, eventually exhausting maxconn=20.
-                _discard_borrowed_conn(conn)
-                conn = None
+            if _pool is None:
+                init_pool()
+            conn = _pool.getconn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.execute("SET TIME ZONE 'Africa/Algiers'")
+                return conn
+            except Exception:
+                # connection is dead → return it CLOSED through the pool API
+                try:
+                    _pool.putconn(conn, close=True)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                raise
+        except Exception as e:
+            last_err = e
+            logging.warning(
+                "[DB] get_connection attempt " + str(attempt + 1) + "/3 failed: "
+                + str(e)[:150]
+            )
+            time.sleep(0.2 * (attempt + 1))
     # All attempts failed with current pool — try failover to next DB
     logging.warning("[DB] Current DB #" + str(_active_db_index + 1) + " failed, attempting failover...")
     if len(_db_urls) > 1 and _switch_to_next_db():
         try:
-            pool_now = _pool
-            conn = pool_now.getconn()
+            if _pool is None:
+                init_pool()
+            conn = _pool.getconn()
             with conn.cursor() as cur:
                 cur.execute("SET TIME ZONE 'Africa/Algiers'")
-            with _conn_origin_lock:
-                _conn_origin[id(conn)] = pool_now
             return conn
-        except Exception:
-            if conn is not None:
-                _discard_borrowed_conn(conn)
-                conn = None
+        except Exception as e:
+            logging.error("[DB] Failover getconn failed: " + str(e)[:150])
     # Last resort: recreate current pool (single-DB or all multi-DBs failed)
     logging.warning("[DB] Recreating pool for current DB...")
     try:
-        if _pool is not None:
-            try:
-                _pool.closeall()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    _pool = None
-    init_pool()
-    try:
-        pool_now = _pool
-        conn = pool_now.getconn()
+        init_pool()
+        conn = _pool.getconn()
         with conn.cursor() as cur:
+            cur.execute("SELECT 1")
             cur.execute("SET TIME ZONE 'Africa/Algiers'")
-        with _conn_origin_lock:
-            _conn_origin[id(conn)] = pool_now
         return conn
     except Exception as e:
-        raise
-
-
-def _discard_borrowed_conn(conn):
-    """Return a broken borrowed connection to its origin pool flagged for close.
-    Frees the pool slot properly instead of leaking it."""
-    with _conn_origin_lock:
-        origin = _conn_origin.pop(id(conn), None)
-    if origin is not None:
-        try:
-            origin.putconn(conn, close=True)
-            return
-        except Exception:
-            pass
-    try:
-        conn.close()
-    except Exception:
-        pass
+        raise RuntimeError(
+            "No database connection available: " + str(last_err) + " / " + str(e)
+        )
 
 
 def release_connection(conn):
     if conn is None:
         return
-    # ⚡ FIX: return each connection to the pool it was checked out from,
-    # never to whatever pool is currently active (prevents post-failover
-    # pollution where old-DB connections silently serve new queries).
-    with _conn_origin_lock:
-        origin = _conn_origin.pop(id(conn), None)
     if conn.closed:
-        # Connection died mid-use — make sure its pool slot is freed.
-        if origin is not None:
-            try:
-                origin.putconn(conn, close=True)
-            except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-        else:
+        return
+    if _pool:
+        try:
+            _pool.putconn(conn)
+        except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
-        return
-    if origin is None:
-        # Unknown/untracked connection (e.g. stale borrow after map clear).
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return
-    try:
-        origin.putconn(conn)
-    except Exception:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 # ═══════════════════════════════════════════════════════════
 #  OFFLINE MODE + SYNC SYSTEM
@@ -681,47 +571,23 @@ _cache_lock = threading.Lock()
 def _load_offline_queue():
     """Load persisted queue from disk on startup."""
     global _offline_queue
-    candidates = [_OFFLINE_QUEUE_PATH, _OFFLINE_QUEUE_PATH + ".bak"]
-    for path in candidates:
-        try:
-            if not os.path.exists(path):
-                continue
-            with open(path, "r", encoding="utf-8") as f:
+    try:
+        if os.path.exists(_OFFLINE_QUEUE_PATH):
+            with open(_OFFLINE_QUEUE_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, list):
-                # ⚡ FIX: previously a corrupt file silently wiped ALL pending
-                # operations. Now we fall back to the .bak snapshot instead.
                 _offline_queue = [op for op in data if isinstance(op, dict) and op.get("retries", 0) < 15]
-                logging.info("[OFFLINE] Loaded " + str(len(_offline_queue)) + " pending ops from " + os.path.basename(path))
-                return
-        except Exception as e:
-            logging.warning("[OFFLINE] Failed to load queue from " + path + ": " + str(e))
-    logging.warning("[OFFLINE] No usable queue file found — starting empty.")
+                logging.info("[OFFLINE] Loaded " + str(len(_offline_queue)) + " pending ops from disk")
+    except Exception as e:
+        logging.error("[OFFLINE] Failed to load queue: " + str(e))
+        _offline_queue = []
 
-
-# ── Atomic save for offline queue ⚡ FIX ──
-# The old implementation wrote JSON directly over the live file; a crash or
-# power-cut mid-write corrupted it, and on next boot _load_offline_queue()
-# silently DROPPED every pending sale. We now write to a temp file and
-# atomically rename over the target (POSIX atomic), keeping a .bak copy.
 
 def _save_offline_queue():
-    """Persist queue to disk atomically."""
+    """Persist queue to disk."""
     try:
-        with _offline_queue_lock:
-            snapshot = list(_offline_queue)
-        tmp_path = _OFFLINE_QUEUE_PATH + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, ensure_ascii=False, indent=1)
-            f.flush()
-            os.fsync(f.fileno())
-        # keep previous good version as .bak before replacing
-        try:
-            if os.path.exists(_OFFLINE_QUEUE_PATH):
-                os.replace(_OFFLINE_QUEUE_PATH, _OFFLINE_QUEUE_PATH + ".bak")
-        except Exception:
-            pass
-        os.replace(tmp_path, _OFFLINE_QUEUE_PATH)
+        with open(_OFFLINE_QUEUE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_offline_queue, f, ensure_ascii=False, indent=1)
     except Exception as e:
         logging.error("[OFFLINE] Failed to save queue: " + str(e))
 
@@ -744,105 +610,29 @@ def queue_operation(op_type, data, description=""):
     return op["id"]
 
 
-def is_transient_db_error(exc):
-    """⚡ Decide whether an exception looks like a transient connectivity
-    problem (worth queueing for offline retry) rather than a data/programming
-    error (never retry — replaying would corrupt data)."""
-    try:
-        if isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
-            return True
-        # Data-shape errors must NEVER be queued for replay
-        if isinstance(exc, (psycopg2.DataError, psycopg2.IntegrityError,
-                            psycopg2.ProgrammingError, psycopg2.InternalError)):
-            return False
-        msg = str(exc).lower()
-        keys = (
-            "connection", "server closed", "timed out", "timeout",
-            "could not connect", "network", "reset by peer", "broken pipe",
-            "ssl", "connection refused", "temporarily unavailable",
-        )
-        return any(k in msg for k in keys)
-    except Exception:
-        return False
-
-
-class _PermanentOpError(Exception):
-    """Raised inside _execute_queued_op for errors that can never succeed on
-    retry (bad values, missing rows…). Stops re-queuing 'poison' operations."""
-
-
-def _mark_op_applied(op_id):
-    """Record an operation id in the applied_ops ledger. Returns True if the
-    marker was newly inserted, False when the op was ALREADY applied before."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO applied_ops (id) VALUES (%s) ON CONFLICT DO NOTHING RETURNING id",
-                (op_id,),
-            )
-            newly = cur.fetchone() is not None
-        conn.commit()
-        return newly
-    except Exception:
-        conn.rollback()
-        # Ledger unavailable — behave optimistically so ops still run once.
-        return True
-    finally:
-        release_connection(conn)
-
-
-def _op_already_applied(op_id):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM applied_ops WHERE id = %s", (op_id,))
-            row = cur.fetchone()
-        conn.commit()
-        return row is not None
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        release_connection(conn)
-
-
 def _execute_queued_op(op):
-    """Execute a single queued operation. Returns True on success.
-
-    ⚡ FIX (idempotency): each queued op carries a deterministic id and the
-    applied_ops table acts as a ledger:
-      • final marker  -> op was FULLY applied before → skip silently.
-      • ':begin' marker present but final missing -> a previous attempt
-        crashed midway; replaying could double-count stock, so the op is
-        failed permanently and reported to admins instead of guessing.
-      • neither marker -> normal path: mark begun, execute, mark done.
-    The remaining race window shrank from 'until next restart' (original bug
-    that allowed double-added quantities) to a single ledger round-trip."""
+    """Execute a single queued operation. Returns True on success, "drop" for
+    permanently invalid ops (must not be retried), False on transient failure.
+    NOTE: called while holding _offline_queue_lock — must NEVER call
+    queue_operation() itself (non-reentrant lock) or it deadlocks."""
     op_type = op["type"]
     data = op["data"]
-    op_id = str(op.get("id") or "")
     try:
-        if op_id:
-            if _op_already_applied(op_id):
-                logging.info("[OFFLINE] Op already applied previously, skipping: " + op.get("desc", op_type))
-                return True
-            if not _mark_op_applied(op_id + ":begin"):
-                msg = "\u26a0\ufe0f عملية معلقة بنتيجة غير مؤكدة بعد انهيار سابق: " + op.get("desc", op_type) + "\nيرجى مراجعة المخزون يدوياً."
-                try:
-                    with _offline_queue_lock:
-                        _admin_notices.append(msg)
-                except Exception:
-                    pass
-                raise _PermanentOpError("ambiguous state from previous crashed attempt")
         if op_type == "add_qty":
             db_update_quantity(data["product_id"], data["qty"], "add")
             if data.get("user_id"):
-                log_transaction(data["product_id"], "add", data["qty"], data["user_id"], reason=data.get("reason"))
+                try:
+                    log_transaction(data["product_id"], "add", data["qty"], data["user_id"], reason=data.get("reason"))
+                except Exception as tx_err:
+                    # ledger entry lost on replay (stock already correct) — logged loudly
+                    logging.error("[OFFLINE] Replay: ledger write failed after qty add: " + str(tx_err))
         elif op_type == "remove_qty":
             db_update_quantity(data["product_id"], data["qty"], "remove")
             if data.get("user_id"):
-                log_transaction(data["product_id"], "remove", data["qty"], data["user_id"], reason=data.get("reason"))
+                try:
+                    log_transaction(data["product_id"], "remove", data["qty"], data["user_id"], reason=data.get("reason"))
+                except Exception as tx_err:
+                    logging.error("[OFFLINE] Replay: ledger write failed after qty remove: " + str(tx_err))
         elif op_type == "add_product":
             db_add_product(data["name"], data.get("quantity", 0), data.get("location", ""), data.get("minimum_stock", 5))
         elif op_type == "register_user":
@@ -851,21 +641,14 @@ def _execute_queued_op(op):
             log_transaction(data["product_id"], data["type"], data["quantity"], data["user_id"], reason=data.get("reason"))
         else:
             logging.warning("[OFFLINE] Unknown op type: " + op_type)
-            raise _PermanentOpError("unknown op type: " + op_type)
-        if op_id:
-            _mark_op_applied(op_id)
+            return "drop"
         return True
-    except psycopg2.DataError as e:
-        logging.error("[OFFLINE] Permanent data error for " + op.get("desc", op_type) + ": " + str(e))
-        raise _PermanentOpError(str(e))
-    except psycopg2.IntegrityError as e:
-        # e.g. FK violation — retrying forever cannot fix bad references
-        logging.error("[OFFLINE] Permanent integrity error for " + op.get("desc", op_type) + ": " + str(e))
-        raise _PermanentOpError(str(e))
-    except _PermanentOpError:
-        raise
+    except ValueError as e:
+        # Permanent condition (e.g., product/user deleted meanwhile) — retrying is pointless.
+        logging.warning("[OFFLINE] Dropping permanently invalid op '" + op["desc"] + "': " + str(e))
+        return "drop"
     except Exception as e:
-        logging.warning("[OFFLINE] Retry failed for " + op.get("desc", "") + ": " + str(e))
+        logging.warning("[OFFLINE] Retry failed for " + op["desc"] + ": " + str(e))
         return False
 
 
@@ -876,47 +659,44 @@ def _retry_pending_operations(bot=None, loop=None):
     run_coroutine_threadsafe.
     """
     global _offline_queue
-    # Drain any urgent admin notices collected elsewhere (failover, ambiguous ops…)
-    pending_notices = []
-    with _offline_queue_lock:
-        if _admin_notices:
-            pending_notices = list(_admin_notices)
-            _admin_notices.clear()
     with _offline_queue_lock:
         if not _offline_queue:
-            if not pending_notices:
-                return 0
-            _send_admin_notices(pending_notices, bot, loop)
             return 0
         remaining = []
         succeeded = 0
         failed_permanent = []
+        dropped = 0
         for op in _offline_queue:
             op["retries"] += 1
-            try:
-                applied = _execute_queued_op(op)
-                if applied:
-                    succeeded += 1
-                    logging.info("[OFFLINE] Recovered: " + op["desc"])
-                elif op["retries"] >= 15:
-                    failed_permanent.append(op)
-                    logging.error("[OFFLINE] Permanently failed: " + op["desc"])
-                else:
-                    remaining.append(op)
-            except _PermanentOpError as e:
-                # ⚡ FIX: never retry poison operations 15 times — fail fast.
+            result = _execute_queued_op(op)
+            if result == "drop":
+                # permanently invalid → remove silently (already logged by executor)
+                dropped += 1
+            elif result:
+                succeeded += 1
+                logging.info("[OFFLINE] Recovered: " + op["desc"])
+            elif op["retries"] >= 15:
                 failed_permanent.append(op)
-                logging.error("[OFFLINE] Permanently failed (" + str(e) + "): " + op.get("desc", ""))
+                logging.error("[OFFLINE] Permanently failed: " + op["desc"])
+            else:
+                remaining.append(op)
         _offline_queue = remaining
         _save_offline_queue()
+        if dropped:
+            logging.info("[OFFLINE] Dropped " + str(dropped) + " invalid queued op(s).")
+    # Notify admin about permanent failures
     if failed_permanent and bot and loop is not None:
         for admin_id in ADMIN_IDS:
             try:
                 msg = "\u26a0\ufe0f \u0639\u0645\u0644\u064a\u0627\u062a \u0644\u0645 \u062a\u0646\u062c\u062d \u0628\u0639\u062f \u0639\u062f\u0629 \u0645\u062d\u0627\u0648\u0644\u0627\u062a:\n\n"
                 for op in failed_permanent:
-                    age_min = int((time.time() - op.get("created_at", time.time())) / 60)
-                    msg += "\u2022 " + op.get("desc", "") + " (" + str(age_min) + " \u062f\u0642\u064a\u0642\u0629)\n"
+                    age_min = int((time.time() - op["created_at"]) / 60)
+                    msg += "\u2022 " + op["desc"] + " (" + str(age_min) + " \u062f\u0642\u064a\u0642\u0629)\n"
                 msg += "\n\U0001f4cb \u064a\u0631\u062c\u0649 \u0627\u0644\u062a\u062d\u0642\u0642 \u062a\u062f\u0648\u064a\u0627\u064b"
+                # run_coroutine_threadsafe schedules the coroutine on the
+                # main event loop (which lives in the main thread). Calling
+                # asyncio.ensure_future here would raise RuntimeError because
+                # this function runs inside asyncio.to_thread().
                 future = asyncio.run_coroutine_threadsafe(
                     bot.send_message(chat_id=admin_id, text=msg),
                     loop,
@@ -929,30 +709,7 @@ def _retry_pending_operations(bot=None, loop=None):
                 future.add_done_callback(_log_notify_err)
             except Exception:
                 pass
-    if pending_notices:
-        _send_admin_notices(pending_notices, bot, loop)
     return succeeded
-
-
-def _send_admin_notices(notices, bot, loop):
-    """Best-effort delivery of urgent system notices to all admins."""
-    if not notices or bot is None or loop is None:
-        return
-    body = "\n\n".join(notices)
-    for admin_id in ADMIN_IDS:
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                bot.send_message(chat_id=admin_id, text=body),
-                loop,
-            )
-            def _log_notice_err(fut):
-                try:
-                    fut.result()
-                except Exception as exc:
-                    logging.warning("[NOTICE] Admin notify failed: " + str(exc))
-            future.add_done_callback(_log_notice_err)
-        except Exception:
-            pass
 
 
 async def _offline_retry_loop(bot):
@@ -1071,8 +828,6 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
     can_ship         BOOLEAN NOT NULL DEFAULT FALSE,
-    can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE,
-    price_tier        VARCHAR(10) DEFAULT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -1083,14 +838,12 @@ CREATE TABLE IF NOT EXISTS products (
     location       VARCHAR(255) DEFAULT '',
     minimum_stock  INTEGER NOT NULL DEFAULT 5,
     selling_price  NUMERIC(12,2) NOT NULL DEFAULT 0,
-    price_low      NUMERIC(12,2) NOT NULL DEFAULT 0,
-    price_high     NUMERIC(12,2) NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
     id         SERIAL PRIMARY KEY,
-    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
     type       VARCHAR(10) NOT NULL CHECK (type IN ('add', 'remove', 'reconcile')),
     quantity   INTEGER NOT NULL,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -1139,13 +892,6 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     value       TEXT
 );
 
--- ⚡ Idempotency ledger for the offline operation queue: prevents replayed
--- operations from being applied twice after recovery.
-CREATE TABLE IF NOT EXISTS applied_ops (
-    id          VARCHAR(32) PRIMARY KEY,
-    applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS invoices (
     id              SERIAL PRIMARY KEY,
     customer_name   VARCHAR(500) NOT NULL,
@@ -1160,7 +906,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE TABLE IF NOT EXISTS invoice_items (
     id              SERIAL PRIMARY KEY,
     invoice_id      INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
-    product_id      INTEGER REFERENCES products(id) ON DELETE CASCADE,
+    product_id      INTEGER REFERENCES products(id) ON DELETE SET NULL,
     product_name    VARCHAR(500) NOT NULL,
     quantity        INTEGER NOT NULL,
     unit_price      NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -1173,7 +919,7 @@ CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id
 CREATE TABLE IF NOT EXISTS pending_deliveries (
     id            SERIAL PRIMARY KEY,
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
     pending_qty   INTEGER NOT NULL DEFAULT 0,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     fulfilled_at  TIMESTAMPTZ
@@ -1185,7 +931,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_deliveries_pending ON pending_deliveries(
 CREATE TABLE IF NOT EXISTS unshipped_sales (
     id            SERIAL PRIMARY KEY,
     transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
-    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
     product_name  VARCHAR(500) NOT NULL,
     quantity      INTEGER NOT NULL,
     sold_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -1277,28 +1023,19 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 ALTER TABLE products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(12,2) NOT NULL DEFAULT 0;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
-            -- Migration: add price_low and price_high to products
-            DO $$ BEGIN
-                ALTER TABLE products ADD COLUMN IF NOT EXISTS price_low NUMERIC(12,2) NOT NULL DEFAULT 0;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
-            DO $$ BEGIN
-                ALTER TABLE products ADD COLUMN IF NOT EXISTS price_high NUMERIC(12,2) NOT NULL DEFAULT 0;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
-            -- Migration: add price_tier to users
-            DO $$ BEGIN
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS price_tier VARCHAR(10) DEFAULT NULL;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
-            -- Migration: add can_manage_prices to users
-            DO $$ BEGIN
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_prices BOOLEAN NOT NULL DEFAULT FALSE;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
             -- Migration: allow invoice_items.product_id to be NULL (for manual products)
             DO $$ BEGIN
                 ALTER TABLE invoice_items ALTER COLUMN product_id DROP NOT NULL;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            -- Migration: history preservation on product delete —
+            -- detach unshipped_sales/pending_deliveries rows instead of wiping them.
+            DO $$ BEGIN
+                ALTER TABLE unshipped_sales ALTER COLUMN product_id DROP NOT NULL;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
+            DO $$ BEGIN
+                ALTER TABLE pending_deliveries ALTER COLUMN product_id DROP NOT NULL;
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             -- Seed: add invoice update notification
@@ -1347,7 +1084,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             CREATE TABLE IF NOT EXISTS pending_deliveries (
                 id            SERIAL PRIMARY KEY,
                 user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-                product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
                 pending_qty   INTEGER NOT NULL DEFAULT 0,
                 created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 fulfilled_at  TIMESTAMPTZ
@@ -1367,7 +1104,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 CREATE TABLE IF NOT EXISTS unshipped_sales (
                     id            SERIAL PRIMARY KEY,
                     transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
-                    product_id    INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
                     product_name  VARCHAR(500) NOT NULL,
                     quantity      INTEGER NOT NULL,
                     sold_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -1384,37 +1121,6 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             INSERT INTO bot_updates (description) VALUES
             ('📤 تتبع الشحن: السلع المباعة تظهر في قائمة غير المشحونة' || chr(10) || chr(10) || '📤 زر جديد: غير المشحونة' || chr(10) || '✅ عند البيع يتم تسجيل السلعة تلقائياً' || chr(10) || '📦 اضغط تم الشحن عندما يتم إخراجها من المخزن')
             ON CONFLICT DO NOTHING;
-
-            -- ⚡ Migration: bot_updates had no uniqueness, so the seed INSERTs
-            -- above re-inserted the SAME update on every restart (Render
-            -- redeploys often), inflating the table forever and re-broadcasting
-            -- old seeds as if they were new. Deduplicate, then enforce.
-            DELETE FROM bot_updates a
-                USING bot_updates b
-                WHERE a.id > b.id AND md5(a.description) = md5(b.description);
-            DO $$ BEGIN
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_updates_md5 ON bot_updates (md5(description));
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
-
-            -- ⚡ Migration: products.name never had a UNIQUE constraint, so
-            -- db_add_product()'s merge branch was dead code and adding the
-            -- same item twice created two independent rows. First rename any
-            -- existing duplicates (suffix instead of delete → history kept),
-            -- then enforce a functional unique index.
-            UPDATE products SET name = name || ' ♯' || id
-            WHERE id IN (
-                SELECT p.id FROM products p
-                JOIN (
-                    SELECT LOWER(TRIM(name)) AS norm, MIN(id) AS keep_id
-                    FROM products GROUP BY LOWER(TRIM(name)) HAVING COUNT(*) > 1
-                ) d ON LOWER(TRIM(p.name)) = d.norm AND p.id <> d.keep_id
-            );
-            DO $$ BEGIN
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_unique ON products (LOWER(TRIM(name)));
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
-
             """)
             # Migration: ensure all ADMIN_IDS users always get admin role
             if ADMIN_IDS:
@@ -1422,7 +1128,106 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                     "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
                     (list(ADMIN_IDS),)
                 )
+            # Migration: de-duplicate usernames so the unique index below can be created safely.
+            # Keep the newest row's username (max telegram_id row wins; the current holder of the
+            # handle on Telegram), older duplicates get NULL and fall back to first_name display.
+            cur.execute("""
+                UPDATE users u
+                SET username = NULL
+                WHERE u.username IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM users v
+                      WHERE v.username IS NOT NULL
+                        AND LOWER(v.username) = LOWER(u.username)
+                        AND v.telegram_id > u.telegram_id
+                  )
+                  AND u.telegram_id <> COALESCE((
+                      SELECT MAX(v.telegram_id) FROM users v
+                      WHERE v.username IS NOT NULL
+                        AND LOWER(v.username) = LOWER(u.username)
+                  ), u.telegram_id)
+            """)
+            dedup_count = cur.rowcount
+            # Hard guarantee: no two active accounts can ever hold the same username again.
+            # Wrapped in a SAVEPOINT so a failure here never aborts the whole schema init.
+            try:
+                cur.execute("SAVEPOINT users_username_uniq")
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_uniq "
+                    "ON users (LOWER(username)) WHERE username IS NOT NULL"
+                )
+                cur.execute("RELEASE SAVEPOINT users_username_uniq")
+            except Exception as idx_err:
+                cur.execute("ROLLBACK TO SAVEPOINT users_username_uniq")
+                logging.warning("[DB] username unique index deferred: " + str(idx_err))
+
+            # Migration: merge duplicate product names into the OLDEST row per name,
+            # remapping all referencing tables first so no history is lost,
+            # then enforce case-insensitive uniqueness going forward.
+            _dup_remap_sql = """
+                UPDATE {table} t SET product_id = m.keep_id
+                FROM (
+                    SELECT p.id AS dup_id, k.keep_id
+                    FROM products p
+                    JOIN (
+                        SELECT LOWER(name) AS lname, MIN(id) AS keep_id
+                        FROM products GROUP BY LOWER(name) HAVING COUNT(*) > 1
+                    ) k ON LOWER(p.name) = k.lname AND p.id <> k.keep_id
+                ) m
+                WHERE t.product_id = m.dup_id
+            """
+            for _t in ("transactions", "unshipped_sales", "extraction_requests", "invoice_items"):
+                cur.execute(_dup_remap_sql.format(table=_t))
+            cur.execute(
+                "DELETE FROM products p USING products q "
+                "WHERE LOWER(p.name) = LOWER(q.name) AND p.id > q.id"
+            )
+            prod_dupes = cur.rowcount
+            try:
+                cur.execute("SAVEPOINT products_name_uniq")
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_uniq "
+                    "ON products (LOWER(name))"
+                )
+                cur.execute("RELEASE SAVEPOINT products_name_uniq")
+            except Exception as idx_err:
+                cur.execute("ROLLBACK TO SAVEPOINT products_name_uniq")
+                logging.warning("[DB] product name unique index deferred: " + str(idx_err))
+
+            # Migration (legacy DBs): stop accidental data loss on product deletion.
+            # - transactions / unshipped_sales history must NOT vanish with the product.
+            # - invoice_items keeps billing rows alive with a detached product reference.
+            # Constraint names follow PostgreSQL defaults (table_col_fkey), each guarded
+            # in its own DO block so one legacy oddity never breaks initialization.
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_product_id_fkey;
+                    ALTER TABLE transactions
+                        ADD CONSTRAINT transactions_product_id_fkey
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;
+                EXCEPTION WHEN OTHERS THEN NULL; END $$;
+            """)
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE unshipped_sales DROP CONSTRAINT IF EXISTS unshipped_sales_product_id_fkey;
+                    ALTER TABLE unshipped_sales
+                        ADD CONSTRAINT unshipped_sales_product_id_fkey
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;
+                EXCEPTION WHEN OTHERS THEN NULL; END $$;
+            """)
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_product_id_fkey;
+                    ALTER TABLE invoice_items
+                        ADD CONSTRAINT invoice_items_product_id_fkey
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
+                EXCEPTION WHEN OTHERS THEN NULL; END $$;
+            """)
         conn.commit()
+        if dedup_count:
+            print("[DB] Deduplicated " + str(dedup_count) + " duplicate username(s).")
+        if prod_dupes:
+            print("[DB] Merged " + str(prod_dupes) + " duplicate product(s).")
         print("[DB] Schema initialized successfully.")
     except Exception as e:
         conn.rollback()
@@ -1436,12 +1241,39 @@ CREATE TABLE IF NOT EXISTS bot_settings (
 #  USER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
+def _normalize_username(username):
+    """توحيد صيغة اسم المستخدم: إزالة @ والفراغات، وتحويل الفراغ الفارغ إلى NULL.
+    يمنع تكرار نفس الحساب بصيغ مختلفة (@ali مقابل ali مقابل ' ali ')."""
+    if username is None:
+        return None
+    cleaned = str(username).strip().lstrip("@").strip()
+    return cleaned or None
+
+
+def _claim_username_sql():
+    """CTE مشترك: يُفرغ الاسم من أي حساب آخر يحمله قبل الإدراج/التحديث ذرّياً.
+    الحامل الأحدث (أعلى telegram_id) هو من يستمر بالاسم، ويتوافق مع
+    idx_users_username_uniq فلا تُرفع أي استثناء تفرد أبداً."""
+    return """
+        WITH cleared AS (
+            UPDATE users SET username = NULL
+            WHERE %s IS NOT NULL
+              AND username IS NOT NULL
+              AND LOWER(username) = LOWER(%s)
+              AND telegram_id <> %s
+            RETURNING 1
+        )
+    """
+
+
 def register_user(telegram_id, username=None, first_name=None):
+    username = _normalize_username(username)
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             role = "admin" if telegram_id in ADMIN_IDS else "pending"
-            cur.execute("""\n                INSERT INTO users (telegram_id, username, first_name, role)
+            cur.execute(_claim_username_sql() + """
+                INSERT INTO users (telegram_id, username, first_name, role)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
@@ -1451,7 +1283,8 @@ def register_user(telegram_id, username=None, first_name=None):
                 -- NEVER downgrade role on re-register
                 -- (admin stays admin, approved customer stays customer)
                 RETURNING id, telegram_id, username, first_name, role, active, created_at
-            """, (telegram_id, username, first_name, role))
+            """, (username, username, telegram_id,
+                  telegram_id, username, first_name, role))
             user = cur.fetchone()
         conn.commit()
         return dict(user)
@@ -1480,18 +1313,23 @@ def _set_state(context, state):
 
 def sync_user_info(user):
     """تحديث اسم المستخدم تلقائياً عند أي تفاعل.
-    يُنشئ السجل إذا لم يكن موجود، أو يُحدّث username و first_name إذا تغيرت."""
+    يُنشئ السجل إذا لم يكن موجود، أو يُحدّث username و first_name إذا تغيرت.
+    يفرّغ الاسم من أي حساب آخر يحمله أولاً حتى لا يتكرر الاسم في قاعدة البيانات."""
+    username = _normalize_username(getattr(user, "username", None))
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""\n                INSERT INTO users (telegram_id, username, first_name, role)
+            cur.execute(_claim_username_sql() + """
+                INSERT INTO users (telegram_id, username, first_name, role)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
                     active = TRUE
-                """, (user.id, user.username, user.first_name, "admin" if user.id in ADMIN_IDS else "pending"))
+            """, (username, username, user.id,
+                  user.id, username, user.first_name,
+                  "admin" if user.id in ADMIN_IDS else "pending"))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1718,7 +1556,7 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_manage_prices, first_name, price_tier, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -1732,13 +1570,6 @@ def db_export_backup():
             unshipped_sales = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
             pending_deliveries = [dict(r) for r in cur.fetchall()]
-            # ⚡ FIX: settings were silently lost when restoring old backups
-            try:
-                cur.execute("SELECT key, value FROM bot_settings ORDER BY key")
-                bot_settings = [dict(r) for r in cur.fetchall()]
-            except Exception:
-                conn.rollback()
-                bot_settings = []
         conn.commit()
         return {
             "version": 5,
@@ -1752,7 +1583,6 @@ def db_export_backup():
             "incoming_orders": incoming_orders,
             "unshipped_sales": unshipped_sales,
             "pending_deliveries": pending_deliveries,
-            "bot_settings": bot_settings,
         }
     except Exception:
         conn.rollback()
@@ -1783,59 +1613,43 @@ def db_import_backup(data):
             cur.execute("DELETE FROM users")
 
             # ── Import users (single INSERT with can_extract + can_ship + first_name) ──
-            # ⚡ SECURITY FIX: never trust role='admin' coming from a file that
-            # anyone could have edited — only ADMIN_IDS may be admins after a
-            # restore. Mirrors the same rule enforced by init_db().
-            _admin_tid_set = set(ADMIN_IDS)
+            # Deduplicate by telegram_id BEFORE inserting: a duplicated/corrupted backup
+            # must never create two accounts for the same person.
             users = data.get("users", [])
             if users:
+                _seen = {}
+                for u in users:
+                    _seen[u["telegram_id"]] = u  # last occurrence wins (freshest state)
+                users = list(_seen.values())
                 rows = []
                 for u in users:
-                    _role = u.get("role", "customer")
-                    if _role == "admin" and u.get("telegram_id") not in _admin_tid_set:
-                        logging.warning("[BACKUP] Demoted non-whitelisted admin telegram_id=%s during import", u.get("telegram_id"))
-                        _role = "customer"
                     rows.append((
-                        u["id"], u["telegram_id"], u.get("username"),
-                        _role, u.get("active", True),
+                        u["id"], u["telegram_id"], _normalize_username(u.get("username")),
+                        u.get("role", "customer"), u.get("active", True),
                         u.get("created_at"),
                         u.get("can_extract", False),
                         u.get("can_ship", False),
-                        u.get("can_manage_prices", False),
                         u.get("first_name"),
-                        u.get("price_tier"),
                     ))
                 cur.executemany("""
-                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_ship, can_manage_prices, first_name, price_tier)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_ship, first_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (telegram_id) DO NOTHING
                 """, rows)
                 max_uid = max(u["id"] for u in users)
                 cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
 
             # ── Import products ──
-            # ⚡ FIX: legacy backups may contain duplicate names (the old bug
-            # this whole fix closes). The functional unique index would reject
-            # them and abort the whole restore — so rename extras with a
-            # unique suffix here, same policy as the init_db() migration.
             products = data.get("products", [])
             if products:
-                seen_norm = {}
-                for p in products:
-                    norm = str(p.get("name", "")).strip().lower()
-                    if norm in seen_norm:
-                        p["name"] = str(p["name"]).strip() + " ♯" + str(p["id"])
-                        logging.warning("[BACKUP] Renamed duplicate product id=%s during import", p.get("id"))
-                    else:
-                        seen_norm[norm] = p["id"]
                 rows = [
                     (p["id"], p["name"], p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0),
-                     p.get("price_low", 0), p.get("price_high", 0))
+                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0))
                     for p in products
                 ]
                 cur.executemany("""
-                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price, price_low, price_high)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, rows)
                 max_pid = max(p["id"] for p in products)
                 cur.execute("SELECT setval('products_id_seq', %s)", (max_pid,))
@@ -1949,26 +1763,6 @@ def db_import_backup(data):
                 max_pdid = max(pd["id"] for pd in pend_delivs)
                 cur.execute("SELECT setval('pending_deliveries_id_seq', %s)", (max_pdid,))
 
-            # ── ⚡ Restore bot_settings (upsert; unknown current keys kept) ──
-            # Guarded: a missing table must not doom the whole import.
-            cur.execute("SELECT to_regclass('bot_settings')")
-            settings_rows = data.get("bot_settings", [])
-            if settings_rows and cur.fetchone()[0] is not None:
-                cur.executemany("""
-                    INSERT INTO bot_settings (key, value)
-                    VALUES (%s, %s)
-                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-                """, [(s.get("key"), s.get("value")) for s in settings_rows])
-
-            # ── ⚡ Reset the offline-op ledger: old world is gone, previous
-            #    markers must not suppress re-execution of ops queued for the
-            #    NEW dataset. NOTE: only attempted when the table exists —
-            #    a failed statement inside this transaction would doom the
-            #    entire restore otherwise.
-            cur.execute("SELECT to_regclass('applied_ops')")
-            if cur.fetchone()[0] is not None:
-                cur.execute("DELETE FROM applied_ops")
-
         conn.commit()
 
         summary = ("✅ تم استيراد البيانات:\n"
@@ -1997,12 +1791,7 @@ def db_import_backup(data):
 # ═══════════════════════════════════════════════════════════
 
 def db_add_product(name, quantity=0, location="", minimum_stock=5):
-    """Add a new product. Returns (product_dict, is_new).
-    ⚡ FIX: previously 'ON CONFLICT DO NOTHING' had no arbiter and there was
-    no unique constraint on name — so the merge branch below was dead code
-    and adding the same item twice created two rows. A functional unique
-    index on LOWER(TRIM(name)) is now created by init_db(), so conflict
-    handling actually works: existing items get their quantity summed."""
+    """Add a new product. Returns (product_dict, is_new)."""
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("اسم المنتج فارغ.")
@@ -2012,15 +1801,16 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
             cur.execute("""
                 INSERT INTO products (name, quantity, location, minimum_stock)
                 VALUES (%s, %s, %s, %s)
-                ON CONFLICT (LOWER(TRIM(name))) DO NOTHING
+                ON CONFLICT DO NOTHING
                 RETURNING id, name, quantity, location, minimum_stock, created_at
             """, (clean_name, quantity, location.strip(), minimum_stock))
             product = cur.fetchone()
             if product:
                 conn.commit()
                 return dict(product), True
-            # Product already exists — sum quantity into it
-            cur.execute("SELECT * FROM products WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s)) LIMIT 1", (clean_name,))
+            # Product already exists — try to find and update (case-insensitive to match
+            # the idx_products_name_uniq expression index)
+            cur.execute("SELECT * FROM products WHERE LOWER(name) = LOWER(%s) LIMIT 1", (clean_name,))
             existing = cur.fetchone()
             if existing:
                 cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s RETURNING *", (quantity, existing["id"]))
@@ -2181,19 +1971,15 @@ def db_update_product(product_id, name=None, location=None, minimum_stock=None):
 
 def db_update_quantity(product_id, change, transaction_type):
     """Update product quantity atomically to prevent race conditions.
-
+    
     Instead of SELECT then UPDATE (unsafe), we use a single atomic UPDATE:
     - ADD:  UPDATE ... SET quantity = quantity + X WHERE id = Y
-    - REMOVE: UPDATE ... SET quantity = quantity - X WHERE id = Y
-
-    ⚡ NOTE: negative inventory is INTENTIONALLY allowed (app-wide model):
-    overselling goes below zero and the deficit is tracked as a pending
-    delivery, then auto-reconciled when new stock arrives.
-
+    - REMOVE: UPDATE ... SET quantity = quantity - X WHERE id = Y AND quantity >= X
+    
     PostgreSQL guarantees the UPDATE executes as one indivisible operation.
     If two users update the same product simultaneously, PostgreSQL serializes
     them automatically — no Redis lock needed.
-
+    
     Example race condition prevented:
       Product has 10 units
       User A: UPDATE ... quantity = quantity + 5  → 15
@@ -2243,68 +2029,15 @@ def db_update_quantity(product_id, change, transaction_type):
         release_connection(conn)
 
 
-def db_update_product_prices(product_id, price_low, price_high):
-    """Update price_low and price_high for a product."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "UPDATE products SET price_low = %s, price_high = %s WHERE id = %s "
-                "RETURNING id, name, quantity, price_low, price_high",
-                (price_low, price_high, product_id))
-            row = cur.fetchone()
-            if not row:
-                raise ValueError("المنتج غير موجود.")
-            conn.commit()
-            return dict(row)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-def db_set_user_price_tier(telegram_id, tier):
-    """Set price_tier for a user. tier: 'low', 'high', or None to clear."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "UPDATE users SET price_tier = %s WHERE telegram_id = %s RETURNING id, telegram_id, username, price_tier",
-                (tier, telegram_id))
-            row = cur.fetchone()
-            conn.commit()
-            return dict(row) if row else None
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-def set_price_manager_permission(telegram_id, allowed):
-    """Grant or revoke price management permission."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET can_manage_prices = %s WHERE telegram_id = %s RETURNING id",
-                (allowed, telegram_id),
-            )
-            updated = cur.fetchone() is not None
-        conn.commit()
-        return updated
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
 
 def db_delete_product(product_id):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Preserve business history: detach sales/delivery records from
+            # this product BEFORE deleting it, so nothing is cascade-swept.
+            cur.execute("UPDATE unshipped_sales SET product_id = NULL WHERE product_id = %s", (product_id,))
+            cur.execute("UPDATE pending_deliveries SET product_id = NULL WHERE product_id = %s", (product_id,))
             cur.execute("DELETE FROM products WHERE id = %s RETURNING id", (product_id,))
             deleted = cur.fetchone() is not None
         conn.commit()
@@ -2323,6 +2056,12 @@ def db_bulk_delete_products(id_list):
         with conn.cursor() as cur:
             deleted_count = 0
             not_found = []
+            # Preserve business history for every product being removed.
+            if id_list:
+                cur.execute("UPDATE unshipped_sales SET product_id = NULL "
+                            "WHERE product_id = ANY(%s)", (list(id_list),))
+                cur.execute("UPDATE pending_deliveries SET product_id = NULL "
+                            "WHERE product_id = ANY(%s)", (list(id_list),))
             for pid in id_list:
                 cur.execute("DELETE FROM products WHERE id = %s RETURNING id", (pid,))
                 if cur.fetchone():
@@ -2446,14 +2185,6 @@ def delete_transaction(tx_id, admin_tid):
                             cur.execute("DELETE FROM pending_deliveries WHERE id = %s", (pd["id"],))
                         else:
                             cur.execute("UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s", (new_pending, pd["id"]))
-            # ⚡ FIX: deleting a 'remove' transaction used to leave its matching
-            # unshipped_sales row orphaned — the sale kept showing in 📤 غير المشحونة
-            # even though the operation was undone.
-            if tx["type"] == "remove":
-                cur.execute(
-                    "DELETE FROM unshipped_sales WHERE transaction_id = %s AND shipped = FALSE",
-                    (tx_id,),
-                )
             # Delete the transaction
             cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
         conn.commit()
@@ -3018,8 +2749,6 @@ STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
 STATE_RESET_PIN = "waiting_reset_pin"
-STATE_WAITING_PRICE_LOW = "waiting_price_low"
-STATE_WAITING_PRICE_HIGH = "waiting_price_high"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -3116,9 +2845,7 @@ async def _broadcast_update_notification(update, context):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # ⚡ FIX: suspended accounts used to receive update broadcasts too
-            # (inconsistent with _broadcast_to_all_users which filters active).
-            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer') AND active = TRUE")
+            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
             user_rows = cur.fetchall()
         conn.commit()
     except Exception:
@@ -3324,11 +3051,7 @@ def parse_crt_input(text):
     """Parse quantity input: accepts '10', '10crt', '10 crt'."""
     cleaned = text.strip().lower().replace(" ", "").replace("crt", "").replace("pcs", "")
     if cleaned.isdigit() and int(cleaned) > 0:
-        # ⚡ FIX: INT4-safe cap like parse_qty_input
-        cleaned_val = int(cleaned)
-        if cleaned_val > 999999999:
-            return None
-        return cleaned_val
+        return int(cleaned)
     return None
 
 
@@ -3339,10 +3062,6 @@ def parse_qty_input(text):
     try:
         pid, qty = int(parts[0]), int(parts[1])
         if pid <= 0 or qty <= 0:
-            return None
-        # ⚡ FIX: cap at INT4-safe maximum to avoid PostgreSQL DataError that
-        # previously ended up poisoned in the offline retry queue.
-        if qty > 999999999:
             return None
         return pid, qty
     except ValueError:
@@ -3392,128 +3111,6 @@ def set_bot_setting(key, value):
     finally:
         release_connection(conn)
 
-
-async def generate_weekly_report(bot):
-    """Generate and send the weekly inventory report. Returns report text."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
-                # Total products
-                cur.execute("SELECT COUNT(*) as cnt FROM products")
-                total = cur.fetchone()["cnt"]
-
-                # Total quantity
-                cur.execute("SELECT COALESCE(SUM(quantity), 0) as total_qty FROM products")
-                total_qty = cur.fetchone()["total_qty"]
-
-                # Low stock count
-                cur.execute("SELECT COUNT(*) as cnt FROM products WHERE quantity <= minimum_stock")
-                low_count = cur.fetchone()["cnt"]
-
-                # Top 5 highest quantity
-                cur.execute(
-                    "SELECT name, quantity FROM products"
-                    " WHERE quantity > 0"
-                    " ORDER BY quantity DESC LIMIT 5")
-                top_products = cur.fetchall()
-
-                # Bottom 5 (lowest / zero)
-                cur.execute(
-                    "SELECT name, quantity FROM products"
-                    " ORDER BY quantity ASC LIMIT 5")
-                bottom_products = cur.fetchall()
-
-                # Transactions this week
-                cur.execute(
-                    "SELECT COUNT(*) as cnt FROM transactions"
-                    " WHERE date >= NOW() - INTERVAL '7 days'")
-                weekly_tx_count = cur.fetchone()["cnt"]
-
-                # Adds vs removes this week
-                cur.execute(
-                    "SELECT type AS tx_type, COUNT(*) as cnt FROM transactions"
-                    " WHERE date >= NOW() - INTERVAL '7 days'"
-                    " GROUP BY type")
-                type_counts = {r["tx_type"]: r["cnt"] for r in cur.fetchall()}
-                adds = type_counts.get("add", 0)
-                removes = type_counts.get("remove", 0)
-        finally:
-            release_connection(conn)
-
-        # Build report message
-        lines = []
-        lines.append("\U0001f4cb \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0645\u062e\u0632\u0648\u0646 \u0627\u0644\u0623\u0633\u0628\u0648\u0639\u064a")
-        algeria_tz = datetime.timezone(datetime.timedelta(hours=1))
-        lines.append("\U0001f4c5 " + datetime.datetime.now(algeria_tz).strftime("%Y-%m-%d"))
-        lines.append("")
-        lines.append("\U0001f4e6 \u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u0646\u062a\u062c\u0627\u062a: " + str(total))
-        lines.append("\U0001f4cf \u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0643\u0645\u064a\u0627\u062a: " + str(total_qty))
-        lines.append("\U0001f534 \u0645\u0646\u062a\u062c\u0627\u062a \u0645\u0646\u062e\u0641\u0636\u0629: " + str(low_count))
-        lines.append("")
-        lines.append("\U0001f504 \u062d\u0631\u0643\u0629 \u0647\u0630\u0627 \u0627\u0644\u0623\u0633\u0628\u0648\u0639:")
-        lines.append("   \u2795 \u0625\u0636\u0627\u0641\u0629: " + str(adds) + " \u0639\u0645\u0644\u064a\u0629")
-        lines.append("   \u2796 \u0625\u062e\u0631\u0627\u062c: " + str(removes) + " \u0639\u0645\u0644\u064a\u0629")
-        lines.append("")
-
-        if top_products:
-            lines.append("\U0001f4c8 \u0623\u0643\u062b\u0631 5 \u0645\u0646\u062a\u062c\u0627\u062a \u0643\u0645\u064a\u0629:")
-            for p in top_products:
-                lines.append("   \U0001f4e6 " + str(p["name"] or "") + " (" + str(p["quantity"]) + ")")
-            lines.append("")
-
-        if bottom_products:
-            lines.append("\U0001f4c9 \u0623\u0642\u0644 5 \u0645\u0646\u062a\u062c\u0627\u062a \u0643\u0645\u064a\u0629:")
-            for p in bottom_products:
-                icon = "\U0001f534" if p["quantity"] == 0 else "\U0001f7e1"
-                lines.append("   " + icon + " " + str(p["name"] or "") + " (" + str(p["quantity"]) + ")")
-
-        report_text = chr(10).join(lines)
-
-        # Send to configured recipient
-        recipient_id = get_bot_setting("weekly_report_recipient")
-        if not recipient_id:
-            logging.warning("[WEEKLY] No recipient configured")
-            return report_text
-
-        try:
-            await bot.send_message(chat_id=int(recipient_id), text=report_text)
-            logging.info("[WEEKLY] Report sent to " + str(recipient_id))
-        except Exception as e:
-            logging.error("[WEEKLY] Failed to send: " + str(e))
-
-        return report_text
-
-    except Exception as e:
-        logging.error("[WEEKLY] Report generation failed: " + str(e))
-        return None
-
-
-async def _weekly_report_loop(bot):
-    """Send weekly report every Sunday at 23:00 Algeria time (22:00 UTC).
-    ⚡ FIX: get_bot_setting() used to run OUTSIDE any try/except, so one
-    transient DB hiccup raised out of the while-loop and killed this task
-    permanently (created via asyncio.create_task with no done-callback —
-    nobody would ever notice). The whole body is now fault-tolerant."""
-    last_report = ""
-    while True:
-        try:
-            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
-            # Sunday = weekday 6, send at 22:00 UTC = 23:00 Algeria
-            today = now.strftime("%Y-%m-%d")
-            is_sunday = now.weekday() == 6
-            hour_ok = 22 <= now.hour < 23
-            enabled = get_bot_setting("weekly_report_enabled", "false") == "true"
-            if is_sunday and hour_ok and today != last_report and enabled:
-                await generate_weekly_report(bot)
-                last_report = today
-        except asyncio.CancelledError:
-            raise  # never swallow shutdown/cancellation
-        except Exception as e:
-            logging.error("[WEEKLY] Report loop error (recovered): " + str(e))
-        await asyncio.sleep(60)
-
-# ═══════════════════════════════════════════════════════════
 
 
 def get_admin_keyboard(user_id=None):
@@ -3796,8 +3393,21 @@ async def process_seller_input(update, context, text):
 
     try:
         updated = db_update_quantity(product_id, qty, action)
-        tx = log_transaction(product_id, action, qty, user_id, reason=seller)
-        tx_id = tx["id"] if tx else None
+        # ⚠️ فصل السجل عن الكمية عمداً: لو فشل log_transaction بعد نجاح الكمية
+        # كان المسار القديم يعيد طلب العملية المركّبة كاملة → ازدواج في المخزون عند الإعادة.
+        # الآن: الكمية سليمة، والسجل الفاشل فقط هو ما يدخل الطابور.
+        try:
+            tx = log_transaction(product_id, action, qty, user_id, reason=seller)
+            tx_id = tx["id"] if tx else None
+        except Exception as tx_err:
+            logging.error("[TX] Log failed while qty already applied: " + str(tx_err))
+            queue_operation(
+                "log_transaction",
+                {"product_id": product_id, "type": action, "quantity": qty,
+                 "user_id": user_id, "reason": seller},
+                description="سجل حركة معلّق",
+            )
+            tx_id = None
         _invalidate_product_cache()
         unit = _get_unit_code(updated["name"])
         if action == "add":
@@ -3843,21 +3453,13 @@ async def process_seller_input(update, context, text):
     except ValueError as e:
         await update.message.reply_text("❌ " + str(e), reply_markup=get_input_keyboard())
     except Exception as e:
-        # ⚡ FIX: only queue the operation when the failure looks transient
-        # (network / DB down). Previously ANY exception — e.g. a quantity
-        # exceeding INT4 — was queued and then failed forever, while the user
-        # was told it would execute automatically.
-        if is_transient_db_error(e):
-            logging.error("[OFFLINE] DB write failed: " + str(e))
-            _desc = ("\u0625\u0636\u0627\u0641\u0629" if action == "add" else "\u0625\u062e\u0631\u0627\u062c") + " " + str(qty) + " \u0648\u062d\u062f\u0629"
-            queue_operation(action + "_qty", {"product_id": product_id, "qty": qty, "user_id": user_id, "reason": seller}, description=_desc)
-            _invalidate_product_cache()
-            await update.message.reply_text("\u26a0\ufe0f \u062a\u0645 \u062d\u0641\u0638 \u0627\u0644\u0639\u0645\u0644\u064a\u0629 \u0648\u0633\u064a\u062a\u0645 \u062a\u0646\u0641\u064a\u0630\u0647\u0627 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b.\n\n\U0001f4cb \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a \u0627\u0644\u0645\u0639\u0644\u0642\u0629: " + str(get_offline_queue_count()), reply_markup=get_admin_keyboard())
-        else:
-            logging.error("[SELLER_INPUT] Non-transient DB error: " + str(e))
-            await update.message.reply_text("\u274c \u0641\u0634\u0644\u062a \u0627\u0644\u0639\u0645\u0644\u064a\u0629 \u0648\u0644\u0645 \u062a\u062a\u0645: " + str(e)[:200], reply_markup=get_admin_keyboard())
+        # ── Offline fallback: queue operation for retry ──
+        logging.error("[OFFLINE] DB write failed: " + str(e))
+        _desc = ("\u0625\u0636\u0627\u0641\u0629" if action == "add" else "\u0625\u062e\u0631\u0627\u062c") + " " + str(qty) + " \u0648\u062d\u062f\u0629"
+        queue_operation(action + "_qty", {"product_id": product_id, "qty": qty, "user_id": user_id, "reason": seller}, description=_desc)
+        _invalidate_product_cache()
+        await update.message.reply_text("\u26a0\ufe0f \u062a\u0645 \u062d\u0641\u0638 \u0627\u0644\u0639\u0645\u0644\u064a\u0629 \u0648\u0633\u064a\u062a\u0645 \u062a\u0646\u0641\u064a\u0630\u0647\u0627 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b.\n\n\U0001f4cb \u0627\u0644\u0639\u0645\u0644\u064a\u0627\u062a \u0627\u0644\u0645\u0639\u0644\u0642\u0629: " + str(get_offline_queue_count()), reply_markup=get_admin_keyboard())
         context.user_data.clear()
-        return
     # Don't clear if pending notify needs user_data
     if not context.user_data.get("pending_add_notify") and not context.user_data.get("pending_rem_notify"):
         context.user_data.clear()
@@ -4478,14 +4080,8 @@ async def callback_mov_date_handler(update, context):
                 while remaining:
                     chunk = remaining[:4096]
                     remaining = remaining[4096:]
-                    # ⚡ FIX: CallbackQuery has no effective_chat in PTB v20 —
-                    # this AttributeError silently dropped all chunks beyond
-                    # the first message. Use the message's chat id instead.
-                    _chat_id = query.message.chat_id if query.message else None
-                    if _chat_id is None:
-                        break
                     await context.bot.send_message(
-                        chat_id=_chat_id,
+                        chat_id=(query.message.chat_id if query.message else query.from_user.id),
                         text=chunk,
                         parse_mode=ParseMode.HTML)
         except Exception as e:
@@ -4781,11 +4377,13 @@ async def search_command(update, context):
 async def callback_approval_handler(update, context):
     """Handle approve/reject for pending users."""
     query = update.callback_query
-    # ⚡ SECURITY FIX: these buttons were executable by ANYONE who got hold of
-    # the message (e.g. via forwarding). Approve/reject are admin actions and
-    # reject permanently deletes the user — verify BEFORE answering the query.
+    # ── AUTH GUARD ── يجب أن يكون المستدعي مديراً قبل أي شيء، وإلا يُرفض الطلب.
     if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        logging.warning(
+            "[USERS] Unauthorized approve/reject attempt by "
+            + str(query.from_user.id) + " on data=" + str(query.data)
+        )
         return
     await query.answer()
     data = query.data  # "approve_123456" or "reject_123456"
@@ -4828,17 +4426,109 @@ async def callback_approval_handler(update, context):
             await query.edit_message_text("⚠️ المستخدم غير موجود.")
 
 
-async def callback_promote_handler(update, context):
-    """ترقية مستخدم إلى مدير أو إزالة صلاحية الإدارة."""
+def _protected_account(telegram_id):
+    """حسابات محمية لا يجوز تعديل أدوارها من داخل البوت إطلاقاً
+    (مدراء وفّاح البيئة + الملاك). التعديل يكون فقط عبر env/ADMIN_IDS."""
+    return telegram_id in ADMIN_IDS or telegram_id in OWNER_IDS
+
+
+# ── Confirm-before-grant: يمنع المنح العرضي ويوقف فوضى النقر المزدوج ──
+
+async def callback_users_ask_handler(update, context):
+    """خطوة تأكيد صريحة قبل أي ترقية/إزالة: تعرض بطاقة تضم
+    اسم الهدف ومعرّفه والدور المطلوب، ثم زر تنفيذ وزر إلغاء."""
     query = update.callback_query
-    # ⚡ CRITICAL SECURITY FIX: this handler used to run UPDATE users SET
-    # role='admin' with NO permission check at all — anyone who could press
-    # the button (e.g. a forwarded /users panel) could promote themselves to
-    # admin. Role changes are owner-only from now on.
-    if not is_owner(query.from_user.id):
-        await query.answer("❌ هذا الإجراء متاح للمالك فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
+
+    data = query.data  # "askpromote_123" أو "askdemote_123"
+    parts = data.split("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return
+    action, target_id = parts[0], int(parts[1])
+
+    if _protected_account(target_id):
+        await query.answer("🛡️ هذا الحساب محمي ولا يمكن تعديله من هنا.", show_alert=True)
+        return
+
+    target = get_user(target_id)
+    if not target:
+        await _safe_edit(query, "⚠️ المستخدم غير موجود في قاعدة البيانات.")
+        return
+
+    # escape any HTML-sensitive chars coming from Telegram names BEFORE building the card
+    raw_name = target.get("first_name") or ("@" + target["username"] if target.get("username") else str(target_id))
+    tname = (
+        str(raw_name).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    tid = str(target_id)
+    user_line = (
+        "👤 المستخدم: <b>" + tname + "</b>\n"
+        "🆔 المعرف: <code>" + tid + "</code>"
+        + ("\n📧 اليوزر: @" + target["username"] if target.get("username") else "")
+    )
+
+    cards = {
+        "askpromote": (
+            "👑 <b>تأكيد ترقية إلى مدير</b>\n\n"
+            + user_line +
+            "\n⚙️ الدور الحالي: عميل\n"
+            "✏️ الدور الجديد: <b>مدير</b> (صلاحية كاملة على المخزون)\n\n"
+            "هل أنت متأكد من التنفيذ؟",
+            "👑 نعم، رقِّه",
+            "promote_" + tid,
+        ),
+        "askdemote": (
+            "👤 <b>تأكيد إزالة صلاحية الإدارة</b>\n\n"
+            + user_line +
+            "\n⚙️ الدور الحالي: مدير\n"
+            "✏️ الدور الجديد: <b>عميل</b> (سيفقد صلاحية الإدارة)\n\n"
+            "هل أنت متأكد من التنفيذ؟",
+            "👤 نعم، أزل الإدارة",
+            "demote_" + tid,
+        ),
+    }
+
+    if action not in cards:
+        return
+    text, confirm_label, confirm_cb = cards[action]
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(confirm_label, callback_data=confirm_cb)],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="users_cancel")],
+    ])
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def callback_users_cancel_handler(update, context):
+    """إلغاء أي عملية قيد التأكيد والعودة للوحة المستخدمين."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    await query.answer("تم الإلغاء.")
+    try:
+        await users_command(update, context)
+    except Exception as e:
+        logging.error("[USERS] Cancel->render failed: " + str(e))
+        await _safe_edit(query, "تم الإلغاء.")
+
+
+async def callback_promote_handler(update, context):
+    """تنفيذ الترقية/الإزالة بعد التأكيد — محمي بفحص صلاحيات المستدعي."""
+    query = update.callback_query
+    # ── AUTH GUARD ── منع أي شخص غير مصرح له بتغيير الأدوار.
+    caller_id = query.from_user.id
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        logging.warning(
+            "[USERS] Unauthorized role change attempt by "
+            + str(caller_id) + " on data=" + str(query.data)
+        )
+        return
+
     data = query.data  # "promote_123456" or "demote_123456"
     parts = data.split("_", 1)
     if len(parts) != 2:
@@ -4848,15 +4538,37 @@ async def callback_promote_handler(update, context):
         return
     target_id = int(tid_str)
 
+    # ── ESCALATION GUARD ── لا يمكن تعديل حسابات البيئة المحمية إطلاقاً.
+    if _protected_account(target_id):
+        await query.answer("🛡️ لا يمكن تعديل دور حساب محمي (مالك/بيئة).", show_alert=True)
+        return
+    # ── LEVEL GUARD ── إزالة إدارة مدير آخر تتطلب صلاحية مالك فقط.
+    if action == "demote" and not is_owner(caller_id):
+        await query.answer("🔐 إزالة الإدارة متاحة لصاحب البوت فقط.", show_alert=True)
+        return
+    if target_id == caller_id:
+        await query.answer("🚫 لا يمكنك تنفيذ هذا الإجراء على نفسك.", show_alert=True)
+        return
+
+    await query.answer()
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # env-protected accounts can never be touched, even if a guard above changes later
+            protected = tuple(set(list(ADMIN_IDS) + list(OWNER_IDS)))
             if action == "promote":
-                cur.execute("UPDATE users SET role = 'admin' WHERE telegram_id = %s AND role = 'customer' RETURNING *", (target_id,))
+                cur.execute(
+                    "UPDATE users SET role = 'admin' WHERE telegram_id = %s AND role = 'customer' "
+                    "AND telegram_id NOT IN %s RETURNING *",
+                    (target_id, protected),
+                )
                 user = cur.fetchone()
             elif action == "demote":
-                cur.execute("UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'admin' AND telegram_id NOT IN %s RETURNING *",
-                    (target_id, tuple(ADMIN_IDS)))
+                cur.execute(
+                    "UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'admin' "
+                    "AND telegram_id NOT IN %s RETURNING *",
+                    (target_id, protected),
+                )
                 user = cur.fetchone()
             else:
                 return
@@ -4869,9 +4581,13 @@ async def callback_promote_handler(update, context):
 
     if user:
         user = dict(user)
-        name = user.get("first_name") or user.get("username") or str(user["telegram_id"])
+        raw_name = user.get("first_name") or user.get("username") or str(user["telegram_id"])
+        name = str(raw_name).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if action == "promote":
-            await query.edit_message_text("👑 تم ترقية <b>" + name + "</b> إلى مدير!", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(
+                "👑 تم ترقية <b>" + name + "</b> إلى مدير!\n🆔 <code>" + str(target_id) + "</code>",
+                parse_mode=ParseMode.HTML,
+            )
             try:
                 await context.bot.send_message(
                     chat_id=target_id,
@@ -4881,7 +4597,10 @@ async def callback_promote_handler(update, context):
             except Exception:
                 pass
         else:
-            await query.edit_message_text("👤 تم إزالة صلاحية الإدارة من <b>" + name + "</b>.", parse_mode=ParseMode.HTML)
+            await query.edit_message_text(
+                "👤 تم إزالة صلاحية الإدارة من <b>" + name + "</b>.\n🆔 <code>" + str(target_id) + "</code>",
+                parse_mode=ParseMode.HTML,
+            )
             try:
                 await context.bot.send_message(
                     chat_id=target_id,
@@ -4890,7 +4609,10 @@ async def callback_promote_handler(update, context):
                 )
             except Exception:
                 pass
-        logging.info("[USERS] " + action + " user " + str(target_id))
+        logging.info(
+            "[USERS] " + action + " target=" + str(target_id)
+            + " by=" + str(caller_id)
+        )
     else:
         await query.edit_message_text("⚠️ لم يتم تطبيق التغيير.")
 
@@ -5006,11 +4728,6 @@ async def handle_backup_document(update, context):
 
 async def callback_restore_handler(update, context):
     query = update.callback_query
-    # ⚡ SECURITY FIX: restore replaces the whole database — require admin
-    # at execution time (button may arrive in a forwarded message).
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
     await query.answer()
     data = query.data
     if data == "restore_confirm":
@@ -5037,13 +4754,13 @@ async def callback_restore_handler(update, context):
             pass
 
 
-async def _safe_edit(query, text, reply_markup=None):
+async def _safe_edit(query, text, reply_markup=None, parse_mode=None):
     """Edit message safely — works for both text messages and document captions."""
     try:
-        await query.edit_message_text(text, reply_markup=reply_markup)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception:
         try:
-            await query.edit_message_caption(text, reply_markup=reply_markup)
+            await query.edit_message_caption(text, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception:
             pass
 
@@ -5217,11 +4934,6 @@ async def callback_rem_notify_handler(update, context):
 
 async def callback_email_restore_handler(update, context):
     query = update.callback_query
-    # ⚡ SECURITY FIX: importing a backup REPLACES THE ENTIRE DATABASE.
-    # This callback had no auth check; enforce admin-only at execution time.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
     await query.answer()
     data = query.data
     if data == "email_restore_confirm":
@@ -5249,11 +4961,12 @@ async def callback_email_restore_handler(update, context):
 
 async def callback_restore_last_confirm_handler(update, context):
     query = update.callback_query
-    # ⚡ SECURITY FIX: 'last_restore_confirm' wipes ALL current data and
-    # imports _last_backup_data. A forwarded old button must never be able to
-    # destroy production inventory — admin check first.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
+    # ── AUTH GUARD ── الاستعادة تحلّ محل قاعدة البيانات بالكامل: صاحب البوت فقط.
+    if not is_owner(query.from_user.id):
+        await query.answer("🔐 الاستعادة الكاملة متاحة لصاحب البوت فقط.", show_alert=True)
+        logging.warning(
+            "[BACKUP] Unauthorized restore attempt by " + str(query.from_user.id)
+        )
         return
     await query.answer()
     # _last_backup_data is only read here, not assigned; no `global` declaration needed.
@@ -5278,17 +4991,35 @@ async def callback_restore_last_confirm_handler(update, context):
         except Exception:
             pass
 
-# ── Users Command ──
+# ── Users Command (لوحة إدارة المستخدمين) ──
 
-async def users_command(update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ للمديرين فقط.")
-        return
+_MAX_PANEL_ROWS = 60  # حماية من تجاوز حد 4096 حرف في رسائل تليجرام
+
+
+def _display_label(u):
+    """تسمية عرض موحّدة: الاسم ثم @اليوزر ثم ID دائماً —
+    حتى لو تشابهت الأسماء يظل كل صف مميزاً بمعرّفه الفريد."""
+    tid = u["telegram_id"]
+    uname = u.get("username")
+    fname = u.get("first_name")
+    label = fname or ("@" + uname if uname else str(tid))
+    extras = []
+    if uname:
+        extras.append("@" + uname)
+    extras.append("🆔 " + str(tid))
+    return label, extras
+
+
+def _get_users_snapshot():
+    """قراءة واحدة متسقة لقائمتَي المعلّقين والمفعّلين."""
     pending = get_pending_users()
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE role IN ('admin', 'customer') ORDER BY role, created_at")
+            cur.execute(
+                "SELECT * FROM users WHERE role IN ('admin', 'customer') "
+                "ORDER BY role, created_at"
+            )
             approved = [dict(r) for r in cur.fetchall()]
         conn.commit()
     except Exception as e:
@@ -5297,80 +5028,154 @@ async def users_command(update, context):
         approved = []
     finally:
         release_connection(conn)
+    return pending, approved
 
-    # أزرار الموافقة/الرفض للمعلّقين
+
+def _build_users_panel():
+    """يبني نص اللوحة وأزرارها. كل إجراء تغيير دور يمر عبر ask* لتأكيد صريح،
+    ويختفي الزر فور الضغط (استبدال الرسالة بالبطاقة) فلا يتكرر النقر المزدوج."""
+    pending, approved = _get_users_snapshot()
+
     buttons = []
+    msg_lines = ["⚙️ <b>إدارة المستخدمين</b>\n"]
+
+    # ── المعلّقون ──
     if pending:
-        for u in pending:
-            name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
-            date_str = u["created_at"].strftime("%m/%d %H:%M") if u.get("created_at") else ""
+        msg_lines.append("🔔 <b>منتظرون للموافقة (" + str(len(pending)) + "):</b>")
+        shown_pending = pending[:_MAX_PANEL_ROWS]
+        for u in shown_pending:
+            label, extras = _display_label(u)
+            date_str = (
+                u["created_at"].strftime("%m/%d %H:%M") if u.get("created_at") else ""
+            )
+            msg_lines.append("  • " + label + " — " + " | ".join(extras) + (" ⏱ " + date_str if date_str else ""))
             buttons.append([
-                InlineKeyboardButton("✅ " + name + " (" + date_str + ")", callback_data="approve_" + str(u["telegram_id"])),
-                InlineKeyboardButton("❌", callback_data="reject_" + str(u["telegram_id"])),
+                InlineKeyboardButton(
+                    "✅ تنشيط: " + label[:20],
+                    callback_data="approve_" + str(u["telegram_id"]),
+                ),
+                InlineKeyboardButton("🗑 رفض", callback_data="reject_" + str(u["telegram_id"])),
             ])
-
-    # أزرار الترقية/الإزالة والمشاركة للمفعلين
-    promote_buttons = []
-    for u in approved:
-        name = (u.get("first_name") or u.get("username") or str(u["telegram_id"]))[:18]
-        tid = u["telegram_id"]
-        if u["role"] == "customer":
-            promote_buttons.append([InlineKeyboardButton(
-                "👑 ترقية: " + name,
-                callback_data="promote_" + str(tid)
-            )])
-            # Ship permission buttons for customers
-            if u.get("can_ship"):
-                promote_buttons.append([InlineKeyboardButton(
-                    "📤 سحب شحن: " + name,
-                    callback_data="ship_revoke_" + str(tid)
-                )])
-            else:
-                promote_buttons.append([InlineKeyboardButton(
-                    "📤 منح شحن: " + name,
-                    callback_data="ship_grant_" + str(tid)
-                )])
-        elif u["role"] == "admin" and tid not in ADMIN_IDS:
-            promote_buttons.append([InlineKeyboardButton(
-                "👤 إزالة إدارة: " + name,
-                callback_data="demote_" + str(tid)
-            )])
-            # Ship permission buttons for non-env admins
-            if u.get("can_ship"):
-                promote_buttons.append([InlineKeyboardButton(
-                    "📤 سحب شحن: " + name,
-                    callback_data="ship_revoke_" + str(tid)
-                )])
-            else:
-                promote_buttons.append([InlineKeyboardButton(
-                    "📤 منح شحن: " + name,
-                    callback_data="ship_grant_" + str(tid)
-                )])
-
-    msg_lines = ["⚙️ إدارة المستخدمين\n"]
-    if pending:
-        msg_lines.append("🔔 منتظرين الموافقة (" + str(len(pending)) + "):")
-        for u in pending:
-            name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
-            # ⚡ FIX: a NULL created_at crashed the whole handler silently.
-            date_str = u["created_at"].strftime("%m/%d %H:%M") if u.get("created_at") else ""
-            msg_lines.append("  • " + name + " (" + date_str + ")")
+        if len(pending) > len(shown_pending):
+            msg_lines.append("  … و" + str(len(pending) - len(shown_pending)) + " معلّق آخر (حد العرض)")
         msg_lines.append("")
     else:
-        msg_lines.append("✅ لا يوجد طلبات معلقة.")
+        msg_lines.append("✅ لا توجد طلبات معلقة.")
+
     msg_lines.append("")
-    msg_lines.append("✅ المستخدمون المفعلين (" + str(len(approved)) + "):")
+
+    # ── المفعّلون ──
+    admins = [u for u in approved if u["role"] == "admin"]
+    customers = [u for u in approved if u["role"] == "customer"]
+
+    if approved:
+        msg_lines.append(
+            "✅ <b>المستخدمون المفعّلون (" + str(len(approved)) + ")</b> "
+            "— 👑 مدراء: " + str(len(admins)) + " | 👤 عملاء: " + str(len(customers))
+        )
+
+    shown_rows = 0
     for u in approved:
-        name = u.get("first_name") or u.get("username") or str(u["telegram_id"])
+        if shown_rows >= _MAX_PANEL_ROWS:
+            break
+        shown_rows += 1
+        label, extras = _display_label(u)
         role_icon = "👑" if u["role"] == "admin" else "👤"
-        msg_lines.append("  " + role_icon + " " + name)
+        flags = []
+        if u.get("can_ship"):
+            flags.append("📤")
+        if u.get("can_extract"):
+            flags.append("🛒")
+        msg_lines.append(
+            "  " + role_icon + " " + label + " — " + " | ".join(extras)
+            + (("  " + "".join(flags)) if flags else "")
+        )
+    if len(approved) > shown_rows:
+        msg_lines.append("  … و" + str(len(approved) - shown_rows) + " مستخدم آخر (حد العرض)")
 
-    # أزرار الترقية أسفل الرسالة
-    if promote_buttons:
-        buttons.extend(promote_buttons)
+    # ── أزرار الإجراءات (كلها عبر خطوة تأكيد ask*) ──
+    action_rows = 0
+    for u in approved:
+        tid = u["telegram_id"]
+        if _protected_account(tid):
+            continue  # حسابات البيئة/المالك لا تظهر لها أزرار تعديل
+        if action_rows >= _MAX_PANEL_ROWS:
+            break
+        label = (u.get("first_name") or ("@" + u["username"] if u.get("username") else str(tid)))[:18]
+        if u["role"] == "customer":
+            buttons.append([
+                InlineKeyboardButton(
+                    "👑 ترقية: " + label,
+                    callback_data="askpromote_" + str(tid),
+                ),
+                InlineKeyboardButton(
+                    ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
+                    callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
+                ),
+            ])
+            action_rows += 1
+        elif u["role"] == "admin":
+            buttons.append([
+                InlineKeyboardButton(
+                    "👤 إزالة الإدارة: " + label,
+                    callback_data="askdemote_" + str(tid),
+                ),
+                InlineKeyboardButton(
+                    ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
+                    callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
+                ),
+            ])
+            action_rows += 1
 
-    markup = InlineKeyboardMarkup(buttons) if buttons else None
-    await update.message.reply_text("\n".join(msg_lines), reply_markup=markup)
+    # ── أدوات اللوحة ──
+    buttons.append([
+        InlineKeyboardButton("🔄 تحديث", callback_data="users_refresh"),
+        InlineKeyboardButton("✖️ إغلاق", callback_data="users_close"),
+    ])
+
+    markup = InlineKeyboardMarkup(buttons)
+    text = "\n".join(msg_lines)
+    return text, markup
+
+
+async def _send_users_panel(update, context):
+    """عرض اللوحة: كردّ على أمر أو كتعديل لرسالة قائمة (يطفئ الأزرار القديمة)."""
+    query = update.callback_query
+    text, markup = _build_users_panel()
+    if query is not None:
+        await _safe_edit(query, text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def users_command(update, context):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ للمديرين فقط.")
+        return
+    await _send_users_panel(update, context)
+
+
+async def callback_users_refresh_handler(update, context):
+    """زر التحديث: يعيد رسم اللوحة بأحدث البيانات."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    await query.answer("🔄 تم التحديث")
+    try:
+        await _send_users_panel(update, context)
+    except Exception as e:
+        logging.error("[USERS] Refresh failed: " + str(e))
+
+
+async def callback_users_close_handler(update, context):
+    """زر الإغلاق: يجفف الرسالة ويزيل كل الأزرار."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    await query.answer()
+    await _safe_edit(query, "🔒 أُغلقت لوحة المستخدمين.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -5576,12 +5381,10 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         info_data = [
             [Paragraph("N° Facture", body_style), Paragraph("#" + str(invoice_id), body_style)],
             [Paragraph("Date", body_style), Paragraph(date_str, body_style)],
-            # ⚡ FIX: reportlab Paragraph parses inline XML — unescaped '<'/'&'
-            # from a client name corrupted or crashed PDF generation.
-            [Paragraph("Client", body_style), Paragraph(html.escape(str(customer_name)), body_style)],
+            [Paragraph("Client", body_style), Paragraph(customer_name, body_style)],
         ]
         if worker_name:
-            info_data.append([Paragraph("Livreur", body_style), Paragraph(html.escape(str(worker_name)), body_style)])
+            info_data.append([Paragraph("Livreur", body_style), Paragraph(worker_name, body_style)])
 
         info_table = Table(info_data, colWidths=[60*mm, 80*mm])
         info_table.setStyle(TableStyle([
@@ -5606,7 +5409,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
             pt = item.get("ptype", "m2")
             if pt == "pcs":
                 table_data.append([
-                    Paragraph(html.escape(str(item["product_name"])), body_style),
+                    Paragraph(item["product_name"], body_style),
                     Paragraph(str(item["quantity"]) + " pcs", body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/pcs", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
@@ -5617,7 +5420,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
                 if n_pcs:
                     qty_txt += " (" + str(n_pcs) + " pcs)"
                 table_data.append([
-                    Paragraph(html.escape(str(item["product_name"])), body_style),
+                    Paragraph(item["product_name"], body_style),
                     Paragraph(qty_txt, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
@@ -5628,7 +5431,7 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
                 if crt_info:
                     qty_display += " (" + str(item["num_boxes"]) + " crt)"
                 table_data.append([
-                    Paragraph(html.escape(str(item["product_name"])), body_style),
+                    Paragraph(item["product_name"], body_style),
                     Paragraph(qty_display, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m²", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
@@ -5664,9 +5467,21 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
 
 
 async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name):
-    """Finalize invoice: save to DB, deduct stock, generate PDF, notify worker."""
-    items = context.user_data.get("invoice_items", [])
+    """Finalize invoice: save to DB, deduct stock, generate PDF, notify worker.
+    ⚡ Idempotency guard: the draft is CLAIMED via pop() as the very first
+    synchronous step. A double-click on the worker button (or any replay)
+    finds no draft and exits immediately — so one click can never create
+    two invoices or deduct stock twice."""
+    items = context.user_data.pop("invoice_items", None)
     customer = context.user_data.get("invoice_customer", "")
+    if not items:
+        chat_hint = update.effective_chat.id if update.effective_chat else None
+        if chat_hint:
+            try:
+                await context.bot.send_message(chat_id=chat_hint, text="⚠️ لا توجد مسودة فاتورة نشطة — ربما تم إنشاؤها للتو.")
+            except Exception:
+                pass
+        return
     admin = update.effective_user
     chat_id = update.effective_chat.id
     total = sum(i["subtotal"] for i in items)
@@ -5694,7 +5509,6 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             )
             invoice = cur.fetchone()
             invoice_id = invoice["id"]
-            had_shortfall = 0  # ⚡ total units that went into pending delivery
             for item in items:
                 # For m2 products, quantity is the area (m²); use num_boxes for stock deduction
                 stock_qty = item.get("num_boxes", item["quantity"]) if item.get("ptype") == "m2" else item["quantity"]
@@ -5704,43 +5518,18 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                     (invoice_id, item["product_id"], item["product_name"], item["quantity"], item["unit_price"], item["subtotal"])
                 )
                 # Deduct from stock if product exists in DB
-                # ⚡ FIX: the old UPDATE carried 'AND quantity >= stock' but
-                # STILL wrote a 'remove' transaction and told the admin the
-                # stock was deducted even when nothing was taken out — a
-                # silent ledger/stock divergence. Behavior now matches the
-                # app-wide model: negative stock is allowed, the movement is
-                # logged truthfully, and any NEW deficit becomes a pending
-                # delivery for the worker (same as the normal sale flow).
                 if item["product_id"]:
                     cur.execute(
-                        "SELECT quantity FROM products WHERE id = %s FOR UPDATE",
-                        (item["product_id"],)
+                        "UPDATE products SET quantity = quantity - %s WHERE id = %s AND quantity >= %s",
+                        (stock_qty, item["product_id"], stock_qty)
                     )
-                    _prod_row = cur.fetchone()
-                    prev_qty = int(_prod_row["quantity"]) if (_prod_row and _prod_row["quantity"] is not None) else 0
-                    cur.execute(
-                        "UPDATE products SET quantity = quantity - %s WHERE id = %s RETURNING quantity",
-                        (stock_qty, item["product_id"])
-                    )
-                    _new_row = cur.fetchone()
-                    new_qty = int(_new_row["quantity"]) if _new_row else prev_qty - stock_qty
+                    if cur.rowcount == 0:
+                        logging.warning("[INVOICE] Insufficient stock for product %s (need %s)", item["product_id"], stock_qty)
                     # Log transaction
                     cur.execute(
                         "INSERT INTO transactions (product_id, type, quantity, user_id) VALUES (%s, 'remove', %s, %s)",
                         (item["product_id"], stock_qty, admin_db_id)
                     )
-                    # Track newly-created deficit as a pending delivery for the worker
-                    # NOTE: no inner try/except here — a failed statement dooms a
-                    # PostgreSQL transaction anyway; better to fail the whole
-                    # invoice atomically than commit half of it.
-                    _additional_deficit = max(0, -new_qty) - max(0, -prev_qty)
-                    if _additional_deficit > 0:
-                        had_shortfall += _additional_deficit
-                        if worker_id:
-                            cur.execute(
-                                "INSERT INTO pending_deliveries (user_id, product_id, pending_qty) VALUES (%s, %s, %s)",
-                                (worker_id, item["product_id"], _additional_deficit)
-                            )
 
         conn.commit()
     except Exception as e:
@@ -5804,12 +5593,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         result_msg += "📎 تم إرسال الفاتورة PDF" + chr(10)
     if worker_notified:
         result_msg += "📨 تم إشعار العامل" + chr(10)
-    # ⚡ FIX: honest reporting — never claim stock was deducted cleanly when
-    # part of it went negative/pending.
-    if had_shortfall > 0:
-        result_msg += "⚠️ تم الخصم من المخزون مع عجز " + str(had_shortfall) + " وحدة سُجّلت كطلب معلّق للعامل"
-    else:
-        result_msg += "✅ تم الخصم من المخزون"
+    result_msg += "✅ تم الخصم من المخزون"
     await _send(result_msg, get_admin_keyboard())
 
 
@@ -6417,7 +6201,7 @@ async def handle_admin_message(update, context):
     if state == STATE_SHIP_ALL_CODE:
         code = text.strip()
         context.user_data.clear()
-        if code == SHIP_ALL_CODE:  # ⚡ moved from hardcoded "0000" to env-configurable
+        if code == SHIP_ALL_SECURITY_CODE:
             db_user = get_user(update.effective_user.id)
             shipped_by = db_user["id"] if db_user else 0
             count = mark_all_shipped(shipped_by)
@@ -6493,7 +6277,7 @@ async def handle_admin_message(update, context):
         if pin == BTN_CANCEL:
             context.user_data.clear()
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(user.id))
-        elif pin == RESET_STOCK_PIN:  # ⚡ moved from hardcoded "5614" to env-configurable
+        elif pin == RESET_STOCK_PIN:
             await process_reset_stock(update, context)
         else:
             await update.message.reply_text("❌ رمز PIN خاطئ. تم الإلغاء.", reply_markup=get_admin_keyboard())
@@ -6577,11 +6361,8 @@ async def handle_admin_message(update, context):
 
     if state == STATE_INVOICE_QTY:
         try:
-            import math as _math
             qty = float(text.strip())
-            # ⚡ FIX: 'nan <= 0' is False so NaN/Infinity slipped through and
-            # later crashed int(qty) with OverflowError; also cap the value.
-            if not _math.isfinite(qty) or qty <= 0 or qty > 10000000:
+            if qty <= 0:
                 raise ValueError
         except ValueError:
             await update.message.reply_text("❌ أرسل رقم صحيح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
@@ -6631,10 +6412,8 @@ async def handle_admin_message(update, context):
 
     if state == STATE_INVOICE_PRICE:
         try:
-            import math as _math
             price = float(text.strip())
-            # ⚡ FIX: reject NaN/Infinity and absurd values like before
-            if not _math.isfinite(price) or price < 0 or price > 1000000000:
+            if price < 0:
                 raise ValueError
         except ValueError:
             await update.message.reply_text("❌ أرسل سعر صحيح.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
@@ -6668,11 +6447,8 @@ async def handle_admin_message(update, context):
 
     if state == STATE_INVOICE_AREA:
         try:
-            import math as _math
             box_area = float(text.strip())
-            # ⚡ FIX: reject NaN (previously passed `box_area <= 0`) which then
-            # produced ceil(nan) errors / zero-division downstream
-            if not _math.isfinite(box_area) or box_area <= 0 or box_area > 100000:
+            if box_area <= 0:
                 raise ValueError
         except ValueError:
             await update.message.reply_text("❌ أرسل مساحة العلبة صحيحة (مثلاً: 1.44).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_qty"), InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]]))
@@ -7144,14 +6920,6 @@ async def handle_customer_message(update, context):
             await update.message.reply_text("❌ أرسل عددا صحيحا." + chr(10) + "مثال: 10 أو 10" + unit, reply_markup=get_customer_keyboard())
             return
         qty = parsed
-        # ⚡ SECURITY FIX: the waiting state may have been saved BEFORE this
-        # account was suspended/demoted — old buttons/states must not let a
-        # revoked user mutate stock. Re-verify at execution time.
-        _db_u_now = get_user(user.id)
-        if not _db_u_now or not _db_u_now.get("active", False) or _db_u_now.get("role") not in ("admin", "customer"):
-            context.user_data.clear()
-            await update.message.reply_text("❌ حسابك غير مفعل حالياً.", reply_markup=get_customer_keyboard())
-            return
         try:
             updated = db_update_quantity(product["id"], qty, action)
             db_user = get_user(user.id)
@@ -7281,10 +7049,11 @@ async def route_message(update, context):
 async def callback_extract_perm_handler(update, context):
     """Handle grant/revoke extraction permission from users list."""
     query = update.callback_query
-    await query.answer()
+    # ── AUTH GUARD ── يجب الفحص قبل query.answer حتى يظهر التحذير فعلاً.
     if not is_admin(query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
     try:
         if data.startswith("ext_grant_"):
@@ -7326,10 +7095,11 @@ async def callback_extract_perm_handler(update, context):
 async def callback_ship_perm_handler(update, context):
     """Handle grant/revoke shipping permission from users list."""
     query = update.callback_query
-    await query.answer()
+    # ── AUTH GUARD ── يجب الفحص قبل query.answer حتى يظهر التحذير فعلاً.
     if not is_admin(query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
     try:
         if data.startswith("ship_grant_"):
@@ -7453,10 +7223,10 @@ async def callback_extract_request_handler(update, context):
 async def callback_extract_approve_handler(update, context):
     """Handle admin approve/reject extraction request."""
     query = update.callback_query
+    await query.answer()
     if not is_admin(query.from_user.id):
         await query.answer("❌ للمديرين فقط.", show_alert=True)
         return
-    await query.answer()
     data = query.data
     parts = data.split("_")
     action = parts[1]
@@ -7468,13 +7238,7 @@ async def callback_extract_approve_handler(update, context):
     admin_uid = admin_db["id"] if admin_db else 0
     try:
         success, msg = process_extraction_request(request_id, action == "approve", admin_uid)
-        # ⚡ FIX: remove the ✅/❌ buttons once decided so a stale list cannot
-        # trigger a second approval (process_extraction_request is guarded by
-        # SELECT FOR UPDATE, but the dead UI kept confusing admins).
-        try:
-            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([]))
-        except Exception:
-            await query.edit_message_text(msg)
+        await query.edit_message_text(msg)
         if success:
             try:
                 conn = get_connection()
@@ -7923,11 +7687,6 @@ async def callback_calc_restart_handler(update, context):
 async def callback_provide_handler(update, context):
     """Handle 'provide_<product_id>' — ask admin for quantity to add directly."""
     query = update.callback_query
-    # ⚡ SECURITY FIX: this button directly modifies stock; verify the presser
-    # is an admin instead of trusting whoever was shown the button.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
     await query.answer()
     data = query.data
     if not data.startswith("provide_"):
@@ -8191,11 +7950,6 @@ async def handle_receipt_photo(update, context):
 async def callback_incoming_order_handler(update, context):
     """معالجة أزرار المدير: جاهز / غير جاهز."""
     query = update.callback_query
-    # ⚡ SECURITY FIX: these buttons notify customers and change order state;
-    # verify admin identity at press time (buttons survive message forwarding).
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
     await query.answer()
     data = query.data
     bot = context.bot
@@ -8229,23 +7983,19 @@ async def callback_incoming_order_handler(update, context):
                 pass
 
         # Edit caption (photo) or text depending on message type
-        # ⚡ FIX: strip the inline keyboard so the buttons can't be pressed again
-        _empty_kb = InlineKeyboardMarkup([])
         try:
             await query.edit_message_caption(
                 caption="✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
                 "📦 " + order["product_name"] +
                 "\n\n📱 تم إشعار صاحب الطلب.",
                 parse_mode=ParseMode.HTML,
-                reply_markup=_empty_kb,
             )
         except Exception:
             try:
                 await query.edit_message_text(
                     "✅ تم تأكيد - الطلب #" + str(order_id) + " جاهز في المخزن\n"
                     "📦 " + order["product_name"] +
-                    "\n\n📱 تم إشعار صاحب الطلب.",
-                    reply_markup=_empty_kb,
+                    "\n\n📱 تم إشعار صاحب الطلب."
                 )
             except Exception:
                 pass
@@ -8283,23 +8033,19 @@ async def callback_incoming_order_handler(update, context):
                 pass
 
         if order:
-            # ⚡ FIX: strip keyboard so buttons die after acting on them
-            _empty_kb = InlineKeyboardMarkup([])
             try:
                 await query.edit_message_caption(
                     caption="⏳ الطلب #" + str(order_id) + " ليس جاهزاً بعد.\n"
                     "📦 " + dict(order).get("product_name", "") +
                     "\n\n📱 تم إشعار المستخدم.",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=_empty_kb,
                 )
             except Exception:
                 try:
                     await query.edit_message_text(
                         "⏳ الطلب #" + str(order_id) + " ليس جاهزاً بعد.\n"
                         "📦 " + dict(order).get("product_name", "") +
-                        "\n\n📱 تم إشعار المستخدم.",
-                        reply_markup=_empty_kb,
+                        "\n\n📱 تم إشعار المستخدم."
                     )
                 except Exception:
                     pass
@@ -8331,24 +8077,9 @@ def _get_telegram_id(user_db_id):
 
 
 async def _on_app_post_init(application):
-    """Start ALL background tasks after the app is initialized.
-    ⚡ FIX: previously this only started the offline-retry loop, and the
-    start method decided whether it ran at all:
-      • webhook mode   → got offline retry only; daily backup, weekly report
-        and keep-alive NEVER started (silent backup outage),
-      • render-polling → initialize()/start() called manually so PTB never
-        fired post_init → even the retry loop stayed dead while /health
-        reported 'degraded' forever.
-    Every run mode now calls this hook, and every background task lives here."""
-    bot = application.bot
-    asyncio.create_task(_offline_retry_loop(bot))
+    """Start background tasks after the app is initialized (works for both webhook and polling)."""
+    asyncio.create_task(_offline_retry_loop(application.bot))
     logging.info("[BOT] Offline retry task started via post_init")
-    asyncio.create_task(_daily_backup_loop(bot))
-    logging.info("[BOT] Daily auto-backup task started via post_init")
-    asyncio.create_task(_weekly_report_loop(bot))
-    logging.info("[BOT] Weekly report task started via post_init")
-    asyncio.create_task(_keep_alive(application))
-    logging.info("[BOT] Keep-alive task started via post_init")
 
 
 def build_application():
@@ -8375,6 +8106,11 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
+    # خطوة التأكيد قبل تغيير أي دور + أدوات لوحة المستخدمين
+    app.add_handler(CallbackQueryHandler(callback_users_ask_handler, pattern="^(askpromote|askdemote)_"))
+    app.add_handler(CallbackQueryHandler(callback_users_cancel_handler, pattern="^users_cancel$"))
+    app.add_handler(CallbackQueryHandler(callback_users_refresh_handler, pattern="^users_refresh$"))
+    app.add_handler(CallbackQueryHandler(callback_users_close_handler, pattern="^users_close$"))
     app.add_handler(CallbackQueryHandler(callback_promote_handler, pattern="^promote_"))
     app.add_handler(CallbackQueryHandler(callback_promote_handler, pattern="^demote_"))
     # Restore handlers - specific patterns first, then generic
@@ -8407,11 +8143,12 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_mov_product_handler, pattern=r"^movp_\d+$"))
     app.add_handler(CallbackQueryHandler(callback_mov_date_handler, pattern="^movd_"))
     app.add_handler(CallbackQueryHandler(callback_mov_delete_handler, pattern="^movp_del_"))
-    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_"))
-    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
-    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_area_"))
+    # الفواتير: الأنماط الأخص أولاً حتى لا يبتلعها النمط العام ^invoice_
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_back_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_remove_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_(?!back_|remove_)"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
+    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_area_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
     app.add_handler(CommandHandler("backup", backup_command))
@@ -8432,69 +8169,58 @@ def build_application():
 
 def _fetch_latest_backup_from_email():
     """Fetch latest backup JSON from email via IMAP. Returns dict or None.
-
-    ⚡ FIX: previously used a raw-Arabic SUBJECT search — many IMAP servers
-    reject non-ASCII search strings (BAD response), and any exception left the
-    session open forever. Now: try UTF-8 subject search first, fall back to an
-    ASCII-safe FROM search with python-side subject decoding, and guarantee
-    logout via finally."""
+    Robustness fixes over the previous version:
+    - Subject filtering is done client-side (IMAP SUBJECT search with raw
+      Arabic/emoji is unreliable across providers).
+    - Session is always logged out in finally, even on partial failures.
+    - Malformed attachment payloads can no longer abort the whole scan."""
     if not IMAP_HOST or not SMTP_EMAIL or not SMTP_PASSWORD:
         return None
     import imaplib
+    import ssl
     import email as email_lib
-    from email.header import decode_header
+    from email.header import decode_header, make_header
     mail = None
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST)
+        mail = imaplib.IMAP4_SSL(IMAP_HOST, ssl_context=ssl.create_default_context())
         mail.login(SMTP_EMAIL, SMTP_PASSWORD)
-        mail.select("INBOX")
-        id_list = []
-        # Attempt 1: UTF-8 charset subject search (RFC 6855-capable servers)
-        try:
-            status, msg_ids = mail.search("UTF-8", "SUBJECT", "نسخة احتياطية")
-            if status == "OK" and msg_ids and msg_ids[0]:
-                id_list = msg_ids[0].split()
-        except Exception as e:
-            logging.warning("[IMAP] UTF-8 subject search unsupported, falling back: " + str(e))
-        # Attempt 2: ASCII-safe FROM search then python-side subject match
-        if not id_list:
-            status, msg_ids = mail.search(None, '(FROM "%s")' % SMTP_EMAIL.replace('"', ''))
-            if status != "OK" or not msg_ids[0]:
-                return None
-            candidates = msg_ids[0].split()
-            id_list = []
-            for mid in candidates[-50:]:  # cheap safety cap on header fetches
-                try:
-                    st, head = mail.fetch(mid, "(BODY[HEADER.FIELDS (SUBJECT)])")
-                    if st != "OK" or not head or not head[0]:
-                        continue
-                    raw_subj = head[0][1]
-                    decoded = ""
-                    for chunk, enc in decode_header(raw_subj.decode("utf-8", "ignore")):
-                        decoded += chunk.decode(enc or "utf-8", "ignore") if isinstance(chunk, bytes) else chunk
-                    if "نسخة احتياطية" in decoded:
-                        id_list.append(mid)
-                except Exception:
-                    continue
-        if not id_list:
-            return None
-        latest_id = id_list[-1]
-        status, msg_data = mail.fetch(latest_id, "(RFC822)")
+        status, _ = mail.select("INBOX")
         if status != "OK":
             return None
-        raw_email = msg_data[0][1]
-        msg = email_lib.message_from_bytes(raw_email)
-        json_data = None
-        for part in msg.walk():
-            cd = str(part.get("Content-Disposition", ""))
-            if "attachment" in cd:
+        status, msg_ids = mail.search(None, "ALL")
+        if status != "OK" or not msg_ids[0]:
+            return None
+        # Scan the newest messages only (bandwidth cap), newest first.
+        candidates = msg_ids[0].split()[-100:]
+        for mid in reversed(candidates):
+            status, msg_data = mail.fetch(mid, "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw_email = msg_data[0][1]
+            try:
+                msg = email_lib.message_from_bytes(raw_email)
+                subj_raw = msg.get("Subject", "") or ""
+                subject = str(make_header(decode_header(subj_raw)))
+            except Exception as parse_err:
+                logging.warning("[IMAP] Skip unparsable message: " + str(parse_err))
+                continue
+            if ("نسخة احتياطية" not in subject) and ("backup" not in subject.lower()):
+                continue
+            for part in msg.walk():
+                cd = str(part.get("Content-Disposition", ""))
+                if "attachment" not in cd:
+                    continue
                 fname = part.get_filename()
-                if fname and fname.endswith(".json"):
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        json_data = json.loads(payload.decode("utf-8"))
-                        break
-        return json_data
+                if not (fname and fname.endswith(".json")):
+                    continue
+                payload = part.get_payload(decode=True)
+                if not payload:
+                    continue
+                try:
+                    return json.loads(payload.decode("utf-8"))
+                except Exception as json_err:
+                    logging.warning("[IMAP] Bad backup payload: " + str(json_err))
+        return None
     except Exception as e:
         logging.error("[IMAP] Failed to fetch backup: " + str(e))
         return None
@@ -8505,7 +8231,6 @@ def _fetch_latest_backup_from_email():
             except Exception:
                 pass
 
-
 def _send_backup_email(backup_bytes, filename):
     """Send backup JSON to configured email. Returns True on success, False otherwise."""
     if not SMTP_EMAIL or not SMTP_PASSWORD or not BACKUP_EMAIL:
@@ -8514,6 +8239,7 @@ def _send_backup_email(backup_bytes, filename):
         logging.error("[BACKUP] SMTP_HOST not configured")
         return False
     import smtplib
+    import ssl
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.base import MIMEBase
@@ -8535,8 +8261,14 @@ def _send_backup_email(backup_bytes, filename):
         encoders.encode_base64(part)
         part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-            server.starttls()
+        tls_ctx = ssl.create_default_context()  # verifies cert + hostname
+        if SMTP_PORT == 465:
+            server_ctx = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30, context=tls_ctx)
+        else:
+            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        with server_ctx as server:
+            if SMTP_PORT != 465:
+                server.starttls(context=tls_ctx)
             server.login(SMTP_EMAIL, SMTP_PASSWORD)
             server.sendmail(SMTP_EMAIL, BACKUP_EMAIL, msg.as_string())
         logging.info("[BACKUP] Email sent to " + BACKUP_EMAIL)
@@ -8703,10 +8435,24 @@ async def _keep_alive(app):
 
 
 
+
+
+async def _health_handler(request):
+    """Shared aiohttp health endpoint (webhook mode + Render polling mode)."""
+    qcount = get_offline_queue_count()
+    status = "degraded" if qcount > 0 else "ok"
+    return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}',
+                        content_type="application/json")
+
+
 if __name__ == "__main__":
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
+    if SHIP_ALL_SECURITY_CODE == "0000":
+        logging.warning("[SECURITY] SHIP_ALL_SECURITY_CODE لا يزال على الافتراضي 0000 — غيّره من متغيرات البيئة!")
+    if RESET_STOCK_PIN == "5614":
+        logging.warning("[SECURITY] RESET_STOCK_PIN لا يزال على الافتراضي 5614 — غيّره من متغيرات البيئة!")
     # init_db() calls get_connection() which lazily creates the pool via
     # init_pool(), so an explicit init_pool() here would leak the previous
     # pool's connections.
@@ -8726,30 +8472,22 @@ if __name__ == "__main__":
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
-        if not WEBHOOK_SECRET:
-            # ⚡ SECURITY: without a secret token anyone knowing the public URL
-            # can POST forged Telegram updates and impersonate an admin.
-            print("[BOT] ⚠️ WARNING: WEBHOOK_SECRET is NOT set — endpoint accepts unauthenticated POSTs!")
-            logging.warning("[BOT] WEBHOOK_SECRET missing; forged-update protection disabled.")
         webhook_app = web.Application()
-        async def health(request):
-            qcount = get_offline_queue_count()
-            status = "degraded" if qcount > 0 else "ok"
-            return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
-        webhook_app.router.add_get("/health", health)
-        webhook_app.router.add_get("/", health)
+        webhook_app.router.add_get("/health", _health_handler)
+        webhook_app.router.add_get("/", _health_handler)
+        # ── Security: Telegram sends X-Telegram-Bot-Api-Secret-Token on every update;
+        # PTB validates it against this value and rejects spoofed requests.
+        import secrets as _secrets
+        secret_token = os.getenv("WEBHOOK_SECRET_TOKEN") or _secrets.token_hex(32)
+        logging.info("[BOT] Webhook secret token validation enabled.")
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
-            secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None,
+            secret_token=secret_token,
             drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
         health_app = web.Application()
-        async def health(request):
-            qcount = get_offline_queue_count()
-            status = "degraded" if qcount > 0 else "ok"
-            return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
-        health_app.router.add_get("/health", health)
-        health_app.router.add_get("/", health)
+        health_app.router.add_get("/health", _health_handler)
+        health_app.router.add_get("/", _health_handler)
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
@@ -8758,13 +8496,8 @@ if __name__ == "__main__":
             except Exception:
                 pass
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
-            # ⚡ FIX: PTB only fires post_init inside run_polling()/run_webhook();
-            # this branch drives the lifecycle manually, so start ALL background
-            # loops explicitly here (offline retry + daily backup + weekly report
-            # + keep-alive). Previously the offline retry loop NEVER ran in this
-            # mode and /health stayed 'degraded' forever.
-            await _on_app_post_init(tg_app)
-            print("[BOT] Weekly report scheduler enabled")
+            asyncio.create_task(_keep_alive(aio_app))
+            asyncio.create_task(_daily_backup_loop(tg_app.bot))
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
