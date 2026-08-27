@@ -119,6 +119,45 @@ def set_ship_permission(telegram_id, allowed):
         release_connection(conn)
 
 
+def can_unshipped(telegram_id):
+    """Check if user has unshipped-view permission.
+
+    صلاحية الاطلاع على السلع غير المشحونة: تُمنح لكل مستخدم على حدة
+    من لوحة المستخدمين. المدراء لا يحتاجونها لأن قائمة الإدارة تتيحها دائماً."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT can_unshipped FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return bool(row and row["can_unshipped"])
+    except Exception as e:
+        conn.rollback()
+        logging.error("[DB] can_unshipped check failed: " + str(e), exc_info=True)
+        return False
+    finally:
+        release_connection(conn)
+
+
+def set_unshipped_permission(telegram_id, allowed):
+    """Grant or revoke unshipped-view permission."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET can_unshipped = %s WHERE telegram_id = %s RETURNING id",
+                (allowed, telegram_id),
+            )
+            updated = cur.fetchone() is not None
+        conn.commit()
+        return updated
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def create_extraction_request(product_id, quantity, requester_id):
     """Create a new extraction request (status: pending)."""
     conn = get_connection()
@@ -229,6 +268,7 @@ IMAP_HOST = os.getenv("IMAP_HOST", "")  # e.g. imap.gmail.com
 BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID", "")  # Telegram channel ID for backup files (e.g. "-1001234567890")
 
 _last_backup_data = None  # keeps latest backup dict in memory
+_startup_restore_notice = None  # رسالة استعادة تلقائية عند الإقلاع تُرسل للمدراء بعد تشغيل البوت
 
 
 _raw_admin_ids = os.getenv("ADMIN_IDS", "")
@@ -365,7 +405,7 @@ def _emergency_full_backup(url):
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, first_name, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_unshipped, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -457,13 +497,33 @@ def _switch_to_next_db(reason="connection failure"):
                 _pool = None
                 init_pool(candidate_url)
                 logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
-                # Step 4: Import backup into new DB
+                # Step 4: Import backup into new DB — فقط إذا كانت القاعدة الهدف فارغة.
+                # الحماية: مع قاعدة واحدة قد ينقطع الاتصال عابراً ثم يعود وفيه بيانات
+                # أحدث من آخر نسخة — استيرادها هنا كان سيمحو العمليات الجديدة.
+                # القاعدة الفارغة فعلاً (ضياع بيانات حقيقي أو قاعدة احتياطية جديدة)
+                # تُستعاد فيها النسخة تلقائياً كما هو مقصود.
                 if backup_data and len(backup_data.get("products", [])) > 0:
+                    target_empty = True
                     try:
-                        db_import_backup(backup_data)
-                        logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1))
+                        chk = get_connection()
+                        try:
+                            with chk.cursor() as cur:
+                                cur.execute("SELECT COUNT(*) FROM products")
+                                target_empty = (cur.fetchone()[0] == 0)
+                            chk.commit()
+                        finally:
+                            release_connection(chk)
                     except Exception as e:
-                        logging.error("[DB] Failed to restore backup into new DB: " + str(e))
+                        logging.error("[DB] Empty-check on target DB failed: " + str(e))
+                        target_empty = False  # آمن: عند الشك لا تستورد شيئاً
+                    if target_empty:
+                        try:
+                            db_import_backup(backup_data)
+                            logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1) + " (كانت فارغة — استعادة تلقائية)")
+                        except Exception as e:
+                            logging.error("[DB] Failed to restore backup into new DB: " + str(e))
+                    else:
+                        logging.info("[DB] Skipped auto-restore: DB #" + str(candidate_index + 1) + " تحتوي بيانات بالفعل — حماية من المحو")
                 return True
 
         logging.error("[DB] ALL " + str(n) + " databases are unreachable!")
@@ -828,6 +888,7 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
     can_ship         BOOLEAN NOT NULL DEFAULT FALSE,
+    can_unshipped     BOOLEAN NOT NULL DEFAULT FALSE,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -967,6 +1028,11 @@ def init_db():
                 -- Migration: add can_ship column
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_ship BOOLEAN NOT NULL DEFAULT FALSE;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                -- Migration: add can_unshipped column (صلاحية الاطلاع على السلع غير المشحونة)
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_unshipped BOOLEAN NOT NULL DEFAULT FALSE;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
                 -- Migration: add first_name column for auto-update display names
@@ -1556,7 +1622,7 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, first_name, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_unshipped, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -1629,11 +1695,12 @@ def db_import_backup(data):
                         u.get("created_at"),
                         u.get("can_extract", False),
                         u.get("can_ship", False),
+                        u.get("can_unshipped", False),
                         u.get("first_name"),
                     ))
                 cur.executemany("""
-                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_ship, first_name)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_ship, can_unshipped, first_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (telegram_id) DO NOTHING
                 """, rows)
                 max_uid = max(u["id"] for u in users)
@@ -3172,19 +3239,22 @@ def get_seller_keyboard():
 
 
 
-def get_customer_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            [BTN_CUST_ADD, BTN_CUST_REMOVE],
-            [BTN_CUST_ORDER],
-            [BTN_CUST_MY_ORDERS, BTN_CUST_PENDING],
-            [BTN_CUST_ALERT],
-            [BTN_CUST_MOVEMENTS],
-            [BTN_UNSHIPPED],
-            [BTN_CUST_CANCEL],
-        ],
-        resize_keyboard=True,
-    )
+def get_customer_keyboard(telegram_id=None):
+    """لوحة العميل.
+
+    عند تمرير telegram_id تُخفى زر «غير المشحونة» عن غير المصرّح لهم
+    (can_unshipped). عند عدم التمرير يبقى السلوك القديم كما هو."""
+    rows = [
+        [BTN_CUST_ADD, BTN_CUST_REMOVE],
+        [BTN_CUST_ORDER],
+        [BTN_CUST_MY_ORDERS, BTN_CUST_PENDING],
+        [BTN_CUST_ALERT],
+        [BTN_CUST_MOVEMENTS],
+        [BTN_CUST_CANCEL],
+    ]
+    if telegram_id is None or is_admin(telegram_id) or can_unshipped(telegram_id):
+        rows.insert(-1, [BTN_UNSHIPPED])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
@@ -4326,7 +4396,7 @@ async def start_command(update, context):
         else:
             await update.message.reply_text(
                 "👋 مرحباً <b>" + name + "</b>\n\n⌛ بحث عن المنتجات المتاحة\n📁 استخدم الأزرار أدناه.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
-                reply_markup=get_customer_keyboard(),
+                reply_markup=get_customer_keyboard(user.id),
                 parse_mode=ParseMode.HTML,
             )
     context.user_data.clear()
@@ -5086,6 +5156,8 @@ def _build_users_panel():
             flags.append("📤")
         if u.get("can_extract"):
             flags.append("🛒")
+        if u.get("can_unshipped"):
+            flags.append("📋")
         msg_lines.append(
             "  " + role_icon + " " + label + " — " + " | ".join(extras)
             + (("  " + "".join(flags)) if flags else "")
@@ -5113,7 +5185,13 @@ def _build_users_panel():
                     callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
                 ),
             ])
-            action_rows += 1
+            buttons.append([
+                InlineKeyboardButton(
+                    ("📋 سحب غير المشحونة" if u.get("can_unshipped") else "📋 منح غير المشحونة") + ": " + label,
+                    callback_data=("uns_revoke_" if u.get("can_unshipped") else "uns_grant_") + str(tid),
+                ),
+            ])
+            action_rows += 2
         elif u["role"] == "admin":
             buttons.append([
                 InlineKeyboardButton(
@@ -5125,7 +5203,13 @@ def _build_users_panel():
                     callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
                 ),
             ])
-            action_rows += 1
+            buttons.append([
+                InlineKeyboardButton(
+                    ("📋 سحب غير المشحونة" if u.get("can_unshipped") else "📋 منح غير المشحونة") + ": " + label,
+                    callback_data=("uns_revoke_" if u.get("can_unshipped") else "uns_grant_") + str(tid),
+                ),
+            ])
+            action_rows += 2
 
     # ── أدوات اللوحة ──
     buttons.append([
@@ -6828,6 +6912,15 @@ async def handle_customer_message(update, context):
             return
 
         if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
+            # ── PERM GUARD ── صلاحية «غير المشحونة» لكل مستخدم على حدة:
+            # حتى لو كتب الزر يدوياً لا يرى أي بيانات دون إذن المدير.
+            if not (is_admin(user.id) or can_unshipped(user.id)):
+                await update.message.reply_text(
+                    "❌ لا تملك صلاحية الاطلاع على السلع غير المشحونة.\n"
+                    "تواصل مع المدير لمنحك هذه الصلاحية.",
+                    reply_markup=get_customer_keyboard(user.id),
+                )
+                return
             ship_view = can_ship(update.effective_user.id)
             await _show_unshipped_sales(update, context, admin_view=ship_view)
             return
@@ -7131,6 +7224,51 @@ async def callback_ship_perm_handler(update, context):
                 logging.error("[SHIP_PERM] Notify user failed: " + str(e))
     except Exception as e:
         logging.error("[SHIP_PERM] Error: " + str(e))
+        try:
+            await query.edit_message_text("❌ خطأ: " + str(e))
+        except Exception:
+            pass
+
+
+async def callback_unshipped_perm_handler(update, context):
+    """منح/سحب صلاحية الاطلاع على السلع غير المشحونة من لوحة المستخدمين."""
+    query = update.callback_query
+    # ── AUTH GUARD ── يجب الفحص قبل query.answer حتى يظهر التحذير فعلاً.
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ للمديرين فقط.", show_alert=True)
+        return
+    await query.answer()
+    data = query.data
+    try:
+        if data.startswith("uns_grant_"):
+            tid = int(data.split("_")[2])
+            set_unshipped_permission(tid, True)
+            db_u = get_user(tid)
+            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
+            await query.edit_message_text("✅ تم منح صلاحية «غير المشحونة» لـ " + uname)
+            try:
+                await context.bot.send_message(
+                    chat_id=tid,
+                    text="📋 تم منحك صلاحية الاطلاع على السلع غير المشحونة."
+                          "\nستجد زر «غير المشحونة» في قائمتك الرئيسية.",
+                )
+            except Exception as e:
+                logging.error("[UNS_PERM] Notify user failed: " + str(e))
+        elif data.startswith("uns_revoke_"):
+            tid = int(data.split("_")[2])
+            set_unshipped_permission(tid, False)
+            db_u = get_user(tid)
+            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
+            await query.edit_message_text("❌ تم سحب صلاحية «غير المشحونة» من " + uname)
+            try:
+                await context.bot.send_message(
+                    chat_id=tid,
+                    text="❌ تم سحب صلاحية الاطلاع على السلع غير المشحونة.",
+                )
+            except Exception as e:
+                logging.error("[UNS_PERM] Notify user failed: " + str(e))
+    except Exception as e:
+        logging.error("[UNS_PERM] Error: " + str(e))
         try:
             await query.edit_message_text("❌ خطأ: " + str(e))
         except Exception:
@@ -8129,6 +8267,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_ship_cancel_handler, pattern="^ship_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_grant_"))
     app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_revoke_"))
+    app.add_handler(CallbackQueryHandler(callback_unshipped_perm_handler, pattern="^uns_grant_"))
+    app.add_handler(CallbackQueryHandler(callback_unshipped_perm_handler, pattern="^uns_revoke_"))
     app.add_handler(CallbackQueryHandler(callback_ship_handler, pattern="^ship(_|all)"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
@@ -8379,23 +8519,63 @@ async def _daily_backup(bot, label="auto"):
     return result
 
 
-async def _daily_backup_loop(bot):
-    """Run scheduled backups at midnight AND noon (Algeria time).
-    Window is the full hour to be resilient to short outages.
+# ═══════════════════════════════════════════════════════════
+#  DAILY AUTO-BACKUP SCHEDULE (نسخة واحدة يومياً)
+# ═══════════════════════════════════════════════════════════
+
+def _try_claim_auto_backup(slot_key):
+    """احتكار فتحة النسخة التلقائية ذرياً عبر قاعدة البيانات.
+
+    تكتب العلامة في bot_settings بـ INSERT ... ON CONFLICT DO UPDATE ...
+    WHERE value <> جديد، وترجع True فقط للعملية التي كسبت المطالبة.
+    هكذا لا تُرسل النسخة مرتين حتى لو أُعيد تشغيل البوت داخل الساعة نفسها
+    أو تشغّل أكثر من نسخة على Render — لأن آخر موعد ناجح محفوظ في DB
+    وليس في الذاكرة.
     """
-    # Track last backup per slot to avoid duplicates: "2026-08-25_midnight" / "2026-08-25_noon"
-    last_slots = {"midnight": "", "noon": ""}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_settings (key, value) VALUES (%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value "
+                "WHERE bot_settings.value <> EXCLUDED.value "
+                "RETURNING key",
+                ("auto_backup_slot", slot_key),
+            )
+            won = cur.fetchone() is not None
+        conn.commit()
+        return won
+    except Exception as e:
+        conn.rollback()
+        logging.error("[BACKUP] Claim slot failed: " + str(e), exc_info=True)
+        return False  # آمن: لا ترسل إلا والمطالبة حاسمة
+
+
+async def _daily_backup_loop(bot):
+    """نسخة احتياطية تلقائية واحدة كل يوم الساعة 17:00 (توقيت الجزائر).
+
+    - الموعد قابل للتغيير من متغير البيئة AUTO_BACKUP_HOUR (0-23).
+    - النافذة كامل الساعة لمقاومة الانقطاعات القصيرة.
+    - منع التكرار نهائي عبر _try_claim_auto_backup: العلامة محفوظة في
+      قاعدة البيانات ("2026-08-27_17") فلا يعيد إعادة التشغيل إرسالها.
+    """
+    try:
+        backup_hour = int(os.getenv("AUTO_BACKUP_HOUR", "").strip() or 17)
+    except ValueError:
+        backup_hour = 17
+    if not (0 <= backup_hour <= 23):
+        backup_hour = 17
+    logging.info("[BACKUP] Daily auto-backup scheduled at %02d:00 Algeria time", backup_hour)
     while True:
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
-        today = now.strftime("%Y-%m-%d")
-        # Midnight slot: hour == 0 (Algeria time)
-        # Noon slot: hour == 12
-        for hour, slot_name in [(0, "midnight"), (12, "noon")]:
-            slot_key = today + "_" + slot_name
-            if now.hour == hour and last_slots[slot_name] != slot_key:
-                logging.info("[BACKUP] Starting " + slot_name + " scheduled backup...")
-                await _daily_backup(bot, label=slot_name)
-                last_slots[slot_name] = slot_key
+        try:
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
+            if now.hour == backup_hour:
+                slot_key = now.strftime("%Y-%m-%d") + "_%02d" % backup_hour
+                if _try_claim_auto_backup(slot_key):
+                    logging.info("[BACKUP] Starting scheduled daily backup (%02d:00)...", backup_hour)
+                    await _daily_backup(bot, label="daily")
+        except Exception as e:
+            logging.error("[BACKUP] Loop error: " + str(e))
         await asyncio.sleep(60)
 
 
@@ -8465,6 +8645,39 @@ if __name__ == "__main__":
         _loaded = _load_backup_from_disk()
         if _loaded:
             _last_backup_data = _loaded
+    # ── استعادة تلقائية عند الإقلاع: قاعدة فارغة + نسخة متاحة = ضياع حقيقي ──
+    # تغطي أيضاً حالة الحذف اليدوي: إن وجد البوت القاعدة فارغة تماماً (0 سلعة)
+    # ووجد نسخة محفوظة (ذاكرة/قرص) أعادها فوراً دون تدخل، وأشعار المدراء بعد الإقلاع.
+    try:
+        _conn = get_connection()
+        _empty_db = False
+        try:
+            with _conn.cursor() as _cur:
+                _cur.execute("SELECT COUNT(*) FROM products")
+                _empty_db = (_cur.fetchone()[0] == 0)
+            _conn.commit()
+        finally:
+            release_connection(_conn)
+        if _empty_db:
+            _src = _last_backup_data
+            if _src and len(_src.get("products", [])) > 0:
+                _summary = db_import_backup(_src)
+                _bdate = str(_src.get("date", "?"))[:16]
+                _nprod = len(_src.get("products", []))
+                _ntx = len(_src.get("transactions", []))
+                _startup_restore_notice = (
+                    "♻️ استعادة تلقائية عند إقلاع البوت\n\n"
+                    "كانت قاعدة البيانات فارغة، فاستُعيدت آخر نسخة احتياطية:\n"
+                    "📦 السلع: " + str(_nprod) + "\n"
+                    "📜 العمليات: " + str(_ntx) + "\n"
+                    "📅 تاريخ النسخة: " + _bdate + "\n\n"
+                    "إن لم تتوقع هذه الاستعادة راجع النسخ الاحتياطية فوراً."
+                )
+                logging.info("[STARTUP] Auto-restored backup into empty DB (" + str(_nprod) + " products): " + str(_summary)[:150])
+            else:
+                logging.info("[STARTUP] DB is empty and no usable backup found — starting fresh.")
+    except Exception as e:
+        logging.error("[STARTUP] Auto-restore check failed: " + str(e))
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
@@ -8489,16 +8702,25 @@ if __name__ == "__main__":
         health_app.router.add_get("/health", _health_handler)
         health_app.router.add_get("/", _health_handler)
         async def on_startup(aio_app):
+            global _startup_restore_notice
             await tg_app.initialize()
             await tg_app.start()
             try:
                 await tg_app.bot.delete_webhook(drop_pending_updates=True)
             except Exception:
                 pass
+            # إشعار المدراء بنتيجة الاستعادة التلقائية عند الإقلاع (إن حدثت)
+            if _startup_restore_notice:
+                for _aid in ADMIN_IDS:
+                    try:
+                        await tg_app.bot.send_message(chat_id=_aid, text=_startup_restore_notice)
+                    except Exception:
+                        pass
+                _startup_restore_notice = None
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
-            print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
+            print("[BOT] Daily auto-backup enabled (17:00 Algeria time, once per day)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
             await tg_app.updater.stop()
