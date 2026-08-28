@@ -5213,7 +5213,159 @@ async def callback_product_action_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════
+#  تنظيف الشاشة التلقائي — AUTO SCREEN SWEEP
+#  عند الضغط على "القائمة الرئيسية" (admin_done) أو "تحديث
+#  الواجهة" (go_start) أو إرسال /start تُحذف كل رسائل المهمة
+#  السابقة (رسائل البوت + رسائل المستخدم) لئلا تمتلئ الشاشة.
+#  ملاحظات:
+#  - الفواتير (المستندات) تبقى ظاهرة عمداً: send_document غير متتبع.
+#  - تيليجرام يمنع حذف الرسائل الأقدم من 48 ساعة → تُتجاهل بصمت.
+#  - التنظيف يعمل في الخاص فقط (المجموعات تحتاج صلاحيات إدارة).
+# ═══════════════════════════════════════════════════════════
+from collections import deque as _sweep_deque
+
+_SWEEP_BOT_MSGS = {}                    # chat_id -> deque معرّفات رسائل البوت الصادرة
+_SWEEP_USER_KEY = "_sweep_user_msgs"    # مفتاح chat_data: معرّفات رسائل المستخدم
+_SWEEP_MAX_TRACKED = 160                # سقف الذاكرة لكل محادثة
+
+# الدوال المغلَّفة للتتبع — send_document مستثناة عمداً لتبقى الفواتير ظاهرة
+_SWEEP_TRACK_METHODS = (
+    "send_message", "send_photo", "send_animation", "send_video",
+    "send_audio", "send_voice", "send_media_group", "copy_message",
+)
+
+
+def _sweep_track(chat_id, message_id):
+    """تسجيل رسالة أرسلها البوت كي يمكن حذفها لاحقاً عند تنظيف الشاشة."""
+    try:
+        if chat_id is None or message_id is None:
+            return
+        dq = _SWEEP_BOT_MSGS.setdefault(
+            int(chat_id), _sweep_deque(maxlen=_SWEEP_MAX_TRACKED)
+        )
+        dq.append(int(message_id))
+    except Exception:
+        pass
+
+
+def _install_sweep_tracking(bot):
+    """تغليف دوال الإرسال في كائن البوت: كل رسالة صادرة تُسجَّل تلقائياً.
+
+    يعمل مع كل طرق الإرسال (send_message/send_photo/...) بما فيها
+    الاختصارات مثل message.reply_text لأنها تستدعي bot.send_message داخلياً.
+    """
+    class _TrackedSend:
+        """غلاف قابل للاستدعاء: يستدعي الدالة الأصلية ثم يسجل معرّف الرسالة."""
+        __slots__ = ("_orig",)
+
+        def __init__(self, orig_fn):
+            self._orig = orig_fn
+
+        async def __call__(self, *args, **kwargs):
+            res = await self._orig(*args, **kwargs)
+            try:
+                chat_id = kwargs.get("chat_id")
+                if chat_id is None and args:
+                    chat_id = args[0]
+                if hasattr(res, "message_id"):
+                    _sweep_track(chat_id, res.message_id)
+                elif isinstance(res, (list, tuple)):
+                    for _m in res:
+                        if hasattr(_m, "message_id"):
+                            _sweep_track(chat_id, _m.message_id)
+            except Exception:
+                pass
+            return res
+
+    for name in _SWEEP_TRACK_METHODS:
+        orig = getattr(bot, name, None)
+        if orig is None or not callable(orig):
+            continue
+        try:
+            setattr(bot, name, _TrackedSend(orig))
+        except Exception:
+            pass
+
+
+async def _sweep_safe_delete(bot, chat_id, message_id):
+    """حذف رسالة واحدة بأمان (يتجاهل: أقدم من 48 ساعة / محذوفة سابقاً)."""
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        return True
+    except Exception:
+        return False
+
+
+async def sweep_screen(update, context):
+    """تنظيف الشاشة: حذف كل الرسائل المتتبعة في هذه المحادثة
+    (رسائل البوت + رسائل المستخدم) قبل عرض قائمة رئيسية نظيفة.
+    يعمل في الخاص فقط ويفشل بصمت دون إفساد تدفق المعالج الرئيسي."""
+    try:
+        chat = update.effective_chat if update is not None else None
+        if chat is None or chat.type != "private":
+            return 0
+        cid = int(chat.id)
+        mids = list(_SWEEP_BOT_MSGS.pop(cid, _sweep_deque()))
+        cd = getattr(context, "chat_data", None)
+        if isinstance(cd, dict):
+            stored = cd.pop(_SWEEP_USER_KEY, None)
+            if isinstance(stored, list):
+                mids.extend(stored)
+        seen, ordered = set(), []
+        for m in mids:
+            try:
+                m = int(m)
+            except Exception:
+                continue
+            if m not in seen:
+                seen.add(m)
+                ordered.append(m)
+        if not ordered:
+            return 0
+        deleted = 0
+        for i in range(0, len(ordered), 8):
+            chunk = ordered[i:i + 8]
+            results = await asyncio.gather(
+                *[_sweep_safe_delete(context.bot, cid, m) for m in chunk]
+            )
+            deleted += sum(1 for r in results if r)
+        logging.info(
+            "[SWEEP] chat " + str(cid) + ": deleted "
+            + str(deleted) + "/" + str(len(ordered)) + " messages"
+        )
+        return deleted
+    except Exception as sweep_err:
+        try:
+            logging.debug("[SWEEP] failed: " + str(sweep_err))
+        except Exception:
+            pass
+        return 0
+
+
+async def _sweep_user_tracker(update, context):
+    """متعقب صامت (group=-2): يحفظ معرّفات رسائل المستخدم (نصوص/صور/مستندات)
+    كي تُحذف مع رسائل البوت عند تنظيف الشاشة التالي."""
+    try:
+        msg = update.message
+        chat = update.effective_chat
+        if msg is None or chat is None or chat.type != "private":
+            return
+        cd = context.chat_data
+        lst = cd.get(_SWEEP_USER_KEY)
+        if not isinstance(lst, list):
+            lst = []
+            cd[_SWEEP_USER_KEY] = lst
+        lst.append(msg.message_id)
+        if len(lst) > _SWEEP_MAX_TRACKED:
+            del lst[:-_SWEEP_MAX_TRACKED]
+    except Exception:
+        pass
+
+
 async def start_command(update, context):
+    # تنظيف الشاشة: حذف رسائل المهمة السابقة قبل عرض القائمة
+    await sweep_screen(update, context)
     user = update.effective_user
     sync_user_info(user)
     # Notify admins about new pending user
@@ -8501,6 +8653,12 @@ async def callback_ship_cancel_handler(update, context):
 async def callback_admin_done_handler(update, context):
     query = update.callback_query
     await query.answer()
+    # تنظيف الشاشة: حذف كل رسائل المهمة المنتهية + تصفير حالة المهمة
+    await sweep_screen(update, context)
+    try:
+        context.user_data.clear()
+    except Exception:
+        pass
     try:
         await query.delete_message()
     except Exception:
@@ -8512,6 +8670,8 @@ async def callback_go_start_handler(update, context):
     """ينفّذ /start عند ضغط المستخدم على زر التحديث."""
     query = update.callback_query
     await query.answer()
+    # تنظيف الشاشة: حذف كل رسائل المهمة السابقة قبل عرض القائمة
+    await sweep_screen(update, context)
     user = query.from_user
     sync_user_info(user)
 
@@ -9112,6 +9272,10 @@ async def _on_app_post_init(application):
 
 def build_application():
     app = Application.builder().token(BOT_TOKEN).post_init(_on_app_post_init).build()
+
+    # ── تنظيف الشاشة: تتبع رسائل البوت الصادرة + رسائل المستخدم (تُحذف عند العودة للقائمة) ──
+    _install_sweep_tracking(app.bot)
+    app.add_handler(MessageHandler(filters.ALL, _sweep_user_tracker, block=True), group=-2)
 
     # ── Middleware: تحديث بيانات المستخدم تلقائياً عند أي تفاعل ──
     async def auto_sync_user(update, context):
