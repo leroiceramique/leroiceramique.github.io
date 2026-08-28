@@ -3754,7 +3754,6 @@ BTN_CUST_ORDER_LEGACY = "📦 طلب توريد"  # توافق لوحات الإ
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
-BTN_CALC = "🧮 حاسبة الكميات"
 BTN_UNSHIPPED = "📤 غير المشحونة"
 
 # ═══════════════════════════════════════════════════════════
@@ -3787,19 +3786,6 @@ ROLE_PICK_ORDER = (ROLE_SELLER, ROLE_STOCK, ROLE_MANAGER, ROLE_EXTERNAL)
 STOCK_ADMIN_BTNS = (BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
                     BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_PENDING_ADMIN, BTN_UNSHIPPED)
 STOCK_ADMIN_PREFIXES = (BTN_PENDING_ADMIN, BTN_UNSHIPPED)
-
-# Tile sizes: (label, cm_w, cm_h)
-TILE_SIZES = [
-    ("20×20", 20, 20),
-    ("25×25", 25, 25),
-    ("30×30", 30, 30),
-    ("40×40", 40, 40),
-    ("60×60", 60, 60),
-    ("80×80", 80, 80),
-]
-
-# Space type waste percentages
-SPACE_WASTE = {"bathroom": 15, "kitchen": 10, "floor": 8, "custom": 10}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -4175,8 +4161,6 @@ def get_admin_keyboard(user_id=None):
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
         [unshipped_btn, BTN_RESET_STOCK],
     ]
-    if user_id and is_owner(user_id):
-        rows.insert(-1, [BTN_CALC])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -7618,7 +7602,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_CALC, BTN_UNSHIPPED]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -7753,20 +7737,6 @@ async def handle_admin_message(update, context):
                 "🔐 أرسل رمز PIN للتأكيد:\n"
                 "(أو أرسل ❌ للإلغاء)",
                 reply_markup=get_input_keyboard(),
-            )
-            return
-        if text == BTN_CALC:
-            if not is_owner(user.id):
-                return
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚿 حمام", callback_data="calcspace_bathroom")],
-                [InlineKeyboardButton("🍳 مطبخ", callback_data="calcspace_kitchen")],
-                [InlineKeyboardButton("🏠 أرضية", callback_data="calcspace_floor")],
-                [InlineKeyboardButton("📐 مخصص", callback_data="calcspace_custom")],
-            ])
-            await update.message.reply_text(
-                "🧮 حاسبة الكميات\n📏 نوع المساحة?",
-                reply_markup=kb,
             )
             return
         # Fallback — should not reach here
@@ -8329,36 +8299,6 @@ async def handle_admin_message(update, context):
         context.user_data.clear()
         return
     
-    elif state == "calc_length":
-        parsed = parse_crt_input(text)
-        if parsed is None or parsed <= 0:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645\u0627 \u0635\u062d\u064a\u062d\u0627 \u0644\u0644\u0645\u062a\u0631 (\u0645\u062b\u0627\u0644: 4)", reply_markup=get_input_keyboard())
-            return
-        context.user_data["calc_data"]["length"] = parsed
-        context.user_data["state"] = "calc_width"
-        await update.message.reply_text("\U0001f4cf \u0623\u0631\u0633\u0644 \u0627\u0644\u0639\u0631\u0636 \u0628\u0627\u0644\u0645\u062a\u0631:", reply_markup=get_input_keyboard())
-        return
-    elif state == "calc_width":
-        parsed = parse_crt_input(text)
-        if parsed is None or parsed <= 0:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645\u0627 \u0635\u062d\u064a\u062d\u0627 \u0644\u0644\u0645\u062a\u0631 (\u0645\u062b\u0627\u0644: 3)", reply_markup=get_input_keyboard())
-            return
-        context.user_data["calc_data"]["width"] = parsed
-        size_btns = []
-        for label, _w, _h in TILE_SIZES:
-            size_btns.append([InlineKeyboardButton(label + " \u0633\u0645", callback_data="calcsize_" + label)])
-        size_btns.append([InlineKeyboardButton("\U0001f4d0 \u062d\u062c\u0645 \u0645\u062e\u0635\u0635", callback_data="calcsize_custom")])
-        await update.message.reply_text("\U0001f4d0 \u062d\u062c\u0645 \u0627\u0644\u0628\u0644\u0627\u0637?", reply_markup=InlineKeyboardMarkup(size_btns))
-        return
-    elif state == "calc_custom_size":
-        parsed = parse_crt_input(text)
-        if parsed is None or parsed <= 0:
-            await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0631\u0642\u0645\u0627 \u0628\u0627\u0644\u0633\u0646\u062a\u064a\u0645\u062a\u0631 (\u0645\u062b\u0627\u0644: 60)", reply_markup=get_input_keyboard())
-            return
-        context.user_data["calc_data"]["tile_w"] = parsed
-        context.user_data["calc_data"]["tile_h"] = parsed
-        await _show_calc_result(update, context)
-        return
     else:
         # Unknown state — log and clear safely instead of silent data destruction
         logging.warning("[ADMIN] Unhandled state: " + str(state) + " for user " + str(user.id))
@@ -8395,7 +8335,7 @@ async def handle_customer_message(update, context):
             text in cust_buttons
             or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
                         BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
-                        BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CALC, BTN_CUST_ORDER_LEGACY)
+                        BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CUST_ORDER_LEGACY)
             or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
             or text.startswith(BTN_PENDING_ADMIN) or text.startswith(BTN_UNSHIPPED)
         )
@@ -8415,7 +8355,7 @@ async def handle_customer_message(update, context):
             text in cust_buttons
             or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
                         BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
-                        BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CALC)
+                        BTN_PENDING_ADMIN, BTN_RESET_STOCK)
             or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
             or text.startswith(BTN_PENDING_ADMIN)
         )
@@ -9291,144 +9231,6 @@ async def callback_go_start_handler(update, context):
 
 
 # ═══════════════════════════════════════════════════════════
-#  CERAMIC QUANTITY CALCULATOR (Owner-only)
-# ═══════════════════════════════════════════════════════════
-
-async def callback_calc_space_handler(update, context):
-    """Handle space type selection for calculator."""
-    query = update.callback_query
-    await query.answer()
-    if not is_owner(query.from_user.id):
-        return
-    space_type = query.data.replace("calcspace_", "")
-    context.user_data["calc_data"] = {"space_type": space_type}
-    context.user_data["state"] = "calc_length"
-    labels = {"bathroom": "\U0001f6bf حمام", "kitchen": "\U0001f373 مطبخ", "floor": "\U0001f3e0 أرضية", "custom": "\U0001f4d0 مخصص"}
-    await query.message.reply_text(
-        "\U0001f9ee حاسبة الكميات — " + labels.get(space_type, "") + chr(10) + chr(10) + "\U0001f4cf أرسل الطول بالمتر:",
-        reply_markup=get_input_keyboard(),
-    )
-
-
-async def callback_calc_size_handler(update, context):
-    """Handle tile size selection for calculator."""
-    query = update.callback_query
-    await query.answer()
-    if not is_owner(query.from_user.id):
-        return
-    data = query.data
-    if data == "calcsize_custom":
-        context.user_data["state"] = "calc_custom_size"
-        await query.message.reply_text(
-            "\U0001f4cf أرسل طول البلاطة بالسنتيمتر (مثال: 60):",
-            reply_markup=get_input_keyboard(),
-        )
-        return
-    size_str = data.replace("calcsize_", "")
-    for label, w, h in TILE_SIZES:
-        if label == size_str:
-            context.user_data["calc_data"]["tile_w"] = w
-            context.user_data["calc_data"]["tile_h"] = h
-            break
-    await _show_calc_result(update, context)
-
-
-def _do_calc(data):
-    """Perform the tile calculation."""
-    length = data["length"]
-    width = data["width"]
-    tile_w = data["tile_w"]
-    tile_h = data["tile_h"]
-    space_type = data.get("space_type", "custom")
-    waste_pct = SPACE_WASTE.get(space_type, 10)
-
-    area = length * width
-    tile_area_m2 = (tile_w * tile_h) / 10000.0
-    tiles_exact = area / tile_area_m2
-    tiles_with_waste = tiles_exact * (1 + waste_pct / 100.0)
-    tiles_needed = int(tiles_with_waste) + (1 if tiles_with_waste % 1 > 0 else 0)
-    tiles_without_waste = int(tiles_exact) + (1 if tiles_exact % 1 > 0 else 0)
-
-    return {
-        "area": area,
-        "tile_w": tile_w,
-        "tile_h": tile_h,
-        "tiles_without_waste": tiles_without_waste,
-        "tiles_needed": tiles_needed,
-        "waste_pct": waste_pct,
-        "space_type": space_type,
-    }
-
-
-async def _show_calc_result(update, context):
-    """Show calculation result + matching products from stock."""
-    data = context.user_data.get("calc_data", {})
-    r = _do_calc(data)
-    space_labels = {"bathroom": "\U0001f6bf حمام", "kitchen": "\U0001f373 مطبخ", "floor": "\U0001f3e0 أرضية", "custom": "\U0001f4d0 مخصص"}
-    space_label = space_labels.get(r["space_type"], "")
-
-    lines = [
-        "\U0001f9ee نتيجة الحساب — " + space_label,
-        "━" * 22,
-        "\U0001f4cf المساحة: " + "{:.2f}".format(r["area"]) + " م\u00b2",
-        "\U0001f4d0 حجم البلاط: " + str(r["tile_w"]) + "×" + str(r["tile_h"]) + " سم",
-        "",
-        "\U0001f535 بدون هدر: " + str(r["tiles_without_waste"]) + " قطعة",
-        "\U0001f7e2 مع هدر " + str(r["waste_pct"]) + "%: " + str(r["tiles_needed"]) + " قطعة",
-    ]
-
-    # Search products matching this tile size
-    size_num = str(r["tile_w"])
-    all_products = get_all_products()
-    matching = [p for p in all_products if size_num in p["name"]]
-
-    if matching:
-        lines.append("")
-        lines.append("\U0001f4e6 منتجات مطابقة (" + str(r["tile_w"]) + "×" + str(r["tile_h"]) + "):")
-        lines.append("━" * 22)
-        for p in matching[:8]:
-            icon = "\u2705" if p["quantity"] > 0 else "\u274c"
-            lines.append(icon + " " + p["name"] + " — " + str(p["quantity"]))
-    else:
-        lines.append("")
-        lines.append("\U0001f4e6 لا توجد منتجات مطابقة في المخزن")
-
-    product_buttons = []
-    for p in matching[:6]:
-        icon = "\u2705" if p["quantity"] > 0 else "\u274c"
-        label = p["name"] + " — " + str(p["quantity"]) + " " + icon
-        product_buttons.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
-
-    product_buttons.append([InlineKeyboardButton("\U0001f504 حساب جديد", callback_data="calc_restart")])
-    product_buttons.append([InlineKeyboardButton("\U0001f3e0 القائمة الرئيسية", callback_data="admin_done")])
-
-    await update.message.reply_text(
-        chr(10).join(lines),
-        reply_markup=InlineKeyboardMarkup(product_buttons),
-    )
-    context.user_data["state"] = None
-
-
-async def callback_calc_restart_handler(update, context):
-    """Restart the calculator."""
-    query = update.callback_query
-    await query.answer()
-    if not is_owner(query.from_user.id):
-        return
-    context.user_data.clear()
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("\U0001f6bf حمام", callback_data="calcspace_bathroom")],
-        [InlineKeyboardButton("\U0001f373 مطبخ", callback_data="calcspace_kitchen")],
-        [InlineKeyboardButton("\U0001f3e0 أرضية", callback_data="calcspace_floor")],
-        [InlineKeyboardButton("\U0001f4d0 مخصص", callback_data="calcspace_custom")],
-    ])
-    await query.message.reply_text(
-        "\U0001f9ee حاسبة الكميات\n\U0001f4cf نوع المساحة?",
-        reply_markup=kb,
-    )
-
-
-# ═══════════════════════════════════════════════════════════
 #  PENDING DELIVERIES DISPLAY
 # ═══════════════════════════════════════════════════════════
 
@@ -9879,9 +9681,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
-    app.add_handler(CallbackQueryHandler(callback_calc_space_handler, pattern="^calcspace_"))
-    app.add_handler(CallbackQueryHandler(callback_calc_size_handler, pattern="^calcsize_"))
-    app.add_handler(CallbackQueryHandler(callback_calc_restart_handler, pattern="^calc_restart$"))
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
     app.add_handler(CallbackQueryHandler(callback_ship_cancel_handler, pattern="^ship_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_grant_"))
