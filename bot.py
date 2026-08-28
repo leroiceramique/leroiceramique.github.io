@@ -5,6 +5,7 @@ import html
 import datetime
 import logging
 import asyncio
+import contextvars
 import unicodedata
 import time
 import hashlib
@@ -1740,7 +1741,8 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     telegram_id BIGINT UNIQUE NOT NULL,
     username    VARCHAR(255),
     first_name  VARCHAR(255),
-    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'customer', 'pending')),
+    role        VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer', 'pending')),
+    requested_role VARCHAR(20) DEFAULT NULL,
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
     can_ship         BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1874,7 +1876,7 @@ def init_db():
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
                 ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('admin', 'customer', 'pending'));
+                    CHECK (role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer', 'pending'));
                 ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
                 -- Migration: add can_extract column
                 DO $$ BEGIN
@@ -2050,6 +2052,26 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                     "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
                     (list(ADMIN_IDS),)
                 )
+            # Migration: نظام الفئات — عمود الفئة المطلوبة + قيد الأدوار الكامل
+            # (idempotent: يعمل بأمان على كل إقلاع، ويُصلح قيود القواعد القديمة)
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_name = 'users' AND column_name = 'requested_role'"
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute("ALTER TABLE users ADD COLUMN requested_role VARCHAR(20)")
+            cur.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'users'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%role%'"
+            )
+            for _role_con in cur.fetchall():
+                _conname = str(_role_con[0]).replace('"', '')
+                cur.execute('ALTER TABLE users DROP CONSTRAINT IF EXISTS "' + _conname + '"')
+            cur.execute(
+                "ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN "
+                "('admin', 'manager', 'stock', 'seller', 'external', 'customer', 'pending'))"
+            )
             # Migration: de-duplicate usernames so the unique index below can be created safely.
             # Keep the newest row's username (max telegram_id row wins; the current holder of the
             # handle on Telegram), older duplicates get NULL and fall back to first_name display.
@@ -2278,7 +2300,8 @@ def is_admin(telegram_id):
     if telegram_id in ADMIN_IDS:
         return True
     user = get_user(telegram_id)
-    return user is not None and user["role"] == "admin"
+    # 🧑‍💼 مدير البوت (manager) يملك صلاحيات الإدارة الكاملة مثل admin
+    return user is not None and user["role"] in ("admin", "manager")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2290,11 +2313,13 @@ def is_owner(telegram_id):
 
 
 def is_approved(telegram_id):
-    """Check if user is approved (admin or customer, not pending)."""
+    """Check if user is approved (any active role, not pending)."""
     if telegram_id in ADMIN_IDS:
         return True
     user = get_user(telegram_id)
-    return user is not None and user["role"] in ("admin", "customer")
+    return user is not None and user["role"] in (
+        "admin", "manager", "stock", "seller", "external", "customer"
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2435,17 +2460,45 @@ def get_pending_users():
         release_connection(conn)
 
 
-def approve_user(telegram_id):
+def approve_user(telegram_id, role=None):
+    """تفعيل المستخدم المعلّق: بالفئة التي اختارها إن وُجدت، وإلا عميل.
+    يمكن تمرير role صراحة لتفعيله بفئة محددة (زر «تفعيل بفئة» في إشعار المدير)."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "UPDATE users SET role = 'customer' WHERE telegram_id = %s AND role = 'pending' RETURNING *",
-                (telegram_id,),
-            )
+            if role:
+                cur.execute(
+                    "UPDATE users SET role = %s, requested_role = NULL "
+                    "WHERE telegram_id = %s AND role = 'pending' RETURNING *",
+                    (role, telegram_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE users SET role = COALESCE(requested_role, 'customer'), requested_role = NULL "
+                    "WHERE telegram_id = %s AND role = 'pending' RETURNING *",
+                    (telegram_id,),
+                )
             row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def set_user_role(telegram_id, role):
+    """تغيير فئة مستخدم مفعّل (من لوحة المستخدمين → زر 🎯 الفئة)."""
+    if role not in ROLE_LABELS:
+        raise ValueError("invalid role: " + str(role))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET role = %s WHERE telegram_id = %s", (role, telegram_id))
+            changed = cur.rowcount > 0
+        conn.commit()
+        return changed
     except Exception:
         conn.rollback()
         raise
@@ -3696,12 +3749,44 @@ BTN_CUST_ADD = "➕ إضافة"
 BTN_CUST_REMOVE = "➖ إخراج"
 BTN_CUST_MOVEMENTS = "📋 الحركة"
 BTN_CUST_CANCEL = "❌ إلغاء"
-BTN_CUST_ORDER = "📦 طلب توريد"
+BTN_CUST_ORDER = "📦 طلب توريد جديد"
+BTN_CUST_ORDER_LEGACY = "📦 طلب توريد"  # توافق لوحات الإصدار السابق
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
 BTN_CALC = "🧮 حاسبة الكميات"
 BTN_UNSHIPPED = "📤 غير المشحونة"
+
+# ═══════════════════════════════════════════════════════════
+#  نظام الفئات (الأدوار) — ROLES SYSTEM
+#  كل فئة لها لوحة أزرار وميزاتها الخاصة؛ الميزات الجديدة
+#  تُوجّه للفئة المعنية عبر ROLE_LABELS + بوابة الفئات.
+# ═══════════════════════════════════════════════════════════
+ROLE_ADMIN = "admin"        # 👑 مدير النظام (متغيرات البيئة/المالك)
+ROLE_MANAGER = "manager"    # 🧑‍💼 مدير البوت (صلاحيات كاملة)
+ROLE_STOCK = "stock"        # 📦 عامل مخزون (المخزون فقط)
+ROLE_SELLER = "seller"      # 🛍 بائع (الفواتير والمبيعات)
+ROLE_EXTERNAL = "external"  # 🌍 بائع خارجي (التوفر فقط دون كميات)
+ROLE_CUSTOMER = "customer"  # 👤 عميل (السلوك القديم كما هو)
+ROLE_PENDING = "pending"    # ⏳ قيد المراجعة (لم يُفعّل بعد)
+
+ROLE_LABELS = {
+    "admin": "👑 مدير النظام",
+    "manager": "🧑‍💼 مدير البوت",
+    "stock": "📦 عامل مخزون",
+    "seller": "🛍 بائع",
+    "external": "🌍 بائع خارجي",
+    "customer": "👤 عميل",
+    "pending": "⏳ قيد المراجعة",
+}
+
+# الخيارات التي تُعرض على المستخدم الجديد عند طرق باب البوت لأول مرة
+ROLE_PICK_ORDER = (ROLE_SELLER, ROLE_STOCK, ROLE_MANAGER, ROLE_EXTERNAL)
+
+# أزرار لوحة الإدارة المسموحة لعامل المخزون (تُفحص في بوابة الفئات)
+STOCK_ADMIN_BTNS = (BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
+                    BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_PENDING_ADMIN, BTN_UNSHIPPED)
+STOCK_ADMIN_PREFIXES = (BTN_PENDING_ADMIN, BTN_UNSHIPPED)
 
 # Tile sizes: (label, cm_w, cm_h)
 TILE_SIZES = [
@@ -3768,7 +3853,7 @@ async def _broadcast_update_notification(update, context):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer')")
             user_rows = cur.fetchall()
         conn.commit()
     except Exception:
@@ -3821,7 +3906,7 @@ async def _broadcast_to_all_users(bot, message):
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer') AND active = TRUE")
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer') AND active = TRUE")
                 rows = cur.fetchall()
             conn.commit()
         except Exception:
@@ -4036,8 +4121,20 @@ def set_bot_setting(key, value):
 
 
 
+# 🎯 سياق المستخدم الحالي: تضبطه نقاط الدخول (متعقب الرسائل + معالجات الكولباك)
+# كي تعيد get_admin_keyboard لوحة الفئة الصحيحة تلقائياً لغير المديرين
+# بدل تسريب لوحة الإدارة الكاملة لعامل المخزون/البائع/الخارجي.
+_KB_ROLE_UID = contextvars.ContextVar("kb_role_uid", default=None)
+
+
 def get_admin_keyboard(user_id=None):
-    """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين."""
+    """لوحة المفاتيح الديناميكية - تعرض عدادات الطلبات والمستخدمين المعلّقين.
+
+    🎯 حماية الفئات: عند الاستدعاء من مسار مستخدم غير إداري تُعاد لوحة فئته تلقائياً."""
+    if user_id is None:
+        user_id = _KB_ROLE_UID.get()
+    if user_id is not None and not is_admin(user_id):
+        return get_role_keyboard(user_id)
     # عداد طلبات التوريد المعلّقة
     incoming_count = 0
     pending_deliveries_count = 0
@@ -4111,6 +4208,72 @@ def get_customer_keyboard(telegram_id=None):
     if telegram_id is None or is_admin(telegram_id) or can_unshipped(telegram_id):
         rows.insert(-1, [BTN_UNSHIPPED])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def _get_role(telegram_id):
+    """قراءة فئة المستخدم بسرعة (حسابات البيئة = admin دائماً)."""
+    if telegram_id is not None and telegram_id in ADMIN_IDS:
+        return ROLE_ADMIN
+    try:
+        u = get_user(telegram_id)
+        return (u or {}).get("role") or ROLE_PENDING
+    except Exception:
+        return ROLE_PENDING
+
+
+def get_stock_keyboard():
+    """📦 لوحة عامل المخزون: اخراج/اضافة/تعديل/حركة/مخزون منخفض/معلقة/غير مشحونة."""
+    rows = [
+        [BTN_REMOVE_QTY, BTN_ADD],
+        [BTN_ADD_QTY, BTN_EDIT],
+        [BTN_MOVEMENTS, BTN_LOW_STOCK],
+        [BTN_PENDING_ADMIN, BTN_UNSHIPPED],
+        [BTN_CUST_CANCEL],
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def get_seller_main_keyboard(telegram_id=None):
+    """🛍 لوحة البائع: بحث/اخراج/فاتورة/طلب توريد جديد/طلباتي/غير مشحونة/الحركة."""
+    # غير المشحونة ظاهرة للبائع دائماً (فئة كاملة لا صلاحية فردية)
+    rows = [
+        [BTN_SEARCH, BTN_CUST_REMOVE],
+        [BTN_INVOICE],
+        [BTN_CUST_ORDER],
+        [BTN_CUST_MY_ORDERS, BTN_UNSHIPPED],
+        [BTN_CUST_MOVEMENTS],
+        [BTN_CUST_CANCEL],
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def get_external_keyboard():
+    """🌍 لوحة البائع الخارجي: بحث التوفر فقط (دون كميات أو أزرار أخرى)."""
+    return ReplyKeyboardMarkup([[BTN_SEARCH], [BTN_CUST_CANCEL]], resize_keyboard=True)
+
+
+def get_role_keyboard(telegram_id=None):
+    """لوحة الأزرار حسب فئة المستخدم — الفئة تحدد ما يراه (الميزات توجه للفئة المعنية)."""
+    role = _get_role(telegram_id) if telegram_id else ROLE_CUSTOMER
+    if role in (ROLE_ADMIN, ROLE_MANAGER):
+        return get_admin_keyboard(telegram_id)
+    if role == ROLE_STOCK:
+        return get_stock_keyboard()
+    if role == ROLE_SELLER:
+        return get_seller_main_keyboard(telegram_id)
+    if role == ROLE_EXTERNAL:
+        return get_external_keyboard()
+    return get_customer_keyboard(telegram_id)
+
+
+def _role_picker_keyboard(prefix="pickrole"):
+    """أزرار اختيار الفئة للمستخدم الجديد (بائع / عامل مخزون / مدير بوت / بائع خارجي)."""
+    rows = []
+    for r in ROLE_PICK_ORDER:
+        rows.append([InlineKeyboardButton(ROLE_LABELS[r], callback_data=prefix + "_" + r)])
+    return InlineKeyboardMarkup(rows)
+
+
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
     keyboard = InlineKeyboardMarkup([
@@ -4160,6 +4323,7 @@ async def confirm_add_product(update, context, product_name, qty, is_motif=False
 async def callback_addtype_handler(update, context):
     """Handle product type selection (motif vs other)."""
     query = update.callback_query
+    _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
     data = query.data
     try:
@@ -4216,6 +4380,7 @@ async def callback_addtype_handler(update, context):
 async def callback_add_handler(update, context):
     """Handle inline button press for add confirmation."""
     query = update.callback_query
+    _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
 
     data = query.data
@@ -4556,6 +4721,33 @@ async def process_search(update, context, text, admin_view=False):
             lines.append("")
         await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
     else:
+        # 🌍 البائع الخارجي: نتائج التوفر فقط (متوفرة/غير متوفرة) دون كميات
+        try:
+            _ps_role = _get_role(update.effective_user.id)
+        except Exception:
+            _ps_role = ROLE_CUSTOMER
+        if _ps_role == ROLE_EXTERNAL:
+            if len(results) == 1:
+                p = results[0]
+                mark = "✅ متوفرة حالياً" if p["quantity"] > 0 else "❌ غير متوفرة حالياً"
+                await update.message.reply_text(p["name"] + "\n\n" + mark)
+            else:
+                lines = ["🔍 نتائج البحث عن " + text + " (" + str(len(results)) + "):", ""]
+                buttons = []
+                for p in results:
+                    mark = "✅" if p["quantity"] > 0 else "❌"
+                    lines.append(mark + " " + p["name"])
+                    label = p["name"]
+                    if len(label) > 40:
+                        label = label[:37] + "..."
+                    buttons.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
+                lines.append("👆 اضغط على السلعة لمعرفة توفرها.")
+                await update.message.reply_text(
+                    "\n".join(lines),
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+            context.user_data.clear()
+            return
         if len(results) == 1:
             p = results[0]
             await _show_product_detail(update, context, p)
@@ -4631,17 +4823,38 @@ def _get_unit_ar(product_name):
 
 async def _show_product_detail(update, context, product):
     p = product
+    # 🎯 بوابة الفئات: الخارجي يرى التوفر فقط دون كميات أو أزرار،
+    # والبائع يرى الكمية مع زر الإخراج والسجل فقط (بدون إضافة).
+    try:
+        _det_role = _get_role(update.effective_user.id)
+    except Exception:
+        _det_role = ROLE_CUSTOMER
+    pid = str(p["id"])
+    if _det_role == ROLE_EXTERNAL:
+        avail = "✅ متوفرة حالياً" if p["quantity"] > 0 else "❌ غير متوفرة حالياً"
+        ext_text = p["name"] + "\n\n" + avail
+        if hasattr(update, "callback_query") and update.callback_query:
+            await update.callback_query.edit_message_text(ext_text)
+        else:
+            await update.message.reply_text(ext_text)
+        return
     icon = _product_status_icon(p)
     qty = p["quantity"]
     unit_ar = _get_unit_ar(p["name"])
     text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " " + unit_ar + " " + icon
-    pid = str(p["id"])
     buttons = [
         [
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
     ]
+    if _det_role == ROLE_SELLER:
+        buttons = [
+            [
+                InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
+                InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid),
+            ],
+        ]
     keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
@@ -4823,13 +5036,18 @@ async def _show_all_movements(update, context, admin_view=True):
         await update.message.reply_text(text, reply_markup=markup)
     except Exception as e:
         logging.error("[MOVEMENTS_DATE] Error: " + str(e))
-        kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+        kb = get_role_keyboard(update.effective_user.id)
         await update.message.reply_text("❌ حدث خطأ في عرض الحركات.", reply_markup=kb)
 
 
 async def callback_mov_product_handler(update, context):
     """Handle product selection from movement product picker."""
     query = update.callback_query
+    # 🎯 البائع الخارجي: الحركة غير متاحة لفئته (بحث فقط)
+    if _get_role(query.from_user.id) == ROLE_EXTERNAL:
+        await query.answer("❌ هذا الإجراء غير متاح لفئتك.", show_alert=True)
+        return
+    _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
     try:
         product_id = int(query.data.split("_")[1])
@@ -4903,6 +5121,11 @@ async def callback_mov_product_handler(update, context):
 async def callback_mov_date_handler(update, context):
     """Handle date selection from movements date picker."""
     query = update.callback_query
+    # 🎯 البائع الخارجي: الحركة غير متاحة لفئته (بحث فقط)
+    if _get_role(query.from_user.id) == ROLE_EXTERNAL:
+        await query.answer("❌ هذا الإجراء غير متاح لفئتك.", show_alert=True)
+        return
+    _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
     data = query.data  # "movd_2025-01-15"
 
@@ -5086,6 +5309,7 @@ async def callback_mov_delete_handler(update, context):
 
 async def callback_product_select_handler(update, context):
     query = update.callback_query
+    _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
     data = query.data
     try:
@@ -5119,6 +5343,15 @@ async def callback_product_select_handler(update, context):
 
 async def callback_product_action_handler(update, context):
     query = update.callback_query
+    # 🎯 بوابة الفئات: الخارجي ممنوع نهائياً، والبائع يخرج فقط (لا يضيف)
+    _pact_role = _get_role(query.from_user.id)
+    if _pact_role == ROLE_EXTERNAL:
+        await query.answer("❌ هذا الإجراء غير متاح لفئتك.", show_alert=True)
+        return
+    if _pact_role == ROLE_SELLER and query.data.startswith("pact_add_"):
+        await query.answer("❌ الإضافة خارج صلاحيات فئة البائع.", show_alert=True)
+        return
+    _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
     data = query.data
     parts = data.split("_", 2)
@@ -5347,6 +5580,8 @@ async def _sweep_user_tracker(update, context):
     """متعقب صامت (group=-2): يحفظ معرّفات رسائل المستخدم (نصوص/صور/مستندات)
     كي تُحذف مع رسائل البوت عند تنظيف الشاشة التالي."""
     try:
+        _ef_user = getattr(update, "effective_user", None)
+        _KB_ROLE_UID.set(_ef_user.id if _ef_user is not None else None)
         msg = update.message
         chat = update.effective_chat
         if msg is None or chat is None or chat.type != "private":
@@ -5397,14 +5632,20 @@ async def start_command(update, context):
         name = user.first_name or ""
         db_user = get_user(user.id)
         if db_user and db_user.get("role") == "pending":
+            # 🚪 المستخدم الجديد يختار فئته: بائع / عامل مخزون / مدير بوت / بائع خارجي
             await _send_themed(context.bot, update.effective_chat.id,
-                "👋 مرحباً <b>" + name + "</b>\n\n⏳ حسابك قيد المراجعة.\nيجب الانتظار حتى يفعلك المدير.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
+                "👋 مرحباً <b>" + name + "</b>\n\n"
+                "🎯 اختر فئتك في هذا النظام:\n"
+                "(سيصل طلبك للمدير مع فئتك لتفعيلها)\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
                 parse_mode=ParseMode.HTML,
+                reply_markup=_role_picker_keyboard(),
             )
         else:
             await _send_themed(context.bot, update.effective_chat.id,
                 "👋 مرحباً <b>" + name + "</b>\n\n⌛ بحث عن المنتجات المتاحة\n📁 استخدم الأزرار أدناه.\n\n━━━━━━━━━━━━━━━━━━━━━\n⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
-                reply_markup=get_customer_keyboard(user.id),
+                reply_markup=get_role_keyboard(user.id),
                 parse_mode=ParseMode.HTML,
             )
     context.user_data.clear()
@@ -5464,28 +5705,61 @@ async def callback_approval_handler(update, context):
         )
         return
     await query.answer()
-    data = query.data  # "approve_123456" or "reject_123456"
-    parts = data.split("_", 1)
-    if len(parts) != 2:
-        return
-    action, tid_str = parts[0], parts[1]
-    if not tid_str.isdigit():
-        return
+    data = query.data  # "approve_123456" / "reject_123456" / "approveas_seller_123456"
+    req_role = None
+    if data.startswith("approveas_"):
+        # تفعيل بفئة محددة اختارها المستخدم الجديد
+        parts = data.split("_", 2)
+        if len(parts) != 3 or not parts[2].isdigit():
+            return
+        action, req_role, tid_str = parts[0], parts[1], parts[2]
+        if req_role not in ROLE_LABELS:
+            return
+    else:
+        parts = data.split("_", 1)
+        if len(parts) != 2:
+            return
+        action, tid_str = parts[0], parts[1]
+        if not tid_str.isdigit():
+            return
     target_id = int(tid_str)
 
     if action == "approve":
+        # يحترم الفئة التي اختارها المستخدم (requested_role) وإلا يُفعّل عميلاً
         user = approve_user(target_id)
         if user:
+            role_now = user.get("role") or "customer"
             await query.edit_message_text(
-                "\u2705 \u062a\u0645 \u062a\u0641\u0639\u064a\u0644 \u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:\n"
+                "\u2705 تم تفعيل المستخدم:\n"
+                "👤 " + (user.get("username") or str(user["telegram_id"]))
+                + "\n🎯 الفئة: " + ROLE_LABELS.get(role_now, role_now)
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text="\u2705 تم تفعيل حسابك!\n"
+                    "🎯 فئتك: " + ROLE_LABELS.get(role_now, role_now) + "\n\n"
+                    "🔄 اضغط /start لظهور لوحتك الخاصة.",
+                )
+            except Exception:
+                pass
+        else:
+            await query.edit_message_text("⚠️ المستخدم غير موجود أو مفعل بالفعل.")
+
+    elif action == "approveas":
+        # تفعيل صريح بالفئة المطلوبة في زر الإشعار
+        user = approve_user(target_id, role=req_role)
+        if user:
+            await query.edit_message_text(
+                "\u2705 تم تفعيل المستخدم بفئة " + ROLE_LABELS.get(req_role, req_role) + ":\n"
                 "👤 " + (user.get("username") or str(user["telegram_id"]))
             )
             try:
                 await context.bot.send_message(
                     chat_id=target_id,
-                    text="\u2705 \u062a\u0645 \u062a\u0641\u0639\u064a\u0644 \u062d\u0633\u0627\u0628\u0643!\n"
-                    "\u0627\u0644\u0622\u0646 \u064a\u0645\u0643\u0646\u0643 \u0627\u0644\u0628\u062d\u062b \u0641\u064a \u0627\u0644\u0645\u062e\u0632\u0648\u0646.\n"
-                    "\u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629 \u0644\u0645\u0639\u0631\u0641\u0629 \u062a\u0648\u0641\u0631\u0647\u0627.",
+                    text="\u2705 تم تفعيل حسابك!\n"
+                    "🎯 فئتك: " + ROLE_LABELS.get(req_role, req_role) + "\n\n"
+                    "🔄 اضغط /start لظهور لوحتك الخاصة.",
                 )
             except Exception:
                 pass
@@ -5508,6 +5782,68 @@ def _protected_account(telegram_id):
     """حسابات محمية لا يجوز تعديل أدوارها من داخل البوت إطلاقاً
     (مدراء وفّاح البيئة + الملاك). التعديل يكون فقط عبر env/ADMIN_IDS."""
     return telegram_id in ADMIN_IDS or telegram_id in OWNER_IDS
+
+
+async def callback_pickrole_handler(update, context):
+    """🚪 المستخدم الجديد اختار فئته (بائع/عامل مخزون/مدير بوت/بائع خارجي)
+    → تُحفظ الفئة المطلوبة ويصل إشعار للمدراء بأزرار تفعيل بالفئة."""
+    query = update.callback_query
+    role = query.data.replace("pickrole_", "", 1)
+    if role not in ROLE_PICK_ORDER:
+        await query.answer("❌ فئة غير معروفة.", show_alert=True)
+        return
+    await query.answer("✅ تم إرسال طلبك للمدير")
+    user = query.from_user
+    sync_user_info(user)
+    try:
+        db_user = get_user(user.id)
+    except Exception:
+        db_user = None
+    if db_user and db_user.get("role") != "pending":
+        try:
+            await query.edit_message_text("ℹ️ تمت معالجة حسابك مسبقاً — اضغط /start")
+        except Exception:
+            pass
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET requested_role = %s "
+                "WHERE telegram_id = %s AND role = 'pending'",
+                (role, user.id),
+            )
+        conn.commit()
+    except Exception as pick_err:
+        conn.rollback()
+        logging.error("[ROLE] Failed to save requested role: " + str(pick_err))
+    finally:
+        release_connection(conn)
+    try:
+        await query.edit_message_text(
+            "✅ تم تسجيل طلبك بفئة: " + ROLE_LABELS[role]
+            + "\n⏳ بانتظار موافقة المدير — سيصلك إشعار عند التفعيل."
+        )
+    except Exception:
+        pass
+    uname = user.first_name or ("@" + user.username if user.username else str(user.id))
+    for admin_id in ADMIN_IDS:
+        try:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "✅ تفعيل " + ROLE_LABELS[role],
+                    callback_data="approveas_" + role + "_" + str(user.id))],
+                [InlineKeyboardButton("👤 تفعيل كعميل", callback_data="approve_" + str(user.id))],
+                [InlineKeyboardButton("🗑 رفض", callback_data="reject_" + str(user.id))],
+            ])
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text="🔔 طلب فئة جديد:\n\n👤 " + uname
+                + "\n📧 " + str(user.id)
+                + "\n🎯 الفئة المطلوبة: " + ROLE_LABELS[role],
+                reply_markup=kb)
+        except Exception as notify_err:
+            logging.error("[ROLE] Notify admin failed: " + str(notify_err))
 
 
 # ── Confirm-before-grant: يمنع المنح العرضي ويوقف فوضى النقر المزدوج ──
@@ -6095,7 +6431,7 @@ def _get_users_snapshot():
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT * FROM users WHERE role IN ('admin', 'customer') "
+                "SELECT * FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer') "
                 "ORDER BY role, created_at"
             )
             approved = [dict(r) for r in cur.fetchall()]
@@ -6123,6 +6459,9 @@ def _build_users_panel():
         shown_pending = pending[:_MAX_PANEL_ROWS]
         for u in shown_pending:
             label, extras = _display_label(u)
+            extras = list(extras)
+            if u.get("requested_role"):
+                extras.append("🎯 يطلب: " + ROLE_LABELS.get(u["requested_role"], u["requested_role"]))
             date_str = (
                 u["created_at"].strftime("%m/%d %H:%M") if u.get("created_at") else ""
             )
@@ -6142,14 +6481,19 @@ def _build_users_panel():
 
     msg_lines.append("")
 
-    # ── المفعّلون ──
-    admins = [u for u in approved if u["role"] == "admin"]
-    customers = [u for u in approved if u["role"] == "customer"]
+    # ── المفعّلون (مجمّعون حسب الفئة) ──
+    role_counts = {}
+    for u in approved:
+        _r = u.get("role", "customer")
+        role_counts[_r] = role_counts.get(_r, 0) + 1
+    counts_str = " | ".join(
+        ROLE_LABELS.get(_r, _r) + ": " + str(_c) for _r, _c in role_counts.items()
+    )
 
     if approved:
         msg_lines.append(
             "✅ <b>المستخدمون المفعّلون (" + str(len(approved)) + ")</b> "
-            "— 👑 مدراء: " + str(len(admins)) + " | 👤 عملاء: " + str(len(customers))
+            "— " + counts_str
         )
 
     shown_rows = 0
@@ -6158,7 +6502,7 @@ def _build_users_panel():
             break
         shown_rows += 1
         label, extras = _display_label(u)
-        role_icon = "👑" if u["role"] == "admin" else "👤"
+        role_icon = ROLE_LABELS.get(u.get("role", "customer"), "👤").split(" ")[0]
         flags = []
         if u.get("can_ship"):
             flags.append("📤")
@@ -6185,8 +6529,8 @@ def _build_users_panel():
         if u["role"] == "customer":
             buttons.append([
                 InlineKeyboardButton(
-                    "👑 ترقية: " + label,
-                    callback_data="askpromote_" + str(tid),
+                    "🎯 الفئة: " + label,
+                    callback_data="askrole_" + str(tid),
                 ),
                 InlineKeyboardButton(
                     ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
@@ -6203,8 +6547,8 @@ def _build_users_panel():
         elif u["role"] == "admin":
             buttons.append([
                 InlineKeyboardButton(
-                    "👤 إزالة الإدارة: " + label,
-                    callback_data="askdemote_" + str(tid),
+                    "🎯 الفئة: " + label,
+                    callback_data="askrole_" + str(tid),
                 ),
                 InlineKeyboardButton(
                     ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
@@ -6218,6 +6562,19 @@ def _build_users_panel():
                 ),
             ])
             action_rows += 2
+        else:
+            # الفئات الجديدة (manager / stock / seller / external)
+            buttons.append([
+                InlineKeyboardButton(
+                    "🎯 الفئة: " + label,
+                    callback_data="askrole_" + str(tid),
+                ),
+                InlineKeyboardButton(
+                    ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
+                    callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
+                ),
+            ])
+            action_rows += 1
 
     # ── أدوات اللوحة ──
     buttons.append([
@@ -6268,6 +6625,91 @@ async def callback_users_close_handler(update, context):
         return
     await query.answer()
     await _safe_edit(query, "🔒 أُغلقت لوحة المستخدمين.")
+
+
+async def callback_role_menu_handler(update, context):
+    """🎯 قائمة تغيير فئة مستخدم من لوحة المستخدمين
+    (بديل شامل للترقية/الإزالة: كل الفئات في قائمة واحدة)."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    await query.answer()
+    parts = query.data.split("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return
+    tid = int(parts[1])
+    if _protected_account(tid):
+        await _safe_edit(query, "🔒 هذا الحساب محمي (المالك/متغيرات البيئة) — لا يمكن تعديل فئته من هنا.")
+        return
+    try:
+        target = get_user(tid)
+    except Exception:
+        target = None
+    tname = (target.get("first_name") or ("@" + target["username"] if target.get("username") else str(tid))) if target else str(tid)
+    current = (target or {}).get("role", "customer")
+    rows = []
+    for r in (ROLE_ADMIN, ROLE_MANAGER, ROLE_STOCK, ROLE_SELLER, ROLE_EXTERNAL, ROLE_CUSTOMER):
+        mark = "✅" if r == current else "▫️"
+        rows.append([InlineKeyboardButton(
+            mark + " " + ROLE_LABELS[r],
+            callback_data="setrole_" + r + "_" + str(tid))])
+    rows.append([InlineKeyboardButton("🔙 رجوع للوحة", callback_data="users_refresh")])
+    await _safe_edit(
+        query,
+        "🎯 تغيير الفئة\n\n👤 " + tname
+        + "\n📌 الفئة الحالية: " + ROLE_LABELS.get(current, current)
+        + "\n\nاختر الفئة الجديدة:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def callback_role_set_handler(update, context):
+    """تنفيذ تغيير الفئة بعد الاختيار من القائمة + إشعار المستخدم."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    await query.answer()
+    parts = query.data.split("_")  # setrole_<role>_<tid>
+    if len(parts) != 3:
+        return
+    _, role, tid_str = parts
+    if role not in ROLE_LABELS or not tid_str.isdigit():
+        return
+    tid = int(tid_str)
+    if _protected_account(tid):
+        await _safe_edit(query, "🔒 حساب محمي — لا يمكن تعديل فئته من داخل البوت.")
+        return
+    try:
+        changed = set_user_role(tid, role)
+    except Exception as role_err:
+        await _safe_edit(query, "❌ خطأ في تغيير الفئة: " + str(role_err))
+        return
+    try:
+        target = get_user(tid)
+    except Exception:
+        target = None
+    tname = (target.get("first_name") or ("@" + target["username"] if target.get("username") else str(tid))) if target else str(tid)
+    if changed:
+        await _safe_edit(
+            query,
+            "✅ تم تغيير الفئة بنجاح\n\n👤 " + tname
+            + "\n🎯 الفئة الجديدة: " + ROLE_LABELS[role],
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع للوحة", callback_data="users_refresh")],
+            ]),
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=tid,
+                text="🎯 حدّث المدير فئتك إلى: " + ROLE_LABELS[role]
+                + "\n🔄 اضغط 🏠 القائمة الرئيسية أو /start لظهور لوحتك الجديدة.",
+            )
+        except Exception:
+            pass
+    else:
+        await _safe_edit(query, "⚠️ لم يتغير شيء (المستخدم غير موجود).")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -6374,7 +6816,7 @@ async def _invoice_show_workers(update_or_query, context, from_callback=False):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT id, telegram_id, username, first_name FROM users "
-                "WHERE role IN ('admin', 'customer') AND active = TRUE "
+                "WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer') AND active = TRUE "
                 "ORDER BY first_name"
             )
             workers = cur.fetchall()
@@ -6711,13 +7153,13 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     await _send(result_msg, get_admin_keyboard())
 
 
-async def callback_invoice_handler(update, context):
-    """Handle invoice-related callback queries."""
     query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
+    _KB_ROLE_UID.set(query.from_user.id)
+    # 🎯 الفواتير للمديرين والبائعين (البائع يدير فواتيره عبر نفس المسار)
+    if not (is_admin(query.from_user.id) or _get_role(query.from_user.id) == ROLE_SELLER):
+        await query.answer("❌ هذا الإجراء للمديرين والبائعين فقط.", show_alert=True)
         return
+    await query.answer()
     data = query.data
 
     if data == "invoice_review":
@@ -7020,7 +7462,7 @@ async def _process_mov_product_input(update, context, text, is_admin=True):
     text = text.strip()
     if text == "❌" or text == BTN_CANCEL or text == BTN_CUST_CANCEL:
         context.user_data.clear()
-        kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+        kb = get_role_keyboard(update.effective_user.id)
         await update.message.reply_text("❌ تم الإلغاء.", reply_markup=kb)
         return
     results = search_products(text)
@@ -7094,7 +7536,7 @@ async def _process_mov_range_input(update, context, text, is_admin):
     text = text.strip()
     if text == "❌" or text == BTN_CANCEL or text == BTN_CUST_CANCEL:
         context.user_data.clear()
-        kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+        kb = get_role_keyboard(update.effective_user.id)
         await update.message.reply_text("❌ تم الإلغاء.", reply_markup=kb)
         return True
     try:
@@ -7120,7 +7562,7 @@ async def _process_mov_range_input(update, context, text, is_admin):
         start_date = context.user_data.get("mov_range_from")
         if not start_date:
             context.user_data.clear()
-            kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+            kb = get_role_keyboard(update.effective_user.id)
             await update.message.reply_text("❌ فُقدت بيانات البداية. حاول مرة أخرى.", reply_markup=kb)
             return True
         if parsed_date < start_date:
@@ -7136,7 +7578,7 @@ async def _process_mov_range_input(update, context, text, is_admin):
             if not rows:
                 await update.message.reply_text(
                     "📋 حركة " + date_display + ":\n\nلا توجد عمليات في هذا النطاق.",
-                    reply_markup=get_admin_keyboard() if is_admin else get_customer_keyboard(),
+                    reply_markup=get_role_keyboard(update.effective_user.id),
                 )
                 context.user_data.clear()
                 return True
@@ -7144,7 +7586,7 @@ async def _process_mov_range_input(update, context, text, is_admin):
             header = "📋 حركة " + date_display + " (" + str(len(rows)) + "):"
             body_lines = text_out.split("\n")[2:]
             final_text = header + "\n" + "\n".join(body_lines)
-            kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+            kb = get_role_keyboard(update.effective_user.id)
             try:
                 if len(final_text) <= 4096:
                     await update.message.reply_text(final_text, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -7163,7 +7605,7 @@ async def _process_mov_range_input(update, context, text, is_admin):
                 await update.message.reply_text(plain[:4096], reply_markup=kb)
         except Exception as e:
             logging.error("[MOV_RANGE] fetch failed: " + str(e))
-            kb = get_admin_keyboard() if is_admin else get_customer_keyboard()
+            kb = get_role_keyboard(update.effective_user.id)
             await update.message.reply_text("❌ فشل جلب الحركات: " + str(e), reply_markup=kb)
         context.user_data.clear()
         return True
@@ -7178,6 +7620,39 @@ async def handle_admin_message(update, context):
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
+
+    # ═══════════════════════════════════════════════════════════
+    #  بوابة الفئات: عامل المخزون/البائع يمرّ فقط بما تسمح به فئته
+    #  (حتى لو كتب نص الزر يدوياً دون وجوده في لوحته)
+    # ═══════════════════════════════════════════════════════════
+    if not is_admin(user.id):
+        _gate_role = await asyncio.to_thread(_get_role, user.id)
+        _gate_state = context.user_data.get("state") or ""
+        if _gate_role == ROLE_STOCK:
+            _allowed = (
+                not is_admin_btn
+                or text in STOCK_ADMIN_BTNS
+                or any(text.startswith(p) for p in STOCK_ADMIN_PREFIXES)
+            )
+        elif _gate_role == ROLE_SELLER:
+            _allowed = (
+                text == BTN_INVOICE
+                or _gate_state.startswith("waiting_invoice")
+                or text in (BTN_CANCEL, BTN_CUST_CANCEL)
+            )
+        else:
+            _allowed = False
+        if text in (BTN_CANCEL, BTN_CUST_CANCEL) and _allowed:
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_role_keyboard(user.id))
+            return
+        if not _allowed:
+            await update.message.reply_text(
+                "❌ هذا الإجراء خارج صلاحيات فئتك ("
+                + ROLE_LABELS.get(_gate_role, _gate_role) + ").",
+                reply_markup=get_role_keyboard(user.id),
+            )
+            return
 
     # ═══════════════════════════════════════════════════════════
     #  Handle admin buttons FIRST — before any state handler
@@ -7828,7 +8303,7 @@ async def handle_admin_message(update, context):
             conn = get_connection()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'customer')")
+                    cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer')")
                     users = [r[0] for r in cur.fetchall()]
                 conn.commit()
             except Exception:
@@ -7902,19 +8377,91 @@ async def handle_customer_message(update, context):
 
     # Handle customer buttons (clear state first)
     cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING, BTN_UNSHIPPED]
+
+    # ═══════════════════════════════════════════════════════════
+    #  🎯 بوابة الفئات لمسار العميل: البائع/الخارجي يمرّان فقط بما تسمح به فئتهما
+    # ═══════════════════════════════════════════════════════════
+    _cust_role = await asyncio.to_thread(_get_role, user.id)
+    _is_unshipped_txt = text.startswith(BTN_UNSHIPPED)
+    if _cust_role == ROLE_EXTERNAL:
+        # 🌍 البائع الخارجي: بحث فقط (زر البحث أو إرسال اسم السلعة) + إلغاء
+        if text in (BTN_CUST_CANCEL, BTN_CANCEL):
+            context.user_data.clear()
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_external_keyboard())
+            return
+        _known_btn = (
+            text in cust_buttons
+            or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
+                        BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
+                        BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CALC, BTN_CUST_ORDER_LEGACY)
+            or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
+            or text.startswith(BTN_PENDING_ADMIN) or text.startswith(BTN_UNSHIPPED)
+        )
+        if _known_btn:
+            await update.message.reply_text(
+                "❌ هذا الإجراء خارج صلاحيات فئتك ("
+                + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
+                reply_markup=get_external_keyboard(),
+            )
+            return
+    elif _cust_role == ROLE_SELLER:
+        # 🛍 البائع: بحث/اخراج/طلباتي/طلب توريد جديد/غير مشحونة/الحركة/فاتورة فقط
+        _seller_allowed = (BTN_SEARCH, BTN_CUST_REMOVE, BTN_CUST_ORDER, BTN_CUST_ORDER_LEGACY,
+                           BTN_CUST_MY_ORDERS, BTN_UNSHIPPED, BTN_CUST_MOVEMENTS,
+                           BTN_INVOICE, BTN_CUST_CANCEL, BTN_CANCEL)
+        _known_btn = (
+            text in cust_buttons
+            or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
+                        BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
+                        BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CALC)
+            or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
+            or text.startswith(BTN_PENDING_ADMIN)
+        )
+        if _known_btn and text not in _seller_allowed and not _is_unshipped_txt:
+            await update.message.reply_text(
+                "❌ هذا الإجراء خارج صلاحيات فئتك ("
+                + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
+                reply_markup=get_seller_main_keyboard(user.id),
+            )
+            return
+
+    # 🔍 بحث صريح (البائع/الخارجي/العميل): نفس حالة بحث العميل
+    if text == BTN_SEARCH:
+        _set_state(context, "waiting_cust_search")
+        await update.message.reply_text("🔍 اكتب اسم السلعة:", reply_markup=get_input_keyboard())
+        return
+
+    # 🛍 البائع: إنشاء فاتورة (نفس مسار فاتورة الإدارة) — ولغير البائع رفض صريح
+    if text == BTN_INVOICE:
+        if _get_role(user.id) == ROLE_SELLER:
+            _set_state(context, STATE_INVOICE_CUSTOMER)
+            context.user_data["invoice_items"] = []
+            await update.message.reply_text(
+                "\U0001f9fe \u0625\u0646\u0634\u0627\u0621 \u0641\u0627\u062a\u0648\u0631\u0629" + chr(10) + chr(10)
+                + "\U0001f464 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646 \u0623\u0648 \u0631\u0642\u0645 \u0647\u0627\u062a\u0641\u0647:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
+        else:
+            await update.message.reply_text(
+                "❌ هذا الإجراء غير متاح لفئتك.",
+                reply_markup=get_role_keyboard(user.id),
+            )
+        return
+
     if text in cust_buttons:
         context.user_data.clear()
         state = None
 
         if text == BTN_CUST_CANCEL:
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_role_keyboard(user.id))
             return
 
         if text == BTN_CUST_ALERT:
             await send_low_stock_list(update, context)
             return
 
-        if text == BTN_CUST_ORDER:
+        if text in (BTN_CUST_ORDER, BTN_CUST_ORDER_LEGACY):
             _set_state(context, "waiting_order_photo")
             await update.message.reply_text(
                 "📦 طلب توريد جديد\n\n"
@@ -7944,11 +8491,13 @@ async def handle_customer_message(update, context):
         if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
             # ── PERM GUARD ── صلاحية «غير المشحونة» لكل مستخدم على حدة:
             # حتى لو كتب الزر يدوياً لا يرى أي بيانات دون إذن المدير.
-            if not (is_admin(user.id) or can_unshipped(user.id)):
+            _uns_role = _get_role(user.id)
+            if not (is_admin(user.id) or can_unshipped(user.id)
+                    or _uns_role in (ROLE_SELLER, ROLE_STOCK)):
                 await update.message.reply_text(
                     "❌ لا تملك صلاحية الاطلاع على السلع غير المشحونة.\n"
                     "تواصل مع المدير لمنحك هذه الصلاحية.",
-                    reply_markup=get_customer_keyboard(user.id),
+                    reply_markup=get_role_keyboard(user.id),
                 )
                 return
             ship_view = can_ship(update.effective_user.id)
@@ -7968,7 +8517,7 @@ async def handle_customer_message(update, context):
     if state == "waiting_cust_search":
         if text == BTN_CUST_CANCEL:
             context.user_data.clear()
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_customer_keyboard())
+            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_role_keyboard(user.id))
             return
         await process_search(update, context, text, admin_view=False)
         context.user_data.clear()
@@ -8134,10 +8683,13 @@ async def route_message(update, context):
     text = update.message.text.strip()
     # ── Efficient: check role with single DB call instead of 4 ──
     db_error = False
+    _role = None
     try:
         db_user = await asyncio.to_thread(get_user, user.id)
-        is_adm = user.id in ADMIN_IDS or (db_user and db_user.get('role') == 'admin')
-        is_appr = is_adm or (db_user and db_user.get("role") in ("admin", "customer"))
+        # 🎯 نظام الفئات: role يحدد المسار واللوحة
+        _role = (db_user or {}).get("role") or ("admin" if user.id in ADMIN_IDS else "pending")
+        is_adm = _role in ("admin", "manager")
+        is_appr = is_adm or _role in ("stock", "seller", "external", "customer")
     except Exception as e:
         logging.error("[ROUTE] DB check failed: " + str(e))
         db_error = True
@@ -8153,13 +8705,19 @@ async def route_message(update, context):
         return
     if text == "/cancel":
         context.user_data.clear()
-        if is_adm:
-            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=await asyncio.to_thread(lambda: get_admin_keyboard(update.effective_user.id)))
-        else:
-            await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
+        await update.message.reply_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.", reply_markup=await asyncio.to_thread(lambda: get_role_keyboard(update.effective_user.id)))
         return
     await asyncio.to_thread(register_user, telegram_id=user.id, username=user.username, first_name=user.first_name)
     if is_adm:
+        await handle_admin_message(update, context)
+    elif _role == "stock":
+        # 📦 عامل المخزون: يمر عبر مسار الإدارة داخل بوابة الفئات (أزرار المخزون فقط)
+        await handle_admin_message(update, context)
+    elif _role == "seller" and (
+        text == BTN_INVOICE
+        or str(context.user_data.get("state") or "").startswith("waiting_invoice")
+    ):
+        # 🛍 البائع: مسار الفواتير فقط عبر مسار الإدارة المشروط
         await handle_admin_message(update, context)
     else:
         await handle_customer_message(update, context)
@@ -8476,7 +9034,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 async def _show_unshipped_sales(update, context, admin_view=True):
     """عرض السلع المباعة غير المشحونة. admin_view=True يعرض أزرار الشحن."""
     sales = get_unshipped_sales()
-    kb = get_admin_keyboard() if admin_view else get_customer_keyboard()
+    kb = get_role_keyboard(update.effective_user.id)
     if not sales:
         await update.message.reply_text(
             "✅ لا توجد سلع غير مشحونة.",
@@ -8663,7 +9221,7 @@ async def callback_admin_done_handler(update, context):
         await query.delete_message()
     except Exception:
         pass
-    await _send_themed(context.bot, query.message.chat_id, "✅ القائمة الرئيسية:", reply_markup=get_admin_keyboard())
+    await _send_themed(context.bot, query.message.chat_id, "✅ القائمة الرئيسية:", reply_markup=get_role_keyboard(query.from_user.id))
 
 
 async def callback_go_start_handler(update, context):
@@ -8724,10 +9282,10 @@ async def callback_go_start_handler(update, context):
                 "━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "⚡ تم التطوير بواسطة <a href=\"tg://resolve?screen=YOUSSEF_D1\">@YOUSSEF_D1</a>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_customer_keyboard(),
+                reply_markup=get_role_keyboard(user.id),
             )
         except Exception:
-            await query.message.reply_text("🔄 اضغط /start", reply_markup=get_customer_keyboard())
+            await query.message.reply_text("🔄 اضغط /start", reply_markup=get_role_keyboard(user.id))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -9298,6 +9856,11 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
+    # 🎯 نظام الفئات: اختيار فئة المستخدم الجديد + التفعيل بالفئة + إدارة الفئات من اللوحة
+    app.add_handler(CallbackQueryHandler(callback_pickrole_handler, pattern="^pickrole_"))
+    app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^approveas_"))
+    app.add_handler(CallbackQueryHandler(callback_role_menu_handler, pattern="^askrole_"))
+    app.add_handler(CallbackQueryHandler(callback_role_set_handler, pattern="^setrole_"))
     # خطوة التأكيد قبل تغيير أي دور + أدوات لوحة المستخدمين
     app.add_handler(CallbackQueryHandler(callback_users_ask_handler, pattern="^(askpromote|askdemote)_"))
     app.add_handler(CallbackQueryHandler(callback_users_cancel_handler, pattern="^users_cancel$"))
