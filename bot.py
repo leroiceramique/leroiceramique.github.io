@@ -7153,6 +7153,8 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     await _send(result_msg, get_admin_keyboard())
 
 
+async def callback_invoice_handler(update, context):
+    """Handle invoice-related callback queries."""
     query = update.callback_query
     _KB_ROLE_UID.set(query.from_user.id)
     # 🎯 الفواتير للمديرين والبائعين (البائع يدير فواتيره عبر نفس المسار)
