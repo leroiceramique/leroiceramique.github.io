@@ -2042,6 +2042,12 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             );
             CREATE INDEX IF NOT EXISTS idx_pending_deliveries_product ON pending_deliveries(product_id);
             CREATE INDEX IF NOT EXISTS idx_pending_deliveries_user ON pending_deliveries(user_id);
+            -- Migration: legacy databases created pending_deliveries before
+            -- v17 — CREATE TABLE IF NOT EXISTS does not add missing columns,
+            -- so every auto-reconcile UPDATE (... fulfilled_at = NOW()) was
+            -- failing silently and stale rows never healed. Ensure it exists.
+            ALTER TABLE pending_deliveries
+                ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ;
             -- Seed: add negative inventory update notification
             -- Seed: add negative inventory update notification
             INSERT INTO bot_updates (description) VALUES
@@ -4894,6 +4900,17 @@ async def process_seller_input(update, context, text):
                     msg += "\n\n⚠️ الكمية أصبحت سالبة — تم تسجيل " + str(additional_deficit) + " وحدة كطلب معلق"
                 except Exception as e:
                     logging.error("[PENDING] Failed to create: " + str(e))
+        if action == "add":
+            # (v19) تسوية تلقائية: فور زيادة المخزون غطِّ المنتظرين وأشعِرهم
+            try:
+                rec = await asyncio.to_thread(auto_reconcile_product, product_id, qty, user_id)
+                if rec and rec["fulfilled"]:
+                    await _send_fulfilled_notifications(context.bot, rec["fulfilled"])
+                    msg += ("\n🔔 تم إشعار " + str(len(rec["fulfilled"]))
+                            + " زبون منتظر بأن السلعة صارت متوفرة ("
+                            + str(rec["total_covered"]) + " وحدة)")
+            except Exception as rec_err:
+                logging.error("[PENDING] Reconcile after add failed: " + str(rec_err))
         if seller:
             msg += "\n👤 البائع: " + seller
         msg += "\n\n" + format_product_admin(updated)
@@ -8619,6 +8636,20 @@ async def handle_admin_message(update, context):
                 msg = "\u2705 \u062a\u0645\u062a \u0627\u0644\u0625\u0636\u0627\u0641\u0629!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             else:
                 msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+            if action == "add":
+                # (v19) تسوية تلقائية: فور زيادة المخزون غطِّ المنتظرين وأشعِرهم
+                try:
+                    rec = await asyncio.to_thread(
+                        auto_reconcile_product, product["id"], qty,
+                        db_user["id"] if db_user else None,
+                    )
+                    if rec and rec["fulfilled"]:
+                        await _send_fulfilled_notifications(context.bot, rec["fulfilled"])
+                        msg += ("\n🔔 تم إشعار " + str(len(rec["fulfilled"]))
+                                + " زبون منتظر بأن السلعة صارت متوفرة ("
+                                + str(rec["total_covered"]) + " وحدة)")
+                except Exception as rec_err:
+                    logging.error("[PENDING] Reconcile after quick-add failed: " + str(rec_err))
             pid = str(updated["id"])
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("\u2795 \u0625\u0636\u0627\u0641\u0629", callback_data="pact_add_" + pid),
@@ -8660,67 +8691,9 @@ async def handle_admin_message(update, context):
     elif state == STATE_SEARCH_ADMIN:
         await process_search(update, context, text, admin_view=True)
         return
-    elif state == "waiting_provide_qty":
-        product = context.user_data.get("provide_product")
-        if not product:
-            context.user_data.clear()
-            await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_admin_keyboard())
-            return
-        parsed = parse_crt_input(text)
-        if parsed is None:
-            unit = _get_unit_code(product["name"])
-            await update.message.reply_text("❌ أرسل عددا صحيحا.\nمثال: 10 أو 10" + unit, reply_markup=get_input_keyboard())
-            return
-        qty = parsed
-        try:
-            admin_db = get_user(user.id)
-            admin_id = admin_db["id"] if admin_db else None
-            updated = await asyncio.to_thread(db_update_quantity, product["id"], qty, "add")
-            if admin_db:
-                tx = log_transaction(product["id"], "add", qty, admin_db["id"], reason="توفير من الطلبات المعلقة")
-            icon = _product_status_icon(updated)
-            unit_ar = _get_unit_ar(updated["name"])
-            msg = (
-                "✅ تم توفير " + str(qty) + " " + unit_ar + " من " + updated["name"] + chr(10)
-                + "📦 المخزون الجديد: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
-            )
-            # Auto-reconcile pending deliveries
-            reconcile_result = await asyncio.to_thread(
-                auto_reconcile_product, product["id"], qty, admin_id
-            )
-            if reconcile_result and reconcile_result["fulfilled"]:
-                pname = reconcile_result["product_name"]
-                covered = reconcile_result["total_covered"]
-                remaining = reconcile_result["remaining_deficit"]
-                msg += chr(10) + chr(10) + "🔄 تمت تسوية العجز تلقائياً:"
-                msg += chr(10) + "   ✅ تم تغطية " + str(covered) + " وحدة"
-                if remaining > 0:
-                    msg += chr(10) + "   ⚠️ متبقي عجز: " + str(remaining)
-                else:
-                    msg += chr(10) + "   🎉 تم تغطية العجز بالكامل!"
-                # Notify customers
-                for f in reconcile_result["fulfilled"]:
-                    if f["user_tid"]:
-                        try:
-                            if f["fully"]:
-                                notif = (
-                                    "✅ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
-                                    + "⏳ طلبك المعلق تم تغطيته بالكامل ✓"
-                                )
-                            else:
-                                notif = (
-                                    "⏳ تم توفير " + str(f["qty"]) + " وحدة من " + pname + chr(10)
-                                    + "📏 المتبقي: " + str(f["remaining"]) + " وحدة"
-                                )
-                            await context.bot.send_message(chat_id=f["user_tid"], text=notif)
-                        except Exception:
-                            pass
-            await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-            await send_low_stock_alerts(context.bot)
-            _invalidate_product_cache()
-        except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ: " + str(e), reply_markup=get_input_keyboard())
-        return
+    # (v19) حُذفت حالة waiting_provide_qty — زر «توفير» في لوحة المعلق أصبح
+    # إشعاراً مباشراً بلا مطالبة بكتابة كمية؛ الإضافة تتم من «➕ إضافة كمية»
+    # والتسوية والإشعار تلقائيان على كل مسارات الإضافة.
     elif state == STATE_ALERT_MSG:
         alert_text = text.strip()
         if not alert_text:
@@ -9716,28 +9689,67 @@ async def callback_go_start_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 async def callback_provide_handler(update, context):
-    """Handle 'provide_<product_id>' — ask admin for quantity to add directly."""
+    """Handle 'provide_<product_id>' — عرض المنتظرين وإشعارهم عند التوفّر.
+
+    وفق «إشعار فقط»: لا يُسأل المدير عن كتابة كمية هنا ولا يُعدَّل المخزون
+    من هذا الزر — الإضافة تتم من «➕ إضافة كمية» كالمعتاد، وفور تغطية
+    الكمية للمنتظرين يُشعَرون تلقائياً (تسوية تلقائية على كل مسارات الإضافة).
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
     if not data.startswith("provide_"):
         return
-    product_id = int(data.split("_")[1])
+    try:
+        product_id = int(data.split("_")[1])
+    except (IndexError, ValueError):
+        return
     product = get_product_by_id(product_id)
     if not product:
         await query.message.reply_text("❌ السلعة غير موجودة.", reply_markup=get_admin_keyboard())
         return
     context.user_data.clear()
-    context.user_data["state"] = "waiting_provide_qty"
-    context.user_data["provide_product"] = dict(product)
+    admin_db = get_user(query.from_user.id)
+    admin_id = admin_db["id"] if admin_db else None
+    # تسوية موضعية فورية لهذه السلعة: أي منتظر غطاه المخزون الحالي يُشعَر الآن
+    healed = None
+    try:
+        healed = await asyncio.to_thread(auto_reconcile_product, product_id, 0, admin_id)
+        if healed and healed["fulfilled"]:
+            await _send_fulfilled_notifications(context.bot, healed["fulfilled"])
+    except Exception as heal_err:
+        logging.error("[PENDING] Provide self-heal failed: " + str(heal_err))
     unit_ar = _get_unit_ar(product["name"])
-    msg = (
-        "📦 توفير: " + product["name"] + chr(10)
-        + "📊 المخزون الحالي: " + str(product["quantity"]) + " " + unit_ar + chr(10)
-        + chr(10)
-        + "أرسل الكمية الواردة:"
-    )
-    await query.message.reply_text(msg, reply_markup=get_input_keyboard())
+    # من ينتظر الآن بعد التسوية؟
+    pendings = [p for p in get_all_pending_deliveries() if p["product_id"] == product_id]
+    if not pendings:
+        msg = "✅ لا يوجد زبائن منتظرون لهذه السلعة."
+        if healed and healed["fulfilled"]:
+            waiters_covered = []
+            for f in healed["fulfilled"]:
+                waiters_covered.append((f.get("user_name") or "زبون") + " (" + str(f["qty"]) + ")")
+            msg = ("🎉 تمت تغطية كل المنتظرين وإشعارهم تلقائياً:\n"
+                   "🔔 " + "، ".join(waiters_covered))
+        msg += "\n\n📊 المخزون الحالي: " + str(product["quantity"]) + " " + unit_ar
+        await query.message.reply_text(msg, reply_markup=get_admin_keyboard())
+        return
+    # ما زال هناك عجز حقيقي — اعرض الوضع بوضوح دون مطالبة بكتابة كمية
+    total_pending = sum(p["pending_qty"] for p in pendings)
+    stock_qty = product["quantity"]
+    waiters = []
+    for p in pendings:
+        waiters.append((p.get("user_fname") or p.get("user_name") or "مجهول") + " " + str(p["pending_qty"]))
+    real_deficit = max(0, total_pending - max(0, stock_qty))
+    lines = [
+        "📦 " + product["name"],
+        "📊 المخزون الحالي: " + str(stock_qty) + " " + unit_ar,
+        "⏳ زبائن منتظرون (" + str(len(pendings)) + "): " + "، ".join(waiters),
+        "⚠️ العجز الحقيقي: " + str(real_deficit) + " " + unit_ar + " — المخزون لا يكفيهم بعد",
+        "",
+        "💡 عند وصول البضاعة أضِفها من زر «➕ إضافة كمية»",
+        "🔔 فور تغطية الكمية للمنتظرين سيتم إشعارهم تلقائياً",
+    ]
+    await query.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
 
 
 async def _show_pending_admin(update, context):
@@ -9797,15 +9809,24 @@ async def _show_pending_admin(update, context):
     for pid, info in grouped.items():
         total_pending = sum(c["qty"] for c in info["customers"])
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(
-            "📦 " + info["name"]
-            + " — العجز: " + str(info["product_qty"])
-            + " (معلق: " + str(total_pending) + ")"
-        )
+        stock_qty = info["product_qty"]
+        unit_ar = _get_unit_ar(info["name"])
+        if stock_qty < 0:
+            lines.append(
+                "📦 " + info["name"]
+                + " — ⚠️ العجز الحقيقي: " + str(-stock_qty) + " " + unit_ar
+                + " | ⏳ منتظرون: " + str(total_pending) + " " + unit_ar
+            )
+        else:
+            lines.append(
+                "📦 " + info["name"]
+                + " — 📊 المخزون: " + str(stock_qty) + " " + unit_ar
+                + " | ⏳ منتظرون: " + str(total_pending) + " " + unit_ar
+            )
         for c in info["customers"]:
             lines.append("   ├─ 👤 " + c["name"] + ": منتظر " + str(c["qty"]) + " وحدة  ⏰ " + c["date"])
     lines.append("")
-    lines.append("💡 اضغط زر السلعة بالأسفل لتوفيرها مباشرة")
+    lines.append("💡 اضغط زر السلعة لعرض المنتظرين — وعند توفر البضاعة يُشعَرون تلقائياً")
     text = "\n".join(lines)
     # Split if too long for Telegram
     if len(text) > 4000:
