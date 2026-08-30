@@ -8975,6 +8975,7 @@ async def handle_customer_message(update, context):
                         chat_id=admin_id,
                         text=caption,
                         parse_mode=ParseMode.HTML,
+                        reply_markup=_incoming_order_keyboard(order_id),
                     )
                 except Exception:
                     pass
@@ -9866,6 +9867,17 @@ async def _show_pending_customer(update, context):
 #  INCOMING ORDERS DISPLAY & CALLBACKS
 # ═══════════════════════════════════════════════════════════
 
+def _incoming_order_keyboard(order_id):
+    """أزرار «جاهز / غير جاهز» لطلب توريد — واحدة للقائمة ولإشعارات الوصول
+    (صورة أو نص) حتى يعامل كل طلب بالطريقة نفسها لحظة وصوله."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ جاهز", callback_data="io_ready_" + str(order_id)),
+            InlineKeyboardButton("⏳ غير جاهز", callback_data="io_notready_" + str(order_id)),
+        ]
+    ])
+
+
 async def _show_admin_incoming_orders(update, context):
     """عرض طلبات التوريد - كل طلب برسالة منفصلة: صورة + أزرار جاهز/غير جاهز."""
     conn = get_connection()
@@ -9899,12 +9911,7 @@ async def _show_admin_incoming_orders(update, context):
             "  |  👤 " + req_name +
             "  |  📦 " + o["product_name"]
         )
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ جاهز", callback_data="io_ready_" + str(order_id)),
-                InlineKeyboardButton("⏳ غير جاهز", callback_data="io_notready_" + str(order_id)),
-            ]
-        ])
+        keyboard = _incoming_order_keyboard(order_id)
         if o.get("photo_file_id"):
             try:
                 await bot.send_photo(
@@ -9984,6 +9991,7 @@ async def handle_receipt_photo(update, context):
                     photo=file_id,
                     caption=caption,
                     parse_mode=ParseMode.HTML,
+                    reply_markup=_incoming_order_keyboard(order_id),
                 )
             except Exception:
                 pass
@@ -10015,11 +10023,12 @@ async def callback_incoming_order_handler(update, context):
         order_id = int(data.split("_")[-1])
         order = complete_incoming_order(order_id)
         if not order:
+            # لا يوجد رفض هنا: غالباً الطلب عولج مسبقاً من نسخة إشعار أخرى
             try:
-                await query.edit_message_caption(caption="❌ الطلب غير موجود.")
+                await query.edit_message_caption(caption="ℹ️ تمت معالجة هذا الطلب مسبقاً أو لم يعد متاحاً.")
             except Exception:
                 try:
-                    await query.edit_message_text("❌ الطلب غير موجود.")
+                    await query.edit_message_text("ℹ️ تمت معالجة هذا الطلب مسبقاً أو لم يعد متاحاً.")
                 except Exception:
                     pass
             return
