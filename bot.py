@@ -4218,10 +4218,11 @@ def get_stock_keyboard():
 
 
 def get_seller_main_keyboard(telegram_id=None):
-    """🛍 لوحة البائع: بحث/اخراج/فاتورة/طلب توريد جديد/طلباتي/غير مشحونة/الحركة."""
+    """🛍 لوحة البائع: بحث/اخراج/إضافة كمية/فاتورة/طلب توريد جديد/طلباتي/غير مشحونة/الحركة."""
     # غير المشحونة ظاهرة للبائع دائماً (فئة كاملة لا صلاحية فردية)
     rows = [
         [BTN_SEARCH, BTN_CUST_REMOVE],
+        [BTN_ADD_QTY],
         [BTN_INVOICE],
         [BTN_CUST_ORDER],
         [BTN_CUST_MY_ORDERS, BTN_UNSHIPPED],
@@ -4808,7 +4809,7 @@ def _get_unit_ar(product_name):
 async def _show_product_detail(update, context, product):
     p = product
     # 🎯 بوابة الفئات: الخارجي يرى التوفر فقط دون كميات أو أزرار،
-    # والبائع يرى الكمية مع زر الإخراج والسجل فقط (بدون إضافة).
+    # والبائع يرى الكمية مع الإضافة والإخراج والسجل (نفس صلاحيات البيع).
     try:
         _det_role = _get_role(update.effective_user.id)
     except Exception:
@@ -4835,9 +4836,10 @@ async def _show_product_detail(update, context, product):
     if _det_role == ROLE_SELLER:
         buttons = [
             [
+                InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
                 InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-                InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid),
             ],
+            [InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)],
         ]
     keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
@@ -5327,13 +5329,10 @@ async def callback_product_select_handler(update, context):
 
 async def callback_product_action_handler(update, context):
     query = update.callback_query
-    # 🎯 بوابة الفئات: الخارجي ممنوع نهائياً، والبائع يخرج فقط (لا يضيف)
+    # 🎯 بوابة الفئات: الخارجي ممنوع نهائياً؛ البائع يضيف ويخرج مثل مسار البيع
     _pact_role = _get_role(query.from_user.id)
     if _pact_role == ROLE_EXTERNAL:
         await query.answer("❌ هذا الإجراء غير متاح لفئتك.", show_alert=True)
-        return
-    if _pact_role == ROLE_SELLER and query.data.startswith("pact_add_"):
-        await query.answer("❌ الإضافة خارج صلاحيات فئة البائع.", show_alert=True)
         return
     _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
@@ -8347,8 +8346,8 @@ async def handle_customer_message(update, context):
             )
             return
     elif _cust_role == ROLE_SELLER:
-        # 🛍 البائع: بحث/اخراج/طلباتي/طلب توريد جديد/غير مشحونة/الحركة/فاتورة فقط
-        _seller_allowed = (BTN_SEARCH, BTN_CUST_REMOVE, BTN_CUST_ORDER, BTN_CUST_ORDER_LEGACY,
+        # 🛍 البائع: بحث/إضافة كمية/اخراج/طلباتي/طلب توريد جديد/غير مشحونة/الحركة/فاتورة فقط
+        _seller_allowed = (BTN_SEARCH, BTN_CUST_REMOVE, BTN_ADD_QTY, BTN_CUST_ORDER, BTN_CUST_ORDER_LEGACY,
                            BTN_CUST_MY_ORDERS, BTN_UNSHIPPED, BTN_CUST_MOVEMENTS,
                            BTN_INVOICE, BTN_CUST_CANCEL, BTN_CANCEL)
         _known_btn = (
@@ -8369,6 +8368,12 @@ async def handle_customer_message(update, context):
 
     # 🔍 بحث صريح (البائع/الخارجي/العميل): نفس حالة بحث العميل
     if text == BTN_SEARCH:
+        _set_state(context, "waiting_cust_search")
+        await update.message.reply_text("🔍 اكتب اسم السلعة:", reply_markup=get_input_keyboard())
+        return
+
+    # ➕ البائع: إضافة كمية — نفس مسار الإخراج (بحث ثم بطاقة السلعة)
+    if text == BTN_ADD_QTY:
         _set_state(context, "waiting_cust_search")
         await update.message.reply_text("🔍 اكتب اسم السلعة:", reply_markup=get_input_keyboard())
         return
