@@ -940,81 +940,6 @@ def set_extract_permission(telegram_id, allowed):
         release_connection(conn)
 
 
-def can_ship(telegram_id):
-    """Check if user has shipping permission."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT can_ship FROM users WHERE telegram_id = %s", (telegram_id,))
-            row = cur.fetchone()
-        conn.commit()
-        return bool(row and row["can_ship"])
-    except Exception as e:
-        conn.rollback()
-        logging.error("[DB] can_ship check failed: " + str(e), exc_info=True)
-        return False
-    finally:
-        release_connection(conn)
-
-
-def set_ship_permission(telegram_id, allowed):
-    """Grant or revoke shipping permission."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET can_ship = %s WHERE telegram_id = %s RETURNING id",
-                (allowed, telegram_id),
-            )
-            updated = cur.fetchone() is not None
-        conn.commit()
-        return updated
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-def can_unshipped(telegram_id):
-    """Check if user has unshipped-view permission.
-
-    صلاحية الاطلاع على السلع غير المشحونة: تُمنح لكل مستخدم على حدة
-    من لوحة المستخدمين. المدراء لا يحتاجونها لأن قائمة الإدارة تتيحها دائماً."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT can_unshipped FROM users WHERE telegram_id = %s", (telegram_id,))
-            row = cur.fetchone()
-        conn.commit()
-        return bool(row and row["can_unshipped"])
-    except Exception as e:
-        conn.rollback()
-        logging.error("[DB] can_unshipped check failed: " + str(e), exc_info=True)
-        return False
-    finally:
-        release_connection(conn)
-
-
-def set_unshipped_permission(telegram_id, allowed):
-    """Grant or revoke unshipped-view permission."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET can_unshipped = %s WHERE telegram_id = %s RETURNING id",
-                (allowed, telegram_id),
-            )
-            updated = cur.fetchone() is not None
-        conn.commit()
-        return updated
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
 def create_extraction_request(product_id, quantity, requester_id):
     """Create a new extraction request (status: pending)."""
     conn = get_connection()
@@ -1151,7 +1076,6 @@ if not OWNER_IDS:
 
 # ── Security codes: من الأفضل أن تُضبط عبر متغيرات البيئة في الإنتاج ──
 # القيم الافتراضية محفوظة للتوافق مع النشر الحالي فقط.
-SHIP_ALL_SECURITY_CODE = os.getenv("SHIP_ALL_SECURITY_CODE", "0000")
 RESET_STOCK_PIN = os.getenv("RESET_STOCK_PIN", "5614")
 
 _previously_low_stock = {}  # {product_id: product_dict}
@@ -1262,7 +1186,7 @@ def _emergency_full_backup(url):
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_unshipped, first_name, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -1272,8 +1196,6 @@ def _emergency_full_backup(url):
             extraction_requests = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM incoming_orders ORDER BY id")
             incoming_orders = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM unshipped_sales ORDER BY id")
-            unshipped_sales = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
             pending_deliveries = [dict(r) for r in cur.fetchall()]
         conn.commit()
@@ -1287,7 +1209,6 @@ def _emergency_full_backup(url):
             "invoice_items": invoice_items,
             "extraction_requests": extraction_requests,
             "incoming_orders": incoming_orders,
-            "unshipped_sales": unshipped_sales,
             "pending_deliveries": pending_deliveries,
         }
         logging.info("[DB] FULL emergency backup from " + url[:50] + "... (" + str(len(products)) + " products, " + str(len(transactions)) + " txns)")
@@ -1746,7 +1667,6 @@ def get_offline_queue_count():
         return len(_offline_queue)
 
 
-
 SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     id          SERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE NOT NULL,
@@ -1756,8 +1676,6 @@ SCHEMA_SQL = """\nCREATE TABLE IF NOT EXISTS users (
     requested_role VARCHAR(20) DEFAULT NULL,
     active      BOOLEAN NOT NULL DEFAULT TRUE,
     can_extract       BOOLEAN NOT NULL DEFAULT FALSE,
-    can_ship         BOOLEAN NOT NULL DEFAULT FALSE,
-    can_unshipped     BOOLEAN NOT NULL DEFAULT FALSE,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -1865,21 +1783,6 @@ CREATE INDEX IF NOT EXISTS idx_pending_deliveries_product ON pending_deliveries(
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_user ON pending_deliveries(user_id);
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_pending ON pending_deliveries(product_id) WHERE pending_qty > 0;
 
-CREATE TABLE IF NOT EXISTS unshipped_sales (
-    id            SERIAL PRIMARY KEY,
-    transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
-    product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
-    product_name  VARCHAR(500) NOT NULL,
-    quantity      INTEGER NOT NULL,
-    sold_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    seller_name   VARCHAR(255),
-    sold_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    shipped       BOOLEAN NOT NULL DEFAULT FALSE,
-    shipped_at    TIMESTAMPTZ,
-    shipped_by    INTEGER REFERENCES users(id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS idx_unshipped_sales_product ON unshipped_sales(product_id);
-CREATE INDEX IF NOT EXISTS idx_unshipped_sales_unshipped ON unshipped_sales(product_id) WHERE shipped = FALSE;
 """
 
 
@@ -1897,6 +1800,8 @@ def init_db():
                         "ON CONFLICT (role, perm) DO NOTHING",
                         (_seed_role, _seed_perm),
                     )
+            # v20: تنظيف صف صلاحية unshipped من القاعدة (النظام أُزيل)
+            cur.execute("DELETE FROM role_permissions WHERE perm = 'unshipped'")
             # Migration: add 'pending' role for existing databases
             cur.execute("""\n                DO $$ BEGIN
                     ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
@@ -1908,16 +1813,6 @@ def init_db():
                 -- Migration: add can_extract column
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
-                EXCEPTION WHEN OTHERS THEN NULL;
-                END $$;
-                -- Migration: add can_ship column
-                DO $$ BEGIN
-                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_ship BOOLEAN NOT NULL DEFAULT FALSE;
-                EXCEPTION WHEN OTHERS THEN NULL;
-                END $$;
-                -- Migration: add can_unshipped column (صلاحية الاطلاع على السلع غير المشحونة)
-                DO $$ BEGIN
-                    ALTER TABLE users ADD COLUMN IF NOT EXISTS can_unshipped BOOLEAN NOT NULL DEFAULT FALSE;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
                 -- Migration: add first_name column for auto-update display names
@@ -1980,11 +1875,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             -- Migration: history preservation on product delete —
-            -- detach unshipped_sales/pending_deliveries rows instead of wiping them.
-            DO $$ BEGIN
-                ALTER TABLE unshipped_sales ALTER COLUMN product_id DROP NOT NULL;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
+            -- detach pending_deliveries rows instead of wiping them.
             DO $$ BEGIN
                 ALTER TABLE pending_deliveries ALTER COLUMN product_id DROP NOT NULL;
             EXCEPTION WHEN OTHERS THEN NULL;
@@ -2055,28 +1946,6 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             ON CONFLICT DO NOTHING;
             INSERT INTO bot_updates (description) VALUES
             ('🔍 بحث تلقائي: اكتب أي اسم سلعة مباشرة وسيتم البحث تلقائياً' || chr(10) || chr(10) || '⚙️ تحسينات: زيادة سرعة الاستجابة وإصلاح مشكلة الاتصال')
-            ON CONFLICT DO NOTHING;
-            -- Migration: create unshipped_sales table
-            DO $$ BEGIN
-                CREATE TABLE IF NOT EXISTS unshipped_sales (
-                    id            SERIAL PRIMARY KEY,
-                    transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
-                    product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
-                    product_name  VARCHAR(500) NOT NULL,
-                    quantity      INTEGER NOT NULL,
-                    sold_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-                    seller_name   VARCHAR(255),
-                    sold_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    shipped       BOOLEAN NOT NULL DEFAULT FALSE,
-                    shipped_at    TIMESTAMPTZ,
-                    shipped_by    INTEGER REFERENCES users(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_unshipped_sales_product ON unshipped_sales(product_id);
-                CREATE INDEX IF NOT EXISTS idx_unshipped_sales_unshipped ON unshipped_sales(product_id) WHERE shipped = FALSE;
-            EXCEPTION WHEN OTHERS THEN NULL;
-            END $$;
-            INSERT INTO bot_updates (description) VALUES
-            ('📤 تتبع الشحن: السلع المباعة تظهر في قائمة غير المشحونة' || chr(10) || chr(10) || '📤 زر جديد: غير المشحونة' || chr(10) || '✅ عند البيع يتم تسجيل السلعة تلقائياً' || chr(10) || '📦 اضغط تم الشحن عندما يتم إخراجها من المخزن')
             ON CONFLICT DO NOTHING;
             """)
             # Migration: ensure all ADMIN_IDS users always get admin role
@@ -2153,7 +2022,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 ) m
                 WHERE t.product_id = m.dup_id
             """
-            for _t in ("transactions", "unshipped_sales", "extraction_requests", "invoice_items"):
+            for _t in ("transactions", "extraction_requests", "invoice_items"):
                 cur.execute(_dup_remap_sql.format(table=_t))
             cur.execute(
                 "DELETE FROM products p USING products q "
@@ -2172,7 +2041,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                 logging.warning("[DB] product name unique index deferred: " + str(idx_err))
 
             # Migration (legacy DBs): stop accidental data loss on product deletion.
-            # - transactions / unshipped_sales history must NOT vanish with the product.
+            # - transactions history must NOT vanish with the product.
             # - invoice_items keeps billing rows alive with a detached product reference.
             # Constraint names follow PostgreSQL defaults (table_col_fkey), each guarded
             # in its own DO block so one legacy oddity never breaks initialization.
@@ -2181,14 +2050,6 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                     ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_product_id_fkey;
                     ALTER TABLE transactions
                         ADD CONSTRAINT transactions_product_id_fkey
-                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;
-                EXCEPTION WHEN OTHERS THEN NULL; END $$;
-            """)
-            cur.execute("""
-                DO $$ BEGIN
-                    ALTER TABLE unshipped_sales DROP CONSTRAINT IF EXISTS unshipped_sales_product_id_fkey;
-                    ALTER TABLE unshipped_sales
-                        ADD CONSTRAINT unshipped_sales_product_id_fkey
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;
                 EXCEPTION WHEN OTHERS THEN NULL; END $$;
             """)
@@ -2270,7 +2131,6 @@ def register_user(telegram_id, username=None, first_name=None):
         raise
     finally:
         release_connection(conn)
-
 
 
 _STATE_TIMEOUT_SECONDS = 600
@@ -2564,7 +2424,7 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, can_ship, can_unshipped, first_name, created_at FROM users ORDER BY id")
+            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -2574,8 +2434,6 @@ def db_export_backup():
             extraction_requests = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM incoming_orders ORDER BY id")
             incoming_orders = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM unshipped_sales ORDER BY id")
-            unshipped_sales = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
             pending_deliveries = [dict(r) for r in cur.fetchall()]
         conn.commit()
@@ -2589,7 +2447,6 @@ def db_export_backup():
             "invoice_items": invoice_items,
             "extraction_requests": extraction_requests,
             "incoming_orders": incoming_orders,
-            "unshipped_sales": unshipped_sales,
             "pending_deliveries": pending_deliveries,
         }
     except Exception:
@@ -2614,13 +2471,14 @@ def db_import_backup(data):
             cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
-            cur.execute("DELETE FROM unshipped_sales")
+            if _unshipped_table_exists(cur):
+                cur.execute("DELETE FROM unshipped_sales")
             cur.execute("DELETE FROM pending_deliveries")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
             cur.execute("DELETE FROM users")
 
-            # ── Import users (single INSERT with can_extract + can_ship + first_name) ──
+            # ── Import users (single INSERT with can_extract + first_name) ──
             # Deduplicate by telegram_id BEFORE inserting: a duplicated/corrupted backup
             # must never create two accounts for the same person.
             users = data.get("users", [])
@@ -2636,13 +2494,11 @@ def db_import_backup(data):
                         u.get("role", "customer"), u.get("active", True),
                         u.get("created_at"),
                         u.get("can_extract", False),
-                        u.get("can_ship", False),
-                        u.get("can_unshipped", False),
                         u.get("first_name"),
                     ))
                 cur.executemany("""
-                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, can_ship, can_unshipped, first_name)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, first_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (telegram_id) DO NOTHING
                 """, rows)
                 max_uid = max(u["id"] for u in users)
@@ -2739,23 +2595,6 @@ def db_import_backup(data):
                 """, rows)
                 max_ioid = max(io["id"] for io in inc_orders)
                 cur.execute("SELECT setval('incoming_orders_id_seq', %s)", (max_ioid,))
-
-            # ── Import unshipped_sales ──
-            unshipped = data.get("unshipped_sales", [])
-            if unshipped:
-                rows = [
-                    (us["id"], us.get("transaction_id"), us["product_id"], us["product_name"],
-                     us["quantity"], us.get("sold_by"), us.get("seller_name"),
-                     us.get("shipped", False), us.get("shipped_at"), us.get("shipped_by"),
-                     us.get("sold_at"))
-                    for us in unshipped
-                ]
-                cur.executemany("""
-                    INSERT INTO unshipped_sales (id, transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped, shipped_at, shipped_by, sold_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, rows)
-                max_usid = max(us["id"] for us in unshipped)
-                cur.execute("SELECT setval('unshipped_sales_id_seq', %s)", (max_usid,))
 
             # ── Import pending_deliveries ──
             pend_delivs = data.get("pending_deliveries", [])
@@ -3038,14 +2877,25 @@ def db_update_quantity(product_id, change, transaction_type):
         release_connection(conn)
 
 
+def _unshipped_table_exists(cur):
+    """v20 أزال نظام unshipped_sales؛ الجدول قد يبقى أرشيفاً في قواعد
+    بيانات ما قبل v20 ويغيب عن القواعد الجديدة — يُفحص وجوده قبل أي لمس."""
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND table_name = 'unshipped_sales'"
+    )
+    return cur.fetchone() is not None
+
 
 def db_delete_product(product_id):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # Preserve business history: detach sales/delivery records from
-            # this product BEFORE deleting it, so nothing is cascade-swept.
-            cur.execute("UPDATE unshipped_sales SET product_id = NULL WHERE product_id = %s", (product_id,))
+            # Preserve business history: detach delivery records from this
+            # product BEFORE deleting it, so nothing is cascade-swept.
+            # (جدول unshipped_sales أُرشِف في v20 — يُفكّ ارتباطه فقط إن وُجد)
+            if _unshipped_table_exists(cur):
+                cur.execute("UPDATE unshipped_sales SET product_id = NULL WHERE product_id = %s", (product_id,))
             cur.execute("UPDATE pending_deliveries SET product_id = NULL WHERE product_id = %s", (product_id,))
             cur.execute("DELETE FROM products WHERE id = %s RETURNING id", (product_id,))
             deleted = cur.fetchone() is not None
@@ -3067,8 +2917,9 @@ def db_bulk_delete_products(id_list):
             not_found = []
             # Preserve business history for every product being removed.
             if id_list:
-                cur.execute("UPDATE unshipped_sales SET product_id = NULL "
-                            "WHERE product_id = ANY(%s)", (list(id_list),))
+                if _unshipped_table_exists(cur):
+                    cur.execute("UPDATE unshipped_sales SET product_id = NULL "
+                                "WHERE product_id = ANY(%s)", (list(id_list),))
                 cur.execute("UPDATE pending_deliveries SET product_id = NULL "
                             "WHERE product_id = ANY(%s)", (list(id_list),))
             for pid in id_list:
@@ -3472,170 +3323,6 @@ def get_pending_deliveries_count():
         release_connection(conn)
 
 
-# ═══════════════════════════════════════════════════════════
-#  UNSHIPPED SALES (تتبع الشحن)
-# ═══════════════════════════════════════════════════════════
-
-def create_unshipped_sale(transaction_id, product_id, product_name, quantity, sold_by, seller_name=None, shipped=False, shipped_by=None):
-    """Create a sale record. shipped=True means already shipped (owner sale), False means pending shipment."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if shipped:
-                cur.execute(
-                    "INSERT INTO unshipped_sales (transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped, shipped_at, shipped_by) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW(), %s) RETURNING *",
-                    (transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped_by),
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO unshipped_sales (transaction_id, product_id, product_name, quantity, sold_by, seller_name) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
-                    (transaction_id, product_id, product_name, quantity, sold_by, seller_name),
-                )
-            row = cur.fetchone()
-        conn.commit()
-        return dict(row) if row else None
-    except Exception as e:
-        conn.rollback()
-        logging.error("[UNSHIPPED] Failed to create: " + str(e))
-        return None
-    finally:
-        release_connection(conn)
-
-
-def get_unshipped_sales():
-    """Get all unshipped sales ordered by sold_at ASC."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT us.*, u.first_name AS seller_first_name, u.username AS seller_username "
-                "FROM unshipped_sales us "
-                "LEFT JOIN users u ON u.id = us.sold_by "
-                "WHERE us.shipped = FALSE "
-                "ORDER BY us.sold_at ASC"
-            )
-            rows = cur.fetchall()
-        conn.commit()
-        return [dict(r) for r in rows]
-    except Exception:
-        conn.rollback()
-        return []
-    finally:
-        release_connection(conn)
-
-
-def get_unshipped_count():
-    """Get count of unshipped sale records."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM unshipped_sales WHERE shipped = FALSE")
-            count = cur.fetchone()[0]
-        conn.commit()
-        return count
-    except Exception:
-        conn.rollback()
-        return 0
-    finally:
-        release_connection(conn)
-
-
-def mark_shipped_product(product_id, shipped_by):
-    """Mark all unshipped sales for a product as shipped. Returns count marked."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE unshipped_sales SET shipped = TRUE, shipped_at = NOW(), shipped_by = %s "
-                "WHERE product_id = %s AND shipped = FALSE",
-                (shipped_by, product_id),
-            )
-            count = cur.rowcount
-        conn.commit()
-        return count
-    except Exception as e:
-        conn.rollback()
-        logging.error("[UNSHIPPED] mark_shipped failed: " + str(e))
-        return 0
-    finally:
-        release_connection(conn)
-
-
-def mark_shipped_partial(product_id, ship_qty, shipped_by):
-    """Mark up to ship_qty as shipped FIFO. Returns (shipped_count, shipped_qty_actual)."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Get unshipped records for this product ordered by sold_at ASC (FIFO)
-            cur.execute(
-                "SELECT * FROM unshipped_sales WHERE product_id = %s AND shipped = FALSE ORDER BY sold_at ASC",
-                (product_id,)
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-
-            remaining = ship_qty
-            shipped_count = 0
-            for row in rows:
-                if remaining <= 0:
-                    break
-                if row["quantity"] <= remaining:
-                    # Ship entire record
-                    cur.execute(
-                        "UPDATE unshipped_sales SET shipped = TRUE, shipped_at = NOW(), shipped_by = %s WHERE id = %s",
-                        (shipped_by, row["id"]),
-                    )
-                    remaining -= row["quantity"]
-                    shipped_count += 1
-                else:
-                    # Partial: reduce quantity, create shipped record for the shipped portion
-                    new_qty = row["quantity"] - remaining
-                    cur.execute(
-                        "UPDATE unshipped_sales SET quantity = %s WHERE id = %s",
-                        (new_qty, row["id"]),
-                    )
-                    # Insert shipped portion
-                    cur.execute(
-                        "INSERT INTO unshipped_sales (transaction_id, product_id, product_name, quantity, sold_by, seller_name, shipped, shipped_at, shipped_by, sold_at) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW(), %s, %s)",
-                        (row["transaction_id"], row["product_id"], row["product_name"],
-                         remaining, row["sold_by"], row["seller_name"], shipped_by, row["sold_at"]),
-                    )
-                    shipped_count += 1
-                    remaining = 0
-
-        conn.commit()
-        return shipped_count, ship_qty - remaining
-    except Exception as e:
-        conn.rollback()
-        logging.error("[UNSHIPPED] mark_shipped_partial failed: " + str(e))
-        return 0, 0
-    finally:
-        release_connection(conn)
-
-
-def mark_all_shipped(shipped_by):
-    """Mark ALL unshipped sales as shipped. Returns count marked."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE unshipped_sales SET shipped = TRUE, shipped_at = NOW(), shipped_by = %s "
-                "WHERE shipped = FALSE",
-                (shipped_by,),
-            )
-            count = cur.rowcount
-        conn.commit()
-        return count
-    except Exception as e:
-        conn.rollback()
-        logging.error("[UNSHIPPED] mark_all_shipped failed: " + str(e))
-        return 0
-    finally:
-        release_connection(conn)
-
-
 def get_admin_last_transaction(admin_tid):
     """Get the admin's most recent non-reconcile transaction."""
     conn = get_connection()
@@ -3682,7 +3369,6 @@ def get_transactions(limit=20, offset=0):
         raise
     finally:
         release_connection(conn)
-
 
 
 def get_product_transactions(product_id, limit=30):
@@ -3803,8 +3489,6 @@ STATE_WAITING_SELLER = "waiting_seller_name"
 STATE_SELLER_ACTION = "seller_action"  # stores 'add' or 'remove'
 STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
-STATE_SHIP_QTY = "waiting_ship_qty"
-STATE_SHIP_ALL_CODE = "waiting_ship_all_code"
 STATE_ADD_TYPE = "waiting_add_type"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
@@ -3846,7 +3530,6 @@ BTN_CUST_ORDER_LEGACY = "📦 طلب توريد"  # توافق لوحات الإ
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
-BTN_UNSHIPPED = "📤 غير المشحونة"
 
 # ═══════════════════════════════════════════════════════════
 #  نظام الفئات (الأدوار) — ROLES SYSTEM
@@ -3876,8 +3559,8 @@ ROLE_PICK_ORDER = (ROLE_SELLER, ROLE_STOCK, ROLE_MANAGER, ROLE_EXTERNAL)
 
 # أزرار لوحة الإدارة المسموحة لعامل المخزون (تُفحص في بوابة الفئات)
 STOCK_ADMIN_BTNS = (BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
-                    BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_PENDING_ADMIN, BTN_UNSHIPPED)
-STOCK_ADMIN_PREFIXES = (BTN_PENDING_ADMIN, BTN_UNSHIPPED)
+                    BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_PENDING_ADMIN)
+STOCK_ADMIN_PREFIXES = (BTN_PENDING_ADMIN,)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3897,7 +3580,6 @@ PERM_REMOVE       = "remove"        # ➖ إخراج كمية
 PERM_INVOICE      = "invoice"       # 🧾 إنشاء فاتورة
 PERM_SUPPLY_ORDER = "supply_order"  # 📦 طلب توريد جديد
 PERM_MY_ORDERS    = "my_orders"     # 📋 طلباتي
-PERM_UNSHIPPED    = "unshipped"     # 📤 غير المشحونة
 PERM_MOVEMENTS    = "movements"     # 📋 الحركة
 PERM_ADD_PRODUCT  = "add_product"   # 📦 إضافة سلعة
 PERM_EDIT_PRODUCT = "edit_product"  # ✏️ تعديل سلعة
@@ -3911,7 +3593,6 @@ PERM_LABELS = {
     PERM_INVOICE:      "🧾 إنشاء فاتورة",
     PERM_SUPPLY_ORDER: "📦 طلب توريد جديد",
     PERM_MY_ORDERS:    "📋 طلباتي",
-    PERM_UNSHIPPED:    "📤 غير المشحونة",
     PERM_MOVEMENTS:    "📋 الحركة",
     PERM_ADD_PRODUCT:  "📦 إضافة سلعة",
     PERM_EDIT_PRODUCT: "✏️ تعديل سلعة",
@@ -3922,9 +3603,9 @@ PERM_LABELS = {
 # الصلاحيات القابلة للإدارة لكل فئة (= الافتراضي المفعّل عند أول تشغيل)
 ROLE_PERM_CATALOG = {
     ROLE_SELLER: (PERM_SEARCH, PERM_ADD_QTY, PERM_REMOVE, PERM_INVOICE,
-                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_UNSHIPPED, PERM_MOVEMENTS),
+                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS),
     ROLE_STOCK:  (PERM_ADD_QTY, PERM_ADD_PRODUCT, PERM_REMOVE, PERM_EDIT_PRODUCT,
-                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING, PERM_UNSHIPPED),
+                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING),
     ROLE_EXTERNAL: (PERM_SEARCH,),
 }
 
@@ -3939,7 +3620,6 @@ ROLE_BTN_PERM_MAP = {
         BTN_CUST_ORDER:        PERM_SUPPLY_ORDER,
         BTN_CUST_ORDER_LEGACY: PERM_SUPPLY_ORDER,
         BTN_CUST_MY_ORDERS:    PERM_MY_ORDERS,
-        BTN_UNSHIPPED:         PERM_UNSHIPPED,
         BTN_CUST_MOVEMENTS:    PERM_MOVEMENTS,
     },
     ROLE_STOCK: {
@@ -3950,7 +3630,6 @@ ROLE_BTN_PERM_MAP = {
         BTN_MOVEMENTS:     PERM_MOVEMENTS,
         BTN_LOW_STOCK:     PERM_LOW_STOCK,
         BTN_PENDING_ADMIN: PERM_PENDING,
-        BTN_UNSHIPPED:     PERM_UNSHIPPED,
     },
     ROLE_EXTERNAL: {
         BTN_SEARCH: PERM_SEARCH,
@@ -4046,8 +3725,6 @@ def _btn_perm_ok(role, text):
         # العدادات الديناميكية (نص الزر + عداد بين قوسين)
         if text.startswith(BTN_PENDING_ADMIN) and PERM_PENDING in _map.values():
             _perm = PERM_PENDING
-        elif text.startswith(BTN_UNSHIPPED) and PERM_UNSHIPPED in _map.values():
-            _perm = PERM_UNSHIPPED
     if _perm is None:
         return False  # زر معروف خارج لوحة الفئة → مرفوض
     return role_perm_enabled(role, _perm)
@@ -4448,7 +4125,6 @@ def set_bot_setting(key, value):
         release_connection(conn)
 
 
-
 # 🎯 سياق المستخدم الحالي: تضبطه نقاط الدخول (متعقب الرسائل + معالجات الكولباك)
 # كي تعيد get_admin_keyboard لوحة الفئة الصحيحة تلقائياً لغير المديرين
 # بدل تسريب لوحة الإدارة الكاملة لعامل المخزون/البائع/الخارجي.
@@ -4466,7 +4142,6 @@ def get_admin_keyboard(user_id=None):
     # عداد طلبات التوريد المعلّقة
     incoming_count = 0
     pending_deliveries_count = 0
-    unshipped_count = 0
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -4478,14 +4153,11 @@ def get_admin_keyboard(user_id=None):
             pending_users_count = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0")
             pending_deliveries_count = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM unshipped_sales WHERE shipped = FALSE")
-            unshipped_count = cur.fetchone()[0]
         conn.commit()
     except Exception:
         conn.rollback()
         pending_users_count = 0
         pending_deliveries_count = 0
-        unshipped_count = 0
     finally:
         release_connection(conn)
 
@@ -4493,7 +4165,6 @@ def get_admin_keyboard(user_id=None):
     users_btn = ("⚙️ المستخدمين (" + str(pending_users_count) + ")") if pending_users_count > 0 else BTN_USERS
     incoming_btn = ("🚚 طلبات التوريد (" + str(incoming_count) + ")") if incoming_count > 0 else BTN_INCOMING
     pending_btn = ("🔴 الطلبات المعلقة (" + str(pending_deliveries_count) + ")") if pending_deliveries_count > 0 else BTN_PENDING_ADMIN
-    unshipped_btn = ("📤 غير المشحونة (" + str(unshipped_count) + ")") if unshipped_count > 0 else BTN_UNSHIPPED
 
     rows = [
         [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY],
@@ -4501,7 +4172,7 @@ def get_admin_keyboard(user_id=None):
         [users_btn, BTN_BACKUP, BTN_ALERT],
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
-        [unshipped_btn, BTN_RESET_STOCK],
+        [BTN_RESET_STOCK],
         [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -4516,14 +4187,8 @@ def get_seller_keyboard():
     return ReplyKeyboardMarkup([[BTN_SKIP], [BTN_CANCEL]], resize_keyboard=True)
 
 
-
-
-
 def get_customer_keyboard(telegram_id=None):
-    """لوحة العميل.
-
-    عند تمرير telegram_id تُخفى زر «غير المشحونة» عن غير المصرّح لهم
-    (can_unshipped). عند عدم التمرير يبقى السلوك القديم كما هو."""
+    """لوحة العميل."""
     rows = [
         [BTN_CUST_ADD, BTN_CUST_REMOVE],
         [BTN_CUST_ORDER],
@@ -4532,8 +4197,6 @@ def get_customer_keyboard(telegram_id=None):
         [BTN_CUST_MOVEMENTS],
         [BTN_CUST_CANCEL],
     ]
-    if telegram_id is None or is_admin(telegram_id) or can_unshipped(telegram_id):
-        rows.insert(-1, [BTN_UNSHIPPED])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -4577,8 +4240,6 @@ def get_stock_keyboard():
     _r4 = []
     if perms.get(PERM_PENDING):
         _r4.append(BTN_PENDING_ADMIN)
-    if perms.get(PERM_UNSHIPPED):
-        _r4.append(BTN_UNSHIPPED)
     if _r4:
         rows.append(_r4)
     rows.append([BTN_CUST_CANCEL])
@@ -4606,8 +4267,6 @@ def get_seller_main_keyboard(telegram_id=None):
     _r2 = []
     if perms.get(PERM_MY_ORDERS):
         _r2.append(BTN_CUST_MY_ORDERS)
-    if perms.get(PERM_UNSHIPPED):
-        _r2.append(BTN_UNSHIPPED)
     if _r2:
         rows.append(_r2)
     if perms.get(PERM_MOVEMENTS):
@@ -4805,7 +4464,8 @@ def db_reset_all_stock():
             cur.execute("DELETE FROM invoices")
             cur.execute("DELETE FROM extraction_requests")
             cur.execute("DELETE FROM incoming_orders")
-            cur.execute("DELETE FROM unshipped_sales")
+            if _unshipped_table_exists(cur):
+                cur.execute("DELETE FROM unshipped_sales")
             cur.execute("DELETE FROM pending_deliveries")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
@@ -4816,7 +4476,8 @@ def db_reset_all_stock():
             cur.execute("SELECT setval('invoice_items_id_seq', 1, false)")
             cur.execute("SELECT setval('extraction_requests_id_seq', 1, false)")
             cur.execute("SELECT setval('incoming_orders_id_seq', 1, false)")
-            cur.execute("SELECT setval('unshipped_sales_id_seq', 1, false)")
+            if _unshipped_table_exists(cur):
+                cur.execute("SELECT setval('unshipped_sales_id_seq', 1, false)")
             cur.execute("SELECT setval('pending_deliveries_id_seq', 1, false)")
         conn.commit()
     except Exception:
@@ -5089,8 +4750,6 @@ async def process_delete_product(update, context, text, telegram_id):
     context.user_data.clear()
 
 
-
-
 async def process_search(update, context, text, admin_view=False):
     if not text:
         await update.message.reply_text(
@@ -5327,13 +4986,10 @@ def _build_movements_text(rows):
                 line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             else:
                 # Blue 🔵 if this product has unfulfilled pending deliveries (deficit),
-                # red 🔴 otherwise. The "- quantity" sign is shown only for unshipped sales.
-                is_pending_unshipped = r.get("is_unshipped")
+                # red 🔴 otherwise.
                 has_pending_deficit = r.get("has_pending_deficit")
                 if has_pending_deficit:
                     line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
-                elif is_pending_unshipped:
-                    line = "🔴 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
                 else:
                     line = "🔴 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             lines.append(line)
@@ -5358,12 +5014,10 @@ def _fetch_today_movements():
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
                 "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped, "
                 "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0)) AS has_pending_deficit "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
                 "WHERE t.date >= CURRENT_DATE AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
                 "ORDER BY t.date DESC")
             col_names = [desc[0] for desc in cur.description]
@@ -5377,8 +5031,6 @@ def _fetch_today_movements():
         release_connection(conn)
 
 
-
-
 def _fetch_movements_by_date(target_date):
     """Fetch movements for a specific date from DB."""
     conn = get_connection()
@@ -5387,12 +5039,10 @@ def _fetch_movements_by_date(target_date):
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
                 "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped, "
                 "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0)) AS has_pending_deficit "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
                 "WHERE t.date >= %s AND t.date < %s AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (target_date, target_date + datetime.timedelta(days=1)))
@@ -5416,11 +5066,9 @@ def _fetch_movements_by_range(start_date, end_date):
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
                 "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(us.id IS NOT NULL AND us.shipped = FALSE) AS is_unshipped "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "LEFT JOIN unshipped_sales us ON us.transaction_id = t.id AND us.shipped = FALSE "
                 "WHERE t.date >= %s AND t.date < %s AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%%تصحيح مخزون%%') "
                 "ORDER BY t.date DESC",
                 (start_date, end_date + datetime.timedelta(days=1)))
@@ -6491,7 +6139,6 @@ async def backup_command(update, context):
                 + "\n🧾 الفواتير: " + str(len(backup.get("invoices", [])))
                 + "\n🚚 طلبات التوريد: " + str(len(backup.get("incoming_orders", [])))
                 + "\n📤 طلبات الاستخراج: " + str(len(backup.get("extraction_requests", [])))
-                + "\n📦 غير المشحونة: " + str(len(backup.get("unshipped_sales", [])))
                 + "\n💡 حفظ الملف. لإستيراد البيانات أرسله للبوت."),
             reply_markup=keyboard,
         )
@@ -6757,24 +6404,6 @@ async def callback_rem_notify_handler(update, context):
     # Update transaction reason in DB
     if tx_id:
         update_transaction_reason(tx_id, reason_label)
-    # Track sale record: owner = auto-shipped, others = pending shipment
-    if reason in ("sale", "saoula", "carthago"):
-        try:
-            sold_by = actor["id"] if actor else None
-            actor_tid = actor.get("telegram_id") if actor else None
-            owner_sold = is_owner(actor_tid) if actor_tid else False
-            create_unshipped_sale(
-                transaction_id=tx_id,
-                product_id=product["id"],
-                product_name=product["name"],
-                quantity=qty,
-                sold_by=sold_by,
-                seller_name=seller,
-                shipped=owner_sold,
-                shipped_by=sold_by if owner_sold else None,
-            )
-        except Exception as e:
-            logging.error("[UNSHIPPED] Failed to track sale: " + str(e))
     try:
         if reason == "correction":
             confirm = "📝 تم تصحيح المخزون ✅"
@@ -6951,12 +6580,8 @@ def _build_users_panel():
         label, extras = _display_label(u)
         role_icon = ROLE_LABELS.get(u.get("role", "customer"), "👤").split(" ")[0]
         flags = []
-        if u.get("can_ship"):
-            flags.append("📤")
         if u.get("can_extract"):
             flags.append("🛒")
-        if u.get("can_unshipped"):
-            flags.append("📋")
         msg_lines.append(
             "  " + role_icon + " " + label + " — " + " | ".join(extras)
             + (("  " + "".join(flags)) if flags else "")
@@ -6979,46 +6604,22 @@ def _build_users_panel():
                     "🎯 الفئة: " + label,
                     callback_data="askrole_" + str(tid),
                 ),
-                InlineKeyboardButton(
-                    ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
-                    callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
-                ),
             ])
-            buttons.append([
-                InlineKeyboardButton(
-                    ("📋 سحب غير المشحونة" if u.get("can_unshipped") else "📋 منح غير المشحونة") + ": " + label,
-                    callback_data=("uns_revoke_" if u.get("can_unshipped") else "uns_grant_") + str(tid),
-                ),
-            ])
-            action_rows += 2
+            action_rows += 1
         elif u["role"] == "admin":
             buttons.append([
                 InlineKeyboardButton(
                     "🎯 الفئة: " + label,
                     callback_data="askrole_" + str(tid),
                 ),
-                InlineKeyboardButton(
-                    ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
-                    callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
-                ),
             ])
-            buttons.append([
-                InlineKeyboardButton(
-                    ("📋 سحب غير المشحونة" if u.get("can_unshipped") else "📋 منح غير المشحونة") + ": " + label,
-                    callback_data=("uns_revoke_" if u.get("can_unshipped") else "uns_grant_") + str(tid),
-                ),
-            ])
-            action_rows += 2
+            action_rows += 1
         else:
             # الفئات الجديدة (manager / stock / seller / external)
             buttons.append([
                 InlineKeyboardButton(
                     "🎯 الفئة: " + label,
                     callback_data="askrole_" + str(tid),
-                ),
-                InlineKeyboardButton(
-                    ("📤 سحب الشحن" if u.get("can_ship") else "📤 منح شحن") + ": " + label,
-                    callback_data=("ship_revoke_" if u.get("can_ship") else "ship_grant_") + str(tid),
                 ),
             ])
             action_rows += 1
@@ -8065,9 +7666,9 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_UNSHIPPED, BTN_PERMS]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
-    dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
+    dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
 
     # ═══════════════════════════════════════════════════════════
@@ -8186,9 +7787,6 @@ async def handle_admin_message(update, context):
         if text == BTN_PENDING_ADMIN or text.startswith(BTN_PENDING_ADMIN):
             await _show_pending_admin(update, context)
             return
-        if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
-            await _show_unshipped_sales(update, context)
-            return
 
         if text == BTN_USERS or text.startswith(BTN_USERS):
             await users_command(update, context)
@@ -8228,70 +7826,6 @@ async def handle_admin_message(update, context):
     if text == BTN_CANCEL:
         context.user_data.clear()
         await update.message.reply_text("\u274c تم الإلغاء.", reply_markup=get_admin_keyboard())
-        return
-
-    # State: waiting for ship-all security code
-    if state == STATE_SHIP_ALL_CODE:
-        code = text.strip()
-        context.user_data.clear()
-        if code == SHIP_ALL_SECURITY_CODE:
-            db_user = get_user(update.effective_user.id)
-            shipped_by = db_user["id"] if db_user else 0
-            count = mark_all_shipped(shipped_by)
-            if count > 0:
-                await update.message.reply_text(
-                    "✅ تم شحن " + str(count) + " سلعة بنجاح!",
-                    reply_markup=get_admin_keyboard(),
-                )
-            else:
-                await update.message.reply_text(
-                    "📭 لا توجد سلع للشحن.",
-                    reply_markup=get_admin_keyboard(),
-                )
-        else:
-            await update.message.reply_text(
-                "❌ كود الأمان خاطئ.",
-                reply_markup=get_admin_keyboard(),
-            )
-        return
-
-    # State: waiting for ship quantity
-    if state == STATE_SHIP_QTY:
-        try:
-            qty = int(text.strip())
-        except ValueError:
-            await update.message.reply_text("❌ أرسل رقم صحيح.")
-            return
-        product_id = context.user_data.get("ship_product_id")
-        pname = context.user_data.get("ship_product_name", "")
-        total = context.user_data.get("ship_total", 0)
-        if qty <= 0:
-            await update.message.reply_text("❌ الكمية يجب أن تكون أكبر من 0.")
-            return
-        if qty > total:
-            unit = _get_unit_ar(pname)
-            await update.message.reply_text(
-                "❌ الكمية المطلوبة (" + str(qty) + ") أكبر من المعلق (" + str(total) + " " + unit + ")."
-            )
-            return
-        db_user = get_user(user.id)
-        shipped_by = db_user["id"] if db_user else 0
-        if qty == total:
-            count = mark_shipped_product(product_id, shipped_by)
-            unit = _get_unit_ar(pname)
-            await update.message.reply_text(
-                "✅ تم شحن " + pname + " (" + str(qty) + " " + unit + ") — " + str(count) + " عملية",
-                reply_markup=get_admin_keyboard(),
-            )
-        else:
-            count, shipped_actual = mark_shipped_partial(product_id, qty, shipped_by)
-            unit = _get_unit_ar(pname)
-            remaining = total - shipped_actual
-            msg = "✅ تم شحن " + str(shipped_actual) + " " + unit + " من " + pname
-            if remaining > 0:
-                msg += chr(10) + "📤 المتبقي معلّق: " + str(remaining) + " " + unit
-            await update.message.reply_text(msg, reply_markup=get_admin_keyboard())
-        context.user_data.clear()
         return
 
     # No active state → auto-search or help
@@ -8746,13 +8280,12 @@ async def handle_customer_message(update, context):
         state = None
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING, BTN_UNSHIPPED]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING]
 
     # ═══════════════════════════════════════════════════════════
     #  🎯 بوابة الفئات لمسار العميل: البائع/الخارجي يمرّان فقط بما تسمح به فئتهما
     # ═══════════════════════════════════════════════════════════
     _cust_role = await asyncio.to_thread(_get_role, user.id)
-    _is_unshipped_txt = text.startswith(BTN_UNSHIPPED)
     if _cust_role == ROLE_EXTERNAL:
         # 🌍 البائع الخارجي: بحث فقط (زر البحث أو إرسال اسم السلعة) + إلغاء
         # 🔐 صلاحية البحث قابلة للإطفاء من لوحة الصلاحيات
@@ -8773,7 +8306,7 @@ async def handle_customer_message(update, context):
                         BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
                         BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CUST_ORDER_LEGACY)
             or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
-            or text.startswith(BTN_PENDING_ADMIN) or text.startswith(BTN_UNSHIPPED)
+            or text.startswith(BTN_PENDING_ADMIN)
         )
         if _known_btn:
             await update.message.reply_text(
@@ -8801,10 +8334,7 @@ async def handle_customer_message(update, context):
             or text.startswith(BTN_PENDING_ADMIN)
         )
         # زر معروف → يُقبل فقط إن كانت صلاحيته مفعّلة (زر غير مربوط = مسموح)
-        # استثناء «غير المشحونة» ذات البادئة الديناميكية يُحكم بالصلاحية نفسها
-        if _known_btn and not _btn_perm_ok(_cust_role, text) and not (
-            _is_unshipped_txt and role_perm_enabled(_cust_role, PERM_UNSHIPPED)
-        ):
+        if _known_btn and not _btn_perm_ok(_cust_role, text):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
@@ -8879,24 +8409,6 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=False)
-            return
-
-        if text == BTN_UNSHIPPED or text.startswith(BTN_UNSHIPPED):
-            # ── PERM GUARD ── صلاحية «غير المشحونة» لكل مستخدم على حدة:
-            # حتى لو كتب الزر يدوياً لا يرى أي بيانات دون إذن المدير.
-            _uns_role = _get_role(user.id)
-            # 🔐 للبائع/عامل المخزون: الاطلاع محكوم أيضاً بصلاحية الفئة الديناميكية
-            if not (is_admin(user.id) or can_unshipped(user.id)
-                    or (_uns_role in (ROLE_SELLER, ROLE_STOCK)
-                        and role_perm_enabled(_uns_role, PERM_UNSHIPPED))):
-                await update.message.reply_text(
-                    "❌ لا تملك صلاحية الاطلاع على السلع غير المشحونة.\n"
-                    "تواصل مع المدير لمنحك هذه الصلاحية.",
-                    reply_markup=get_role_keyboard(user.id),
-                )
-                return
-            ship_view = can_ship(update.effective_user.id)
-            await _show_unshipped_sales(update, context, admin_view=ship_view)
             return
 
     # ── Custom date range for movements ──
@@ -9002,25 +8514,6 @@ async def handle_customer_message(update, context):
                 msg = "✅ تمت الإضافة!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             else:
                 msg = "✅ تم إخراج!" + chr(10) + chr(10) + updated["name"] + chr(10) + "📦 الكمية: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
-                # ── Register as an unshipped sale (shipped=False) so the admin can
-                #    mark it as shipped later via BTN_UNSHIPPED. This closes the gap
-                #    where customer sales disappeared from the unshipped tracking.
-                #    Customers are never owners, so shipped=False by definition.
-                if db_user:
-                    try:
-                        seller_label = (db_user.get("first_name") or db_user.get("username") or None)
-                        create_unshipped_sale(
-                            transaction_id=tx_id,
-                            product_id=updated["id"],
-                            product_name=updated["name"],
-                            quantity=qty,
-                            sold_by=db_user["id"],
-                            seller_name=seller_label,
-                            shipped=False,
-                        )
-                        msg += chr(10) + chr(10) + "📤 تم تسجيل البيع في قائمة غير المشحونة"
-                    except Exception as e:
-                        logging.error("[UNSHIPPED] Failed to track customer sale: " + str(e))
                 # Check if this created a deficit (negative stock)
                 old_qty = updated.get("_old_qty", 0)
                 new_qty = updated["quantity"]
@@ -9168,95 +8661,6 @@ async def callback_extract_perm_handler(update, context):
         except Exception:
             pass
 
-
-async def callback_ship_perm_handler(update, context):
-    """Handle grant/revoke shipping permission from users list."""
-    query = update.callback_query
-    # ── AUTH GUARD ── يجب الفحص قبل query.answer حتى يظهر التحذير فعلاً.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
-    await query.answer()
-    data = query.data
-    try:
-        if data.startswith("ship_grant_"):
-            tid = int(data.split("_")[2])
-            set_ship_permission(tid, True)
-            db_u = get_user(tid)
-            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
-            await query.edit_message_text("✅ تم منح صلاحية الشحن لـ " + uname)
-            try:
-                await context.bot.send_message(
-                    chat_id=tid,
-                    text="📤 تم منحك صلاحية شحن السلع غير المشحونة."
-                          "\nاضغط على \"غير المشحونة\" للتحكم.",
-                )
-            except Exception as e:
-                logging.error("[SHIP_PERM] Notify user failed: " + str(e))
-        elif data.startswith("ship_revoke_"):
-            tid = int(data.split("_")[2])
-            set_ship_permission(tid, False)
-            db_u = get_user(tid)
-            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
-            await query.edit_message_text("❌ تم سحب صلاحية الشحن من " + uname)
-            try:
-                await context.bot.send_message(
-                    chat_id=tid,
-                    text="❌ تم سحب صلاحية شحن السلع.",
-                )
-            except Exception as e:
-                logging.error("[SHIP_PERM] Notify user failed: " + str(e))
-    except Exception as e:
-        logging.error("[SHIP_PERM] Error: " + str(e))
-        try:
-            await query.edit_message_text("❌ خطأ: " + str(e))
-        except Exception:
-            pass
-
-
-async def callback_unshipped_perm_handler(update, context):
-    """منح/سحب صلاحية الاطلاع على السلع غير المشحونة من لوحة المستخدمين."""
-    query = update.callback_query
-    # ── AUTH GUARD ── يجب الفحص قبل query.answer حتى يظهر التحذير فعلاً.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
-    await query.answer()
-    data = query.data
-    try:
-        if data.startswith("uns_grant_"):
-            tid = int(data.split("_")[2])
-            set_unshipped_permission(tid, True)
-            db_u = get_user(tid)
-            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
-            await query.edit_message_text("✅ تم منح صلاحية «غير المشحونة» لـ " + uname)
-            try:
-                await context.bot.send_message(
-                    chat_id=tid,
-                    text="📋 تم منحك صلاحية الاطلاع على السلع غير المشحونة."
-                          "\nستجد زر «غير المشحونة» في قائمتك الرئيسية.",
-                )
-            except Exception as e:
-                logging.error("[UNS_PERM] Notify user failed: " + str(e))
-        elif data.startswith("uns_revoke_"):
-            tid = int(data.split("_")[2])
-            set_unshipped_permission(tid, False)
-            db_u = get_user(tid)
-            uname = db_u.get("first_name") or db_u.get("username") or str(tid) if db_u else str(tid)
-            await query.edit_message_text("❌ تم سحب صلاحية «غير المشحونة» من " + uname)
-            try:
-                await context.bot.send_message(
-                    chat_id=tid,
-                    text="❌ تم سحب صلاحية الاطلاع على السلع غير المشحونة.",
-                )
-            except Exception as e:
-                logging.error("[UNS_PERM] Notify user failed: " + str(e))
-    except Exception as e:
-        logging.error("[UNS_PERM] Error: " + str(e))
-        try:
-            await query.edit_message_text("❌ خطأ: " + str(e))
-        except Exception:
-            pass
 
 async def _show_pending_extractions(update, context):
     """Show list of pending extraction requests."""
@@ -9421,187 +8825,6 @@ async def error_handler(update, context):
 # ═══════════════════════════════════════════════════════════
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-
-
-# ═══════════════════════════════════════════════════════════
-#  UNSHIPPED SALES DISPLAY & SHIPPING
-# ═══════════════════════════════════════════════════════════
-
-async def _show_unshipped_sales(update, context, admin_view=True):
-    """عرض السلع المباعة غير المشحونة. admin_view=True يعرض أزرار الشحن."""
-    sales = get_unshipped_sales()
-    kb = get_role_keyboard(update.effective_user.id)
-    if not sales:
-        await update.message.reply_text(
-            "✅ لا توجد سلع غير مشحونة.",
-            reply_markup=kb,
-        )
-        return
-
-    # Group by product
-    from collections import OrderedDict
-    grouped = OrderedDict()
-    for s in sales:
-        pid = s["product_id"]
-        if pid not in grouped:
-            grouped[pid] = {
-                "name": s["product_name"],
-                "total_qty": 0,
-                "items": [],
-            }
-        grouped[pid]["total_qty"] += s["quantity"]
-        grouped[pid]["items"].append(s)
-
-    # Build message
-    lines = ["📤 السلع غير المشحونة (" + str(len(sales)) + ")"]
-    lines.append("")
-    for pid, info in grouped.items():
-        unit = _get_unit_ar(info["name"])
-        lines.append(
-            "📦 " + info["name"]
-            + " — " + str(info["total_qty"]) + " " + unit
-        )
-        for item in info["items"]:
-            seller = item.get("seller_name") or item.get("seller_first_name") or item.get("seller_username") or ""
-            date_str = item["sold_at"].strftime("%d/%m %H:%M") if item.get("sold_at") else ""
-            lines.append(
-                "   └─ " + str(item["quantity"]) + " " + unit
-                + "  |  👤 " + seller
-                + "  |  ⏰ " + date_str
-            )
-        lines.append("")
-
-    text = chr(10).join(lines)
-
-    if not admin_view:
-        # Dry page for sellers - no shipping buttons
-        if len(text) > 4000:
-            parts = []
-            current = [lines[0], lines[1]]
-            for ln in lines[2:]:
-                if len(chr(10).join(current)) + len(chr(10) + ln) > 3900:
-                    parts.append(chr(10).join(current))
-                    current = ["📤 تابع السلع غير المشحونة"]
-                current.append(ln)
-            if current:
-                parts.append(chr(10).join(current))
-            for part in parts:
-                await update.message.reply_text(part)
-        else:
-            await update.message.reply_text(text)
-        return
-
-    # Admin: show shipping buttons
-    ship_buttons = []
-    for pid, info in grouped.items():
-        unit = _get_unit_ar(info["name"])
-        label = "✅ شحن: " + info["name"] + " (" + str(info["total_qty"]) + " " + unit + ")"
-        ship_buttons.append([InlineKeyboardButton(label, callback_data="ship_" + str(pid))])
-    ship_buttons.append([InlineKeyboardButton("✅ شحن الكل", callback_data="ship_all")])
-    ship_buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")])
-
-    if len(text) > 4000:
-        parts = []
-        current = [lines[0], lines[1]]
-        for ln in lines[2:]:
-            if len(chr(10).join(current)) + len(chr(10) + ln) > 3900:
-                parts.append(chr(10).join(current))
-                current = ["📤 تابع السلع غير المشحونة"]
-            current.append(ln)
-        if current:
-            parts.append(chr(10).join(current))
-        for part in parts:
-            await update.message.reply_text(part)
-        await update.message.reply_text(
-            "📤 " + str(len(grouped)) + " سلعة — اختر للتشحن:",
-            reply_markup=InlineKeyboardMarkup(ship_buttons),
-        )
-    else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(ship_buttons))
-
-
-async def callback_ship_handler(update, context):
-    """Handle ship_ and ship_all callbacks — ask for quantity first."""
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id) and not can_ship(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
-
-    data = query.data
-
-    if data == "ship_all":
-        _set_state(context, STATE_SHIP_ALL_CODE)
-        await query.edit_message_text(
-            "🔒 أدخل كود الأمان لشحن الكل:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ إلغاء", callback_data="ship_cancel")]
-            ]),
-        )
-        return
-
-    if data.startswith("ship_"):
-        try:
-            product_id = int(data.split("_")[1])
-        except (IndexError, ValueError):
-            return
-
-        # Get total unshipped qty for this product
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE(SUM(quantity), 0) FROM unshipped_sales WHERE product_id = %s AND shipped = FALSE",
-                    (product_id,)
-                )
-                total_unshipped = cur.fetchone()[0]
-                cur.execute("SELECT name FROM products WHERE id = %s", (product_id,))
-                row = cur.fetchone()
-            conn.commit()
-            pname = row[0] if row else ""
-        except Exception as e:
-            conn.rollback()
-            logging.error("[SHIP] DB query failed: " + str(e))
-            pname = ""
-            total_unshipped = 0
-        finally:
-            release_connection(conn)
-
-        if total_unshipped == 0:
-            await query.edit_message_text("📭 لا توجد عمليات غير مشحونة لهذه السلعة.")
-            return
-
-        # Save state and ask for quantity
-        _set_state(context, STATE_SHIP_QTY)
-        context.user_data["ship_product_id"] = product_id
-        context.user_data["ship_product_name"] = pname
-        context.user_data["ship_total"] = total_unshipped
-
-        unit = _get_unit_ar(pname)
-        await query.edit_message_text(
-            "📤 شحن: " + pname + " (" + str(total_unshipped) + " " + unit + ")" + chr(10) + chr(10)
-            + "كم الكمية المطلوب شحنها?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ إلغاء", callback_data="ship_cancel")]
-            ]),
-        )
-        return
-
-
-async def callback_ship_cancel_handler(update, context):
-    """إلغاء عملية الشحن والرجوع لقائمة السلع غير المشحونة."""
-    query = update.callback_query
-    await query.answer()
-    context.user_data.pop("state", None)
-    context.user_data.pop("ship_product_id", None)
-    context.user_data.pop("ship_product_name", None)
-    context.user_data.pop("ship_total", None)
-    await query.edit_message_text(
-        "❌ تم إلغاء عملية الشحن.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")]
-        ]),
-    )
 
 
 async def callback_admin_done_handler(update, context):
@@ -10220,12 +9443,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
-    app.add_handler(CallbackQueryHandler(callback_ship_cancel_handler, pattern="^ship_cancel$"))
-    app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_grant_"))
-    app.add_handler(CallbackQueryHandler(callback_ship_perm_handler, pattern="^ship_revoke_"))
-    app.add_handler(CallbackQueryHandler(callback_unshipped_perm_handler, pattern="^uns_grant_"))
-    app.add_handler(CallbackQueryHandler(callback_unshipped_perm_handler, pattern="^uns_revoke_"))
-    app.add_handler(CallbackQueryHandler(callback_ship_handler, pattern="^ship(_|all)"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
     app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
@@ -10260,7 +9477,6 @@ def build_application():
 # ═══════════════════════════════════════════════════════════
 #  DAILY AUTO-BACKUP
 # ═══════════════════════════════════════════════════════════
-
 
 
 def _fetch_latest_backup_from_email():
@@ -10570,9 +9786,6 @@ async def _keep_alive(app):
         await session.close()
 
 
-
-
-
 async def _health_handler(request):
     """Shared aiohttp health endpoint (webhook mode + Render polling mode)."""
     qcount = get_offline_queue_count()
@@ -10585,8 +9798,6 @@ if __name__ == "__main__":
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
-    if SHIP_ALL_SECURITY_CODE == "0000":
-        logging.warning("[SECURITY] SHIP_ALL_SECURITY_CODE لا يزال على الافتراضي 0000 — غيّره من متغيرات البيئة!")
     if RESET_STOCK_PIN == "5614":
         logging.warning("[SECURITY] RESET_STOCK_PIN لا يزال على الافتراضي 5614 — غيّره من متغيرات البيئة!")
     # init_db() calls get_connection() which lazily creates the pool via
