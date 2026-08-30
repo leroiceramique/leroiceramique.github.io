@@ -1537,6 +1537,11 @@ def _execute_queued_op(op):
     try:
         if op_type == "add_qty":
             db_update_quantity(data["product_id"], data["qty"], "add")
+            # Reconcile pending deliveries covered by the replayed stock
+            try:
+                auto_reconcile_product(data["product_id"], data["qty"], data.get("user_id"))
+            except Exception as rec_err:
+                logging.error("[OFFLINE] Replay: reconcile failed: " + str(rec_err))
             if data.get("user_id"):
                 try:
                     log_transaction(data["product_id"], "add", data["qty"], data["user_id"], reason=data.get("reason"))
@@ -1551,7 +1556,13 @@ def _execute_queued_op(op):
                 except Exception as tx_err:
                     logging.error("[OFFLINE] Replay: ledger write failed after qty remove: " + str(tx_err))
         elif op_type == "add_product":
-            db_add_product(data["name"], data.get("quantity", 0), data.get("location", ""), data.get("minimum_stock", 5))
+            _rp, _rp_created = db_add_product(data["name"], data.get("quantity", 0), data.get("location", ""), data.get("minimum_stock", 5))
+            # If the name already existed the stock just increased —
+            # reconcile pending deliveries it may now cover
+            try:
+                auto_reconcile_product(_rp["id"], data.get("quantity", 0), data.get("user_id"))
+            except Exception as rec_err:
+                logging.error("[OFFLINE] Replay: reconcile failed: " + str(rec_err))
         elif op_type == "register_user":
             register_user(data["telegram_id"], data.get("username"), data.get("first_name"))
         elif op_type == "log_transaction":
@@ -3217,13 +3228,17 @@ def create_pending_delivery(user_id, product_id, pending_qty):
         release_connection(conn)
 
 
-def auto_reconcile_product(product_id, added_qty, admin_user_id):
-    """Auto-reconcile pending deliveries when new stock is added.
-    
-    Calculates how much of the addition covers existing deficits,
-    fulfills pending deliveries FIFO, creates reconcile transactions,
-    and returns info about fulfilled deliveries for notifications.
-    
+def auto_reconcile_product(product_id, added_qty=0, admin_user_id=None):
+    """Auto-reconcile pending deliveries for one product.
+
+    Invariant: مجموع الطلبات المعلقة المفتوحة للسلعة يجب أن يساوي عجزها
+    الحالي max(0, -quantity). أي زيادة عن ذلك تعني صفوفاً عالقة غطاها
+    المخزون ولم تُزل (كان سببها: إضافة بسبب «تصحيح مخزون» أو «إضافة
+    سلعة» باسم موجود أو إعادة تشغيل عمليات أوفلاين) — تُغطى هنا FIFO
+    وتُزال من قائمة الطلبات المعلقة ويُشعر أصحابها.
+
+    تُستدعى بعد كل زيادة كمية وعند فتح قوائم الطلبات المعلقة (شفاء ذاتي).
+
     Returns dict with:
       - product_name: str
       - total_covered: int
@@ -3242,15 +3257,10 @@ def auto_reconcile_product(product_id, added_qty, admin_user_id):
                 return None
 
             new_qty = product["quantity"]
-            old_qty = new_qty - added_qty
 
-            # How much deficit was covered by this addition?
-            deficit_before = max(0, -old_qty)
-            deficit_after = max(0, -new_qty)
-            covered = deficit_before - deficit_after
-
-            if covered <= 0:
-                return None
+            # The open pending rows must mirror the real deficit. Anything
+            # beyond it is already covered by stock and must be removed.
+            target_pending = max(0, -new_qty)
 
             # Get pending deliveries for this product, oldest first
             cur.execute(
@@ -3266,8 +3276,13 @@ def auto_reconcile_product(product_id, added_qty, admin_user_id):
             if not pendings:
                 return None
 
-            # Fulfill FIFO
-            remaining_cover = covered
+            total_pending = sum(p["pending_qty"] for p in pendings)
+            excess = total_pending - target_pending
+            if excess <= 0:
+                return None
+
+            # Fulfill FIFO down to the real deficit
+            remaining_cover = excess
             fulfilled_list = []
             total_reconciled = 0
 
@@ -3327,6 +3342,61 @@ def auto_reconcile_product(product_id, added_qty, admin_user_id):
         return None
     finally:
         release_connection(conn)
+
+
+async def _send_fulfilled_notifications(bot, fulfilled_list):
+    """Notify customers whose pending orders just got covered by stock."""
+    for f in (fulfilled_list or []):
+        tid = f.get("user_tid")
+        if not tid:
+            continue
+        try:
+            if f["fully"]:
+                notif = (
+                    "✅ تم توفير " + str(f["qty"]) + " وحدة من " + f["product_name"] + chr(10)
+                    + "⏳ طلبك المعلق تم تغطيته بالكامل ✓"
+                )
+            else:
+                notif = (
+                    "⏳ تم توفير " + str(f["qty"]) + " وحدة من " + f["product_name"] + chr(10)
+                    + "📏 المتبقي: " + str(f["remaining"]) + " وحدة"
+                )
+            await bot.send_message(chat_id=tid, text=notif)
+        except Exception:
+            pass
+
+
+def auto_reconcile_all(admin_user_id=None):
+    """Self-heal: run auto_reconcile_product for every product that still
+    has open pending rows. Removes entries already covered by stock
+    (legacy drift) and returns a combined result or None."""
+    product_ids = []
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT product_id FROM pending_deliveries "
+                "WHERE pending_qty > 0 AND product_id IS NOT NULL"
+            )
+            product_ids = [r[0] for r in cur.fetchall()]
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[RECONCILE-ALL] Failed to list products: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+    total_fulfilled = []
+    total_covered = 0
+    for pid in product_ids:
+        result = auto_reconcile_product(pid, 0, admin_user_id)
+        if result and result["fulfilled"]:
+            total_covered += result["total_covered"]
+            total_fulfilled.extend(result["fulfilled"])
+    if not total_fulfilled:
+        return None
+    return {"total_covered": total_covered, "fulfilled": total_fulfilled}
 
 
 def get_all_pending_deliveries():
@@ -4688,8 +4758,19 @@ async def callback_add_handler(update, context):
         name = user_data.get("add_name", "")
         qty = user_data.get("add_qty", 0)
         try:
-            product, _ = db_add_product(name=name, quantity=qty)
+            product, created_now = db_add_product(name=name, quantity=qty)
             msg = "\u2705 \u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0633\u0644\u0639\u0629 \u0628\u0646\u062c\u0627\u062d!\n\n" + format_product_admin(product)
+            # If the name already existed the stock just increased —
+            # reconcile pending deliveries the new stock now covers
+            if not created_now:
+                try:
+                    reconcile_result = await asyncio.to_thread(
+                        auto_reconcile_product, product["id"], qty, None
+                    )
+                    if reconcile_result and reconcile_result["fulfilled"]:
+                        await _send_fulfilled_notifications(context.bot, reconcile_result["fulfilled"])
+                except Exception as rec_err:
+                    logging.error("[ADD] Reconcile failed: " + str(rec_err))
             await query.edit_message_text(msg)
             await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
             # Auto-broadcast new product notification to all users
@@ -6584,16 +6665,30 @@ async def callback_add_notify_handler(update, context):
             # Broadcast only for truck arrival and customer return
             if reason in ("truck", "return"):
                 await _broadcast_add_notification(context.bot, product, qty, actor, reason=reason)
-            # Auto-reconcile pending deliveries silently (no broadcast)
-            if reason in ("truck", "return") and actor:
-                await asyncio.to_thread(
-                    auto_reconcile_product, product["id"], qty, actor["id"]
-                )
             if reason == "return":
                 confirm = "↩️ تم إرسال تنبيه إرجاع للجميع ✅"
             else:
                 confirm = "🚚 تم إرسال تنبيه وصول بضاعة للجميع ✅"
-        await query.edit_message_text(confirm)
+        # Auto-reconcile pending deliveries for EVERY reason (truck/return/
+        # correction): any stock that covers open pending entries removes
+        # them from the pending list and notifies the waiting customers.
+        rec_note = ""
+        if actor:
+            try:
+                reconcile_result = await asyncio.to_thread(
+                    auto_reconcile_product, product["id"], qty, actor["id"]
+                )
+                if reconcile_result and reconcile_result["fulfilled"]:
+                    rec_note = (chr(10) + chr(10) + "🔄 تمت تسوية الطلبات المعلقة تلقائياً:"
+                                + chr(10) + "   ✅ تم تغطية " + str(reconcile_result["total_covered"]) + " وحدة")
+                    if reconcile_result["remaining_deficit"] > 0:
+                        rec_note += chr(10) + "   ⚠️ متبقي عجز: " + str(reconcile_result["remaining_deficit"])
+                    else:
+                        rec_note += chr(10) + "   🎉 تم تغطية العجز بالكامل!"
+                    await _send_fulfilled_notifications(context.bot, reconcile_result["fulfilled"])
+            except Exception as rec_err:
+                logging.error("[ADD_NOTIFY] Reconcile failed: " + str(rec_err))
+        await query.edit_message_text(confirm + rec_note)
     except Exception as e:
         logging.error("[ADD_NOTIFY] Confirm failed: " + str(e))
         try:
@@ -9646,10 +9741,24 @@ async def callback_provide_handler(update, context):
 
 async def _show_pending_admin(update, context):
     """عرض كل السلع ذات العجز مع أزرار توفير مباشرة — للمدير."""
+    # شفاء ذاتي: أي طلب معلق غطته الكمية الحالية يُزال فوراً عند فتح
+    # اللوحة (يشمل الصفوف العالقة القديمة) مع إشعار الزبائن المعنيين.
+    healed_note = ""
+    try:
+        healed = await asyncio.to_thread(auto_reconcile_all)
+        if healed and healed["fulfilled"]:
+            await _send_fulfilled_notifications(context.bot, healed["fulfilled"])
+            healed_note = ("🔄 تمت تسوية " + str(healed["total_covered"])
+                           + " وحدة كانت مغطاة بالمخزون وتأخرت إزالتها من القائمة")
+    except Exception as heal_err:
+        logging.error("[PENDING] Self-heal failed: " + str(heal_err))
     pendings = get_all_pending_deliveries()
     if not pendings:
+        empty_txt = "✅ لا توجد سلع ذات عجز حالياً."
+        if healed_note:
+            empty_txt = "🎉 " + healed_note + chr(10) + chr(10) + empty_txt
         await update.message.reply_text(
-            "✅ لا توجد سلع ذات عجز حالياً.",
+            empty_txt,
             reply_markup=get_admin_keyboard(),
         )
         return
@@ -9682,6 +9791,8 @@ async def _show_pending_admin(update, context):
     provide_buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")])
     # Build text
     lines = ["🔴 السلع المطلوبة للزبائن المنتظرين (" + str(len(grouped)) + ")\n"]
+    if healed_note:
+        lines.append(healed_note)
     for pid, info in grouped.items():
         total_pending = sum(c["qty"] for c in info["customers"])
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
@@ -9719,6 +9830,16 @@ async def _show_pending_customer(update, context):
     if not db_user:
         await update.message.reply_text("❌ حدث خطأ.", reply_markup=get_customer_keyboard())
         return
+    # شفاء ذاتي: إذا كانت لديه طلبات معلقة غطاها المخزون فعلاً وتأخرت
+    # إزالتها، تُزال هنا فوراً ويصله إشعار بالتغطية قبل عرض القائمة.
+    try:
+        healed = await asyncio.to_thread(auto_reconcile_all)
+        if healed and healed["fulfilled"]:
+            mine = [f for f in healed["fulfilled"] if f.get("user_tid") == user.id]
+            if mine:
+                await _send_fulfilled_notifications(context.bot, mine)
+    except Exception as heal_err:
+        logging.error("[PENDING] Self-heal failed: " + str(heal_err))
     pendings = get_user_pending_deliveries(db_user["id"])
     if not pendings:
         await update.message.reply_text(
