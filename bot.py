@@ -1811,6 +1811,13 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     value       TEXT
 );
 
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role     VARCHAR(20) NOT NULL,
+    perm     VARCHAR(60) NOT NULL,
+    enabled  BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (role, perm)
+);
+
 CREATE TABLE IF NOT EXISTS invoices (
     id              SERIAL PRIMARY KEY,
     customer_name   VARCHAR(500) NOT NULL,
@@ -1870,6 +1877,15 @@ def init_db():
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            # 🔐 زرع الصلاحيات الافتراضية للفئات (مرة واحدة فقط —
+            # ON CONFLICT DO NOTHING يحمي تعديلات المدير اللاحقة)
+            for _seed_role, _seed_perms in ROLE_PERM_CATALOG.items():
+                for _seed_perm in _seed_perms:
+                    cur.execute(
+                        "INSERT INTO role_permissions (role, perm, enabled) VALUES (%s, %s, TRUE) "
+                        "ON CONFLICT (role, perm) DO NOTHING",
+                        (_seed_role, _seed_perm),
+                    )
             # Migration: add 'pending' role for existing databases
             cur.execute("""\n                DO $$ BEGIN
                     ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
@@ -3789,6 +3805,256 @@ STOCK_ADMIN_PREFIXES = (BTN_PENDING_ADMIN, BTN_UNSHIPPED)
 
 
 # ═══════════════════════════════════════════════════════════
+#  🔐 نظام الصلاحيات الديناميكي — DYNAMIC ROLE PERMISSIONS
+#  كل صلاحية لكل فئة مخزنة في قاعدة البيانات (جدول role_permissions)
+#  ويُدار من داخل البوت بزر «🔐 الصلاحيات» في لوحة المدير —
+#  بدون تعديل الكود وبدون رفع ملف جديد أبداً.
+#  القيم الافتراضية أدناه = سلوك الفئات الحالي حرفياً، وتُزرع في
+#  قاعدة البيانات مرة واحدة فقط (ON CONFLICT DO NOTHING) فلا تطغى
+#  على تعديلات المدير لاحقاً.
+# ═══════════════════════════════════════════════════════════
+BTN_PERMS = "🔐 الصلاحيات"
+
+PERM_SEARCH       = "search"        # 🔍 بحث
+PERM_ADD_QTY      = "add_qty"       # ➕ إضافة كمية
+PERM_REMOVE       = "remove"        # ➖ إخراج كمية
+PERM_INVOICE      = "invoice"       # 🧾 إنشاء فاتورة
+PERM_SUPPLY_ORDER = "supply_order"  # 📦 طلب توريد جديد
+PERM_MY_ORDERS    = "my_orders"     # 📋 طلباتي
+PERM_UNSHIPPED    = "unshipped"     # 📤 غير المشحونة
+PERM_MOVEMENTS    = "movements"     # 📋 الحركة
+PERM_ADD_PRODUCT  = "add_product"   # 📦 إضافة سلعة
+PERM_EDIT_PRODUCT = "edit_product"  # ✏️ تعديل سلعة
+PERM_LOW_STOCK    = "low_stock"     # 📊 المخزون المنخفض
+PERM_PENDING      = "pending"       # 🔴 الطلبات المعلقة
+
+PERM_LABELS = {
+    PERM_SEARCH:       "🔍 البحث",
+    PERM_ADD_QTY:      "➕ إضافة كمية",
+    PERM_REMOVE:       "➖ إخراج كمية",
+    PERM_INVOICE:      "🧾 إنشاء فاتورة",
+    PERM_SUPPLY_ORDER: "📦 طلب توريد جديد",
+    PERM_MY_ORDERS:    "📋 طلباتي",
+    PERM_UNSHIPPED:    "📤 غير المشحونة",
+    PERM_MOVEMENTS:    "📋 الحركة",
+    PERM_ADD_PRODUCT:  "📦 إضافة سلعة",
+    PERM_EDIT_PRODUCT: "✏️ تعديل سلعة",
+    PERM_LOW_STOCK:    "📊 المخزون المنخفض",
+    PERM_PENDING:      "🔴 الطلبات المعلقة",
+}
+
+# الصلاحيات القابلة للإدارة لكل فئة (= الافتراضي المفعّل عند أول تشغيل)
+ROLE_PERM_CATALOG = {
+    ROLE_SELLER: (PERM_SEARCH, PERM_ADD_QTY, PERM_REMOVE, PERM_INVOICE,
+                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_UNSHIPPED, PERM_MOVEMENTS),
+    ROLE_STOCK:  (PERM_ADD_QTY, PERM_ADD_PRODUCT, PERM_REMOVE, PERM_EDIT_PRODUCT,
+                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING, PERM_UNSHIPPED),
+    ROLE_EXTERNAL: (PERM_SEARCH,),
+}
+
+# ربط أزرار كل فئة بصلاحياتها (للبوابات النصية) — أزرار اللوحة فقط هي المسموحة،
+# وأي زر معروف خارج هذه الخرائط = مرفوض للفئة (قائمة سماح صارمة كما كان).
+ROLE_BTN_PERM_MAP = {
+    ROLE_SELLER: {
+        BTN_SEARCH:            PERM_SEARCH,
+        BTN_CUST_REMOVE:       PERM_REMOVE,
+        BTN_ADD_QTY:           PERM_ADD_QTY,
+        BTN_INVOICE:           PERM_INVOICE,
+        BTN_CUST_ORDER:        PERM_SUPPLY_ORDER,
+        BTN_CUST_ORDER_LEGACY: PERM_SUPPLY_ORDER,
+        BTN_CUST_MY_ORDERS:    PERM_MY_ORDERS,
+        BTN_UNSHIPPED:         PERM_UNSHIPPED,
+        BTN_CUST_MOVEMENTS:    PERM_MOVEMENTS,
+    },
+    ROLE_STOCK: {
+        BTN_REMOVE_QTY:    PERM_REMOVE,
+        BTN_ADD:           PERM_ADD_PRODUCT,
+        BTN_ADD_QTY:       PERM_ADD_QTY,
+        BTN_EDIT:          PERM_EDIT_PRODUCT,
+        BTN_MOVEMENTS:     PERM_MOVEMENTS,
+        BTN_LOW_STOCK:     PERM_LOW_STOCK,
+        BTN_PENDING_ADMIN: PERM_PENDING,
+        BTN_UNSHIPPED:     PERM_UNSHIPPED,
+    },
+    ROLE_EXTERNAL: {
+        BTN_SEARCH: PERM_SEARCH,
+    },
+}
+
+# كاش الصلاحيات: يمنع لمس قاعدة البيانات في كل رسالة.
+# يُفرغ تلقائياً عند أي تبديل + عمر أقصى 30 ثانية للأمان.
+_ROLE_PERM_CACHE = {}
+_ROLE_PERM_TTL = 30.0
+
+
+def _load_role_perms_from_db(role):
+    """يقرأ صلاحيات الفئة من قاعدة البيانات — يرجع None عند أي فشل
+    (فتعود المصفوفة الافتراضية = نفس سلوك الكود في أسوأ الحالات)."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT perm, enabled FROM role_permissions WHERE role = %s", (role,))
+                rows = cur.fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            return None
+        finally:
+            release_connection(conn)
+    except Exception:
+        return None
+    return {r[0]: bool(r[1]) for r in rows if r[0] in PERM_LABELS}
+
+
+def get_role_perms(role):
+    """قاموس كل صلاحيات الفئة (مع كاش 30 ثانية). الفشل = الافتراضي."""
+    now = time.monotonic()
+    _hit = _ROLE_PERM_CACHE.get(role)
+    if _hit and _hit[0] > now:
+        return _hit[1]
+    perms = {p: False for p in PERM_LABELS}
+    _rows = _load_role_perms_from_db(role)
+    if _rows:
+        # صفوف حقيقية مخزنة → الثقة بقاعدة البيانات كما هي
+        perms.update(_rows)
+    else:
+        # لا صفوف لهذه الفئة (أو فشل DB) → الافتراضي الآمن = سلوك الكود
+        for _p in ROLE_PERM_CATALOG.get(role, ()):
+            perms[_p] = True
+    _ROLE_PERM_CACHE[role] = (now + _ROLE_PERM_TTL, perms)
+    return perms
+
+
+def role_perm_enabled(role, perm):
+    """هل الصلاحية مفعّلة لهذه الفئة؟ الإداريون فوق النظام دائماً."""
+    if role in (ROLE_ADMIN, ROLE_MANAGER):
+        return True
+    if role not in ROLE_PERM_CATALOG:
+        # فئات خارج النظام (عميل/قيد المراجعة): لا مصفوفة لها — الرفض هو الآمن
+        return False
+    return bool(get_role_perms(role).get(perm, False))
+
+
+def set_role_perm(role, perm, enabled):
+    """تبديل صلاحية فئة في قاعدة البيانات + تفريغ الكاش فوراً."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO role_permissions (role, perm, enabled) VALUES (%s, %s, %s) "
+                "ON CONFLICT (role, perm) DO UPDATE SET enabled = EXCLUDED.enabled",
+                (role, perm, bool(enabled)),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    _ROLE_PERM_CACHE.clear()
+
+
+def _btn_perm_ok(role, text):
+    """هل يُسمح لهذه الفئة بهذا الزر (نصاً)؟ يُستخدم في بوابات الفئات.
+    دلالة قائمة السماح الصارمة لكل فئة (ROLE_BTN_PERM_MAP): أزرار لوحتها
+    تُحكم بصلاحياتها، أي زر معروف خارج خريطة فئتها = مرفوض لها،
+    والإلغاء متاح لكل الفئات دائماً. العدادات الديناميكية تُطابق ببادئتها."""
+    if role in (ROLE_ADMIN, ROLE_MANAGER):
+        return True
+    if text in (BTN_CANCEL, BTN_CUST_CANCEL):
+        return True  # الإلغاء متاح دائماً
+    _map = ROLE_BTN_PERM_MAP.get(role) or {}
+    _perm = _map.get(text)
+    if _perm is None:
+        # العدادات الديناميكية (نص الزر + عداد بين قوسين)
+        if text.startswith(BTN_PENDING_ADMIN) and PERM_PENDING in _map.values():
+            _perm = PERM_PENDING
+        elif text.startswith(BTN_UNSHIPPED) and PERM_UNSHIPPED in _map.values():
+            _perm = PERM_UNSHIPPED
+    if _perm is None:
+        return False  # زر معروف خارج لوحة الفئة → مرفوض
+    return role_perm_enabled(role, _perm)
+
+
+def _perms_roles_keyboard():
+    """لوحة اختيار الفئة لإدارة صلاحياتها (inline)."""
+    _rows = []
+    for _r in (ROLE_SELLER, ROLE_STOCK, ROLE_EXTERNAL):
+        _rows.append([InlineKeyboardButton(
+            "🛍 البائع" if _r == ROLE_SELLER else ("📦 عامل المخزون" if _r == ROLE_STOCK else "🌍 البائع الخارجي"),
+            callback_data="permsrole_" + _r)])
+    _rows.append([InlineKeyboardButton("✅ إغلاق", callback_data="permsdone")])
+    return InlineKeyboardMarkup(_rows)
+
+
+def _perms_panel_keyboard(role):
+    """لوحة صلاحيات فئة محددة: كل صلاحية زر يتبدل ✅/❌ بضغطة."""
+    perms = get_role_perms(role)
+    _rows = []
+    for _p in ROLE_PERM_CATALOG.get(role, ()):
+        _mark = "✅" if perms.get(_p) else "❌"
+        _rows.append([InlineKeyboardButton(
+            _mark + " " + PERM_LABELS.get(_p, _p),
+            callback_data="permstgl_" + role + "_" + _p)])
+    _rows.append([
+        InlineKeyboardButton("🔄 تحديث", callback_data="permsrole_" + role),
+        InlineKeyboardButton("✅ إغلاق", callback_data="permsdone"),
+    ])
+    return InlineKeyboardMarkup(_rows)
+
+
+def _perms_panel_text(role):
+    return ("🔐 إدارة صلاحيات الفئة: " + ROLE_LABELS.get(role, role) + chr(10) + chr(10)
+            + "اضغط على أي صلاحية لتبديلها (✅ مفعّلة / ❌ موقفة)." + chr(10)
+            + "التغيير يسري فوراً على جميع مستخدمي الفئة.")
+
+
+async def callback_perms_handler(update, context):
+    """🔐 معالج لوحة الصلاحيات: اختيار فئة → تبديل صلاحية فورياً في قاعدة البيانات."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذه اللوحة للمديرين فقط.", show_alert=True)
+        return
+    data = query.data
+    if data == "permsdone":
+        _KB_ROLE_UID.set(query.from_user.id)
+        await query.answer()
+        try:
+            await query.edit_message_text("✅ تم إغلاق لوحة الصلاحيات.")
+        except Exception:
+            pass
+        return
+    if data.startswith("permsrole_"):
+        role = data[len("permsrole_"):]
+        if role not in ROLE_PERM_CATALOG:
+            await query.answer("❌ فئة غير معروفة.", show_alert=True)
+            return
+        _KB_ROLE_UID.set(query.from_user.id)
+        await query.answer()
+        try:
+            await query.edit_message_text(_perms_panel_text(role), reply_markup=_perms_panel_keyboard(role))
+        except Exception:
+            pass
+        return
+    if data.startswith("permstgl_"):
+        rest = data[len("permstgl_"):]
+        role, _, perm = rest.partition("_")
+        if role not in ROLE_PERM_CATALOG or perm not in PERM_LABELS or perm not in ROLE_PERM_CATALOG.get(role, ()):
+            await query.answer("❌ صلاحية غير معروفة.", show_alert=True)
+            return
+        new_val = not role_perm_enabled(role, perm)
+        set_role_perm(role, perm, new_val)
+        _KB_ROLE_UID.set(query.from_user.id)
+        await query.answer("✅ تم التفعيل" if new_val else "⛔ تم الإيقاف")
+        try:
+            await query.edit_message_text(_perms_panel_text(role), reply_markup=_perms_panel_keyboard(role))
+        except Exception:
+            pass
+        return
+
+
+# ═══════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════
 
@@ -4160,6 +4426,7 @@ def get_admin_keyboard(user_id=None):
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
         [unshipped_btn, BTN_RESET_STOCK],
+        [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -4206,35 +4473,81 @@ def _get_role(telegram_id):
 
 
 def get_stock_keyboard():
-    """📦 لوحة عامل المخزون: اخراج/اضافة/تعديل/حركة/مخزون منخفض/معلقة/غير مشحونة."""
-    rows = [
-        [BTN_REMOVE_QTY, BTN_ADD],
-        [BTN_ADD_QTY, BTN_EDIT],
-        [BTN_MOVEMENTS, BTN_LOW_STOCK],
-        [BTN_PENDING_ADMIN, BTN_UNSHIPPED],
-        [BTN_CUST_CANCEL],
-    ]
+    """📦 لوحة عامل المخزون — تُبنى ديناميكياً من صلاحيات الفئة المفعّلة
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
+    perms = get_role_perms(ROLE_STOCK)
+    rows = []
+    _r1 = []
+    if perms.get(PERM_REMOVE):
+        _r1.append(BTN_REMOVE_QTY)
+    if perms.get(PERM_ADD_PRODUCT):
+        _r1.append(BTN_ADD)
+    if _r1:
+        rows.append(_r1)
+    _r2 = []
+    if perms.get(PERM_ADD_QTY):
+        _r2.append(BTN_ADD_QTY)
+    if perms.get(PERM_EDIT_PRODUCT):
+        _r2.append(BTN_EDIT)
+    if _r2:
+        rows.append(_r2)
+    _r3 = []
+    if perms.get(PERM_MOVEMENTS):
+        _r3.append(BTN_MOVEMENTS)
+    if perms.get(PERM_LOW_STOCK):
+        _r3.append(BTN_LOW_STOCK)
+    if _r3:
+        rows.append(_r3)
+    _r4 = []
+    if perms.get(PERM_PENDING):
+        _r4.append(BTN_PENDING_ADMIN)
+    if perms.get(PERM_UNSHIPPED):
+        _r4.append(BTN_UNSHIPPED)
+    if _r4:
+        rows.append(_r4)
+    rows.append([BTN_CUST_CANCEL])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def get_seller_main_keyboard(telegram_id=None):
-    """🛍 لوحة البائع: بحث/اخراج/إضافة كمية/فاتورة/طلب توريد جديد/طلباتي/غير مشحونة/الحركة."""
-    # غير المشحونة ظاهرة للبائع دائماً (فئة كاملة لا صلاحية فردية)
-    rows = [
-        [BTN_SEARCH, BTN_CUST_REMOVE],
-        [BTN_ADD_QTY],
-        [BTN_INVOICE],
-        [BTN_CUST_ORDER],
-        [BTN_CUST_MY_ORDERS, BTN_UNSHIPPED],
-        [BTN_CUST_MOVEMENTS],
-        [BTN_CUST_CANCEL],
-    ]
+    """🛍 لوحة البائع — تُبنى ديناميكياً من صلاحيات الفئة المفعّلة
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
+    perms = get_role_perms(ROLE_SELLER)
+    rows = []
+    _r1 = []
+    if perms.get(PERM_SEARCH):
+        _r1.append(BTN_SEARCH)
+    if perms.get(PERM_REMOVE):
+        _r1.append(BTN_CUST_REMOVE)
+    if _r1:
+        rows.append(_r1)
+    if perms.get(PERM_ADD_QTY):
+        rows.append([BTN_ADD_QTY])
+    if perms.get(PERM_INVOICE):
+        rows.append([BTN_INVOICE])
+    if perms.get(PERM_SUPPLY_ORDER):
+        rows.append([BTN_CUST_ORDER])
+    _r2 = []
+    if perms.get(PERM_MY_ORDERS):
+        _r2.append(BTN_CUST_MY_ORDERS)
+    if perms.get(PERM_UNSHIPPED):
+        _r2.append(BTN_UNSHIPPED)
+    if _r2:
+        rows.append(_r2)
+    if perms.get(PERM_MOVEMENTS):
+        rows.append([BTN_CUST_MOVEMENTS])
+    rows.append([BTN_CUST_CANCEL])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def get_external_keyboard():
-    """🌍 لوحة البائع الخارجي: بحث التوفر فقط (دون كميات أو أزرار أخرى)."""
-    return ReplyKeyboardMarkup([[BTN_SEARCH], [BTN_CUST_CANCEL]], resize_keyboard=True)
+    """🌍 لوحة البائع الخارجي — زر البحث يظهر حسب صلاحية الفئة
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
+    rows = []
+    if role_perm_enabled(ROLE_EXTERNAL, PERM_SEARCH):
+        rows.append([BTN_SEARCH])
+    rows.append([BTN_CUST_CANCEL])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def get_role_keyboard(telegram_id=None):
@@ -4827,20 +5140,51 @@ async def _show_product_detail(update, context, product):
     qty = p["quantity"]
     unit_ar = _get_unit_ar(p["name"])
     text = p["name"] + "\n\n" + "📦 الكمية: " + str(qty) + " " + unit_ar + " " + icon
+    # 🔐 أزرار البطاقة تُبنى حسب صلاحيات الفئة (الإداريون والعميل: كما هو)
+    if _det_role == ROLE_SELLER:
+        _perms = get_role_perms(ROLE_SELLER)
+        buttons = []
+        _row = []
+        if _perms.get(PERM_ADD_QTY):
+            _row.append(InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid))
+        if _perms.get(PERM_REMOVE):
+            _row.append(InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid))
+        if _row:
+            buttons.append(_row)
+        if _perms.get(PERM_MOVEMENTS):
+            buttons.append([InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)])
+        if not buttons:
+            buttons = None
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            await update.message.reply_text(text, reply_markup=keyboard)
+        return
+    if _det_role == ROLE_STOCK:
+        _perms = get_role_perms(ROLE_STOCK)
+        buttons = []
+        _row = []
+        if _perms.get(PERM_ADD_QTY):
+            _row.append(InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid))
+        if _perms.get(PERM_REMOVE):
+            _row.append(InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid))
+        if _row:
+            buttons.append(_row)
+        if _perms.get(PERM_MOVEMENTS):
+            buttons.append([InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)])
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            await update.message.reply_text(text, reply_markup=keyboard)
+        return
     buttons = [
         [
             InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
             InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
         ],
     ]
-    if _det_role == ROLE_SELLER:
-        buttons = [
-            [
-                InlineKeyboardButton("➕ إضافة", callback_data="pact_add_" + pid),
-                InlineKeyboardButton("➖ إخراج", callback_data="pact_rem_" + pid),
-            ],
-            [InlineKeyboardButton("📜 سجل الحركات", callback_data="pact_log_" + pid)],
-        ]
     keyboard = InlineKeyboardMarkup(buttons)
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=keyboard)
@@ -5334,6 +5678,14 @@ async def callback_product_action_handler(update, context):
     if _pact_role == ROLE_EXTERNAL:
         await query.answer("❌ هذا الإجراء غير متاح لفئتك.", show_alert=True)
         return
+    # 🔐 الصلاحيات الديناميكية: البائع/عامل المخزون يمرّ فقط بما هو مفعّل لفئته
+    if _pact_role in (ROLE_SELLER, ROLE_STOCK):
+        _pact_need = {"add": PERM_ADD_QTY, "rem": PERM_REMOVE, "log": PERM_MOVEMENTS}.get(
+            query.data.split("_", 2)[1] if "_" in query.data else ""
+        )
+        if _pact_need and not role_perm_enabled(_pact_role, _pact_need):
+            await query.answer("❌ هذا الإجراء موقف لفئتك — راجع المدير.", show_alert=True)
+            return
     _KB_ROLE_UID.set(query.from_user.id)
     await query.answer()
     data = query.data
@@ -7601,7 +7953,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_UNSHIPPED, BTN_PERMS]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN, BTN_UNSHIPPED]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -7616,12 +7968,13 @@ async def handle_admin_message(update, context):
         if _gate_role == ROLE_STOCK:
             _allowed = (
                 not is_admin_btn
-                or text in STOCK_ADMIN_BTNS
-                or any(text.startswith(p) for p in STOCK_ADMIN_PREFIXES)
+                or (text in STOCK_ADMIN_BTNS and _btn_perm_ok(_gate_role, text))
+                or any(text.startswith(p) and _btn_perm_ok(_gate_role, text)
+                       for p in STOCK_ADMIN_PREFIXES)
             )
         elif _gate_role == ROLE_SELLER:
             _allowed = (
-                text == BTN_INVOICE
+                (text == BTN_INVOICE and _btn_perm_ok(_gate_role, text))
                 or _gate_state.startswith("waiting_invoice")
                 or text in (BTN_CANCEL, BTN_CUST_CANCEL)
             )
@@ -7644,6 +7997,14 @@ async def handle_admin_message(update, context):
     # ═══════════════════════════════════════════════════════════
     if is_admin_btn:
         context.user_data.clear()
+        if text == BTN_PERMS:
+            _KB_ROLE_UID.set(user.id)
+            await update.message.reply_text(
+                "🔐 إدارة صلاحيات الفئات" + chr(10) + chr(10)
+                + "اختر الفئة لعرض صلاحياتها وتبديلها فوراً:",
+                reply_markup=_perms_roles_keyboard(),
+            )
+            return
         if text == BTN_ADD:
             await ask_add_name(update, context)
             return
@@ -8326,6 +8687,14 @@ async def handle_customer_message(update, context):
     _is_unshipped_txt = text.startswith(BTN_UNSHIPPED)
     if _cust_role == ROLE_EXTERNAL:
         # 🌍 البائع الخارجي: بحث فقط (زر البحث أو إرسال اسم السلعة) + إلغاء
+        # 🔐 صلاحية البحث قابلة للإطفاء من لوحة الصلاحيات
+        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text):
+            await update.message.reply_text(
+                "❌ هذا الإجراء خارج صلاحيات فئتك ("
+                + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
+                reply_markup=get_external_keyboard(),
+            )
+            return
         if text in (BTN_CUST_CANCEL, BTN_CANCEL):
             context.user_data.clear()
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_external_keyboard())
@@ -8346,10 +8715,15 @@ async def handle_customer_message(update, context):
             )
             return
     elif _cust_role == ROLE_SELLER:
-        # 🛍 البائع: بحث/إضافة كمية/اخراج/طلباتي/طلب توريد جديد/غير مشحونة/الحركة/فاتورة فقط
-        _seller_allowed = (BTN_SEARCH, BTN_CUST_REMOVE, BTN_ADD_QTY, BTN_CUST_ORDER, BTN_CUST_ORDER_LEGACY,
-                           BTN_CUST_MY_ORDERS, BTN_UNSHIPPED, BTN_CUST_MOVEMENTS,
-                           BTN_INVOICE, BTN_CUST_CANCEL, BTN_CANCEL)
+        # 🛍 البائع: أزرار فئته تُحكم بالصلاحيات الديناميكية (لوحة 🔐 الصلاحيات)
+        # البحث: صلاحية مستقلة قابلة للإطفاء
+        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text):
+            await update.message.reply_text(
+                "❌ هذا الإجراء خارج صلاحيات فئتك ("
+                + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
+                reply_markup=get_seller_main_keyboard(user.id),
+            )
+            return
         _known_btn = (
             text in cust_buttons
             or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
@@ -8358,7 +8732,11 @@ async def handle_customer_message(update, context):
             or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
             or text.startswith(BTN_PENDING_ADMIN)
         )
-        if _known_btn and text not in _seller_allowed and not _is_unshipped_txt:
+        # زر معروف → يُقبل فقط إن كانت صلاحيته مفعّلة (زر غير مربوط = مسموح)
+        # استثناء «غير المشحونة» ذات البادئة الديناميكية يُحكم بالصلاحية نفسها
+        if _known_btn and not _btn_perm_ok(_cust_role, text) and not (
+            _is_unshipped_txt and role_perm_enabled(_cust_role, PERM_UNSHIPPED)
+        ):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
@@ -8380,7 +8758,7 @@ async def handle_customer_message(update, context):
 
     # 🛍 البائع: إنشاء فاتورة (نفس مسار فاتورة الإدارة) — ولغير البائع رفض صريح
     if text == BTN_INVOICE:
-        if _get_role(user.id) == ROLE_SELLER:
+        if _get_role(user.id) == ROLE_SELLER and role_perm_enabled(ROLE_SELLER, PERM_INVOICE):
             _set_state(context, STATE_INVOICE_CUSTOMER)
             context.user_data["invoice_items"] = []
             await update.message.reply_text(
@@ -8439,8 +8817,10 @@ async def handle_customer_message(update, context):
             # ── PERM GUARD ── صلاحية «غير المشحونة» لكل مستخدم على حدة:
             # حتى لو كتب الزر يدوياً لا يرى أي بيانات دون إذن المدير.
             _uns_role = _get_role(user.id)
+            # 🔐 للبائع/عامل المخزون: الاطلاع محكوم أيضاً بصلاحية الفئة الديناميكية
             if not (is_admin(user.id) or can_unshipped(user.id)
-                    or _uns_role in (ROLE_SELLER, ROLE_STOCK)):
+                    or (_uns_role in (ROLE_SELLER, ROLE_STOCK)
+                        and role_perm_enabled(_uns_role, PERM_UNSHIPPED))):
                 await update.message.reply_text(
                     "❌ لا تملك صلاحية الاطلاع على السلع غير المشحونة.\n"
                     "تواصل مع المدير لمنحك هذه الصلاحية.",
@@ -9670,6 +10050,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^approveas_"))
     app.add_handler(CallbackQueryHandler(callback_role_menu_handler, pattern="^askrole_"))
     app.add_handler(CallbackQueryHandler(callback_role_set_handler, pattern="^setrole_"))
+    # 🔐 نظام الصلاحيات الديناميكي: لوحة إدارة صلاحيات الفئات من داخل البوت
+    app.add_handler(CallbackQueryHandler(callback_perms_handler, pattern="^(permsrole_|permstgl_|permsdone)"))
     # خطوة التأكيد قبل تغيير أي دور + أدوات لوحة المستخدمين
     app.add_handler(CallbackQueryHandler(callback_users_ask_handler, pattern="^(askpromote|askdemote)_"))
     app.add_handler(CallbackQueryHandler(callback_users_cancel_handler, pattern="^users_cancel$"))
