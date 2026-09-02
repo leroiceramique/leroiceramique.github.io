@@ -8706,6 +8706,7 @@ OIL_H_RED = 250.0             # عتبة الإشعار الأحمر الإجب�
 OIL_RED_EVERY_SEC = 3 * 3600  # إيقاع الأحمر: كل 3 ساعات
 OIL_PREDICT_DAYS = 7          # التنبيه التوقعي قبل بلوغ العتبة بهذا العدد من الأيام
 OIL_WEEKLY_DAY = 4            # يوم تذكير القراءة الأسبوعي: الجمعة (weekday: الاثنين=0)
+OIL_MIN_RATE_DAYS = 1.0       # أدنى فاصل زمني يُحتسب في تعلّم المعدل (يوم) — يمنع تلويث التعلم بالإدخالات المتتالية
 _OIL_TZ = datetime.timezone(datetime.timedelta(hours=1))  # توقيت الجزائر UTC+1 (بلا توقيت صيفي)
 _OIL_DAYS_AR = {0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء", 3: "الخميس",
                 4: "الجمعة", 5: "السبت", 6: "الأحد"}
@@ -8747,7 +8748,8 @@ def _oil_dt(dt):
 def oil_compute_rate(readings):
     """معدل الاستهلاك الأسبوعي (ساعة/أسبوع) من قراءات [(reading, read_at)].
     متوسط مرجّح بفارق الزمن بين القراءات؛ يرجع None حتى تتوفر قراءتان
-    صالحتان على الأقل (فارق موجب وزمن موجب)."""
+    صالحتان على الأقل (فارق موجب وفاصل زمني ≥ OIL_MIN_RATE_DAYS —
+    الإدخالات المتتالية أو المتقاربة لا تدخل في التحليل الذكي)."""
     pts = []
     for r, at in readings or []:
         v = _oil_f(r)
@@ -8762,7 +8764,7 @@ def oil_compute_rate(readings):
     for (v1, t1), (v2, t2) in zip(pts, pts[1:]):
         days = (t2 - t1).total_seconds() / 86400.0
         dv = v2 - v1
-        if days <= 0 or dv <= 0:
+        if days < OIL_MIN_RATE_DAYS or dv <= 0:
             continue
         dh_total += dv
         dw_total += days / 7.0
@@ -8902,13 +8904,14 @@ def oil_record_reading(by_name, reading):
 
 
 def oil_record_change(recorded_by_name, reading, note):
-    """تسجيل تغيير زيت جديد: أرشفة + خط أساس جديد + تصفير كل أعلام التنبيه."""
+    """تسجيل تغيير زيت جديد: سجل الصيانة + خط أساس جديد + تصفير كل أعلام التنبيه.
+    ملاحظة v22: خط الأساس لا يُؤرشف في oil_readings — التعلم يقتصر على
+    القراءات الفعلية المتباعدة حتى لا يولّد الإدخال الافتتاحي معدلاً وهمياً."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO oil_log (hours_at_change, recorded_by_name, note) VALUES (%s, %s, %s)",
                         (reading, recorded_by_name or "", note or ""))
-            cur.execute("INSERT INTO oil_readings (reading, by_name) VALUES (%s, %s)", (reading, recorded_by_name or ""))
             cur.execute("""UPDATE oil_status
                            SET baseline_hours = %s, last_change_at = NOW(),
                                current_hours = %s, current_hours_at = NOW(),
@@ -9061,7 +9064,7 @@ def oil_status_card():
             lines.append("🔮 التوقع: بلوغ " + str(int(OIL_H_LIMIT)) + " ساعة يوم "
                          + _OIL_DAYS_AR.get(eta.weekday(), "") + " " + eta.strftime("%Y-%m-%d"))
     else:
-        lines.append("🧠 معدل الاستهلاك: غير معروف بعد — يلزم قراءتان على الأقل")
+        lines.append("🧠 معدل الاستهلاك: غير معروف بعد — يبدأ التحليل الذكي تلقائياً بعد أول قراءتين متباعدتين")
     lines.append("🚦 الحالة: " + stage)
     lines.append("")
     lines.append("العتبات: تنبيه يومي عند " + str(int(OIL_H_LIMIT))
