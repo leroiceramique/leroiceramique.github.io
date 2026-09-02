@@ -1783,6 +1783,42 @@ CREATE INDEX IF NOT EXISTS idx_pending_deliveries_product ON pending_deliveries(
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_user ON pending_deliveries(user_id);
 CREATE INDEX IF NOT EXISTS idx_pending_deliveries_pending ON pending_deliveries(product_id) WHERE pending_qty > 0;
 
+-- v21: صيانة الرافعة الشوكية — دورة زيت المحرك
+CREATE TABLE IF NOT EXISTS oil_status (
+    id                   INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    baseline_hours       NUMERIC(10,1) NOT NULL DEFAULT 0,
+    last_change_at       TIMESTAMPTZ,
+    current_hours        NUMERIC(10,1),
+    current_hours_at     TIMESTAMPTZ,
+    confirm_worker_id    BIGINT,
+    confirm_requested_at TIMESTAMPTZ,
+    confirm_confirmed    BOOLEAN NOT NULL DEFAULT FALSE,
+    confirm_confirmed_at TIMESTAMPTZ,
+    weekly_remind_date   DATE,
+    predict_sent_at      TIMESTAMPTZ,
+    notified_200_date    DATE,
+    notified_250_at      TIMESTAMPTZ,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oil_readings (
+    id       SERIAL PRIMARY KEY,
+    reading  NUMERIC(10,1) NOT NULL,
+    read_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    by_name  VARCHAR(255)
+);
+
+CREATE TABLE IF NOT EXISTS oil_log (
+    id               SERIAL PRIMARY KEY,
+    changed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    hours_at_change  NUMERIC(10,1),
+    recorded_by_name VARCHAR(255),
+    note             VARCHAR(500)
+);
+
+CREATE INDEX IF NOT EXISTS idx_oil_readings_read_at ON oil_readings (read_at);
+CREATE INDEX IF NOT EXISTS idx_oil_log_changed_at ON oil_log (changed_at);
+
 """
 
 
@@ -3501,6 +3537,8 @@ STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
 STATE_INVOICE_REVIEW = "waiting_invoice_review"
 STATE_RESET_PIN = "waiting_reset_pin"
+STATE_OIL_READING = "waiting_oil_reading"
+STATE_OIL_NEW_HOURS = "waiting_oil_new_hours"
 
 BTN_ADD = "\U0001f4e6 \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629"
 BTN_SEARCH = "\U0001f50d \u0628\u062d\u062b"
@@ -3530,6 +3568,7 @@ BTN_CUST_ORDER_LEGACY = "📦 طلب توريد"  # توافق لوحات الإ
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
+BTN_OIL = "🔧 زيت الرافعة"
 
 # ═══════════════════════════════════════════════════════════
 #  نظام الفئات (الأدوار) — ROLES SYSTEM
@@ -4173,6 +4212,7 @@ def get_admin_keyboard(user_id=None):
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
         [BTN_RESET_STOCK],
+        [BTN_OIL],
         [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -7666,7 +7706,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -7717,6 +7757,11 @@ async def handle_admin_message(update, context):
                 + "اختر الفئة لعرض صلاحياتها وتبديلها فوراً:",
                 reply_markup=_perms_roles_keyboard(),
             )
+            return
+        if text == BTN_OIL:
+            # 🔧 صيانة الرافعة — وصل هنا مدير فقط (بوابة الفئات أعلاه)
+            card = await asyncio.to_thread(oil_status_card)
+            await update.message.reply_text(card, reply_markup=oil_menu_keyboard())
             return
         if text == BTN_ADD:
             await ask_add_name(update, context)
@@ -8261,6 +8306,40 @@ async def handle_admin_message(update, context):
         context.user_data.clear()
         return
     
+    elif state == STATE_OIL_READING:
+        # 🔧 تحديث قراءة عداد الرافعة
+        val = _oil_parse_hours(text)
+        if val is None:
+            await update.message.reply_text("❌ أرسل رقماً صحيحاً للقراءة (مثال: 1520.5).", reply_markup=get_input_keyboard())
+            return
+        _st_ens = await asyncio.to_thread(oil_ensure_row)
+        _st_base = _oil_f(_st_ens.get("baseline_hours")) or 0.0
+        if _st_ens.get("last_change_at") is not None and val < _st_base:
+            await update.message.reply_text(
+                "❌ القراءة أقل من خط الأساس الحالي (" + _oil_fmt(_st_base) + " ساعة).\n"
+                "إن استُبدل العداد أو تم تغيير الزيت فاستخدم: 🔧 زيت الرافعة ← «🔧 تسجيل تغيير زيت جديد».",
+                reply_markup=get_input_keyboard())
+            return
+        await asyncio.to_thread(oil_record_reading, (user.first_name or user.username or str(user.id)), val)
+        context.user_data.clear()
+        card = await asyncio.to_thread(oil_status_card)
+        await update.message.reply_text("✅ تم تحديث القراءة.\n\n" + card, reply_markup=get_admin_keyboard())
+        return
+    elif state == STATE_OIL_NEW_HOURS:
+        # 🔧 تسجيل تغيير زيت جديد — تصفير الدورة وبدء دورة جديدة
+        val = _oil_parse_hours(text)
+        if val is None:
+            await update.message.reply_text("❌ أرسل رقماً صحيحاً (مثال: 1520.5).", reply_markup=get_input_keyboard())
+            return
+        _st_ens = await asyncio.to_thread(oil_ensure_row)
+        _note = "تأكيد مباشر من المدير"
+        if bool(_st_ens.get("confirm_confirmed")):
+            _note = "تأكيد العامل عبر الزر + إدخال المدير"
+        await asyncio.to_thread(oil_record_change, (user.first_name or user.username or str(user.id)), val, _note)
+        context.user_data.clear()
+        card = await asyncio.to_thread(oil_status_card)
+        await update.message.reply_text("🛢 تم تسجيل تغيير الزيت وبدء دورة جديدة.\n\n" + card, reply_markup=get_admin_keyboard())
+        return
     else:
         # Unknown state — log and clear safely instead of silent data destruction
         logging.warning("[ADMIN] Unhandled state: " + str(state) + " for user " + str(user.id))
@@ -8611,6 +8690,593 @@ async def route_message(update, context):
     else:
         await handle_customer_message(update, context)
 
+
+# ═══════════════════════════════════════════════════════════
+#  🔧 صيانة الرافعة الشوكية — دورة زيت المحرك (v21)
+#  حصرياً للمدراء (admin/manager). رافعة واحدة، دورة واحدة.
+#  التدفق: تسجيل آخر تغيير (خط أساس) ← قراءة أسبوعية للعداد
+#  (تذكير كل جمعة) ← تعلّم معدل الاستهلاك الأسبوعي ← تنبؤ
+#  بالوصول إلى 200 ساعة ← تنبيه يومي عند 200 ← إشعار أحمر
+#  إجباري كل 3 ساعات عند 250 ← تأكيد العامل بزر واحد ← تسجيل
+#  التغيير الجديد ← دورة جديدة.
+# ═══════════════════════════════════════════════════════════
+
+OIL_H_LIMIT = 200.0           # عتبة التنبيه اليومي (ساعة)
+OIL_H_RED = 250.0             # عتبة الإشعار الأحمر الإجباري (ساعة)
+OIL_RED_EVERY_SEC = 3 * 3600  # إيقاع الأحمر: كل 3 ساعات
+OIL_PREDICT_DAYS = 7          # التنبيه التوقعي قبل بلوغ العتبة بهذا العدد من الأيام
+OIL_WEEKLY_DAY = 4            # يوم تذكير القراءة الأسبوعي: الجمعة (weekday: الاثنين=0)
+_OIL_TZ = datetime.timezone(datetime.timedelta(hours=1))  # توقيت الجزائر UTC+1 (بلا توقيت صيفي)
+_OIL_DAYS_AR = {0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء", 3: "الخميس",
+                4: "الجمعة", 5: "السبت", 6: "الأحد"}
+
+
+def oil_algiers_now():
+    """الوقت الحالي بتوقيت الجزائر (fixed UTC+1 — لا يعتمد على tzdata الخادم)."""
+    return datetime.datetime.now(_OIL_TZ)
+
+
+def _oil_f(v):
+    """تحويل آمن إلى float (يقبل Decimal) أو None."""
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _oil_fmt(v):
+    """تنسيق الساعات: بلا أصفار زائدة أو — عند الغياب."""
+    v = _oil_f(v)
+    if v is None:
+        return "—"
+    return ("{:.1f}".format(v)).rstrip("0").rstrip(".")
+
+
+def _oil_dt(dt):
+    """توحيد عرض التواريخ بتوقيت الجزائر."""
+    try:
+        if dt is None:
+            return None
+        if isinstance(dt, datetime.datetime):
+            return dt.astimezone(_OIL_TZ)
+        return dt
+    except Exception:
+        return dt
+
+
+def oil_compute_rate(readings):
+    """معدل الاستهلاك الأسبوعي (ساعة/أسبوع) من قراءات [(reading, read_at)].
+    متوسط مرجّح بفارق الزمن بين القراءات؛ يرجع None حتى تتوفر قراءتان
+    صالحتان على الأقل (فارق موجب وزمن موجب)."""
+    pts = []
+    for r, at in readings or []:
+        v = _oil_f(r)
+        if v is None or at is None:
+            continue
+        pts.append((v, at))
+    if len(pts) < 2:
+        return None
+    pts.sort(key=lambda x: x[1])
+    dh_total = 0.0
+    dw_total = 0.0
+    for (v1, t1), (v2, t2) in zip(pts, pts[1:]):
+        days = (t2 - t1).total_seconds() / 86400.0
+        dv = v2 - v1
+        if days <= 0 or dv <= 0:
+            continue
+        dh_total += dv
+        dw_total += days / 7.0
+    if dw_total <= 0:
+        return None
+    return dh_total / dw_total
+
+
+def oil_due_alerts(st, rate, now):
+    """قرار التنبيهات (دالة نقية قابلة للاختبار) — يرجع قائمة أحداث:
+    [{"kind": weekly|predict|daily200|red250, ...}].
+    st: dict بمفاتيح has_cycle, baseline_hours, current_hours,
+        confirm_confirmed, weekly_remind_date, predict_sent_at,
+        notified_200_date, notified_250_at.
+    rate: معدل الاستهلاك الأسبوعي أو None. now: وقت توقيت الجزائر."""
+    out = []
+    if not st.get("has_cycle"):
+        return out
+    base = _oil_f(st.get("baseline_hours")) or 0.0
+    cur = _oil_f(st.get("current_hours"))
+    if cur is None:
+        cur = base
+    hours_since = cur - base
+    today = now.date()
+    confirmed = bool(st.get("confirm_confirmed"))
+
+    # تذكير القراءة الأسبوعي (الجمعة) — مستقل عن حالة التأكيد
+    if now.weekday() == OIL_WEEKLY_DAY and st.get("weekly_remind_date") != today:
+        out.append({"kind": "weekly", "hours_since": hours_since})
+
+    if confirmed:
+        # العامل أكّد التغيير — التنبيهات متوقفة حتى تسجيل الدورة الجديدة
+        return out
+
+    remaining = OIL_H_LIMIT - hours_since
+    # 🔮 تنبؤ بالاقتراب من 200 (يعلم من القراءات)
+    if rate and rate > 0 and remaining > 0:
+        days = remaining / (rate / 7.0)
+        if days <= OIL_PREDICT_DAYS:
+            last_p = st.get("predict_sent_at")
+            if last_p is None or (now - last_p).total_seconds() >= OIL_PREDICT_DAYS * 86400.0 * 0.9:
+                eta = today + datetime.timedelta(days=days)
+                out.append({"kind": "predict", "hours_since": hours_since, "rate": rate, "eta": eta})
+    # 🟠 عتبة 200 — تنبيه هادئ مرة كل يوم
+    if OIL_H_LIMIT <= hours_since < OIL_H_RED and st.get("notified_200_date") != today:
+        out.append({"kind": "daily200", "hours_since": hours_since})
+    # 🔴 عتبة 250 — إشعار أحمر إجباري كل 3 ساعات
+    if hours_since >= OIL_H_RED:
+        last_r = st.get("notified_250_at")
+        if last_r is None or (now - last_r).total_seconds() >= OIL_RED_EVERY_SEC:
+            out.append({"kind": "red250", "hours_since": hours_since})
+    return out
+
+
+def oil_alert_text(kind, info):
+    """نص التنبيه لكل نوع."""
+    hs = _oil_fmt(info.get("hours_since"))
+    if kind == "weekly":
+        return ("🔧 تذكير أسبوعي: تحديث قراءة عداد الرافعة\n\n"
+                "📊 الساعات منذ آخر تغيير زيت: " + hs + " ساعة\n\n"
+                "افتح: 🔧 زيت الرافعة ← 📝 تحديث قراءة العداد\n"
+                "(القراءات الأسبوعية تجعل التنبؤ بالعتبة دقيقاً)")
+    if kind == "predict":
+        eta = info.get("eta")
+        day = _OIL_DAYS_AR.get(eta.weekday(), "") if eta is not None else ""
+        eta_s = eta.strftime("%Y-%m-%d") if eta is not None else ""
+        return ("🟡 تنبؤ صيانة الرافعة الشوكية\n\n"
+                "حسب استهلاكك المتعلّم (" + _oil_fmt(info.get("rate")) + " ساعة/أسبوع) "
+                "ستصل عتبة " + str(int(OIL_H_LIMIT)) + " ساعة يوم "
+                + day + " " + eta_s + "\n\n"
+                "📊 الساعات منذ آخر تغيير: " + hs + " ساعة\n"
+                "🛢 جهّز تغيير الزيت مبكراً حتى لا يسبقك العدّاد.")
+    if kind == "daily200":
+        return ("🟠 الرافعة تجاوزت " + str(int(OIL_H_LIMIT)) + " ساعة دون تغيير زيت\n\n"
+                "📊 الساعات منذ آخر تغيير: " + hs + " ساعة\n"
+                "⚠️ حان وقت التغيير — هذا تنبيه يومي حتى يتم التغيير.")
+    if kind == "red250":
+        return ("🔴 إشعار أحمر — تغيير زيت الرافعة إجباري!\n\n"
+                "📊 الساعات منذ آخر تغيير: " + hs
+                + " ساعة (تجاوزت حد " + str(int(OIL_H_RED)) + " ساعة)\n"
+                "🛑 استمرار التشغيل بهذه الحالة يعرّض المحرك للتلف.\n"
+                "نفّذ التغيير فوراً ثم سجّله: 🔧 زيت الرافعة ← 🔧 تسجيل تغيير زيت جديد")
+    return ""
+
+
+def oil_ensure_row():
+    """يضمن وجود صف الحالة (id=1) ويرجعه كقاموس — قاعدة بيانات متزامنة."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("INSERT INTO oil_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+            cur.execute("SELECT * FROM oil_status WHERE id = 1")
+            row = dict(cur.fetchone() or {})
+        conn.commit()
+        return row
+    except Exception as e:
+        conn.rollback()
+        logging.warning("[OIL] ensure/read failed: " + str(e))
+        return {}
+    finally:
+        release_connection(conn)
+
+
+def oil_recent_readings(limit=6):
+    """آخر قراءات العداد [(reading, read_at)] تصاعدياً — لتعلّم المعدل."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT reading, read_at FROM oil_readings ORDER BY read_at DESC LIMIT %s", (limit,))
+            rows = [(r[0], r[1]) for r in cur.fetchall()]
+        conn.commit()
+        rows.reverse()
+        return rows
+    except Exception as e:
+        conn.rollback()
+        logging.warning("[OIL] readings failed: " + str(e))
+        return []
+    finally:
+        release_connection(conn)
+
+
+def oil_record_reading(by_name, reading):
+    """تحديث قراءة العداد الحالية + أرشفتها للتعلم."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO oil_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+            cur.execute("UPDATE oil_status SET current_hours = %s, current_hours_at = NOW(), updated_at = NOW() WHERE id = 1",
+                        (reading,))
+            cur.execute("INSERT INTO oil_readings (reading, by_name) VALUES (%s, %s)", (reading, by_name or ""))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def oil_record_change(recorded_by_name, reading, note):
+    """تسجيل تغيير زيت جديد: أرشفة + خط أساس جديد + تصفير كل أعلام التنبيه."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO oil_log (hours_at_change, recorded_by_name, note) VALUES (%s, %s, %s)",
+                        (reading, recorded_by_name or "", note or ""))
+            cur.execute("INSERT INTO oil_readings (reading, by_name) VALUES (%s, %s)", (reading, recorded_by_name or ""))
+            cur.execute("""UPDATE oil_status
+                           SET baseline_hours = %s, last_change_at = NOW(),
+                               current_hours = %s, current_hours_at = NOW(),
+                               confirm_worker_id = NULL, confirm_requested_at = NULL,
+                               confirm_confirmed = FALSE, confirm_confirmed_at = NULL,
+                               predict_sent_at = NULL, notified_200_date = NULL, notified_250_at = NULL,
+                               updated_at = NOW()
+                           WHERE id = 1""", (reading, reading))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def oil_recent_log(limit=20):
+    """سجل الصيانة — آخر التغييرات."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM oil_log ORDER BY changed_at DESC LIMIT %s", (limit,))
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return rows
+    except Exception as e:
+        conn.rollback()
+        logging.warning("[OIL] log failed: " + str(e))
+        return []
+    finally:
+        release_connection(conn)
+
+
+def oil_set_confirm_worker(worker_tid):
+    """تسجيل العامل المُرسل له طلب التأكيد."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO oil_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+            cur.execute("""UPDATE oil_status SET confirm_worker_id = %s, confirm_requested_at = NOW(),
+                           confirm_confirmed = FALSE, confirm_confirmed_at = NULL, updated_at = NOW()
+                           WHERE id = 1""", (worker_tid,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def oil_worker_confirmed(worker_tid):
+    """تثبيت تأكيد العامل — ينجح فقط إن كان هو صاحب الطلب ولم يُؤكد سابقاً."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE oil_status SET confirm_confirmed = TRUE, confirm_confirmed_at = NOW(), updated_at = NOW()
+                           WHERE id = 1 AND confirm_worker_id = %s AND confirm_confirmed = FALSE""",
+                        (worker_tid,))
+            ok = cur.rowcount > 0
+        conn.commit()
+        return ok
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        release_connection(conn)
+
+
+def oil_worker_candidates():
+    """مرشحو تأكيد التغيير: مستخدمون نشطون (غير مدراء) — آخر 15 تسجيلاً."""
+    out = []
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT telegram_id, username, first_name, role FROM users
+                               WHERE active = TRUE AND role NOT IN ('admin', 'manager', 'pending')
+                               ORDER BY created_at DESC LIMIT 15""")
+                for tid, username, first_name, role in cur.fetchall():
+                    name = first_name or username or str(tid)
+                    out.append((int(tid), name + " (" + ROLE_LABELS.get(role, role) + ")"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            release_connection(conn)
+    except Exception as e:
+        logging.warning("[OIL] candidates failed: " + str(e))
+    return out
+
+
+def oil_manager_ids():
+    """معرفات كل المدراء (حسابات البيئة + فئة admin/manager النشطة)."""
+    ids = set(ADMIN_IDS or ())
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager') AND active = TRUE")
+                for r in cur.fetchall():
+                    ids.add(r[0])
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            release_connection(conn)
+    except Exception:
+        pass
+    return [i for i in ids if i]
+
+
+def oil_status_card():
+    """بطاقة حالة دورة الزيت (نص كامل)."""
+    st = oil_ensure_row()
+    rate = oil_compute_rate(oil_recent_readings(6))
+    now = oil_algiers_now()
+    has_cycle = st.get("last_change_at") is not None
+    base = _oil_f(st.get("baseline_hours")) or 0.0
+    cur = _oil_f(st.get("current_hours"))
+    hours_since = max(0.0, (cur if cur is not None else base) - base)
+    if not has_cycle:
+        stage = "⚪ لم تبدأ الدورة بعد"
+    elif bool(st.get("confirm_confirmed")):
+        stage = "⏸ مؤكد — بانتظار تسجيل القراءة الجديدة"
+    elif hours_since >= OIL_H_RED:
+        stage = "🔴 تجاوز 250 — تغيير إجباري"
+    elif hours_since >= OIL_H_LIMIT:
+        stage = "🟠 تجاوز 200 — تنبيه يومي"
+    elif rate and rate > 0 and (OIL_H_LIMIT - hours_since) / (rate / 7.0) <= OIL_PREDICT_DAYS:
+        stage = "🟡 اقتراب العتبة (تنبؤ)"
+    else:
+        stage = "🟢 طبيعي"
+    lines = ["🔧 زيت محرك الرافعة الشوكية", ""]
+    if has_cycle:
+        lca = _oil_dt(st.get("last_change_at"))
+        lines.append("🛢 آخر تغيير زيت: " + (lca.strftime("%Y-%m-%d %H:%M") if lca else "—"))
+        lines.append("🔢 خط الأساس (قراءة العداد عند التغيير): " + _oil_fmt(base) + " ساعة")
+        lines.append("📊 آخر قراءة للعداد: " + (_oil_fmt(cur) if cur is not None else "—") + " ساعة")
+        lines.append("⏱ الساعات منذ آخر تغيير: " + _oil_fmt(hours_since) + " ساعة")
+    else:
+        lines.append("لا توجد دورة مسجلة بعد.")
+        lines.append("ابدأ بـ«🔧 تسجيل تغيير زيت جديد» أو أدخل قراءة العداد الحالية.")
+    lines.append("")
+    if rate and rate > 0:
+        lines.append("🧠 معدل الاستهلاك المتعلّم: " + _oil_fmt(rate) + " ساعة/أسبوع")
+        remaining = OIL_H_LIMIT - hours_since
+        if remaining > 0:
+            days = remaining / (rate / 7.0)
+            eta = now + datetime.timedelta(days=days)
+            lines.append("🔮 التوقع: بلوغ " + str(int(OIL_H_LIMIT)) + " ساعة يوم "
+                         + _OIL_DAYS_AR.get(eta.weekday(), "") + " " + eta.strftime("%Y-%m-%d"))
+    else:
+        lines.append("🧠 معدل الاستهلاك: غير معروف بعد — يلزم قراءتان على الأقل")
+    lines.append("🚦 الحالة: " + stage)
+    lines.append("")
+    lines.append("العتبات: تنبيه يومي عند " + str(int(OIL_H_LIMIT))
+                 + " ساعة • إشعار أحمر كل 3 ساعات عند " + str(int(OIL_H_RED)) + " ساعة")
+    return "\n".join(lines)
+
+
+def oil_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 تحديث قراءة العداد", callback_data="oil_update"),
+         InlineKeyboardButton("🔧 تسجيل تغيير زيت جديد", callback_data="oil_change")],
+        [InlineKeyboardButton("📜 سجل الصيانة", callback_data="oil_log"),
+         InlineKeyboardButton("👷 طلب تأكيد من العامل", callback_data="oil_askconfirm")],
+        [InlineKeyboardButton("🔄 تحديث", callback_data="oil_menu")],
+    ])
+
+
+def oil_log_back_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="oil_back")]])
+
+
+def _oil_parse_hours(text):
+    """تحويل نص القراءة إلى رقم آمن أو None."""
+    t = (text or "").strip().replace(",", ".")
+    try:
+        v = float(t)
+    except (TypeError, ValueError):
+        return None
+    if v < 0 or v > 10000000:
+        return None
+    return round(v, 1)
+
+
+async def callback_oil_handler(update, context):
+    """كل كولباكات الزيت (النمط ^oil_): إدارة للمدراء + تأكيد للعامل."""
+    query = update.callback_query
+    data = query.data or ""
+    if data == "oil_wconfirm":
+        await _oil_worker_confirm_cb(update, context, query)
+        return
+    user = query.from_user
+    if not await asyncio.to_thread(is_admin, user.id):
+        await query.answer("❌ هذا القسم للمدراء فقط.", show_alert=True)
+        return
+    _KB_ROLE_UID.set(user.id)
+    if data in ("oil_menu", "oil_back"):
+        card = await asyncio.to_thread(oil_status_card)
+        await query.answer()
+        try:
+            await query.edit_message_text(card, reply_markup=oil_menu_keyboard())
+        except Exception:
+            await query.message.reply_text(card, reply_markup=oil_menu_keyboard())
+        return
+    if data == "oil_update":
+        context.user_data.clear()
+        _set_state(context, STATE_OIL_READING)
+        await query.answer()
+        await query.message.reply_text(
+            "📝 تحديث قراءة العداد\n\nأرسل القراءة الحالية من عداد الساعات (رقم فقط):\nمثال: 1520.5",
+            reply_markup=get_input_keyboard())
+        return
+    if data == "oil_change":
+        context.user_data.clear()
+        _set_state(context, STATE_OIL_NEW_HOURS)
+        await query.answer()
+        await query.message.reply_text(
+            "🔧 تسجيل تغيير زيت جديد\n\nأرسل قراءة العداد الحالية (رقم فقط):\nمثال: 1520.5",
+            reply_markup=get_input_keyboard())
+        return
+    if data == "oil_log":
+        rows = await asyncio.to_thread(oil_recent_log, 20)
+        await query.answer()
+        if not rows:
+            txt = "📜 سجل الصيانة\n\nلا توجد تغييرات مسجلة بعد."
+        else:
+            lines = ["📜 سجل الصيانة — آخر " + str(len(rows)) + " تغيير", ""]
+            for r in rows:
+                ca = _oil_dt(r.get("changed_at"))
+                lines.append("🛢 " + (ca.strftime("%Y-%m-%d %H:%M") if ca else "—")
+                             + " — عند " + _oil_fmt(r.get("hours_at_change")) + " ساعة")
+                if r.get("recorded_by_name"):
+                    lines.append("   بواسطة: " + r["recorded_by_name"])
+                if r.get("note"):
+                    lines.append("   " + r["note"])
+            txt = "\n".join(lines)
+        try:
+            await query.edit_message_text(txt, reply_markup=oil_log_back_keyboard())
+        except Exception:
+            await query.message.reply_text(txt, reply_markup=oil_log_back_keyboard())
+        return
+    if data == "oil_askconfirm":
+        users = await asyncio.to_thread(oil_worker_candidates)
+        await query.answer()
+        if not users:
+            await query.message.reply_text("❌ لا يوجد مستخدمون نشطون لإرسال طلب التأكيد لهم.")
+            return
+        wrows = [[InlineKeyboardButton("👷 " + name, callback_data="oilwk_" + str(tid))] for tid, name in users]
+        wrows.append([InlineKeyboardButton("❌ إلغاء", callback_data="oil_back")])
+        await query.message.reply_text("👷 اختر العامل لإرسال طلب تأكيد تغيير الزيت:",
+                                       reply_markup=InlineKeyboardMarkup(wrows))
+        return
+    if data.startswith("oilwk_"):
+        tid_s = data[len("oilwk_"):]
+        if not tid_s.isdigit():
+            await query.answer("❌ طلب غير صالح.", show_alert=True)
+            return
+        tid = int(tid_s)
+        users = await asyncio.to_thread(oil_worker_candidates)
+        wname = next((n for t, n in users if t == tid), "العامل")
+        try:
+            await asyncio.to_thread(oil_set_confirm_worker, tid)
+            await context.bot.send_message(
+                chat_id=tid,
+                text=("🔧 طلب تأكيد تغيير زيت الرافعة الشوكية\n\n"
+                      "اضغط الزر أدناه بعد إتمام تغيير الزيت فعلياً:"),
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("✅ أكدت تغيير الزيت", callback_data="oil_wconfirm")]]))
+            await query.answer("✅ تم إرسال طلب التأكيد.")
+            await query.message.reply_text("📨 أُرسل طلب التأكيد إلى: " + wname)
+        except Exception as e:
+            await query.answer("❌ فشل الإرسال: " + str(e), show_alert=True)
+        return
+    await query.answer()
+
+
+async def _oil_worker_confirm_cb(update, context, query):
+    """زر العامل: يعمل فقط لمن أُرسل له طلب التأكيد — بلا أي وصول آخر."""
+    user = query.from_user
+    st = await asyncio.to_thread(oil_ensure_row)
+    if not st or st.get("confirm_worker_id") != user.id:
+        await query.answer("❌ لا يوجد طلب تأكيد موجّه لك.", show_alert=True)
+        return
+    if bool(st.get("confirm_confirmed")):
+        await query.answer("✅ تأكيدك مسجل مسبقاً — بانتظار إدخال القراءة الجديدة.")
+        return
+    ok = await asyncio.to_thread(oil_worker_confirmed, user.id)
+    if not ok:
+        await query.answer("❌ انتهت صلاحية الطلب أو أُلغي.", show_alert=True)
+        return
+    await query.answer("✅ تم تسجيل تأكيدك. شكراً!")
+    try:
+        await query.edit_message_text("✅ تم تسجيل تأكيد تغيير الزيت — شكراً لك!")
+    except Exception:
+        pass
+    wname = user.first_name or user.username or str(user.id)
+    text = ("✅ أكّد العامل " + wname + " تغيير زيت الرافعة.\n\n"
+            "إتمام الدورة: 🔧 زيت الرافعة ← «🔧 تسجيل تغيير زيت جديد» "
+            "وأدخل القراءة الحالية لتصفير العدّاد.")
+    ids = await asyncio.to_thread(oil_manager_ids)
+    for tid in ids:
+        try:
+            await context.bot.send_message(chat_id=tid, text=text)
+        except Exception as e:
+            logging.warning("[OIL] manager notify " + str(tid) + " failed: " + str(e))
+
+
+def _oil_monitor_prepare():
+    """يقرأ الحالة ويقرر التنبيهات ويحدّث أعلام الإرسال (متزامن — يُستدعى من خيط)."""
+    st = oil_ensure_row()
+    if not st:
+        return []
+    st["has_cycle"] = st.get("last_change_at") is not None
+    rate = oil_compute_rate(oil_recent_readings(6))
+    now = oil_algiers_now()
+    due = oil_due_alerts(st, rate, now)
+    if not due:
+        return []
+    today = now.date()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for a in due:
+                if a["kind"] == "weekly":
+                    cur.execute("UPDATE oil_status SET weekly_remind_date = %s WHERE id = 1", (today,))
+                elif a["kind"] == "predict":
+                    cur.execute("UPDATE oil_status SET predict_sent_at = %s WHERE id = 1", (now,))
+                elif a["kind"] == "daily200":
+                    cur.execute("UPDATE oil_status SET notified_200_date = %s WHERE id = 1", (today,))
+                elif a["kind"] == "red250":
+                    cur.execute("UPDATE oil_status SET notified_250_at = %s WHERE id = 1", (now,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.warning("[OIL] flag update failed: " + str(e))
+    finally:
+        release_connection(conn)
+    return [(a["kind"], oil_alert_text(a["kind"], a)) for a in due]
+
+
+async def _oil_send_alerts(bot, alerts):
+    """إرسال التنبيهات لكل المدراء فقط."""
+    ids = await asyncio.to_thread(oil_manager_ids)
+    for kind, text in alerts:
+        if not text:
+            continue
+        for tid in ids:
+            try:
+                await bot.send_message(chat_id=tid, text=text)
+            except Exception as e:
+                logging.warning("[OIL] alert to " + str(tid) + " failed: " + str(e))
+
+
+async def _oil_monitor_loop(bot):
+    """حلقة مراقبة زيت الرافعة: فحص كل 10 دقائق — تذكير الجمعة الأسبوعي،
+    تنبؤ قبل 200، يومي عند 200، أحمر كل 3 ساعات عند 250 (للمدراء فقط).
+    بلا أي مكتبة خارجية: مهمة asyncio خفيفة تعمل داخل البوت."""
+    await asyncio.sleep(20)  # انتظار اكتمال إقلاع البوت
+    while True:
+        try:
+            alerts = await asyncio.to_thread(_oil_monitor_prepare)
+            if alerts:
+                await _oil_send_alerts(bot, alerts)
+        except Exception as e:
+            logging.error("[OIL] monitor error: " + str(e))
+        await asyncio.sleep(600)
 
 # ═══════════════════════════════════════════════════════════
 #  EXTRACTION PERMISSION & REQUEST HANDLERS
@@ -9388,7 +10054,9 @@ def _get_telegram_id(user_db_id):
 async def _on_app_post_init(application):
     """Start background tasks after the app is initialized (works for both webhook and polling)."""
     asyncio.create_task(_offline_retry_loop(application.bot))
+    asyncio.create_task(_oil_monitor_loop(application.bot))
     logging.info("[BOT] Offline retry task started via post_init")
+    logging.info("[BOT] Oil monitor task started via post_init")
 
 
 def build_application():
@@ -9464,6 +10132,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_area_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
+    # 🔧 صيانة الرافعة: إدارة الزيت (مدراء فقط) + زر تأكيد العامل
+    app.add_handler(CallbackQueryHandler(callback_oil_handler, pattern="^oil_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backup_test", backup_test_command))
     app.add_handler(CommandHandler("users", users_command))
