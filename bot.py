@@ -25,6 +25,8 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    TypeHandler,
+    ApplicationHandlerStop,
     filters,
 )
 
@@ -2152,8 +2154,8 @@ def register_user(telegram_id, username=None, first_name=None):
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
-                    first_name = EXCLUDED.first_name,
-                    active = TRUE
+                    first_name = EXCLUDED.first_name
+                -- v23: لا إعادة تفعيل تلقائية هنا — المطرود يبقى مطروداً
                 -- NEVER downgrade role on re-register
                 -- (admin stays admin, approved customer stays customer)
                 RETURNING id, telegram_id, username, first_name, role, active, created_at
@@ -2198,8 +2200,8 @@ def sync_user_info(user):
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
-                    first_name = EXCLUDED.first_name,
-                    active = TRUE
+                    first_name = EXCLUDED.first_name
+                -- v23: لا إعادة تفعيل تلقائية عند التفاعل — المطرود يبقى مطروداً
             """, (username, username, user.id,
                   user.id, username, user.first_name,
                   "admin" if user.id in ADMIN_IDS else "pending"))
@@ -2431,6 +2433,41 @@ def set_user_role(telegram_id, role):
     except Exception:
         conn.rollback()
         raise
+    finally:
+        release_connection(conn)
+
+
+def set_user_active(telegram_id, active):
+    """🚫 طرد/إعادة تنشيط (v23): يبدّل عمود active — المطرود يبقى بسجله وبدوره
+    ويرى البوت رسالة إيقاف فقط حتى يعيد المدير تفعيله من لوحة المستخدمين."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET active = %s WHERE telegram_id = %s RETURNING role",
+                        (bool(active), telegram_id))
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def user_is_active(telegram_id):
+    """فحص بوابة الطرد: True لغير الموجود في القاعدة (المسار الطبيعي قبل التسجيل)،
+    وعند أي خطأ في القاعدة نُفشل الباب مفتوحاً حتى لا يُقفل النظام على أحد."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT active FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return True if row is None else bool(row[0])
+    except Exception as e:
+        logging.warning("[KICK] active check failed: " + str(e))
+        return True
     finally:
         release_connection(conn)
 
@@ -5905,6 +5942,28 @@ def _protected_account(telegram_id):
     return telegram_id in ADMIN_IDS or telegram_id in OWNER_IDS
 
 
+KICK_NOTICE = "⛔ تم إيقاف حسابك من قبل الإدارة.\nللاستفسار تواصل مع إدارة البوت."
+
+
+async def kicked_gate(update, context):
+    """🚫 بوابة الطرد (v23): أول معالج على كل تحديث (group=-2) —
+    المستخدم المطرود (active=FALSE) لا يرى إلا رسالة الإيقاف
+    وتُوقف بقية المعالجات كلياً. المدراء والملاك مستثنون دائماً."""
+    user = update.effective_user if update else None
+    if user is None or user.id in ADMIN_IDS or user.id in OWNER_IDS:
+        return
+    if await asyncio.to_thread(user_is_active, user.id):
+        return
+    try:
+        if update.callback_query is not None:
+            await update.callback_query.answer("⛔ تم إيقاف حسابك من قبل الإدارة.", show_alert=True)
+        elif update.effective_message is not None:
+            await update.effective_message.reply_text(KICK_NOTICE)
+    except Exception:
+        pass
+    raise ApplicationHandlerStop
+
+
 async def callback_pickrole_handler(update, context):
     """🚪 المستخدم الجديد اختار فئته (بائع/عامل مخزون/مدير بوت/بائع خارجي)
     → تُحفظ الفئة المطلوبة ويصل إشعار للمدراء بأزرار تفعيل بالفئة."""
@@ -6023,6 +6082,15 @@ async def callback_users_ask_handler(update, context):
             "هل أنت متأكد من التنفيذ؟",
             "👤 نعم، أزل الإدارة",
             "demote_" + tid,
+        ),
+        "askkick": (
+            "🚫 <b>تأكيد طرد المستخدم</b>\n\n"
+            + user_line +
+            "\n⛔ سيُوقف وصوله فوراً ولن يرى البوت إلا رسالة إيقاف."
+            "\n📊 سجل حركاته يبقى محفوظاً ويمكن إعادته من قسم المطرودين.\n\n"
+            "هل أنت متأكد من الطرد؟",
+            "🚫 نعم، اطرده",
+            "kick_" + tid,
         ),
     }
 
@@ -6150,6 +6218,60 @@ async def callback_promote_handler(update, context):
         )
     else:
         await query.edit_message_text("⚠️ لم يتم تطبيق التغيير.")
+
+
+async def callback_kick_handler(update, context):
+    """🚫 تنفيذ الطرد/إعادة التنشيط بعد التأكيد (v23) — للمدراء فقط،
+    والحسابات المحمية (ADMIN_IDS/OWNER_IDS) مستثناة من الطرد."""
+    query = update.callback_query
+    caller_id = query.from_user.id
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الإجراء للمدراء فقط.", show_alert=True)
+        logging.warning(
+            "[USERS] Unauthorized kick attempt by "
+            + str(caller_id) + " on data=" + str(query.data)
+        )
+        return
+    parts = (query.data or "").split("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return
+    action, tid_str = parts[0], parts[1]
+    target_id = int(tid_str)
+    if action == "kick" and _protected_account(target_id):
+        await query.answer("🛡️ لا يمكن طرد حساب محمي (مالك/بيئة).", show_alert=True)
+        return
+    if target_id == caller_id:
+        await query.answer("🚫 لا يمكنك تنفيذ هذا الإجراء على نفسك.", show_alert=True)
+        return
+    await query.answer()
+    role = set_user_active(target_id, action == "unban")
+    if role is None:
+        await query.edit_message_text("⚠️ المستخدم غير موجود.")
+        return
+    if action == "kick":
+        await query.edit_message_text(
+            "🚫 تم طرد المستخدم وإيقاف وصوله.\n"
+            "📊 سجل حركاته محفوظ — يمكن إعادته من لوحة المستخدمين (قسم المطرودين)."
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="⛔ تم إيقاف حسابك من قبل الإدارة.\nللاستفسار تواصل مع إدارة البوت.",
+            )
+        except Exception:
+            pass
+    else:
+        await query.edit_message_text(
+            "✅ تم إعادة تنشيط المستخدم وفتح وصوله.\n🔄 سيعود للعمل عند ضغط /start."
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="✅ تم إعادة تفعيل حسابك!\n🔄 اضغط /start للعودة إلى لوحتك.",
+            )
+        except Exception:
+            pass
+    logging.info("[USERS] " + action + " target=" + str(target_id) + " by=" + str(caller_id))
 
 # ── Backup Command ─────────────────────────────────────
 
@@ -6605,6 +6727,9 @@ def _build_users_panel():
     counts_str = " | ".join(
         ROLE_LABELS.get(_r, _r) + ": " + str(_c) for _r, _c in role_counts.items()
     )
+    kicked_n = sum(1 for u in approved if not u.get("active"))
+    if kicked_n:
+        counts_str = counts_str + " | 🚫 مطرودون: " + str(kicked_n)
 
     if approved:
         msg_lines.append(
@@ -6622,6 +6747,8 @@ def _build_users_panel():
         flags = []
         if u.get("can_extract"):
             flags.append("🛒")
+        if not u.get("active"):
+            flags.append("🚫 مطرود")
         msg_lines.append(
             "  " + role_icon + " " + label + " — " + " | ".join(extras)
             + (("  " + "".join(flags)) if flags else "")
@@ -6638,7 +6765,17 @@ def _build_users_panel():
         if action_rows >= _MAX_PANEL_ROWS:
             break
         label = (u.get("first_name") or ("@" + u["username"] if u.get("username") else str(tid)))[:18]
-        if u["role"] == "customer":
+        if not u.get("active"):
+            # 🚫 مطرود — الإعادة بيد المدير فقط من هنا (بلا إعادة طلب ذاتي)
+            buttons.append([
+                InlineKeyboardButton(
+                    "✅ إعادة تنشيط: " + label,
+                    callback_data="unban_" + str(tid),
+                ),
+            ])
+            action_rows += 1
+        elif u["role"] == "admin":
+            # أدوار إدارية: تغيير الفئة فقط — الطرد بعد تنزيله إلى عميل (بحماية المالك)
             buttons.append([
                 InlineKeyboardButton(
                     "🎯 الفئة: " + label,
@@ -6646,12 +6783,13 @@ def _build_users_panel():
                 ),
             ])
             action_rows += 1
-        elif u["role"] == "admin":
+        elif u["role"] == "customer":
             buttons.append([
                 InlineKeyboardButton(
                     "🎯 الفئة: " + label,
                     callback_data="askrole_" + str(tid),
                 ),
+                InlineKeyboardButton("🚫 طرد", callback_data="askkick_" + str(tid)),
             ])
             action_rows += 1
         else:
@@ -6661,6 +6799,7 @@ def _build_users_panel():
                     "🎯 الفئة: " + label,
                     callback_data="askrole_" + str(tid),
                 ),
+                InlineKeyboardButton("🚫 طرد", callback_data="askkick_" + str(tid)),
             ])
             action_rows += 1
 
@@ -10097,13 +10236,18 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_role_set_handler, pattern="^setrole_"))
     # 🔐 نظام الصلاحيات الديناميكي: لوحة إدارة صلاحيات الفئات من داخل البوت
     app.add_handler(CallbackQueryHandler(callback_perms_handler, pattern="^(permsrole_|permstgl_|permsdone)"))
+    # 🚫 بوابة الطرد: أول معالج على كل تحديث — المطرود لا يصلحه شيء (v23)
+    app.add_handler(TypeHandler(Update, kicked_gate), group=-2)
     # خطوة التأكيد قبل تغيير أي دور + أدوات لوحة المستخدمين
-    app.add_handler(CallbackQueryHandler(callback_users_ask_handler, pattern="^(askpromote|askdemote)_"))
+    app.add_handler(CallbackQueryHandler(callback_users_ask_handler, pattern="^(askpromote|askdemote|askkick)_"))
     app.add_handler(CallbackQueryHandler(callback_users_cancel_handler, pattern="^users_cancel$"))
     app.add_handler(CallbackQueryHandler(callback_users_refresh_handler, pattern="^users_refresh$"))
     app.add_handler(CallbackQueryHandler(callback_users_close_handler, pattern="^users_close$"))
     app.add_handler(CallbackQueryHandler(callback_promote_handler, pattern="^promote_"))
     app.add_handler(CallbackQueryHandler(callback_promote_handler, pattern="^demote_"))
+    # 🚫 تنفيذ الطرد/إعادة التنشيط (v23)
+    app.add_handler(CallbackQueryHandler(callback_kick_handler, pattern="^kick_"))
+    app.add_handler(CallbackQueryHandler(callback_kick_handler, pattern="^unban_"))
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_channel_handler, pattern="^restore_from_channel$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
