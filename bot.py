@@ -10473,6 +10473,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_role_set_handler, pattern="^setrole_"))
     # v34: أزرار الموافقة/الحذف على طلبات انضمام التطبيق (للمدير)
     app.add_handler(CallbackQueryHandler(callback_pwreg_handler, pattern="^pwreg_(ok|del)_"))
+    app.add_handler(CallbackQueryHandler(callback_pwreset_handler, pattern="^pwreset_gen_"))   # v39
     # 🔐 نظام الصلاحيات الديناميكي: لوحة إدارة صلاحيات الفئات من داخل البوت
     app.add_handler(CallbackQueryHandler(callback_perms_handler, pattern="^(permsrole_|permstgl_|permsdone)"))
     # 🚫 بوابة الطرد: أول معالج على كل تحديث — المطرود لا يصلحه شيء (v23)
@@ -10870,7 +10871,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v38"
+PWA_VERSION = "v39"
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -10933,6 +10934,21 @@ CREATE TABLE IF NOT EXISTS pwa_registrations (
 CREATE INDEX IF NOT EXISTS idx_pwa_reg_status ON pwa_registrations (status, created_at DESC);
 -- ═══ v34: رقم سري يختاره العميل عند التسجيل — يُحفظ في القاعدة عند موافقة المدير ═══
 ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS password_hash TEXT;
+-- ═══ v39: اسم دخول من اختيار العميل — بلا بريد نهائياً (اسم + رقم سر + موافقة الإدارة) ═══
+ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS username VARCHAR(100);
+CREATE UNIQUE INDEX IF NOT EXISTS pwa_reg_username_uniq
+    ON pwa_registrations (LOWER(username)) WHERE status = 'waiting' AND username IS NOT NULL;
+-- ═══ v39: طلبات استعادة الرقم السري — الموظف يطلب والإدارة تولّد رقماً مؤقتاً بضغطة ═══
+CREATE TABLE IF NOT EXISTS pwa_pass_resets (
+    id         SERIAL PRIMARY KEY,
+    username   VARCHAR(100) NOT NULL,
+    status     VARCHAR(10) NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'done', 'cancelled')),
+    temp_pass  TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    done_at    TIMESTAMPTZ,
+    ip         VARCHAR(64)
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_resets_status ON pwa_pass_resets (status, created_at DESC);
 CREATE TABLE IF NOT EXISTS pwa_otp (
     id         SERIAL PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -11391,8 +11407,9 @@ def _pwa_session_user(request):
 # ── منطق API (دوال متزامنة تُستدعى في executor) ──
 
 def _pwa_api_login_email(email, password):
-    """v34: دخول بالبريد الإلكتروني + الرقم السري الذي اختاره العميل عند التسجيل.
-    رسائل واضحة كما طلب المدير: «الرقم السري خاطئ» / لا حساب / بانتظار الموافقة."""
+    """v39: دخول بالبريد (حسابات Google والقديمة) + الرقم السري.
+    رسائل واضحة: «الرقم السري خاطئ» / لا حساب / بانتظار موافقة الإدارة.
+    v39: رُفعت بوابة «تأكيد البريد» نهائياً — لا رموز بريد بعد اليوم."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -11408,12 +11425,12 @@ def _pwa_api_login_email(email, password):
                 if cur.fetchone():
                     return False, None, ("لا يوجد رقم سري محفوظ لحسابك — "
                                          "اطلب من الإدارة ضبط رقم سري (زر 🔑) أو ادخل بحساب Google.")
-                # طلب تسجيل منتظر الموافقة؟
+                # طلب انضمام (Google) منتظر الموافقة؟
                 cur.execute("SELECT 1 FROM pwa_registrations "
                             "WHERE lower(email) = %s AND status = 'waiting' LIMIT 1", (email,))
                 if cur.fetchone():
                     return False, None, ("طلب تسجيلك في انتظار موافقة الإدارة — "
-                                         "سيصلك إشعار على بريدك الإلكتروني عند الموافقة.")
+                                         "ستدخل التطبيق فور موافقتها.")
                 return False, None, ("لا يوجد حساب بهذا البريد الإلكتروني — "
                                      "أنشئ حساباً من «حساب جديد».")
     except Exception as e:
@@ -11422,13 +11439,10 @@ def _pwa_api_login_email(email, password):
         return False, None, "خطأ في الخادم، أعد المحاولة."
     finally:
         release_connection(conn)
-    # v35: فحص الرقم السري أولاً دائماً (حتى لا يُتخطَّى أبداً)،
-    # ثم من سجّل ولم يُدخل رمز التأكيد من بريده → توجيه لشاشة الرمز
+    # v39: فحص الرقم السري أولاً دائماً — بلا بوابة «تأكيد البريد» (لا رموز بريد بعد اليوم)
     if not _pwa_verify_password(password, row["pass_hash"]):
         time.sleep(0.5)  # إبطاء بسيط لتخشين محاولات التخمين
         return False, None, "الرقم السري خاطئ."
-    if not row["identity_verified"]:
-        return False, None, _PWA_VERIFY_NEEDED
     if not row["active"]:
         return False, None, KICK_NOTICE
     if row["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
@@ -11442,9 +11456,11 @@ def _pwa_api_login_email(email, password):
 
 def _pwa_api_login(username, password):
     username = str(username or "").strip()
+    if username.startswith("@"):
+        username = username[1:]   # v39: القارئ يكتب @ كعادة تلغرام — اسم الدخول بلا @
     password = str(password or "")
     if not username or not password:
-        return False, None, "أدخل البريد الإلكتروني (أو اسم المستخدم) والرقم السري."
+        return False, None, "أدخل اسم الدخول (أو البريد) والرقم السري."
     # v34: الدخول بالبريد الإلكتروني + الرقم السري (المسار الأساسي الجديد)
     if "@" in username:
         return _pwa_api_login_email(username.lower(), password)
@@ -11478,6 +11494,20 @@ def _pwa_api_login(username, password):
             row = r
             break
     if row is None:
+        # v39: طلب انضمام (اسم + رقم سر) بانتظار موافقة الإدارة؟
+        conn2 = get_connection()
+        try:
+            with conn2.cursor() as cur2:
+                cur2.execute("SELECT 1 FROM pwa_registrations "
+                             "WHERE lower(username) = %s AND status = 'waiting' LIMIT 1",
+                             (username.lower(),))
+                if cur2.fetchone():
+                    return False, None, ("طلب تسجيلك في انتظار موافقة الإدارة — "
+                                         "ستدخل التطبيق فور موافقتها.")
+        except Exception:
+            pass
+        finally:
+            release_connection(conn2)
         time.sleep(0.5)  # إبطاء بسيط لتخشين محاولات التخمين
         return False, None, "اسم المستخدم أو كلمة المرور غير صحيحة."
     if not row["active"]:
@@ -11515,15 +11545,13 @@ def _pwa_api_me(user):
     }, "perms": _pwa_perm_map(user["role"])}
 
 
-# ═══════════ v32: الهوية (إيميل/هاتف) + التسجيل الذاتي + الرمز السري ═══════════
+# ═══════════ v39: التسجيل بلا بريد — اسم دخول + رقم سر + موافقة الإدارة ═══════════
 
 _PWA_ROLES_SELF = (ROLE_STOCK, ROLE_SELLER)   # الفئات المتاحة للتسجيل الذاتي
-_PWA_REG_EXPIRE_HOURS = 48                    # صلاحية رمز التسجيل بالساعات
+_PWA_REG_EXPIRE_HOURS = 48                    # صلاحية عرض الطلب في لوحة الإدارة بالساعات
 _PWA_OTP_EXPIRE_MIN = 10                      # صلاحية رمز الدخول بالدقائق
 _PWA_OTP_MAX_ATTEMPTS = 5                     # محاولات خاطئة قبل إبطال الرمز
 _PWA_OTP_MAX_PER_10MIN = 3                    # سقف طلبات الرموز لكل مستخدم/10 دقائق
-_PWA_VERIFY_NEEDED = ("لم يتم تأكيد بريدك الإلكتروني بعد — "
-                      "أدخل رمز التأكيد المرسل إلى بريدك.")   # v35
 
 
 def _pwa_norm_phone(p):
@@ -11555,151 +11583,96 @@ def _pwa_mask_identifier(ident):
     return ident[:2] + "••••" + ident[-2:]
 
 
-def _pwa_api_register(name, email_raw, password, role, ip):
-    """v35: تسجيل بنمط فيسبوك/إنستغرام — بريد + رقم سري من اختيار العميل.
-    الحساب يُنشأ فوراً في القاعدة (البريد والرقم السري محفوظان) بوضع
-    «بانتظار تأكيد البريد»، ويُرسل رمز تأكيد من 6 أرقام إلى البريد نفسه؛
-    عند إدخال الرمز يتفعّل الحساب تلقائياً ويدخل صاحبه مباشرة
-    (يتولاه /api/register/verify). بلا هاتف وبلا رموز تلغرام إطلاقاً.
+def _pwa_api_register(name, username_raw, password, role, ip):
+    """v39: التسجيل بلا بريد نهائياً — اسم كامل + اسم دخول من اختيار العميل
+    + رقم سر قوي + الفئة. الطلب يُحفظ «بانتظار موافقة الإدارة» ويُشعَر المدراء
+    فوراً في تلغرام (أزرار موافقة/حذف) وفي جرس التطبيق 🔔.
+    بلا SMTP وبلا Brevo وبلا رموز — إعداد صفري.
     يعيد (ok, payload_or_err). فئة المدير لا تُطلب هنا أبداً."""
     if not _pwa_self_register_enabled():
         return False, None, "التسجيل الذاتي معطّل حالياً — راجع إدارة المؤسسة."
-    if not _pwa_otp_email_ready():
-        return False, None, ("خدمة إرسال البريد غير مهيأة على الخادم — "
-                             "لا يمكن إرسال رمز التأكيد الآن. راجع إدارة المؤسسة.")
     name = str(name or "").strip()
     if len(name) < 3 or len(name) > 120:
         return False, None, "أدخل الاسم الكامل (3 أحرف على الأقل)."
     role = str(role or "").strip()
     if role not in _PWA_ROLES_SELF:
         return False, None, "الفئة المتاحة: بائع أو عامل مخزون فقط."
-    email = str(email_raw or "").strip().lower()
-    if not email:
-        return False, None, "أدخل بريدك الإلكتروني — هو اسم دخولك إلى التطبيق."
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$", email) or len(email) > 254:
-        return False, None, "صيغة البريد الإلكتروني غير صحيحة."
+    username = str(username_raw or "").strip()
+    if username.startswith("@"):
+        username = username[1:]
+    username = re.sub(r"\s+", " ", username)
+    if not (3 <= len(username) <= 40):
+        return False, None, "اسم الدخول يجب أن يكون من 3 إلى 40 حرفاً."
+    if "@" in username:
+        return False, None, "اسم الدخول لا يحتاج @ — اختر اسماً بسيطاً مثل: ahmed"
     pol_ok, pol_msg = _pwa_password_ok(password)
     if not pol_ok:
         return False, None, pol_msg
+    uname_l = username.lower()
     conn = get_connection()
-    reused = False
+    reused_id = None
     try:
         with conn.cursor() as cur:
+            # اسم دخول محجوز لحساب مفعّل؟
             cur.execute(
-                "SELECT id, identity_verified, telegram_id FROM users "
-                "WHERE lower(email) = %s LIMIT 1", (email,))
+                "SELECT u.id FROM pwa_auth a JOIN users u ON u.id = a.user_id "
+                "WHERE lower(a.username) = %s LIMIT 1", (uname_l,))
             row = cur.fetchone()
             if row:
-                uid, verified, tid = int(row[0]), bool(row[1]), row[2]
-                if verified or tid is not None:
-                    return False, None, ("هذا البريد مسجّل مسبقاً — "
-                                         "سجّل الدخول به ورقمك السري.")
-                # محاولة سابقة لم تُؤكَّد بريدها: نحدّث بياناتها ونرسل رمزاً جديداً
-                cur.execute("SELECT user_id FROM pwa_auth WHERE username = %s", (email,))
-                taken = cur.fetchone()
-                if taken and int(taken[0]) != uid:
-                    return False, None, ("هذا البريد مستخدم كاسم دخول لحساب آخر — "
-                                         "استعمل بريداً آخر أو راجع الإدارة.")
+                return False, None, ("اسم الدخول «" + username + "» محجوز مسبقاً — "
+                                     "اختر اسماً آخر أو سجّل الدخول به.")
+            # طلب سابق ما زال بانتظار الموافقة بنفس الاسم؟ نحدّث بياناته بدل الازدواج
+            cur.execute(
+                "SELECT id FROM pwa_registrations "
+                "WHERE lower(username) = %s AND status = 'waiting' LIMIT 1", (uname_l,))
+            row = cur.fetchone()
+            if row:
+                reused_id = int(row[0])
+                cur.execute(
+                    "UPDATE pwa_registrations SET full_name = %s, role = %s, "
+                    "password_hash = %s, created_at = NOW() WHERE id = %s",
+                    (name, role, _pwa_hash_password(str(password)), reused_id))
                 reused = True
-                cur.execute("UPDATE users SET first_name = %s, role = %s, active = TRUE "
-                            "WHERE id = %s", (name, role, uid))
-                cur.execute(
-                    "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
-                    "VALUES (%s, %s, %s, NOW()) "
-                    "ON CONFLICT (user_id) DO UPDATE SET pass_hash = EXCLUDED.pass_hash, "
-                    "username = EXCLUDED.username, updated_at = NOW()",
-                    (uid, email, _pwa_hash_password(str(password))))
             else:
-                # منع احتلال بريد يطابق اسم دخول ويب محجوزاً لمستخدم آخر
-                cur.execute("SELECT user_id FROM pwa_auth WHERE username = %s", (email,))
-                if cur.fetchone():
-                    return False, None, ("هذا البريد مستخدم كاسم دخول لحساب آخر — "
-                                         "استعمل بريداً آخر أو راجع الإدارة.")
+                reused = False
+                code = "PW" + _pwa_secrets.token_hex(2).upper()
                 cur.execute(
-                    "INSERT INTO users (first_name, email, role, active, identity_verified) "
-                    "VALUES (%s, %s, %s, TRUE, FALSE) RETURNING id", (name, email, role))
-                uid = int(cur.fetchone()[0])
-                cur.execute(
-                    "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
-                    "VALUES (%s, %s, %s, NOW())",
-                    (uid, email, _pwa_hash_password(str(password))))
+                    "INSERT INTO pwa_registrations "
+                    "(code, full_name, username, role, status, password_hash, ip) "
+                    "VALUES (%s, %s, %s, %s, 'waiting', %s, %s) RETURNING id",
+                    (code, name, username, role, _pwa_hash_password(str(password)), ip))
+                reused_id = int(cur.fetchone()[0])
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logging.error("[PWA] register failed: " + str(e))
+        msg = str(e)
+        if "pwa_reg_username_uniq" in msg:
+            return False, None, ("لديك طلب انضمام بنفس اسم الدخول ما زال بانتظار "
+                                 "الموافقة — انتظر قرار الإدارة أو اختر اسماً آخر.")
+        logging.error("[PWA] register failed: " + msg)
         return False, None, "خطأ في الخادم، أعد المحاولة."
     finally:
         release_connection(conn)
-    # توليد رمز التأكيد وإرساله إلى البريد نفسه (نمط فيسبوك) — محدود المعدل
-    ok, code_or_msg = _pwa_otp_issue(uid, ip)
-    if not ok:
-        return False, None, code_or_msg
-    sent = _pwa_send_verify_email_sync(email, code_or_msg, name)
-    if not sent:
-        if not reused:
-            # فشل الإرسال لحساب جديد: لا نترك حساباً لا يمكن تأكيده — نحذفه كلياً
-            conn = get_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM users WHERE id = %s", (uid,))
-                conn.commit()
-            except Exception:
-                conn.rollback()
-            finally:
-                release_connection(conn)
-        detail = _PWA_SMTP_LAST_ERR or "إعدادات SMTP على الخادم غير مكتملة."
-        return False, None, ("تعذّر إرسال رمز التأكيد إلى بريدك — المشكلة من إعدادات "
-                             "الخادم وليست من بريدك. السبب: " + detail)
-    return True, {"email": email, "masked": _pwa_mask_identifier(email),
-                  "reused": reused}, None
-
-
-def _pwa_reg_find_pending(email):
-    """v35: حساب تسجيل ذاتي بانتظار تأكيد البريد (بلا تلغرام) → dict أو None."""
-    email = str(email or "").strip().lower()
-    if not email:
-        return None
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, first_name, email, role FROM users "
-                "WHERE lower(email) = %s AND identity_verified = FALSE "
-                "AND telegram_id IS NULL AND role IN %s LIMIT 1",
-                (email, _PWA_ROLES_SELF))
-            row = cur.fetchone()
-        conn.commit()
-        return dict(row) if row else None
-    except Exception as e:
-        conn.rollback()
-        logging.error("[PWA] reg find pending failed: " + str(e))
-        return None
-    finally:
-        release_connection(conn)
-
-
-def _pwa_reg_activate(user_id):
-    """v35: التفعيل التلقائي بعد إدخال رمز البريد الصحيح."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET identity_verified = TRUE, active = TRUE "
-                        "WHERE id = %s", (user_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
+    # إشعار مزدوج بلا أي إعداد: جرس التطبيق 🔔 + رسالة تلغرام بأزرار للمدراء
+    db_insert_notification(
+        "reg", "🔔 طلب انضمام جديد: " + name,
+        "اسم الدخول: " + username + " — الفئة المطلوبة: "
+        + ROLE_LABELS.get(role, role) + " — بانتظار موافقة الإدارة.",
+        actor=name, source="web")
+    if TG_APP is not None:
+        asyncio.create_task(_notify_admins_pwa_registration(
+            reused_id, name, username, ROLE_LABELS.get(role, role)))
+    return True, {"username": username, "reg_id": reused_id, "reused": reused}, None
 
 
 def _pwa_api_registrations_list(user):
-    """قائمة طلبات التسجيل المنتظرة (للمدير فقط) — ضمن /api/users."""
+    """قائمة طلبات التسجيل المنتظرة (للمدير فقط) — ضمن /api/users.
+    v39: تُظهر اسم الدخول أيضاً."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, code, full_name, email, phone, role, password_hash, "
+                "SELECT id, code, full_name, username, email, phone, role, password_hash, "
                 "created_at::text AS created_at, ip FROM pwa_registrations "
                 "WHERE status = 'waiting' AND created_at > NOW() - INTERVAL '"
                 + str(_PWA_REG_EXPIRE_HOURS) + " hours' ORDER BY created_at DESC LIMIT 50")
@@ -11715,7 +11688,8 @@ def _pwa_api_registrations_list(user):
     for r in rows:
         out.append({
             "id": r["id"], "code": r["code"], "name": r["full_name"],
-            "email": r["email"], "phone": r["phone"], "role": r["role"],
+            "username": r.get("username"), "email": r["email"], "phone": r["phone"],
+            "role": r["role"],
             "role_label": ROLE_LABELS.get(r["role"], r["role"]),
             "has_pass": bool(r.get("password_hash")),
             "created_at": (r.get("created_at") or "")[:16], "ip": r.get("ip"),
@@ -11744,6 +11718,140 @@ def _pwa_api_registration_delete(user, reg_id):
     if not n:
         return False, "الطلب غير موجود أو مؤكّد مسبقاً."
     return True, "تم حذف الطلب."
+
+
+# ═══════════ v39: نسيت كلمة المرور — طلب الموظف + توليد رقم سر مؤقت بضغطة ═══════════
+
+_PWA_TEMP_PASS_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # بلا حروف ملتبسة (i,l,o,0,1)
+
+
+def _pwa_generate_temp_password(length=8):
+    """رقم سر مؤقت مقروء ومميز — حروف صغيرة وأرقام مع رقم واحد على الأقل.
+    يُعرض على المدير مرة واحدة ليعطيه للموظف شفهياً."""
+    while True:
+        pw = "".join(_pwa_secrets.choice(_PWA_TEMP_PASS_ALPHABET) for _ in range(length))
+        if any(c.isdigit() for c in pw) and any(c.isalpha() for c in pw):
+            return pw
+
+
+def _pwa_api_forgot_request(username_raw, ip):
+    """v39: طلب استعادة الرقم السري (عام بلا جلسة).
+    يعيد دائماً ردّاً موحّداً (لا يفشل الطلب) حتى لا يُكتشف أي أسماء موجودة.
+    الطلب يظهر للمدير في لوحة المستخدمين وفي تلغرام بضغطة توليد."""
+    username = str(username_raw or "").strip()
+    if username.startswith("@"):
+        username = username[1:]
+    username = re.sub(r"\s+", " ", username)
+    if len(username) < 3:
+        return False, "أدخل اسم الدخول الخاص بك (3 أحرف على الأقل)."
+    uname_l = username.lower()
+    conn = get_connection()
+    found_uid = None
+    new_reset_id = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT a.user_id FROM pwa_auth a JOIN users u ON u.id = a.user_id "
+                "WHERE lower(a.username) = %s AND u.active LIMIT 1", (uname_l,))
+            row = cur.fetchone()
+            if row:
+                found_uid = int(row[0])
+                cur.execute("SELECT 1 FROM pwa_pass_resets "
+                            "WHERE lower(username) = %s AND status = 'waiting' LIMIT 1",
+                            (uname_l,))
+                if not cur.fetchone():
+                    cur.execute(
+                        "INSERT INTO pwa_pass_resets (username, ip) VALUES (%s, %s) "
+                        "RETURNING id", (username, ip))
+                    new_reset_id = int(cur.fetchone()[0])
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] forgot request failed: " + str(e))
+        return False, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+    if found_uid is not None and new_reset_id is not None:
+        db_insert_notification(
+            "reg", "🔑 طلب استعادة رقم سر: " + username,
+            "طالب باستعادة رقمه السري — ولّد رقماً مؤقتاً له من لوحة المستخدمين.",
+            actor=username, source="web")
+        if TG_APP is not None:
+            asyncio.create_task(_notify_admins_pwa_reset(new_reset_id, username))
+    # ردّ موحّد دائماً — لا نكشف إن كان الاسم موجوداً أم لا (حماية من الاستكشاف)
+    return True, None
+
+
+def _pwa_api_resets_list():
+    """v39: قائمة طلبات استعادة الرقم السري المنتظرة (للمدير فقط)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, username, created_at::text AS created_at, ip "
+                "FROM pwa_pass_resets WHERE status = 'waiting' "
+                "ORDER BY created_at DESC LIMIT 50")
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] resets list failed: " + str(e))
+        return []
+    finally:
+        release_connection(conn)
+    return [{"id": r["id"], "username": r["username"],
+             "created_at": (r.get("created_at") or "")[:16], "ip": r.get("ip")}
+            for r in rows]
+
+
+def _pwa_api_reset_generate(user, reset_id):
+    """v39: الموافقة على طلب استعادة — توليد رقم سر مؤقت وحفظه مكان القديم
+    (بكوكي scrypt) وإبطال جلسات صاحبه وإظهار الرقم المؤقت للمدير مرة واحدة.
+    يعيد (ok, msg_or_password)."""
+    try:
+        reset_id = int(reset_id)
+    except (TypeError, ValueError):
+        return False, "معرّف غير صالح.", None
+    conn = get_connection()
+    uname = None
+    uid = None
+    temp = _pwa_generate_temp_password()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT username FROM pwa_pass_resets "
+                        "WHERE id = %s AND status = 'waiting'", (reset_id,))
+            row = cur.fetchone()
+            if not row:
+                return False, "الطلب غير موجود أو مُعالَج مسبقاً.", None
+            uname = str(row[0])
+            cur.execute(
+                "SELECT a.user_id FROM pwa_auth a JOIN users u ON u.id = a.user_id "
+                "WHERE lower(a.username) = %s AND u.active LIMIT 1", (uname.lower(),))
+            urow = cur.fetchone()
+            if not urow:
+                cur.execute("UPDATE pwa_pass_resets SET status = 'cancelled', done_at = NOW() "
+                            "WHERE id = %s", (reset_id,))
+                conn.commit()
+                return False, "لا يوجد حساب نشط بهذا الاسم — أُلغي الطلب.", None
+            uid = int(urow[0])
+            cur.execute("UPDATE pwa_auth SET pass_hash = %s, updated_at = NOW() "
+                        "WHERE user_id = %s",
+                        (_pwa_hash_password(temp), uid))
+            cur.execute("UPDATE pwa_pass_resets SET status = 'done', temp_pass = %s, "
+                        "done_at = NOW() WHERE id = %s", (temp, reset_id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] reset generate failed: " + str(e))
+        return False, "خطأ في الخادم.", None
+    finally:
+        release_connection(conn)
+    # أمان: إبطال جلسات صاحب الحساب (إن كان مسجلاً من جهاز آخر)
+    try:
+        _pwa_kill_sessions(uid)
+    except Exception:
+        pass
+    return True, uname, temp
 
 
 # ── v33: قنوات تسليم الرمز — البريد الإلكتروني (SMTP) وSMS عبر TextBee ──
@@ -12078,20 +12186,6 @@ def _pwa_send_otp_email_sync(to_email, code):
             "⏳ صالح " + str(_PWA_OTP_EXPIRE_MIN) + " دقائق — لا تشاركه مع أحد.\n"
             "إن لم تطلب هذا الرمز فتجاهل هذه الرسالة.\n")
     return _pwa_send_email_sync(to_email, "🔑 رمز الدخول: " + code, body)
-
-
-def _pwa_send_verify_email_sync(to_email, code, name):
-    """v35: رمز تأكيد التسجيل يصل إلى البريد نفسه (نمط فيسبوك/إنستغرام) —
-    متزامن عبر asyncio.to_thread. يعيد True عند النجاح."""
-    body = ("مرحباً " + str(name or "") + "،\n\n"
-            "شكراً لتسجيلك في تطبيق مخزون السيراميك.\n"
-            "رمز تأكيد إنشاء حسابك:\n\n"
-            + str(code) + "\n\n"
-            "⏳ صالح " + str(_PWA_OTP_EXPIRE_MIN) + " دقائق — أدخله في التطبيق "
-            "وسيتفعّل حسابك تلقائياً.\n"
-            "إن لم تطلب هذا الرمز فتجاهل هذه الرسالة ولا تشاركه مع أحد.\n")
-    return _pwa_send_email_sync(to_email, "🔑 رمز تأكيد التسجيل: " + str(code)
-                                + " — مخزون السيراميك", body)
 
 
 async def _pwa_send_otp_sms(phone_norm, code):
@@ -12964,9 +13058,8 @@ async def pwa_login_handler(request):
                 + "\n👤 الاسم المُجرّب: " + username_raw
                 + "\n🌐 IP: " + ip
                 + "\n⏳ تم قفل المحاولات 15 دقيقة."))
-        # v35: من لم يؤكد بريده بعد يُوجّه لشاشة الرمز (الكود يميّزه للواجهة)
-        return _pwa_err(403 if err == _PWA_VERIFY_NEEDED else 401, err,
-                        code="verify_needed" if err == _PWA_VERIFY_NEEDED else None)
+        # v35: من لم يؤكد بريده بعد يُوجّه لشاشة الرمز (الكود يميّزه للواجهة) — أُلغي في v39
+        return _pwa_err(401, err)
     token, user = result
     await _pwa_run(_pwa_login_clear, key)
     await _pwa_run(_audit_log, "login", user, ip=ip)
@@ -12986,13 +13079,12 @@ async def pwa_logout_handler(request):
     return resp
 
 
-# ═══════════ v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ═══════════
+# ═══════════ v39: التسجيل بلا بريد — اسم دخول + رقم سر + موافقة الإدارة ═══════════
 
 async def pwa_register_handler(request):
-    """v35: إنشاء حساب جديد بالبريد والرقم السري (نمط فيسبوك/إنستغرام — عام بلا جلسة).
-    الحساب يُحفظ في القاعدة فوراً، ورمز تأكيد من 6 أرقام يصل إلى البريد نفسه؛
-    عند إدخاله في /api/register/verify يتفعّل الحساب تلقائياً ويدخل صاحبه مباشرة.
-    بلا هاتف وبلا رموز تلغرام إطلاقاً."""
+    """v39: طلب انضمام جديد بلا بريد — اسم كامل + اسم دخول + رقم سر قوي + فئة.
+    الطلب يُحفظ «بانتظار موافقة الإدارة» ويُشعَر المدراء فوراً (تلغرام + جرس التطبيق).
+    بلا SMTP وبلا رموز — إعداد صفري."""
     try:
         body = await request.json()
     except Exception:
@@ -13000,7 +13092,7 @@ async def pwa_register_handler(request):
     ip = request.remote or "؟"
     ok, result, err = await _pwa_run(_pwa_api_register,
                                      str(body.get("name", "")),
-                                     str(body.get("email", "")),
+                                     str(body.get("username", "")),
                                      str(body.get("password", "")),
                                      str(body.get("role", "")), ip)
     if not ok:
@@ -13008,107 +13100,73 @@ async def pwa_register_handler(request):
                        details="دور: " + str(body.get("role", "?")), ip=ip)
         return _pwa_err(400, err)
     await _pwa_run(_audit_log, "register", None,
-                   details="بريد: " + str(result["email"])
+                   details="اسم الدخول: " + str(result["username"])
                            + " فئة: " + str(body.get("role", "?"))
-                           + (" (إعادة إرسال)" if result.get("reused") else ""), ip=ip)
-    return _pwa_jr({"ok": True, "email": result["email"],
-                    "masked": result["masked"],
-                    "message": "أرسلنا رمز التأكيد إلى بريدك — أدخله لتفعيل حسابك."})
+                           + (" (تحديث طلب معلّق)" if result.get("reused") else ""), ip=ip)
+    return _pwa_jr({"ok": True, "username": result["username"],
+                    "message": "وصل طلبك إلى إدارة المؤسسة — بانتظار الموافقة.\n"
+                               "ستدخل التطبيق باسم دخولك ورقمك السري فور موافقتها."})
 
 
-async def pwa_register_verify_handler(request):
-    """v35: تأكيد رمز البريد → تفعيل الحساب تلقائياً + جلسة دخول فورية
-    (نمط فيسبوك: تضيف الرمز فيفتح حسابك)."""
+async def pwa_forgot_handler(request):
+    """v39: نسيت كلمة المرور (عام بلا جلسة) — طلب استعادة يظهر للإدارة
+    في تلغرام ولوحة المستخدمين، والتوليد بضغطة واحدة."""
     try:
         body = await request.json()
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
-    email = str(body.get("email", "")).strip().lower()
-    code = str(body.get("code", "")).strip()
     ip = request.remote or "؟"
-    key = ip + "|regverify:" + email
+    # 🔒 حارس التخمين حتى هنا — يمنع إغراق الطلبات
     try:
-        await _pwa_run(_pwa_login_gate, key)
-    except PwaLocked as lk:
-        await _pwa_run(_audit_log, "lockout", None, details="regverify", ip=ip)
-        mins = max(1, int(lk.retry_after // 60) + 1)
-        return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
-                        + " دقيقة ثم أعد المحاولة.")
-    found = await _pwa_run(_pwa_reg_find_pending, email)
-    if not found:
-        alerted = await _pwa_run(_pwa_login_fail, key)
-        await _pwa_run(_audit_log, "regverify_fail", None,
-                       details="بريد غير معروف", ip=ip)
-        if alerted:
-            await _pwa_run(_audit_log, "brute_force_lock", None, details="regverify", ip=ip)
-            asyncio.create_task(_pwa_alert_owner(
-                "🚨 تنبيه أمني\nمحاولات تخمين متكررة لرموز التأكيد\n🌐 IP: " + ip))
-        return _pwa_err(401, "لا يوجد طلب تسجيل بهذا البريد — أنشئ حساباً من «حساب جديد».")
-    ok, err = await _pwa_run(_pwa_otp_verify, found["id"], code)
-    if not ok:
-        alerted = await _pwa_run(_pwa_login_fail, key)
-        await _pwa_run(_audit_log, "regverify_fail", {"id": found["id"]}, ip=ip)
-        if alerted:
-            await _pwa_run(_audit_log, "brute_force_lock", None, details="regverify", ip=ip)
-            asyncio.create_task(_pwa_alert_owner(
-                "🚨 تنبيه أمني\nرموز تأكيد خاطئة متكررة\n🌐 IP: " + ip))
-        return _pwa_err(401, err)
-    # ✅ التفعيل التلقائي — البريد والرقم السري محفوظان مسبقاً في القاعدة
-    await _pwa_run(_pwa_reg_activate, found["id"])
-    token = await _pwa_run(_pwa_create_session, found["id"])
-    user = {"id": found["id"], "telegram_id": None,
-            "name": found["first_name"] or email, "role": found["role"],
-            "role_label": ROLE_LABELS.get(found["role"], found["role"])}
-    await _pwa_run(_pwa_login_clear, key)
-    await _pwa_run(_audit_log, "register_verified", user, ip=ip)
-    # إشعار فوري للمدراء: عضو جديد فعّل حسابه بنفسه (معلوماتي — بلا أزرار)
-    asyncio.create_task(_notify_admins_pwa_activated(
-        user["name"], email, user["role_label"]))
-    resp = _pwa_jr({"ok": True, "user": user,
-                    "message": "تم تفعيل حسابك ✅ — أهلاً بك!"})
-    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
-    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
-                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
-    return resp
-
-
-async def pwa_register_resend_handler(request):
-    """v35: إعادة إرسال رمز التأكيد إلى البريد (محدود المعدل من داخل _pwa_otp_issue)."""
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    email = str(body.get("email", "")).strip().lower()
-    ip = request.remote or "؟"
-    key = ip + "|regresend:" + email
-    try:
-        await _pwa_run(_pwa_login_gate, key)
+        await _pwa_run(_pwa_login_gate, "forgot|" + ip)
     except PwaLocked as lk:
         mins = max(1, int(lk.retry_after // 60) + 1)
         return _pwa_err(429, "محاولات كثيرة — انتظر نحو " + str(mins)
                         + " دقيقة ثم أعد المحاولة.")
-    if not _pwa_otp_email_ready():
-        return _pwa_err(503, "خدمة إرسال البريد غير مهيأة على الخادم — راجع إدارة المؤسسة.")
-    found = await _pwa_run(_pwa_reg_find_pending, email)
-    if not found:
-        alerted = await _pwa_run(_pwa_login_fail, key)
-        await _pwa_run(_audit_log, "reg_resend_fail", None,
-                       details="بريد غير معروف", ip=ip)
-        if alerted:
-            asyncio.create_task(_pwa_alert_owner(
-                "🚨 تنبيه أمني\nمحاولات متكررة لإعادة إرسال رموز لبريد غير موجود\n🌐 IP: " + ip))
-        return _pwa_err(401, "لا يوجد طلب تسجيل بهذا البريد — أنشئ حساباً من «حساب جديد».")
-    ok, code_or_msg = await _pwa_run(_pwa_otp_issue, found["id"], ip)
+    ok, err = await _pwa_run(_pwa_api_forgot_request,
+                             str(body.get("username", "")), ip)
     if not ok:
-        return _pwa_err(429, code_or_msg)
-    sent = await asyncio.to_thread(_pwa_send_verify_email_sync, email, code_or_msg,
-                                   found["first_name"] or "")
-    if not sent:
-        detail = _PWA_SMTP_LAST_ERR or "إعدادات SMTP على الخادم غير مكتملة."
-        return _pwa_err(503, "تعذّر إرسال الرمز الآن — السبب: " + detail)
-    await _pwa_run(_audit_log, "reg_resend", {"id": found["id"]}, ip=ip)
-    return _pwa_jr({"ok": True, "masked": _pwa_mask_identifier(email),
-                    "message": "أُعيد إرسال الرمز إلى بريدك — تحقق أيضاً من مجلد Spam."})
+        return _pwa_err(400, err)
+    await _pwa_run(_audit_log, "forgot_request", None,
+                   details="اسم: " + str(body.get("username", "")), ip=ip)
+    return _pwa_jr({"ok": True,
+                    "message": "وصل طلبك إلى الإدارة 🔔 — سيُعطى لك رقم سر مؤقت "
+                               "من إدارة المؤسسة، أدخله ثم غيّره من «كلمة مروري»."})
+
+
+async def pwa_resets_handler(request):
+    """v39: قائمة طلبات استعادة الرقم السري (للمدير فقط)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["users"]:
+        return _pwa_err(403, "هذه الشاشة للمديرين فقط.")
+    resets = await _pwa_run(_pwa_api_resets_list)
+    return _pwa_jr({"ok": True, "resets": resets})
+
+
+async def pwa_reset_generate_handler(request):
+    """v39: توليد رقم سر مؤقت لطلب استعادة (للمدير فقط) —
+    يُعرض الرقم للمدير مرة واحدة ليوصله للموظف شفهياً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["users"]:
+        return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
+    try:
+        body = await request.json()
+        reset_id = int(body.get("id", 0))
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, uname_or_err, temp = await _pwa_run(_pwa_api_reset_generate, user, reset_id)
+    if not ok:
+        return _pwa_err(400, uname_or_err)
+    await _pwa_run(_audit_log, "pwreset_gen", user,
+                   details="اسم: " + str(uname_or_err),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "username": uname_or_err, "temp_password": temp,
+                    "message": "الرقم المؤقت لـ " + str(uname_or_err)
+                               + " — أعطه له شفهياً وسيسجّل الدخول به ثم يغيّره."})
 
 
 async def pwa_registrations_handler(request):
@@ -13141,9 +13199,10 @@ async def pwa_registration_delete_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
-async def _notify_admins_pwa_registration(reg_id, full_name, email, role_label):
-    """v34: إشعار فوري للمدراء في تلغرام بطلب انضمام جديد من التطبيق
-    مع أزرار سريعة: تفعيل كبائع / تفعيل كعامل مخزون / حذف الطلب."""
+async def _notify_admins_pwa_registration(reg_id, full_name, username, role_label):
+    """v39: إشعار فوري للمدراء في تلغرام بطلب انضمام جديد من التطبيق
+    مع أزرار سريعة: تفعيل كبائع / تفعيل كعامل مخزون / حذف الطلب.
+    بلا بريد — اسم الدخول والرقم السري محفوظان منذ التسجيل."""
     if TG_APP is None:
         return
     kb = InlineKeyboardMarkup([
@@ -13156,10 +13215,10 @@ async def _notify_admins_pwa_registration(reg_id, full_name, email, role_label):
     lines = [
         "🔔 طلب انضمام جديد من التطبيق:",
         "👤 " + str(full_name or ""),
-        "✉️ " + str(email or ""),
+        "🔑 اسم الدخول: " + str(username or ""),
         "🎯 الفئة المطلوبة: " + str(role_label or ""),
         "",
-        "عند الموافقة يُحفَظ البريد والرقم السري في القاعدة ويتلقى صاحبه إشعاراً بالبريد.",
+        "اضغط موافقة ليدخل التطبيق فوراً باسم الدخول ورقمه السري — بلا موافقة يبقى معلقاً.",
     ]
     text = "\n".join(lines)
     seen = set()
@@ -13178,14 +13237,14 @@ async def _notify_admins_pwa_registration(reg_id, full_name, email, role_label):
 
 
 async def _notify_admins_pwa_activated(name, email, role_label):
-    """v35: إشعار معلوماتي للمدراء في تلغرام — عضو جديد فعّل حسابه بنفسه
-    عبر رمز بريده (نمط فيسبوك). بلا أزرار — إدارة الأعضاء من لوحة المستخدمين."""
+    """v33: إشعار معلوماتي للمدراء في تلغرام — انضمام عبر حساب Google تمت موافقته.
+    بلا أزرار — إدارة الأعضاء من لوحة المستخدمين."""
     if TG_APP is None:
         return
-    text = ("✅ عضو جديد فعّل حسابه بنفسه (رمز البريد):\n"
+    text = ("✅ عضو جديد انضم عبر حساب Google:\n"
             "👤 " + str(name or "") + " — 🎯 " + str(role_label or "") + "\n"
             "✉️ " + str(email or "") + "\n"
-            "البريد والرقم السري محفوظان في القاعدة ويمكنه الدخول بهما الآن.")
+            "البريد محفوظ في القاعدة ويمكنه الدخول الآن.")
     seen = set()
     for admin_id in list(ADMIN_IDS) + list(OWNER_IDS or []):
         try:
@@ -13235,6 +13294,68 @@ async def callback_pwreg_handler(update, context):
             await query.edit_message_text(("🗑 " if ok else "❌ ") + str(msg))
         except Exception:
             pass
+
+
+async def _notify_admins_pwa_reset(reset_id, username):
+    """v39: إشعار فوري للمدراء في تلغرام بطلب استعادة رقم سر —
+    زر واحد يولّد رقماً مؤقتاً بضغطة."""
+    if TG_APP is None:
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔑 توليد رقم سر مؤقت",
+                              callback_data="pwreset_gen_" + str(reset_id))],
+    ])
+    text = ("🔑 طلب استعادة كلمة المرور من التطبيق:\n"
+            "👤 اسم الدخول: " + str(username or "") + "\n\n"
+            "اضغط الزر لتوليد رقم سر مؤقت — أعطه له شفهياً "
+            "وسيغيّره بنفسه من «كلمة مروري» بعد الدخول.")
+    seen = set()
+    for admin_id in list(ADMIN_IDS) + list(OWNER_IDS or []):
+        try:
+            aid = int(admin_id)
+        except (TypeError, ValueError):
+            continue
+        if aid in seen:
+            continue
+        seen.add(aid)
+        try:
+            await TG_APP.bot.send_message(chat_id=aid, text=text, reply_markup=kb)
+        except Exception as e:
+            logging.error("[PWA] reset notify failed for " + str(aid) + ": " + str(e))
+
+
+async def callback_pwreset_handler(update, context):
+    """v39: زر «توليد رقم سر مؤقت» على طلبات الاستعادة (للمدير في تلغرام).
+    يولّد رقماً عشوائياً، يحفظه مكان القديم، يبطل جلسات صاحبه، ويعرضه هنا مرة واحدة."""
+    query = update.callback_query
+    # 🔒 AUTH GUARD — المدير وحده
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    await query.answer()
+    parts = str(query.data or "").split("_")   # pwreset_gen_12
+    action = parts[1] if len(parts) > 1 else ""
+    try:
+        reset_id = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        reset_id = 0
+    if action != "gen" or not reset_id:
+        return
+    ok, uname, temp = await asyncio.to_thread(_pwa_api_reset_generate, None, reset_id)
+    await asyncio.to_thread(_audit_log,
+                            "pwreset_gen" if ok else "pwreset_gen_fail",
+                            None, details=str(uname)[:120])
+    if ok:
+        text = ("✅ تم توليد رقم سر مؤقت لـ: " + str(uname) + "\n\n"
+                "🔑 الرقم المؤقت: <code>" + str(temp) + "</code>\n\n"
+                "أعطه له شفهياً الآن — سيغيّره بنفسه من «كلمة مروري» بعد الدخول.\n"
+                "⚠️ لن يظهر هذا الرقم مرة أخرى.")
+    else:
+        text = "❌ " + str(uname)
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        pass
 
 
 async def pwa_otp_request_handler(request):
@@ -13541,9 +13662,9 @@ def _pwa_google_add_registration(email, name, role, ip):
 
 def _pwa_api_registration_approve(reg_id, role):
     """تفعيل طلب انضمام من التطبيق (للمدير): إنشاء/تحديث حساب المستخدم وتأكيد الطلب.
-    v34: يُحفَظ الرقم السري الذي اختاره العميل في pwa_auth (دخول بالبريد + الرقم السري)،
-    ويصل صاحبه إشعار بالموافقة على بريده عبر SMTP.
-    يعيد (ok, msg). الحساب يُربط بالبريد — تلغرام يُربط لاحقاً من البوت إن رغب."""
+    v39: بلا بريد — اسم الدخول والرقم السري اللذان اختارهما العميل يُحفظان في
+    pwa_auth ويدخل بهما فوراً بعد الموافقة. بلا إشعارات SMTP إطلاقاً.
+    يعيد (ok, msg)."""
     try:
         reg_id = int(reg_id)
     except (TypeError, ValueError):
@@ -13554,12 +13675,13 @@ def _pwa_api_registration_approve(reg_id, role):
     reg_pass = None
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT full_name, email, role, password_hash FROM pwa_registrations "
-                        "WHERE id = %s AND status = 'waiting'", (reg_id,))
+            cur.execute("SELECT full_name, email, username, role, password_hash "
+                        "FROM pwa_registrations WHERE id = %s AND status = 'waiting'", (reg_id,))
             reg = cur.fetchone()
             if not reg:
                 return False, "الطلب غير موجود أو مُفعَّل مسبقاً."
-            full_name, reg_email, reg_role, reg_pass = reg[0], (reg[1] or "").strip().lower(), reg[2], reg[3]
+            full_name, reg_email, reg_username, reg_role, reg_pass = \
+                reg[0], (reg[1] or "").strip().lower(), (reg[2] or "").strip(), reg[3], reg[4]
             final_role = role if role != ROLE_CUSTOMER else reg_role
             if reg_email:
                 cur.execute("UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
@@ -13579,18 +13701,19 @@ def _pwa_api_registration_approve(reg_id, role):
                     "VALUES (%s, %s, TRUE, TRUE) RETURNING id", (full_name, final_role))
                 uid = cur.fetchone()
             uid = int(uid[0])
-            # v34: حفظ الرقم السري المختار عند التسجيل — دخول لاحق بالبريد + الرقم السري
+            # v39: اسم الدخول من اختيار العميل (احتياطاً: البريد أو u<id> للحسابات القديمة)
             if reg_pass:
-                auth_name = reg_email or ("u" + str(uid))
-                cur.execute("SELECT user_id FROM pwa_auth WHERE username = %s", (auth_name,))
+                auth_name = reg_username or reg_email or ("u" + str(uid))
+                cur.execute("SELECT user_id FROM pwa_auth WHERE lower(username) = %s "
+                            "AND user_id <> %s LIMIT 1", (auth_name.lower(), uid))
                 taken = cur.fetchone()
-                if taken and int(taken[0]) != uid:
+                if taken:
                     auth_name = "u" + str(uid)
                 cur.execute(
                     "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
                     "VALUES (%s, %s, %s, NOW()) "
                     "ON CONFLICT (user_id) DO UPDATE SET pass_hash = EXCLUDED.pass_hash, "
-                    "updated_at = NOW()",
+                    "username = EXCLUDED.username, updated_at = NOW()",
                     (uid, auth_name, reg_pass))
             cur.execute("UPDATE pwa_registrations SET status = 'confirmed', confirmed_at = NOW() "
                         "WHERE id = %s", (reg_id,))
@@ -13601,26 +13724,9 @@ def _pwa_api_registration_approve(reg_id, role):
         return False, "خطأ في الخادم."
     finally:
         release_connection(conn)
-    # v34: إشعار الموافقة يصل البريد الحقيقي (SMTP المجاني — نفس إعدادات النسخة الاحتياطية)
-    pass_note = ""
-    if reg_email:
-        if _pwa_otp_email_ready():
-            base = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-            body = ("مرحباً " + str(full_name) + "،\n\n"
-                    "✅ وافقت إدارة المؤسسة على طلب تسجيلك في تطبيق مخزون السيراميك.\n\n"
-                    "بيانات دخولك:\n"
-                    "✉️ البريد: " + reg_email + "\n"
-                    "🔑 الرقم السري: الذي اخترته أنت عند التسجيل\n\n"
-                    + (("🔗 رابط التطبيق: " + base + "\n\n") if base else "")
-                    + "بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية.\n"
-                      "إن لم تكن أنت صاحب هذا الطلب فتجاهل هذه الرسالة.\n")
-            if not _pwa_send_email_sync(
-                    reg_email, "✅ تمت الموافقة على تسجيلك — مخزون السيراميك", body):
-                pass_note = " (تعذّر إرسال إشعار البريد — راجع سجل الخادم)"
-        else:
-            pass_note = " (تنبيه: إشعار البريد لم يُرسَل — SMTP غير مهيأ على الخادم)"
-    return True, ("تم تفعيل العضوية: " + str(full_name) + " ← "
-                  + ROLE_LABELS.get(final_role, final_role) + pass_note)
+    return True, ("✅ تمت الموافقة: " + str(full_name)
+                  + " ← " + ROLE_LABELS.get(final_role, final_role)
+                  + " — يدخل الآن باسم دخوله ورقمه السري.")
 
 
 def _google_return_redirect(base, apk, next_url):
@@ -14236,10 +14342,8 @@ async def pwa_status_handler(request):
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
     return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
                     "self_register": _pwa_self_register_enabled(),
-                    "smtp_ready": _pwa_otp_email_ready(),  # v35: رمز تأكيد التسجيل يصل البريد
+                    "smtp_ready": _pwa_otp_email_ready(),  # للنسخ الاحتياطي البريدي فقط — التسجيل بلا بريد (v39)
                     "smtp_last_err": _PWA_SMTP_LAST_ERR,   # v36: سبب آخر فشل إرسال (تشخيص)
-                    "email_otp": _pwa_otp_email_ready(),   # v33: الرمز يصل البريد الحقيقي
-                    "sms_otp": _pwa_otp_sms_ready(),       # v33: الرمز يصل SMS عبر TextBee
                     "google_login": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),  # v33
                     "reasons": PWA_REASONS})
 
@@ -14448,8 +14552,9 @@ def register_pwa_routes(app):
     app.router.add_post("/api/login", pwa_login_handler)
     # ── v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ──
     app.router.add_post("/api/register", pwa_register_handler)
-    app.router.add_post("/api/register/verify", pwa_register_verify_handler)   # v35
-    app.router.add_post("/api/register/resend", pwa_register_resend_handler)   # v35
+    app.router.add_post("/api/forgot", pwa_forgot_handler)               # v39: طلب استعادة الرقم السري
+    app.router.add_get("/api/resets", pwa_resets_handler)                # v39: قائمة الطلبات (للمدير)
+    app.router.add_post("/api/resets/generate", pwa_reset_generate_handler)  # v39: توليد رقم سر مؤقت
     app.router.add_post("/api/login/otp/request", pwa_otp_request_handler)
     app.router.add_post("/api/login/otp/verify", pwa_otp_verify_handler)
     # ── v33: دخول Google + قنوات OTP الحقيقية + تفعيل العضويات ──

@@ -165,11 +165,12 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   <div class="card" id="loginCard">
     <div id="loginErr"></div>
     <div id="passPane">
-      <div class="fld"><label>البريد الإلكتروني أو اسم المستخدم</label>
-        <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="you@mail.com"></div>
+      <div class="fld"><label>اسم الدخول أو البريد الإلكتروني</label>
+        <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: ahmed"></div>
       <div class="fld"><label>الرقم السري</label>
         <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
       <button class="btn" id="btnLogin">دخول</button>
+      <p style="margin:10px 0 0;text-align:center"><a href="#" id="lnkForgot" style="font-size:12.5px;color:var(--brand2);text-decoration:none">نسيت كلمة المرور؟</a></p>
     </div>
     <div id="gDiv" style="display:none;align-items:center;gap:10px;margin:12px 0 10px">
       <div style="flex:1;height:1px;background:var(--line)"></div>
@@ -179,9 +180,9 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button class="btn gbtn" id="btnGoogle" type="button" style="display:none">
       <svg width="18" height="18" viewBox="0 0 48 48" style="flex-shrink:0"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
       الدخول بحساب Google</button>
-    <p class="hint">حساب جديد؟ سجّل ببريدك ويصلك رمز تأكيد فوري — تفعيل تلقائي<br>
+    <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v38</span></p>
+      <span style="opacity:.65">الإصدار v39</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -189,8 +190,8 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <p style="margin:0 0 14px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🆕 حساب جديد — انضمام للفريق</p>
     <div class="fld"><label>الاسم الكامل</label>
       <input id="rName" placeholder="مثال: أحمد بن يوسف"></div>
-    <div class="fld"><label>البريد الإلكتروني — اسم دخولك</label>
-      <input id="rEmail" type="email" placeholder="you@mail.com" style="direction:ltr;text-align:right"></div>
+    <div class="fld"><label>اسم الدخول — من اختيارك (تدخل به كل مرة)</label>
+      <input id="rUser" autocomplete="username" autocapitalize="none" placeholder="مثال: ahmed"></div>
     <div class="fld"><label>الرقم السري — من اختيارك (8 أحرف على الأقل، حروف وأرقام)</label>
       <input id="rPass" type="password" autocomplete="new-password" placeholder="••••••••"></div>
     <div class="fld"><label>تأكيد الرقم السري</label>
@@ -200,25 +201,30 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
         <button type="button" class="rchip on" data-role="seller">🛍 بائع</button>
         <button type="button" class="rchip" data-role="stock">📦 عامل مخزون</button>
       </div></div>
-    <p id="smtpWarn" style="display:none;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:8px 10px;font-size:12px;line-height:1.7;margin:0 0 10px">⚠️ خدمة إرسال البريد غير مهيأة على الخادم بعد — لن يصل رمز التأكيد حتى يضبط المدير SMTP من لوحة مجانية (Brevo).</p>
-    <button class="btn" id="btnRegister">إنشاء الحساب ومتابعة التفعيل</button>
+    <button class="btn" id="btnRegister">إرسال طلب الانضمام</button>
     <p class="hint"><a href="#" id="lnkBackLogin">← رجوع إلى الدخول</a><br>
-      يصلك رمز تأكيد فوراً على بريدك الإلكتروني — تضيفه ويتفعّل حسابك تلقائياً<br>
-      مثل فيسبوك وإنستغرام — فئة «مدير» تُمنح من الإدارة فقط</p>
+      تُفعّل عضويتك بعد موافقة الإدارة — بلا بريد وبلا رموز<br>
+      فئة «مدير» تُمنح من الإدارة فقط</p>
   </div>
-  <!-- v35: شاشة رمز التأكيد — الرمز يصل البريد نفسه ويُدخل هنا (نمط فيسبوك) -->
-  <div class="card" id="verifyCard" style="display:none">
-    <div id="verifyErr"></div>
-    <p style="margin:0 0 6px;font-weight:800;color:var(--brand);text-align:center;font-size:16px">📬 أكّد بريدك الإلكتروني</p>
-    <p style="margin:0 0 12px;text-align:center;font-size:13px;color:var(--mut);line-height:1.8">
-      أرسلنا رمز تأكيد مكوّن من 6 أرقام إلى:<br><b id="vEmail" style="direction:ltr;unicode-bidi:embed"></b></p>
-    <div class="fld"><label>رمز التأكيد</label>
-      <input id="vCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="••••••"
-             style="direction:ltr;text-align:center;font-size:22px;letter-spacing:10px;font-weight:800"></div>
-    <button class="btn" id="btnVerify">تأكيد وتفعيل الحساب</button>
-    <button class="btn gray" id="btnResend" type="button" style="margin-top:8px">إعادة إرسال الرمز</button>
-    <p class="hint"><a href="#" id="lnkVerifyBack">← تعديل البريد أو الرقم السري</a><br>
-      إن لم يصل الرمز خلال دقائق: تحقق من مجلد الرسائل غير المرغوبة (Spam)</p>
+  <!-- v39: بطاقة انتظار موافقة الإدارة بعد إرسال الطلب -->
+  <div class="card" id="regWaitCard" style="display:none">
+    <p style="margin:0 0 6px;font-weight:800;color:var(--ok);text-align:center;font-size:16px">🔔 وصل طلبك إلى الإدارة</p>
+    <p style="margin:0 0 4px;text-align:center;font-size:13.5px;color:var(--mut);line-height:1.9">
+      اسم دخولك: <b id="rwUser" style="direction:ltr;unicode-bidi:embed"></b><br>
+      عضويتك الآن بانتظار موافقة الإدارة — متى وافقت تدخل التطبيق مباشرة<br>
+      باسم دخولك ورقمك السري. إن لم تُوافق يبقى طلبك معلقاً.</p>
+    <button class="btn gray" id="btnRegWaitBack" style="margin-top:12px">رجوع إلى الدخول</button>
+  </div>
+  <!-- v39: نسيت كلمة المرور — طلب استعادة يصل الإدارة بضغطة -->
+  <div class="card" id="forgotCard" style="display:none">
+    <div id="forgotErr"></div>
+    <div id="forgotOk" style="display:none;background:#e8f7ee;color:#166534;border:1px solid #86efac;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.8;margin:0 0 10px"></div>
+    <p style="margin:0 0 12px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🔑 نسيت كلمة المرور</p>
+    <div class="fld"><label>اسم دخولك (أو بريدك إن كنت تسجل به)</label>
+      <input id="fForgotUser" autocapitalize="none" placeholder="مثال: ahmed"></div>
+    <button class="btn" id="btnForgot">إرسال طلب الاستعادة</button>
+    <p class="hint"><a href="#" id="lnkForgotBack">← رجوع إلى الدخول</a><br>
+      تصل إشعارك للإدارة فوراً وتُعطى لك كلمة مرور مؤقتة — تغيّرها بعد الدخول</p>
   </div>
   <!-- v33: انضمام عبر حساب Google (بريد موثّق من جوجل — بلا رمز بوت) -->
   <div class="card" id="gJoinCard" style="display:none">
@@ -277,7 +283,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v38</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v39</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -445,7 +451,6 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 const $ = (s) => document.querySelector(s);
 const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false,
   googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null, // v33/v34
-  regEmail: "", smtpReady: true, smtpErr: "", resendT: null,   // v35: رمز التأكيد — v36: سبب آخر فشل
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
@@ -469,7 +474,6 @@ async function api(path, opts) {
   if (res.status === 401 && !(opts && opts.noKick)) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة."); }
   if (!res.ok || (data && data.ok === false)) {
     const ex = new Error((data && data.error) || "خطأ غير متوقع.");
-    if (data && data.code) ex.code = data.code;   // v35: مثل verify_needed
     throw ex;
   }
   return data;
@@ -482,20 +486,20 @@ function showLogin(setupMode) {
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
   $("#setupCard").style.display = setupMode ? "" : "none";
-  $("#regCard").style.display = "none"; $("#verifyCard").style.display = "none";
+  $("#regCard").style.display = "none"; $("#regWaitCard").style.display = "none";   // v39
+  $("#forgotCard").style.display = "none";                                          // v39
   $("#lnkRegisterWrap").style.display = (!setupMode && S.selfRegister) ? "" : "none";
   $("#gJoinCard").style.display = "none"; $("#gWaitCard").style.display = "none";  // v33
-  clearInterval(S.resendT);
   $("#loginErr").style.display = "none";
   $("#fPass").value = "";
 }
-/* ─── v34: دخول بالبريد والرقم السري — أُزيلت الرموز والهاتف نهائياً ─── */
+/* ─── v39: دخول باسم الدخول (أو البريد للحسابات القديمة) + الرقم السري — بلا بريد إطلاقاً ─── */
 /* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي (جوجل يحجب WebView) */
 $("#btnGoogle").addEventListener("click", () => {
   const app = window.AndroidBridge ? "?app=1" : "";
   location.href = "/api/auth/google/start" + app;
 });
-/* ─── v35: حساب جديد — بريد + رقم سري من اختيار العميل، ثم رمز تأكيد يصل البريد ─── */
+/* ─── v39: حساب جديد — اسم دخول + رقم سر من اختيارك، والتفعيل بموافقة الإدارة ─── */
 let regRole = "seller";
 $("#rRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
   $("#rRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
@@ -507,108 +511,81 @@ $("#lnkRegister").addEventListener("click", (e) => { e.preventDefault();
 $("#lnkBackLogin").addEventListener("click", (e) => { e.preventDefault();
   $("#regCard").style.display = "none"; $("#loginCard").style.display = "";
   $("#lnkRegisterWrap").style.display = S.selfRegister ? "" : "none"; });
-/* ─── v35: شاشة رمز التأكيد — الرمز يصل البريد ويُدخل هنا ويتفعّل الحساب تلقائياً ─── */
-function startResendCountdown() {
-  let left = 30;
-  const b = $("#btnResend");
-  clearInterval(S.resendT);
-  b.disabled = true; b.textContent = "إعادة إرسال الرمز (30)";
-  S.resendT = setInterval(() => {
-    left--;
-    b.textContent = left > 0 ? ("إعادة إرسال الرمز (" + left + ")") : "إعادة إرسال الرمز";
-    if (left <= 0) { clearInterval(S.resendT); b.disabled = false; }
-  }, 1000);
-}
-function showVerifyCard(email) {
-  S.regEmail = String(email || "").trim().toLowerCase();
-  $("#vEmail").textContent = S.regEmail;
-  const err = $("#verifyErr"); err.style.display = "none"; err.textContent = "";
-  $("#vCode").value = "";
-  ["#loginCard", "#regCard", "#gJoinCard", "#gWaitCard", "#setupCard"]
+/* ─── v39: إرسال الطلب → بطاقة «بانتظار موافقة الإدارة» ─── */
+function showRegWaitCard(username) {
+  $("#rwUser").textContent = username || "";
+  ["#loginCard", "#regCard", "#forgotCard", "#gJoinCard", "#gWaitCard", "#setupCard"]
     .forEach((s) => { $(s).style.display = "none"; });
   $("#lnkRegisterWrap").style.display = "none";
-  $("#verifyCard").style.display = "";
-  startResendCountdown();
-  setTimeout(() => $("#vCode").focus(), 150);
+  $("#regWaitCard").style.display = "";
 }
 async function doRegister() {
   const err = $("#regErr"); err.style.display = "none";
   const name = $("#rName").value.trim();
-  const email = $("#rEmail").value.trim();
+  const username = $("#rUser").value.trim().replace(/^@/, "");
   const p1 = $("#rPass").value, p2 = $("#rPass2").value;
   if (name.length < 3) { err.textContent = "أدخل الاسم الكامل (3 أحرف على الأقل)."; err.style.display = "block"; return; }
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) { err.textContent = "أدخل بريدك الإلكتروني بشكل صحيح — هو اسم دخولك."; err.style.display = "block"; return; }
+  if (username.length < 3 || username.length > 40) { err.textContent = "اسم الدخول من 3 إلى 40 حرفاً — مثال: ahmed"; err.style.display = "block"; return; }
   if (p1.length < 8 || !/[a-zA-Z\u0600-\u06FF]/.test(p1) || !/\d/.test(p1)) {
     err.textContent = "الرقم السري يجب أن يكون 8 أحرف على الأقل ويجمع حروفاً وأرقاماً."; err.style.display = "block"; return; }
   if (p1 !== p2) { err.textContent = "تأكيد الرقم السري غير مطابق."; err.style.display = "block"; return; }
-  const btn = $("#btnRegister"); btn.disabled = true; btn.textContent = "جارِ إنشاء الحساب...";
+  const btn = $("#btnRegister"); btn.disabled = true; btn.textContent = "جارِ إرسال الطلب...";
   try {
     const d = await api("/api/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password: p1, role: regRole })
+      body: JSON.stringify({ name, username, password: p1, role: regRole })
     });
-    toast("📬 " + (d.message || "أُرسل رمز التأكيد إلى بريدك"));
-    showVerifyCard(email);
+    toast("🔔 " + (d.message || "وصل طلبك إلى الإدارة"));
+    $("#rPass").value = ""; $("#rPass2").value = "";
+    showRegWaitCard(username);
   } catch (e2) { err.textContent = e2.message; err.style.display = "block"; }
-  finally { btn.disabled = false; btn.textContent = "إنشاء الحساب ومتابعة التفعيل"; }
+  finally { btn.disabled = false; btn.textContent = "إرسال طلب الانضمام"; }
 }
 $("#btnRegister").addEventListener("click", doRegister);
-async function doVerify() {
-  const err = $("#verifyErr"); err.style.display = "none";
-  const code = $("#vCode").value.replace(/\D/g, "");
-  if (code.length !== 6) { err.textContent = "أدخل رمز التأكيد المكوّن من 6 أرقام."; err.style.display = "block"; return; }
-  const btn = $("#btnVerify"); btn.disabled = true; btn.textContent = "جارِ التحقق...";
+$("#btnRegWaitBack").addEventListener("click", () => showLogin(false));
+/* ─── v39: نسيت كلمة المرور — طلب استعادة يصل الإدارة فوراً ─── */
+$("#lnkForgot").addEventListener("click", (e) => { e.preventDefault();
+  $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
+  $("#forgotErr").style.display = "none"; $("#forgotOk").style.display = "none";
+  $("#fForgotUser").value = $("#fUser").value.trim();
+  $("#forgotCard").style.display = ""; });
+$("#lnkForgotBack").addEventListener("click", (e) => { e.preventDefault();
+  $("#forgotCard").style.display = "none"; $("#loginCard").style.display = "";
+  $("#lnkRegisterWrap").style.display = S.selfRegister ? "" : "none"; });
+async function doForgot() {
+  const err = $("#forgotErr"); err.style.display = "none";
+  const okBox = $("#forgotOk"); okBox.style.display = "none";
+  const username = $("#fForgotUser").value.trim().replace(/^@/, "");
+  if (username.length < 3) { err.textContent = "أدخل اسم دخولك (3 أحرف على الأقل)."; err.style.display = "block"; return; }
+  const btn = $("#btnForgot"); btn.disabled = true; btn.textContent = "جارِ الإرسال...";
   try {
-    const d = await api("/api/register/verify", {
-      noKick: true,   // v35: الخطأ في الرمز لا يُغلق شاشة التحقق
+    const d = await api("/api/forgot", {
+      noKick: true,
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: S.regEmail, code })
+      body: JSON.stringify({ username })
     });
-    toast("🎉 " + (d.message || "تم تفعيل حسابك — أهلاً بك!"));
-    const me = await api("/api/me");
-    showApp(me);
+    okBox.textContent = "🔔 " + (d.message || "وصل طلبك إلى الإدارة.");
+    okBox.style.display = "block";
   } catch (e2) { err.textContent = e2.message; err.style.display = "block"; }
-  finally { btn.disabled = false; btn.textContent = "تأكيد وتفعيل الحساب"; }
+  finally { btn.disabled = false; btn.textContent = "إرسال طلب الاستعادة"; }
 }
-$("#btnVerify").addEventListener("click", doVerify);
-$("#vCode").addEventListener("input", () => {
-  $("#vCode").value = $("#vCode").value.replace(/\D/g, "");
-  if ($("#vCode").value.length === 6) doVerify();
-});
-$("#vCode").addEventListener("keydown", (e) => { if (e.key === "Enter") doVerify(); });
-$("#btnResend").addEventListener("click", async () => {
-  const err = $("#verifyErr"); err.style.display = "none";
-  const btn = $("#btnResend"); btn.disabled = true;
-  try {
-    const d = await api("/api/register/resend", {
-      noKick: true,   // v35: حتى أخطاء الإعادة تبقى في شاشة الرمز
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: S.regEmail })
-    });
-    toast("📬 " + (d.message || "أُعيد إرسال الرمز إلى بريدك"));
-    startResendCountdown();
-  } catch (e2) {
-    err.textContent = e2.message; err.style.display = "block";
-    startResendCountdown();
-  }
-});
-$("#lnkVerifyBack").addEventListener("click", (e) => { e.preventDefault();
-  $("#verifyCard").style.display = "none";
-  $("#regCard").style.display = "";   // رجوع للنموذج — البيانات ما تزال معبّأة
-});
+$("#btnForgot").addEventListener("click", doForgot);
+$("#fForgotUser").addEventListener("keydown", (e) => { if (e.key === "Enter") doForgot(); });
 /* ─── v33: دخول بحساب Google + شاشات الانضمام والانتظار ─── */
 function showGoogleJoin(name, email, ot) {
   S.gOt = ot || ""; S.gName = name || "";
   $("#gJoinName").textContent = S.gName || "بالفريق";
   $("#gJoinEmail").textContent = email || "";
   $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
-  $("#regCard").style.display = "none"; $("#verifyCard").style.display = "none";
+  $("#regCard").style.display = "none"; $("#regWaitCard").style.display = "none";
+  $("#forgotCard").style.display = "none";
   $("#gWaitCard").style.display = "none"; $("#gJoinErr").style.display = "none";
   $("#gJoinCard").style.display = "";
 }
 function showGoogleWait() {
   $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
-  $("#regCard").style.display = "none"; $("#verifyCard").style.display = "none";
+  $("#regCard").style.display = "none"; $("#regWaitCard").style.display = "none";
+  $("#forgotCard").style.display = "none";
   $("#gJoinCard").style.display = "none"; $("#app").style.display = "none";
   $("#login").style.display = "block";
   $("#gWaitCard").style.display = "";
@@ -650,7 +627,8 @@ function handleGoogleReturn(q) {
 /* ─── v33: تفعيل العضويات المنتظرة (للمدير) ─── */
 function openApprove(reg) {
   S.apprDlg = { id: reg.id, role: reg.role };
-  $("#dlgApprUser").textContent = reg.name + " — " + (reg.email ? reg.email : "بلا بريد");
+  $("#dlgApprUser").textContent = reg.name
+    + (reg.username ? " — 🔑 اسم الدخول: " + reg.username : (reg.email ? " — " + reg.email : ""));
   $("#dlgApprChips").innerHTML = ROLE_OPTS.map((o) =>
     '<button type="button" class="rchip' + (o[0] === reg.role ? " on" : "") + '" data-role="' + o[0] + '">' + o[1] + '</button>').join("");
   $("#dlgApprChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
@@ -875,9 +853,10 @@ async function loadOil() {
 async function loadUsers() {
   const box = $("#usrList");
   try {
-    const [d, regsResp] = await Promise.all([
+    const [d, regsResp, resetsResp] = await Promise.all([
       api("/api/users"),
-      api("/api/registrations").catch(() => ({ registrations: [] }))
+      api("/api/registrations").catch(() => ({ registrations: [] })),
+      api("/api/resets").catch(() => ({ resets: [] }))   // v39: طلبات استعادة كلمة المرور
     ]);
     $("#cAll").textContent = d.counts.all;
     $("#cWeb").textContent = d.counts.web;
@@ -885,14 +864,23 @@ async function loadUsers() {
     let html = "";
     const waiting = (regsResp && regsResp.registrations) || [];
     if (waiting.length) {
-      html += '<p style="margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand2)">⏳ طلبات انضمام بانتظار التفعيل (' + waiting.length + ')</p>';
+      html += '<p style="margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand2)">⏳ طلبات انضمام بانتظار الموافقة (' + waiting.length + ')</p>';
       html += waiting.map((w) =>
         '<div class="row"><div class="info"><b>' + esc(w.name) + '</b>'
-        + '<span>' + esc(w.role_label) + (w.phone ? " • 📞 " + esc(w.phone) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + '</span></div>'
+        + '<span>' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + '</span></div>'
         + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g">Google</span>'
-          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? '<span class="badge b">🔑 بريد + رقم سري</span>' : '<span class="badge b">رمز: ' + esc(w.code) + '</span>'))
-        + '<div class="acts"><button class="btn mini green" data-appr=\'' + JSON.stringify(w).replace(/'/g, "&#39;") + '\'>✅ تفعيل</button>'
+          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? '<span class="badge b">🔑 اسم + رقم سر</span>' : '<span class="badge b">رمز: ' + esc(w.code) + '</span>'))
+        + '<div class="acts"><button class="btn mini green" data-appr=\'' + JSON.stringify(w).replace(/'/g, "&#39;") + '\'>✅ موافقة</button>'
         + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
+        + '</div>').join("");
+    }
+    const resets = (resetsResp && resetsResp.resets) || [];
+    if (resets.length) {
+      html += '<p style="margin:10px 0 8px;font-weight:800;font-size:13px;color:var(--brand2)">🔑 طلبات استعادة كلمة المرور (' + resets.length + ')</p>';
+      html += resets.map((r) =>
+        '<div class="row"><div class="info"><b>' + esc(r.username) + '</b>'
+        + '<span>طالب باستعادة رقمه السري' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + '</span></div>'
+        + '<div class="acts"><button class="btn mini gold" data-reset="' + r.id + '" data-runame="' + esc(r.username) + '">🔑 توليد رقم سر مؤقت</button></div>'
         + '</div>').join("");
     }
     html += d.users.map((u) => {
@@ -913,8 +901,6 @@ async function loadUsers() {
       return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
         + '<span>' + esc(u.role_label) + (u.web ? " • اسم الدخول: " + esc(u.web_username) : "") + '</span></div>'
         + (u.active ? "" : '<span class="badge r">مطرود</span>')
-        + (u.verified ? '<span class="badge g">✓ موثّق</span>'
-          : (u.email && !hasTg ? '<span class="badge">⏳ بانتظار تأكيد البريد</span>' : ""))
         + (u.phone ? '<span class="badge b">📞 ' + esc(u.phone) + '</span>' : "")
         + (u.email ? '<span class="badge b">✉️ ' + esc(u.email) + '</span>' : "")
         + (u.web ? '<span class="badge n">🔑 ويب</span>' : "")
@@ -922,15 +908,30 @@ async function loadUsers() {
         + '</div>';
     }).join("");
     box.innerHTML = html;
-    box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr]").forEach((b) => b.addEventListener("click", () => {
+    box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset]").forEach((b) => b.addEventListener("click", () => {
       if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
       else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
+      else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);
       else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);
       else if (b.dataset.self) openPass(null, b.dataset.n, true);
       else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
       else openPass(+b.dataset.tg, b.dataset.n, false);
     }));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+/* ── v39: توليد رقم سر مؤقت لطلب استعادة — يُعرض مرة واحدة ── */
+async function resetGenerate(id, uname) {
+  if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;
+  try {
+    const d = await api("/api/resets/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id })
+    });
+    alert("🔑 الرقم السري المؤقت لـ " + d.username + " هو:\n\n" + d.temp_password
+          + "\n\nأعطه له الآن (شفهياً أو واتساب) — لن يظهر مرة أخرى.\n"
+          + "سيغيّره بنفسه من «كلمة مروري» بعد الدخول.");
+    loadUsers();
+  } catch (e) { toast(e.message, true); }
 }
 async function userToggle(tid, active) {
   if (!confirm(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.")) return;
@@ -1370,11 +1371,6 @@ async function doLogin() {
     showApp(me);
   } catch (e) {
     err.textContent = e.message; err.style.display = "block";
-    // v35: حساب سجّل ولم يُأكّد بريده → شاشة الرمز مباشرة بالبريد المُدخل
-    if (e.code === "verify_needed") {
-      const em = $("#fUser").value.trim();
-      if (em.indexOf("@") >= 0) { err.style.display = "none"; showVerifyCard(em); }
-    }
   } finally {
     $("#btnLogin").disabled = false; $("#btnLogin").textContent = "دخول";
   }
@@ -1427,12 +1423,6 @@ $("#btnLogout").addEventListener("click", async () => {
     S.selfRegister = !!(d && d.self_register); // v32: إظهار رابط «حساب جديد» حسب إعداد الخادم
     if (d && d.reasons) S.reasons = d.reasons; // قائمة الأسباب من الخادم (مصدر واحد)
     S.googleLogin = !!(d && d.google_login);   // v33
-    S.smtpReady = !!(d && d.smtp_ready);       // v35: رمز التأكيد يصل البريد
-    S.smtpErr = (d && d.smtp_last_err) || "";  // v36: سبب آخر فشل إرسال (تشخيص)
-    if (!S.smtpReady) {
-      $("#smtpWarn").style.display = "";
-      if (S.smtpErr) $("#smtpWarn").textContent = "⚠️ خدمة البريد فيها مشكلة — السبب: " + S.smtpErr;
-    }
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
   } catch (e2) {}
