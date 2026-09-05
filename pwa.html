@@ -122,7 +122,25 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .badge.n{background:var(--brandsoft);color:var(--brand)}
 .badge.mut{background:var(--chip);color:var(--mut)}
 .row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+/* v45: زر الخيارات الواحد لبطاقة السلعة */
+.mbtn{flex:none;width:40px;height:40px;border:none;border-radius:11px;background:var(--brandsoft);
+  color:var(--brand);font-size:22px;font-weight:800;cursor:pointer;line-height:1;padding:0}
+.mbtn:active{transform:scale(.92)}
+.mbtns{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.mbtns .btn{margin:0;width:100%}
+/* v45: بطاقات الرئيسية قابلة للنقر */
+.stat{cursor:pointer}
+.stat:active{transform:scale(.96)}
 .empty{text-align:center;color:var(--mut);padding:30px 10px;font-size:14px}
+button:disabled{opacity:.55}
+/* v45: هيكل مؤقت (Skeleton) خفيف للقوائم المهمة */
+.skl{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 14px;margin-bottom:9px;position:relative;overflow:hidden}
+.skl i{display:block;height:12px;border-radius:6px;background:var(--chip);width:65%}
+.skl i+i{width:42%;margin-top:9px;height:10px}
+.skl::after{content:"";position:absolute;top:0;bottom:0;width:60%;left:-60%;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent);animation:sklm 1.3s infinite}
+html[data-theme="dark"] .skl::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.07),transparent)}
+@keyframes sklm{to{left:100%}}
 /* حوار */
 dialog{border:none;border-radius:18px;padding:0;width:min(92vw,380px);
   box-shadow:0 20px 60px rgba(0,0,0,.3);background:var(--card);color:var(--ink)}
@@ -236,7 +254,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v44</span></p>
+      <span style="opacity:.65">الإصدار v45</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -327,14 +345,14 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
     <section class="view on" id="v-home">
       <h2 class="vt">الرئيسية</h2>
       <div class="grid">
-        <div class="stat"><b id="sProd">—</b><span>سلعة</span></div>
-        <div class="stat"><b id="sLow">—</b><span>منخفض</span></div>
-        <div class="stat"><b id="sToday">—</b><span>حركة اليوم</span></div>
+        <div class="stat" id="cardProd" title="اضغط لعرض كل السلع"><b id="sProd">—</b><span>سلعة</span></div>
+        <div class="stat" id="cardLow" title="اضغط لعرض السلع المنخفضة"><b id="sLow">—</b><span>منخفض</span></div>
+        <div class="stat" id="cardToday" title="اضغط لعرض حركة اليوم"><b id="sToday">—</b><span>حركة اليوم</span></div>
       </div>
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v44</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v45</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -433,7 +451,8 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
-      <p class="hint" id="setAbout">الإصدار v44</p>
+      <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
+      <p class="hint" id="setAbout">الإصدار v45</p>
     </section>
   </main>
   <nav class="tabs">
@@ -601,14 +620,29 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
   </div>
 </dialog>
 
+<!-- v45: قائمة خيارات السلعة — زر واحد بدل الأزرار المتناثرة على البطاقة -->
+<dialog id="dlgMenu">
+  <div class="dh" id="dlgMenuTitle">خيارات السلعة</div>
+  <div class="db">
+    <div id="dlgMenuBtns" class="mbtns"></div>
+    <button class="btn gray" id="dlgMenuClose">إغلاق</button>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
 "use strict";
+/* ═══════════ خريطة الكود (v45 — Stability & Security) ═══════════
+   طبقات: أدوات ($ ، esc ، toast) ← api() طبقة الشبكة الموحدة ← حماية (freshGen / opGuard / lockBtn)
+   الأقسام: الوضع الليلي ← الجلسات والدخول ← التنقل ← الرئيسية ← المخزون (قائمة/قائمة الخيارات ⋮/تعديل/حذف)
+   ← حوار الكمية ← الحركة (فلاتر/CSV) ← الزيت ← المستخدمون ← الطلبات والوصل ← تفاصيل السلعة
+   ← إضافة سلعة ← الملف الشخصي ← الإشعارات ← دخول/إعداد ← الإقلاع ← التحديث الداخلي.
+   الملف مقصوداً ملفاً واحداً (يقدمه bot.py مباشرة) — الترتيب هنا طبقات: شبكة ← حالة ← واجهة. */
 const $ = (s) => document.querySelector(s);
 const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false,
   googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null,
-  notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
+  notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false, busy: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
              reconcile: [] },
@@ -618,7 +652,8 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   invTab: "all", invData: [], serverVersion: "" };
 
 const esc = (s) => String(s == null ? "" : s)
-  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");   /* v45: اقتباس مفرد — أسماء فرنسية مثل l'Or */
 
 function toast(msg, isErr) {
   const t = $("#toast"); t.textContent = msg; t.className = isErr ? "err" : "";
@@ -626,18 +661,59 @@ function toast(msg, isErr) {
   t._h = setTimeout(() => { t.style.display = "none"; }, 3200);
 }
 
+/* ─── طبقة API الموحدة v45: مهلة زمنية + رسائل عربية + JSON صالح + قطع الطلبات المعلقة ─── */
+const API_TIMEOUT = 25000;  /* مهلة افتراضية — لا إعادة محاولة تلقائية للعمليات المتغيرة (منع التكرار) */
 async function api(path, opts) {
+  opts = opts || {};
+  const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, opts.timeout || API_TIMEOUT) : null;
   let res;
-  try { res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts || {})); }
-  catch (e) { throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة."); }
-  let data = null;
-  try { data = await res.json(); } catch (e) { data = null; }
-  if (res.status === 401 && !(opts && opts.noKick)) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة."); }
-  if (!res.ok || (data && data.ok === false)) {
-    const ex = new Error((data && data.error) || "خطأ غير متوقع.");
-    throw ex;
+  try {
+    res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts, ctrl ? { signal: ctrl.signal } : {}));
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة.");
   }
+  if (timer) clearTimeout(timer);
+  let data = null, bad = false;
+  try { data = await res.json(); } catch (e) { bad = true; }
+  if (res.status === 401 && !opts.noKick) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة — سجّل الدخول من جديد."); }
+  if (!res.ok || (data && data.ok === false)) {
+    throw new Error((data && data.error) || (res.status >= 500 ? "خطأ في الخادم — حاول بعد قليل." : "خطأ غير متوقع."));
+  }
+  if (bad && res.status !== 204) throw new Error("استجابة غير صالحة من الخادم — أعد المحاولة.");
   return data;
+}
+/* جلب ملف (صورة الوصل) بنفس المهلة — رسائل عربية */
+async function fetchBlob(path) {
+  const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, API_TIMEOUT) : null;
+  try {
+    const res = await fetch(path, Object.assign({ credentials: "same-origin" }, ctrl ? { signal: ctrl.signal } : {}));
+    if (!res.ok) {
+      let m = "تعذر تنفيذ الطلب";
+      try { m = (await res.json()).error || m; } catch (e) {}
+      throw new Error(m);
+    }
+    return await res.blob();
+  } finally { if (timer) clearTimeout(timer); }
+}
+/* ─── أدوات الحماية v45 ───
+   freshGen: يعطل render استجابة قديمة وصلت بعد طلب أحدث (بحث/فلاتر/تبويبات)
+   opGuard/opRelease: يمنع تنفيذ نفس العملية الحساسة مرتين بالتزامن
+   lockBtn: يقفل الزر أثناء العملية ويعيده دائماً (نجاح أو فشل) */
+const _seq = {};
+function freshGen(key) { _seq[key] = (_seq[key] || 0) + 1; const my = _seq[key]; return () => _seq[key] === my; }
+function seqInvalidateAll() { Object.keys(_seq).forEach((k) => { _seq[k]++; }); }
+const _inflight = new Set();
+function opGuard(key) { if (_inflight.has(key)) return false; _inflight.add(key); return true; }
+function opRelease(key) { _inflight.delete(key); }
+function lockBtn(btn, label) {
+  if (!btn || btn.disabled) return null;
+  const old = btn.textContent;
+  btn.disabled = true;
+  if (label) btn.textContent = label;
+  return () => { btn.disabled = false; btn.textContent = old; };
 }
 
 /* ─── v41: الوضع الليلي/النهاري ─── */
@@ -660,6 +736,14 @@ function currentTheme() {
 /* ─── الجلسات ─── */
 function showLogin(setupMode) {
   S.user = null; S.perms = {};
+  /* v45: تنظيف الحالة كاملة — لا تسرب بيانات بين المستخدمين + إبطال الاستجابات القديمة */
+  S.invData = []; S.invQ = ""; S.invTab = "all";
+  S.mov.data = []; S.mov.summary = null; S.mov.product = 0; S.mov.product_name = "";
+  S.pendingData = []; S.incData = { orders: [], admin: false };
+  S.apprDlg = null; S.roleDlg = null; S.passDlg = null; S.dlg = null;
+  seqInvalidateAll();
+  try { $("#qSearch").value = ""; } catch (e0) {}
+  document.querySelectorAll("dialog[open]").forEach((d) => { try { d.close(); } catch (e1) {} });
   stopNotifPolling();
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
@@ -814,6 +898,8 @@ function openApprove(reg) {
 $("#dlgApprCancel").addEventListener("click", () => $("#dlgApprove").close());
 $("#dlgApprGo").addEventListener("click", async () => {
   if (!S.apprDlg) return;
+  const unlock = lockBtn($("#dlgApprGo"), "جارٍ التنفيذ…");   /* v45 */
+  if (!unlock) return;
   try {
     const d = await api("/api/registrations/approve", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -821,6 +907,7 @@ $("#dlgApprGo").addEventListener("click", async () => {
     });
     $("#dlgApprove").close(); toast("✅ " + d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
+  finally { unlock(); }
 });
 function renderHeader() {
   if (!S.user) return;
@@ -857,11 +944,20 @@ function switchView(id) {
 document.querySelectorAll("nav.tabs button").forEach((b) =>
   b.addEventListener("click", () => switchView(b.dataset.v)));
 $("#btnSet").addEventListener("click", () => switchView("v-set"));
+/* ── v45: بطاقات الرئيسية تعمل بالضغط — كل السلع / المنخفضة / حركة اليوم ── */
+$("#cardProd").addEventListener("click", () => { invSetTab("all", true); switchView("v-inv"); });
+$("#cardLow").addEventListener("click", () => { invSetTab("low", true); switchView("v-inv"); });
+$("#cardToday").addEventListener("click", () => {
+  if (!S.perms.movements) { toast("لا تملك صلاحية سجل الحركة.", true); return; }
+  movSetPreset("today", true); switchView("v-mov");
+});
 
 /* ─── الرئيسية ─── */
 async function loadHome() {
+  const fresh = freshGen("home");   /* v45 */
   try {
     const d = await api("/api/stats");
+    if (!fresh()) return;
     $("#sProd").textContent = d.stats.products;
     $("#sLow").textContent = d.stats.low;
     $("#sToday").textContent = d.stats.today;
@@ -918,24 +1014,27 @@ $("#qSearch").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadInventory, 300);
 });
-function invSetTab(t) {
+function invSetTab(t, silent) {  /* v45: silent = تبديل التبويب دون تحميل مزدوج */
   S.invTab = t;
   $("#segAll").classList.toggle("on", t === "all");
   $("#segLow").classList.toggle("on", t === "low");
   $("#segArch").classList.toggle("on", t === "arch");
-  loadInventory();
+  if (!silent) loadInventory();
 }
 $("#segAll").addEventListener("click", () => invSetTab("all"));
 $("#segLow").addEventListener("click", () => invSetTab("low"));
 $("#segArch").addEventListener("click", () => invSetTab("arch"));
 async function loadInventory() {
   const box = $("#invList");
+  const fresh = freshGen("inv");   /* v45: استجابة قديمة لا ترسم */
+  if (!(S.invData || []).length) box.innerHTML = '<div class="skl"><i></i><i></i></div>'.repeat(4);
   const qp = [];
   if (S.invQ) qp.push("q=" + encodeURIComponent(S.invQ));
   if (S.invTab === "arch") qp.push("archived=1");
   if (S.invTab === "low") qp.push("low=1");   /* v43: فلتر المنخفضة يعمل فعلياً */
   try {
     const d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
+    if (!fresh()) return;
     S.invData = d.products || [];
     if (!S.invData.length) {
       box.innerHTML = '<p class="empty">' + (S.invTab === "arch"
@@ -951,37 +1050,57 @@ async function loadInventory() {
       }
       const unit = p.unit ? " " + p.unit : "";
       const qtyBadge = p.low ? '<span class="badge r">' + p.qty + unit + '</span>' : '<span class="badge g">' + p.qty + unit + '</span>';
-      let acts = "";
-      if (S.invTab === "arch") {
-        acts += '<button class="btn mini green" data-act="restore" data-id="' + p.id + '" data-n="' + esc(p.name) + '">♻️ استعادة</button>';
-        if (S.perms.admin) acts += '<button class="btn mini gray" data-act="edit" data-id="' + p.id + '">✏️</button>';
-      } else {
-        if (S.perms.add_qty) acts += '<button class="btn mini green" data-act="add" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➕</button>';
-        if (S.perms.remove) acts += '<button class="btn mini red" data-act="remove" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➖</button>';
-        if (S.perms.admin) {
-          acts += '<button class="btn mini gray" data-act="reconcile" data-id="' + p.id + '" data-n="' + esc(p.name) + '">جرد</button>';
-          acts += '<button class="btn mini gold" data-act="edit" data-id="' + p.id + '" title="تعديل الاسم والبيانات">✏️</button>';
-          acts += '<button class="btn mini red" data-act="del" data-id="' + p.id + '" data-n="' + esc(p.name) + '">🗑</button>';
-        }
-      }
-      return '<div class="row"><div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
+      /* v45: زر ⋮ واحد بجانب اسم السلعة بدل الأزرار المتناثرة — يفتح قائمة الأزرار عند الضغط */
+      const canMenu = S.invTab === "arch" ? true
+        : !!(S.perms.add_qty || S.perms.remove || S.perms.admin);
+      const menuBtn = canMenu
+        ? '<button type="button" class="mbtn" data-menu="' + p.id + '" data-n="' + esc(p.name) + '" title="خيارات السلعة">⋮</button>'
+        : "";
+      return '<div class="row">' + menuBtn
+        + '<div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
         + '<span>' + esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + ' • 📜 للحركة اضغط الاسم</span></div>'
         + (S.invTab === "arch" ? '<span class="badge mut">محذوفة</span>' : qtyBadge)
-        + (acts ? '<div class="acts">' + acts + '</div>' : "")
         + '</div>';
     }).join("");
-    box.querySelectorAll("button[data-act]").forEach((b) =>
-      b.addEventListener("click", () => {
-        const act = b.dataset.act, id = +b.dataset.id, n = b.dataset.n;
-        if (act === "add" || act === "remove" || act === "reconcile") openQty(act, id, n);
-        else if (act === "edit") invEdit(id);
-        else if (act === "del") invDelete(id, n);
-        else if (act === "restore") invRestore(id, n);
-      }));
+    box.querySelectorAll("button[data-menu]").forEach((b) =>
+      b.addEventListener("click", () => openRowMenu(+b.dataset.menu, b.dataset.n)));
     box.querySelectorAll("[data-detail]").forEach((el) =>
       el.addEventListener("click", () => openDetail(+el.dataset.detail)));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
+/* ── v45: قائمة خيارات السلعة — زر ⋮ واحد يظهر الأزرار عند الضغط ── */
+function openRowMenu(id, n) {
+  $("#dlgMenuTitle").textContent = n || "خيارات السلعة";
+  const mk = (act, label, cls) =>
+    '<button type="button" class="btn ' + cls + '" data-act="' + act + '" data-id="' + id + '" data-n="' + esc(n) + '">' + label + '</button>';
+  let h = "";
+  if (S.invTab === "arch") {
+    h += mk("restore", "♻️ استعادة إلى المخزون", "green");
+    if (S.perms.admin) h += mk("edit", "✏️ تعديل البيانات", "gray");
+  } else {
+    if (S.perms.add_qty) h += mk("add", "➕ إضافة كمية", "green");
+    if (S.perms.remove) h += mk("remove", "➖ خصم كمية", "red");
+    if (S.perms.admin) {
+      h += mk("reconcile", "🧮 جرد وتسوية", "gray");
+      h += mk("edit", "✏️ تعديل البيانات", "gold");
+      h += mk("del", "🗑 حذف (أرشفة)", "red");
+    }
+  }
+  const bx = $("#dlgMenuBtns");
+  bx.innerHTML = h;
+  bx.querySelectorAll("button[data-act]").forEach((b) =>
+    b.addEventListener("click", () => {
+      try { $("#dlgMenu").close(); } catch (e) {}
+      const act = b.dataset.act, mid = +b.dataset.id, mn = b.dataset.n;
+      if (act === "add" || act === "remove" || act === "reconcile") openQty(act, mid, mn);
+      else if (act === "edit") invEdit(mid);
+      else if (act === "del") invDelete(mid, mn);
+      else if (act === "restore") invRestore(mid, mn);
+    }));
+  const dlg = $("#dlgMenu");
+  if (!dlg.open) { try { dlg.showModal(); } catch (e) {} }
+}
+$("#dlgMenuClose").addEventListener("click", () => { try { $("#dlgMenu").close(); } catch (e) {} });
 /* ── v41: تعديل السلعة (اسم/موقع/سعر/حد) ── */
 function invEdit(id) {
   const p = (S.invData || []).find((x) => x.id === id);
@@ -1014,6 +1133,7 @@ $("#dlgEditGo").addEventListener("click", async () => {
 /* ── v41: حذف ناعم + استعادة ── */
 async function invDelete(id, name) {
   if (!confirm('حذف السلعة «' + name + '»؟\n\nستُخفى من المخزون بينما يبقى سجل حركتها\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».')) return;
+  if (!opGuard("arch:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/products/archive", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1021,9 +1141,11 @@ async function invDelete(id, name) {
     });
     toast(d.message || "تم الحذف."); loadInventory(); pollNotifs();
   } catch (e) { toast(e.message, true); }
+  finally { opRelease("arch:" + id); }
 }
 async function invRestore(id, name) {
   if (!confirm('استعادة السلعة «' + name + '» إلى المخزون؟')) return;
+  if (!opGuard("arch:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/products/archive", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1031,6 +1153,7 @@ async function invRestore(id, name) {
     });
     toast(d.message || "تمت الاستعادة."); loadInventory(); pollNotifs();
   } catch (e) { toast(e.message, true); }
+  finally { opRelease("arch:" + id); }
 }
 
 /* ─── حوار الكمية ─── */
@@ -1060,6 +1183,8 @@ $("#dlgGo").addEventListener("click", async () => {
   if (isNaN(qty) || qty < 0 || (S.dlg.act !== "reconcile" && qty <= 0)) {
     toast("أدخل كمية صحيحة.", true); return;
   }
+  const unlock = lockBtn($("#dlgGo"), "جارٍ التنفيذ…");   /* v45: لا تكرار للحركة بنقر مزدوج */
+  if (!unlock) return;
   try {
     const chip = S.dlg.chip, extra = $("#dlgReason").value.trim();
     const reason = [chip, extra].filter(Boolean).join(" — ");
@@ -1070,6 +1195,7 @@ $("#dlgGo").addEventListener("click", async () => {
     $("#dlg").close(); toast(d.message || "تمت العملية."); loadInventory();
     pollNotifs();
   } catch (e) { toast(e.message, true); }
+  finally { unlock(); }
 });
 
 /* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ─── */
@@ -1079,7 +1205,7 @@ function isoLocal(d) {
   const p = (n) => String(n).padStart(2, "0");
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
 }
-function movSetPreset(p) {
+function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر دون تحميل مزدوج */
   S.mov.preset = p;
   document.querySelectorAll("#movPresets .fchip").forEach((b) =>
     b.classList.toggle("on", b.dataset.p === p));
@@ -1090,7 +1216,7 @@ function movSetPreset(p) {
   else if (p === "m30") { const d = new Date(now); d.setDate(d.getDate() - 29); f = isoLocal(d); t = isoLocal(now); }
   S.mov.from = f; S.mov.to = t;
   $("#movFrom").value = f; $("#movTo").value = t;
-  loadMovements();
+  if (!silent) loadMovements();
 }
 document.querySelectorAll("#movPresets .fchip").forEach((b) =>
   b.addEventListener("click", () => movSetPreset(b.dataset.p)));
@@ -1139,6 +1265,8 @@ function movDayHeader(day) {
 async function loadMovements() {
   const box = $("#movList");
   if (!S.perms.movements) return;
+  const fresh = freshGen("mov");   /* v45 */
+  if (!(S.mov.data || []).length) box.innerHTML = '<div class="skl"><i></i><i></i></div>'.repeat(4);
   const q = new URLSearchParams({ limit: "300" });
   if (S.mov.from) q.set("from", S.mov.from);
   if (S.mov.to) q.set("to", S.mov.to);
@@ -1150,6 +1278,7 @@ async function loadMovements() {
   $("#movNoFri").classList.toggle("on", S.mov.nofriday);
   try {
     const d = await api("/api/movements?" + q.toString());
+    if (!fresh()) return;
     S.mov.data = d.movements || [];
     S.mov.summary = d.summary || null;
     const s = S.mov.summary;
@@ -1185,8 +1314,10 @@ async function loadMovements() {
 /* ─── الزيت ─── */
 async function loadOil() {
   const box = $("#oilBox");
+  const fresh = freshGen("oil");   /* v45 */
   try {
     const d = await api("/api/oil");
+    if (!fresh()) return;
     if (!d.oil || !d.oil.has_cycle) {
       box.innerHTML = '<p class="empty">لا توجد دورة زيت مسجلة بعد — سجّل أول تغيير من بوت تلغرام.</p>';
       return;
@@ -1209,12 +1340,14 @@ async function loadOil() {
 /* ─── المستخدمون ─── */
 async function loadUsers() {
   const box = $("#usrList");
+  const fresh = freshGen("usr");   /* v45 */
   try {
     const [d, regsResp, resetsResp] = await Promise.all([
       api("/api/users"),
       api("/api/registrations").catch(() => ({ registrations: [] })),
       api("/api/resets").catch(() => ({ resets: [] }))
     ]);
+    if (!fresh()) return;
     $("#cAll").textContent = d.counts.all;
     $("#cWeb").textContent = d.counts.web;
     $("#cKick").textContent = d.counts.kicked;
@@ -1227,7 +1360,7 @@ async function loadUsers() {
         + '<span>' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + '</span></div>'
         + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g">Google</span>'
           : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? '<span class="badge b">🔑 اسم + رقم سر</span>' : '<span class="badge b">رمز: ' + esc(w.code) + '</span>'))
-        + '<div class="acts"><button class="btn mini green" data-appr=\'' + JSON.stringify(w).replace(/'/g, "&#39;") + '\'>✅ موافقة</button>'
+        + '<div class="acts"><button class="btn mini green" data-appr=\'' + esc(JSON.stringify(w)) + '\'>✅ موافقة</button>'
         + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
         + '</div>').join("");
     }
@@ -1278,6 +1411,7 @@ async function loadUsers() {
 }
 async function resetGenerate(id, uname) {
   if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;
+  if (!opGuard("rst:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/resets/generate", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1288,9 +1422,11 @@ async function resetGenerate(id, uname) {
           + "سيغيّره بنفسه من الإعدادات بعد الدخول.");
     loadUsers();
   } catch (e) { toast(e.message, true); }
+  finally { opRelease("rst:" + id); }
 }
 async function userToggle(tid, active) {
   if (!confirm(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.")) return;
+  if (!opGuard("tg:" + tid)) return;   /* v45 */
   try {
     const d = await api("/api/users/toggle", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1298,6 +1434,7 @@ async function userToggle(tid, active) {
     });
     toast(d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
+  finally { opRelease("tg:" + tid); }
 }
 const ROLE_OPTS = [
   ["admin", "👑 مدير النظام"],
@@ -1323,6 +1460,8 @@ $("#dlgRoleCancel").addEventListener("click", () => $("#dlgRole").close());
 $("#dlgRoleGo").addEventListener("click", async () => {
   if (!S.roleDlg || !S.roleDlg.role) { toast("اختر الفئة أولاً.", true); return; }
   if (S.roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;
+  const unlock = lockBtn($("#dlgRoleGo"), "جارٍ التنفيذ…");   /* v45 */
+  if (!unlock) return;
   try {
     const d = await api("/api/users/role", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1330,9 +1469,11 @@ $("#dlgRoleGo").addEventListener("click", async () => {
     });
     toast(d.message); $("#dlgRole").close(); loadUsers();
   } catch (e) { toast(e.message, true); }
+  finally { unlock(); }
 });
 async function regDelete(id) {
   if (!confirm("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.")) return;
+  if (!opGuard("reg:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/registrations/delete", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1340,6 +1481,7 @@ async function regDelete(id) {
     });
     toast(d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
+  finally { opRelease("reg:" + id); }
 }
 /* ── حوار كلمة المرور (لنفسك وللموظفين) ── */
 S.passDlg = null;
@@ -1355,6 +1497,8 @@ $("#dlgPassCancel").addEventListener("click", () => $("#dlgPass").close());
 $("#dlgPassGo").addEventListener("click", async () => {
   const np = $("#fNewPass").value;
   if (np.length < 8) { toast("كلمة المرور قصيرة — 8 أحرف على الأقل مع حروف وأرقام.", true); return; }
+  const unlock = lockBtn($("#dlgPassGo"), "جارٍ الحفظ…");   /* v45 */
+  if (!unlock) return;
   try {
     let d;
     if (S.passDlg.self) {
@@ -1387,6 +1531,7 @@ $("#dlgPassGo").addEventListener("click", async () => {
     }
     $("#dlgPass").close(); toast(d.message || "تم الحفظ."); loadUsers();
   } catch (e) { toast(e.message, true); }
+  finally { unlock(); }
 });
 
 /* ─── الطلبات ─── */
@@ -1399,8 +1544,10 @@ $("#segInc").addEventListener("click", () => {
 });
 async function loadOrders() {
   const box = $("#ordList");
+  const fresh = freshGen("ord");   /* v45 */
   try {
     const results = await Promise.all([api("/api/pending"), api("/api/incoming")]);
+    if (!fresh()) return;
     S.pendingData = results[0].pending || [];
     S.incData = results[1];
     renderOrders();
@@ -1451,6 +1598,7 @@ function renderOrders() {
 }
 async function incomingAdvance(id, action) {
   if (!confirm(action === "receive" ? "تأكيد استلام الطلب من المورد؟" : "تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;
+  if (!opGuard("adv:" + id + ":" + action)) return;   /* v45: لا تكرار */
   try {
     const d = await api("/api/incoming/advance", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1458,6 +1606,7 @@ async function incomingAdvance(id, action) {
     });
     toast(d.message || "تم."); loadOrders();
   } catch (e) { toast(e.message, true); }
+  finally { opRelease("adv:" + id + ":" + action); }
 }
 $("#dlgOrdCancel").addEventListener("click", () => $("#dlgOrd").close());
 $("#dlgOrdGo").addEventListener("click", async () => {
@@ -1465,6 +1614,8 @@ $("#dlgOrdGo").addEventListener("click", async () => {
   const qty = parseInt($("#oQty").value, 10) || 0;
   if (name.length < 2) { toast("أدخل اسم السلعة المطلوبة.", true); return; }
   if (qty < 1) { toast("أدخل كمية صحيحة.", true); return; }
+  const unlock = lockBtn($("#dlgOrdGo"), "جارٍ الإرسال…");   /* v45: لا تكرار للطلب */
+  if (!unlock) return;
   try {
     const d = await api("/api/incoming/create", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1472,14 +1623,17 @@ $("#dlgOrdGo").addEventListener("click", async () => {
     });
     $("#dlgOrd").close(); toast(d.message || "تم إرسال الطلب."); loadOrders();
   } catch (e) { toast(e.message, true); }
+  finally { unlock(); }
 });
 
 /* ─── تفاصيل السلعة v41: أزرار تعديل/حذف/استعادة + سجل السلعة الكامل ─── */
 async function openDetail(id) {
+  const fresh = freshGen("det");   /* v45: أحدث فتح يفوز */
   $("#detBody").innerHTML = '<p class="empty">جارٍ التحميل…</p>';
   $("#dlgDetail").showModal();
   try {
     const d = await api("/api/product/" + id);
+    if (!fresh() || !$("#dlgDetail").open) return;
     const p = d.product;
     if (p.limited) {
       $("#detBody").innerHTML = '<p><b>' + esc(p.name) + '</b></p>'
@@ -1585,6 +1739,7 @@ function receiptUpload(id) {
 $("#receiptFile").addEventListener("change", async () => {
   const f = $("#receiptFile").files && $("#receiptFile").files[0];
   if (!f || !receiptTarget) return;
+  if (!opGuard("receipt:" + receiptTarget)) return;   /* v45: لا رفع مزدوج */
   toast("جارٍ تجهيز الصورة…");
   try {
     const dataUrl = await shrinkImage(f, 1280, 0.75);
@@ -1594,16 +1749,11 @@ $("#receiptFile").addEventListener("change", async () => {
     });
     toast(d.message || "تم حفظ الوصل."); loadOrders();
   } catch (e) { toast(e.message || "فشل رفع الوصل", true); }
+  finally { opRelease("receipt:" + receiptTarget); }
 });
 async function receiptView(id) {
   try {
-    const res = await fetch("/api/incoming/" + id + "/receipt", { credentials: "same-origin" });
-    if (!res.ok) {
-      let m = "تعذر عرض الوصل";
-      try { m = (await res.json()).error || m; } catch (e) {}
-      toast(m, true); return;
-    }
-    const blob = await res.blob();
+    const blob = await fetchBlob("/api/incoming/" + id + "/receipt");
     const img = $("#photoImg");
     if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
     img.dataset.url = URL.createObjectURL(blob);
@@ -1648,6 +1798,8 @@ $("#dlgNewGo").addEventListener("click", async () => {
   }
   const qty = parseInt($("#nQty").value, 10) || 0;
   const min = parseInt($("#nMin").value, 10) || 0;
+  const unlock = lockBtn($("#dlgNewGo"), "جارٍ الإضافة…");   /* v45: لا تكرار للسلعة */
+  if (!unlock) return;
   try {
     const d = await api("/api/products/create", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1657,6 +1809,7 @@ $("#dlgNewGo").addEventListener("click", async () => {
     $("#dlgNew").close(); toast(d.message || "تمت الإضافة."); loadInventory();
     pollNotifs();
   } catch (e) { toast(e.message, true); }
+  finally { unlock(); }
 });
 
 /* ─── v41: الإعدادات والملف الشخصي ─── */
@@ -1788,7 +1941,8 @@ function renderNotifList() {
     + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div>').join("");
 }
 async function pollNotifs() {
-  if (!S.user) return;
+  if (!S.user || S.notif.busy) return;   /* v45: لا تداخل بين فحصين */
+  S.notif.busy = true;
   try {
     const d = await api("/api/notifications?after=" + S.notif.lastId + "&limit=30");
     S.notif.lastId = d.last_id || S.notif.lastId;
@@ -1804,6 +1958,7 @@ async function pollNotifs() {
     }
     renderBadge();
   } catch (e) {}
+  finally { S.notif.busy = false; }
 }
 function startNotifPolling() {
   stopNotifPolling();
@@ -1919,7 +2074,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 (async function boot() {
   applyTheme(currentTheme(), false);
   if ("serviceWorker" in navigator) {
-    try { navigator.serviceWorker.register("/sw.js"); } catch (e) {}
+    try { navigator.serviceWorker.register("/sw.js").catch(() => {}); } catch (e) {}
   }
   let setupMode = false;
   try {
@@ -1932,7 +2087,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v44" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v45" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -1950,7 +2105,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v44";
+const APP_VER = "v45";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -1977,8 +2132,8 @@ function doAppUpdate() {
     } catch (e) { location.reload(); }
   }, 400);
 }
-function checkAppUpdate() {
-  fetch("/api/status", { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
+function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + تعيد Promise<boolean> */
+  return fetch("/api/status", { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
     const v = (d && d.version) || "";
     if (v) S.serverVersion = v;
     const about = $("#setAbout");
@@ -1986,12 +2141,22 @@ function checkAppUpdate() {
     if (v && v !== APP_VER && v !== S.updDismissed) {
       const dlg = $("#dlgUpd");
       if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
+      return true;
     }
-  }).catch(() => {});
+    if (manual) toast("أنت على أحدث إصدار ✅ " + APP_VER);
+    return false;
+  }).catch(() => {
+    if (manual) toast("تعذر الفحص — تحقق من الاتصال.", true);
+    return false;
+  });
 }
 $("#btnUpdYes").addEventListener("click", () => {
   try { $("#dlgUpd").close(); } catch (e) {}
   doAppUpdate();
+});
+$("#btnChkUpd").addEventListener("click", () => {
+  const unlock = lockBtn($("#btnChkUpd"), "جارٍ الفحص…");
+  checkAppUpdate(true).finally(() => { if (unlock) unlock(); });
 });
 $("#btnUpdLater").addEventListener("click", () => {
   S.updDismissed = S.serverVersion || "";
