@@ -1056,6 +1056,7 @@ TEXTBEE_API_KEY = os.getenv("TEXTBEE_API_KEY", "")
 TEXTBEE_DEVICE_ID = os.getenv("TEXTBEE_DEVICE_ID", "")
 TEXTBEE_API_BASE = os.getenv("TEXTBEE_API_BASE", "https://api.textbee.dev/api/v1")
 SMTP_TLS = os.getenv("SMTP_TLS", "").strip().lower()  # "" = 465→SSL وإلا STARTTLS | "ssl" | "none" (اختبار فقط)
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()  # v38: مفتاح Brevo API (HTTPS:443) — يتجاوز حجب منافذ SMTP في الاستضافة المجانية مثل Render
 # ── v33: دخول بحساب Google (OAuth مجاني) ──
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -10869,7 +10870,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v37"
+PWA_VERSION = "v38"
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -11781,10 +11782,11 @@ def _pwa_mask_password(pw):
 
 
 async def testmail_command(update, context):
-    """v37: /testmail — للمدير فقط: فاحص شامل لإعدادات البريد:
+    """v38: /testmail — للمدير فقط: فاحص شامل لإعدادات البريد:
     1) عرض الإعدادات الحالية كما يراها الخادم (كشف الأخطاء المطبعية)
-    2) مصفوفة اتصال TCP: مضيفك + Brevo 587/465 + Gmail كمرجع
-    3) إرسال فعلي إلى BACKUP_EMAIL مع السبب عند الفشل."""
+    2) مصفوفة اتصال TCP لمنافذ SMTP: مضيفك + Brevo 587/465 + Gmail كمرجع
+    3) فحص Brevo HTTPS API (منفذ 443 — الوحيد غير المحجوب في الاستضافة المجانية)
+    4) حكم مباشر + إرسال فعلي إلى BACKUP_EMAIL مع السبب عند الفشل."""
     if not update.effective_user or not is_admin(update.effective_user.id):
         await update.message.reply_text("هذا الأمر للمدير فقط.")
         return
@@ -11802,6 +11804,7 @@ async def testmail_command(update, context):
     # 1) الإعدادات كما يراها الخادم — هنا تظهر الأخطاء المطبعية فوراً
     pw_desc = _pwa_mask_password(SMTP_PASSWORD)
     email_desc = _pwa_mask_identifier(SMTP_EMAIL) if SMTP_EMAIL else "(فارغ)"
+    api_desc = "موجود ✓" if BREVO_API_KEY else "غير موجود"
     await update.message.reply_text(
         "🔧 الإعدادات الحالية كما يراها الخادم:\n"
         "SMTP_HOST = «" + str(SMTP_HOST) + "»\n"
@@ -11809,40 +11812,88 @@ async def testmail_command(update, context):
         "SMTP_TLS = «" + (SMTP_TLS or "") + "»\n"
         "SMTP_EMAIL = " + email_desc + "\n"
         "SMTP_PASSWORD = " + pw_desc + "\n"
+        "BREVO_API_KEY = " + api_desc + "\n"
         "↩️ قارنها بالقيم المطلوبة — أي اختلاف حرف أو مسافة هو السبب.")
 
-    # 2) مصفوفة اتصال TCP سريعة
+    # 2) مصفوفة اتصال TCP لمنافذ SMTP
     await update.message.reply_text("📡 جارٍ فحص الشبكة…")
     probes = [
         ("إعداداتك (" + str(SMTP_HOST) + ":" + str(SMTP_PORT) + ")",
          SMTP_HOST, SMTP_PORT),
-        ("Brevo 587 (الصحيح)", "smtp-relay.brevo.com", 587),
-        ("Brevo 465 (بديل SSL)", "smtp-relay.brevo.com", 465),
-        ("Gmail 465 (مرجع عام)", "smtp.gmail.com", 465),
+        ("Brevo 587", "smtp-relay.brevo.com", 587),
+        ("Brevo 465", "smtp-relay.brevo.com", 465),
+        ("Gmail 465 (مرجع)", "smtp.gmail.com", 465),
     ]
     lines = []
     mine_ok = False
+    others_ok = False
     for label, h, p in probes:
         ok, err = await asyncio.to_thread(_pwa_tcp_probe, h, p)
         if label.startswith("إعداداتك"):
             mine_ok = ok
+        else:
+            others_ok = others_ok or ok
         lines.append(("✅ " if ok else "❌ ") + label
                      + ("" if ok else " — " + err))
-    await update.message.reply_text("📡 نتائج الاتصال:\n" + "\n".join(lines))
+    await update.message.reply_text(
+        "📡 منافذ SMTP:\n" + "\n".join(lines)
+        + "\n(ملاحظة: الاستضافات المجانية مثل Render تحجب منافذ البريد "
+          "25/465/587 — هذا ليس خطأك)")
 
-    # 3) تشخيص مباشر إن كان مضيفك غير متصل والباقي متصل
-    if not mine_ok:
+    # 3) فحص Brevo HTTPS API — منفذ 443 (نفس منفذ تلغرام الذي يعمل لديك)
+    api_ok = False
+    api_keys = _pwa_brevo_api_keys()
+    if api_keys:
+        for k in api_keys:
+            ok, status, info = await asyncio.to_thread(
+                _pwa_brevo_api_request, k, "GET", "account")
+            tail = ("…" + k[-4:]) if len(k) > 8 else "؟"
+            if ok:
+                api_ok = True
+                await update.message.reply_text(
+                    "🔑 Brevo API عبر HTTPS: ✅ يعمل — المفتاح " + tail + " صالح.")
+                break
+            if status in (401, 403):
+                await update.message.reply_text(
+                    "🔑 Brevo API عبر HTTPS: المنفذ مفتوح لكن المفتاح " + tail
+                    + " مرفوض (401).\nهذا مفتاح SMTP وليس مفتاح API — أنشئ مفتاح "
+                      "API من: لوحة Brevo ← SMTP & API ← تبويب API ← Generate new "
+                      "key، ثم أضفه كمتغير BREVO_API_KEY على Render.")
+            else:
+                await update.message.reply_text(
+                    "🔑 Brevo API عبر HTTPS: استجابة غير متوقعة — HTTP "
+                    + str(status) + " " + str(info)[:90])
+    else:
         await update.message.reply_text(
-            "🎯 التشخيص: إعداداتك الحالية لا تفتح اتصالاً، بينما Brevo نفسه متاح!\n"
-            "→ الخطأ في SMTP_HOST أو SMTP_PORT على Render.\n"
-            "القيم الصحيحة:\n"
-            "SMTP_HOST = smtp-relay.brevo.com\n"
-            "SMTP_PORT = 587\n"
-            "(بلا مسافات زائدة، وحرفياً كما هي)\n"
+            "🔑 لا يوجد متغير BREVO_API_KEY — إذا تبيّن أن منافذ SMTP محجوبة "
+            "ستجد خطوات إنشائه أدناه.")
+
+    # 4) الحكم النهائي — يفرّق بين خطأ القيم وحجب المنافذ في الاستضافة
+    if not mine_ok and others_ok:
+        await update.message.reply_text(
+            "🎯 التشخيص: إعداداتك لا تفتح اتصالاً بينما Brevo نفسه متاح!\n"
+            "→ الخطأ في SMTP_HOST أو SMTP_PORT (حرف أو مسافة زائدة).\n"
+            "القيم الصحيحة: SMTP_HOST = smtp-relay.brevo.com و SMTP_PORT = 587\n"
             "عدّلها ثم Manual Deploy وأعد /testmail.")
         return
+    if not mine_ok and not others_ok:
+        if not api_ok:
+            await update.message.reply_text(
+                "🎯 التشخيص: إعداداتك صحيحة لكن استضافتك تحجب كل منافذ البريد "
+                "الصادرة (25/465/587) — سياسة الاستضافات المجانية مثل Render، "
+                "وليست مشكلة منك إطلاقاً.\nالحل: مفتاح Brevo API عبر HTTPS:\n"
+                "1) لوحة Brevo ← SMTP & API ← تبويب API ← Generate new key "
+                "(يبدأ بـ xkeysib-)\n"
+                "2) أضفه على Render كمتغير جديد: BREVO_API_KEY\n"
+                "3) اضغط Manual Deploy ثم أعد /testmail.")
+            return
+        await update.message.reply_text(
+            "🎯 التشخيص: إعداداتك صحيحة 100% — لكن استضافتك (Render المجاني) تحجب "
+            "كل منافذ البريد الصادرة 25/465/587 منذ 2025، ولهذا فشل SMTP حتى مع "
+            "Brevo وGmail.\n✅ لا مشكلة — النسخة الجديدة سترسل عبر HTTPS API "
+            "تلقائياً (نفس منفذ تلغرام الذي يعمل عندك).")
 
-    # 4) إرسال فعلي
+    # 5) إرسال فعلي
     await update.message.reply_text("⏳ جارٍ إرسال بريد تجريبي إلى " + BACKUP_EMAIL + " …")
     ok = await asyncio.to_thread(
         _pwa_send_email_sync, BACKUP_EMAIL,
@@ -11856,12 +11907,13 @@ async def testmail_command(update, context):
             "الإعدادات سليمة — رموز التأكيد ستصل للمسجلين الجدد.")
     else:
         await update.message.reply_text(
-            "❌ الاتصال بخادم البريد سليم لكن الإرسال فشل — السبب:\n"
-            + (_PWA_SMTP_LAST_ERR or "غير معروف"))
+            "❌ فشل الإرسال — السبب:\n" + (_PWA_SMTP_LAST_ERR or "غير معروف"))
 
 
-# v36: تشخيص فشل إرسال البريد — آخر خطأ مصنّف بالعربية يُعرض للمدير وللمسجلين
+# v36/v38: تشخيص فشل إرسال البريد — آخر خطأ مصنّف بالعربية يُعرض للمدير وللمسجلين
 _PWA_SMTP_LAST_ERR = ""
+_PWA_SMTP_PROBE_LOG = []  # v38: سجل كل محاولات الإرسال (host, port, mode, ok?, raw_err)
+_PWA_BREVO_OK_KEY = ""    # v38: آخر مفتاح Brevo API نجح — يُستعمل أولاً في الإرسالات التالية
 
 
 def _pwa_smtp_classify(e):
@@ -11878,11 +11930,13 @@ def _pwa_smtp_classify(e):
         return "تعذر الوصول لخادم البريد — تحقق من SMTP_HOST (smtp-relay.brevo.com)."
     if ("timed out" in low or "timeout" in low or "refused" in low
             or "unreachable" in low):
-        return ("تعذر الاتصال بخادم البريد — القيم الصحيحة حرفياً: "
-                "SMTP_HOST = smtp-relay.brevo.com وSMTP_PORT = 587 "
-                "(المنفذ 25 محجوب في الاستضافة، وتحقق من عدم وجود مسافات "
-                "أو خطأ مطبعي في القيمتين). أرسل /testmail في البوت لتشخيص فوري.")
-    if ("sender" in low and ("reject" in low or "denied" in low)) or "553" in s:
+        return ("تعذر الاتصال بخوادم البريد — الاستضافات المجانية مثل Render تحجب "
+                "منافذ البريد الصادرة (25/465/587). الحل: أنشئ مفتاح Brevo API "
+                "(SMTP & API ← تبويب API ← Generate new key) وأضفه كمتغير "
+                "BREVO_API_KEY على Render ثم اضغط Manual Deploy — الإرسال عبر "
+                "HTTPS يتجاوز هذا الحجب. أرسل /testmail في البوت لتشخيص فوري.")
+    if (("sender" in low and ("reject" in low or "denied" in low
+            or "not verified" in low or "unverified" in low)) or "553" in s):
         return ("بريد المُرسِل مرفوض — في Brevo استعمل SMTP_EMAIL بنفس بريد تسجيل "
                 "الحساب (مُرسِل موثَّق تلقائياً) أو فعّل المُرسِل من لوحة Brevo.")
     if "550" in s or "551" in s or "recipient" in low:
@@ -11890,16 +11944,98 @@ def _pwa_smtp_classify(e):
     return "خطأ غير متوقع في SMTP — راجع سجلات Render (سطر [PWA] email failed)."
 
 
+def _pwa_brevo_api_keys():
+    """v38: مفاتيح Brevo API المرشحة بالترتيب — BREVO_API_KEY أولاً ثم مفتاح SMTP
+    إن بدأ بـ xkeysib- (البادئة واحدة لكن المفتاحين مختلفان في Brevo — نجرب المتاحين)."""
+    keys = []
+    if BREVO_API_KEY:
+        keys.append(BREVO_API_KEY)
+    if SMTP_PASSWORD and SMTP_PASSWORD.startswith("xkeysib-") and SMTP_PASSWORD not in keys:
+        keys.append(SMTP_PASSWORD)
+    if _PWA_BREVO_OK_KEY and _PWA_BREVO_OK_KEY not in keys:
+        keys.insert(0, _PWA_BREVO_OK_KEY)
+    return keys
+
+
+def _pwa_brevo_api_request(api_key, method, path, payload=None):
+    """v38: طلب HTTPS إلى Brevo API v3 (منفذ 443 — غير محجوب في الاستضافة المجانية).
+    يعيد (ok؟، http_status، نص الاستجابة)."""
+    import json as _json
+    import urllib.request
+    import urllib.error
+    url = "https://api.brevo.com/v3/" + str(path).lstrip("/")
+    data = _json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=str(method).upper(),
+                                 headers={"api-key": str(api_key),
+                                          "content-type": "application/json",
+                                          "accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = r.read().decode("utf-8", "replace")
+            return True, r.status, body
+    except urllib.error.HTTPError as e:
+        raw = ""
+        try:
+            raw = e.read().decode("utf-8", "replace")[:220]
+        except Exception:
+            pass
+        return False, e.code, raw
+    except Exception as e:
+        return False, 0, type(e).__name__ + ": " + str(e)[:120]
+
+
+def _pwa_brevo_api_send_sync(api_key, to_email, subject, body):
+    """v38: إرسال بريد عبر Brevo HTTPS API — يعيد (ok؟، status، raw)."""
+    payload = {"sender": {"name": "تطبيق المخزون", "email": SMTP_EMAIL},
+               "to": [{"email": str(to_email)}],
+               "subject": str(subject),
+               "textContent": str(body)}
+    return _pwa_brevo_api_request(api_key, "POST", "smtp/email", payload)
+
+
+def _pwa_email_final_err(last_raw):
+    """v38: السبب النهائي المعروض — أولوية لأخطاء مفتاح API (المسار الأساسي على Render)."""
+    api_fails = [err for (_h, _p, m, ok, err) in _PWA_SMTP_PROBE_LOG
+                 if m == "api" and not ok]
+    if any(("401" in err or "403" in err) for err in api_fails):
+        return ("مفتاح Brevo API مرفوض — أنشئ مفتاح API من لوحة Brevo "
+                "(SMTP & API ← تبويب API ← Generate new key، يبدأ بـ xkeysib-) "
+                "وضعه في متغير جديد على Render: BREVO_API_KEY ثم اضغط Manual "
+                "Deploy. ملاحظة: مفتاح SMTP ومفتاح API مفتاحان مختلفان في Brevo.")
+    if any("sender" in err.lower() for err in api_fails):
+        return ("بريد المُرسِل غير موثّق في Brevo — استعمل SMTP_EMAIL بنفس بريد "
+                "تسجيلك في Brevo أو فعّل المُرسِل من لوحة Brevo (Senders).")
+    return _pwa_smtp_classify(last_raw)
+
+
 def _pwa_send_email_sync(to_email, subject, body):
-    """v34: إرسال بريد عام عبر SMTP المُهيأ (متزامن — يُستدعى في executor).
-    يُستخدم لإشعار الموافقة على التسجيل ورموز الدخول. يعيد True عند النجاح.
-    v36: عند الفشل يُخزَّن السبب المصنَّف في _PWA_SMTP_LAST_ERR للعرض."""
-    global _PWA_SMTP_LAST_ERR
+    """v34: إرسال بريد عام (متزامن — يُستدعى في executor). يعيد True عند النجاح.
+    v38: المسار الأساسي Brevo HTTPS API (منفذ 443 — يعمل رغم حجب منافذ SMTP
+    في Render المجاني منذ 2025)، والـ SMTP احتياط. كل محاولة تُسجّل في
+    _PWA_SMTP_PROBE_LOG والسبب النهائي في _PWA_SMTP_LAST_ERR."""
+    global _PWA_SMTP_LAST_ERR, _PWA_SMTP_PROBE_LOG, _PWA_BREVO_OK_KEY
     import smtplib
     import ssl as _ssl
     from email.mime.text import MIMEText
     from email.header import Header
     from email.utils import formataddr
+    probe = []
+    last_raw = ""
+    # 1) Brevo HTTPS API أولاً — منفذ 443 غير محجوب
+    for k in _pwa_brevo_api_keys():
+        ok, status, raw = _pwa_brevo_api_send_sync(k, to_email, subject, body)
+        if ok:
+            _PWA_BREVO_OK_KEY = k
+            _PWA_SMTP_PROBE_LOG = probe + [("Brevo API HTTPS", 443, "api", True, "")]
+            logging.info("[PWA] email sent via Brevo API to " + str(to_email))
+            _PWA_SMTP_LAST_ERR = ""
+            return True
+        err = ("HTTP " + str(status) + " " + raw) if status else raw
+        probe.append(("Brevo API HTTPS", 443, "api", False, err))
+        logging.error("[PWA] brevo api attempt failed: " + err)
+        if status not in (401, 403):
+            break  # خطأ غير متعلق بالمفتاح — لا فائدة من تجربة مفتاح آخر
+    # 2) SMTP احتياطاً (يعمل خارج Render أو إذا رُفع الحجب)
     try:
         msg = MIMEText(str(body), "plain", "utf-8")
         msg["Subject"] = Header(str(subject), "utf-8")
@@ -11907,24 +12043,30 @@ def _pwa_send_email_sync(to_email, subject, body):
         msg["To"] = to_email
         ctx = _ssl.create_default_context()
         if SMTP_TLS == "none":
-            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25)
+            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
         elif SMTP_PORT == 465 or SMTP_TLS == "ssl":
-            server_ctx = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=25, context=ctx)
+            server_ctx = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15, context=ctx)
         else:
-            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25)
+            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
         with server_ctx as server:
             if SMTP_TLS != "none" and SMTP_PORT != 465 and SMTP_TLS != "ssl":
                 server.starttls(context=ctx)
             server.login(SMTP_EMAIL, SMTP_PASSWORD)
             server.sendmail(SMTP_EMAIL, [to_email], msg.as_string())
-        logging.info("[PWA] email sent to " + str(to_email))
+        mode = "ssl" if (SMTP_PORT == 465 or SMTP_TLS == "ssl") else "starttls"
+        _PWA_SMTP_PROBE_LOG = probe + [(SMTP_HOST, SMTP_PORT, mode, True, "")]
+        logging.info("[PWA] email sent via SMTP to " + str(to_email))
         _PWA_SMTP_LAST_ERR = ""
         return True
     except Exception as e:
-        _PWA_SMTP_LAST_ERR = _pwa_smtp_classify(e)
-        logging.error("[PWA] email failed: " + str(e) + " | السبب: "
-                      + _PWA_SMTP_LAST_ERR)
-        return False
+        last_raw = type(e).__name__ + ": " + str(e)[:150]
+        mode = "ssl" if (SMTP_PORT == 465 or SMTP_TLS == "ssl") else "starttls"
+        probe.append((SMTP_HOST, SMTP_PORT, mode, False, last_raw))
+        logging.error("[PWA] smtp fallback failed: " + last_raw)
+    _PWA_SMTP_PROBE_LOG = probe
+    _PWA_SMTP_LAST_ERR = _pwa_email_final_err(last_raw)
+    logging.error("[PWA] email failed | السبب: " + _PWA_SMTP_LAST_ERR)
+    return False
 
 
 def _pwa_send_otp_email_sync(to_email, code):
@@ -14231,7 +14373,7 @@ async def audit_command(update, context):
 
 
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
-const CACHE = "ceram-pwa-v13";
+const CACHE = "ceram-pwa-v14";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
