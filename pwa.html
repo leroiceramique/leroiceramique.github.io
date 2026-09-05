@@ -3,128 +3,144 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#b45309">
+<meta name="theme-color" content="#1877f2">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>مخزون السيراميك</title>
+<script>
+/* v41: تطبيق الوضع المحفوظ قبل الرسم — لا وميض أبيض عند فتح الوضع الليلي */
+(function(){
+  try{
+    var t = localStorage.getItem("ceram_theme");
+    if(!t && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) t = "dark";
+    if(t === "dark") document.documentElement.setAttribute("data-theme","dark");
+  }catch(e){}
+})();
+</script>
 <style>
+/* ═══ v41: نظام تصميم احترافي بنمط فيسبوك — فاتح + داكن ═══ */
 :root{
-  --bg:#fdf6f0; --card:#ffffff; --ink:#3f2a1d; --mut:#8a6f5c;
-  --brand:#b45309; --brand2:#d97706; --ok:#15803d; --bad:#b91c1c; --warn:#b45309;
-  --line:#f0e2d4; --chip:#fbe8d7; --radius:16px;
+  --bg:#f0f2f5; --card:#ffffff; --ink:#050505; --mut:#65676b;
+  --brand:#1877f2; --brand2:#0a5fd0; --brandsoft:#e7f3ff;
+  --ok:#31a24c; --bad:#e41e3f; --warn:#b45309;
+  --line:#e4e6eb; --chip:#f0f2f5; --radius:14px;
+  --shadow:0 1px 2px rgba(0,0,0,.08), 0 2px 12px rgba(0,0,0,.05);
+}
+html[data-theme="dark"]{
+  --bg:#18191a; --card:#242526; --ink:#e4e6eb; --mut:#b0b3b8;
+  --brand:#2d88ff; --brand2:#1877f2; --brandsoft:#263951;
+  --ok:#2e9e49; --bad:#ff6b76; --warn:#f0b21f;
+  --line:#3e4042; --chip:#3a3b3c;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
 body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
   min-height:100vh; font-size:15px}
 button{font-family:inherit}
-input,select{font-family:inherit;font-size:16px}
+input,select,textarea{font-family:inherit;font-size:16px}
 /* ─── شاشة الدخول ─── */
 #login{display:flex;flex-direction:column;align-items:center;justify-content:center;
   min-height:100vh;padding:24px;gap:14px}
-#login .logo{width:88px;height:88px;border-radius:22px;object-fit:contain;background:#fff;
-  box-shadow:0 6px 24px rgba(180,83,9,.18)}
+#login .logo{width:88px;height:88px;border-radius:24px;object-fit:cover;
+  box-shadow:0 6px 24px rgba(24,119,242,.28)}
 #login h1{font-size:22px;margin:6px 0 2px}
 #login p.sub{color:var(--mut);margin:0 0 10px;font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
-  padding:18px;width:100%;max-width:380px;box-shadow:0 4px 18px rgba(63,42,29,.06)}
+  padding:18px;width:100%;max-width:380px;box-shadow:var(--shadow)}
 .fld{margin-bottom:12px}
 .fld label{display:block;font-size:13px;color:var(--mut);margin-bottom:5px}
 .fld input{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
-  background:#fffdfb;color:var(--ink)}
-.fld input:focus{outline:none;border-color:var(--brand2)}
+  background:var(--bg);color:var(--ink)}
+.fld input:focus{outline:none;border-color:var(--brand)}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;
   border-radius:12px;padding:12px 18px;font-size:15px;font-weight:700;cursor:pointer;
   background:var(--brand);color:#fff;width:100%}
-.btn:active{transform:scale(.98)}
-.btn.gray{background:#efe7de;color:var(--ink)}
+.btn:active{transform:scale(.98);filter:brightness(.94)}
+.btn.gray{background:var(--chip);color:var(--ink)}
 .btn.mini{width:auto;padding:7px 12px;font-size:13px;border-radius:10px}
-.btn.gold{background:var(--brand2)}
+.btn.gold{background:var(--warn);color:#fff}
 .btn.red{background:var(--bad)} .btn.green{background:var(--ok)}
-#loginErr,#setupErr,#regErr{display:none;background:#fdecec;color:var(--bad);border:1px solid #f5c2c2;
+#loginErr,#setupErr,#regErr{display:none;background:rgba(228,30,63,.1);color:var(--bad);border:1px solid rgba(228,30,63,.35);
   padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
-/* ─── v32: تبويبات الدخول + حساب جديد ─── */
-.ltabs{display:flex;gap:6px;margin-bottom:14px;background:#f6efe7;border-radius:12px;padding:4px}
-.ltab{flex:1;border:none;background:transparent;border-radius:9px;padding:9px 6px;
-  font-size:13.5px;font-weight:700;color:var(--mut);cursor:pointer}
-.ltab.on{background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(180,83,9,.25)}
 .reglink{margin:2px 0 0;font-size:13.5px;text-align:center}
 .reglink a{color:var(--brand);font-weight:800;text-decoration:none}
-.bigcode{font-size:34px;font-weight:900;letter-spacing:8px;text-align:center;
-  color:var(--brand);background:#fff7ed;border:2px dashed var(--brand2);
-  border-radius:14px;padding:14px 6px;margin:12px 0;direction:ltr;user-select:all}
-.badge.g{background:#e7f6ec;color:#15803d}
-.badge.b{background:#e8f1fd;color:#1d4ed8}
+.badge.g{background:rgba(49,162,76,.14);color:var(--ok)}
+.badge.b{background:var(--brandsoft);color:var(--brand)}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
-header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--brand),#92400e);
-  color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;
-  box-shadow:0 2px 10px rgba(0,0,0,.12)}
-header img{width:34px;height:34px;border-radius:9px;background:#fff;object-fit:contain}
+header{position:sticky;top:0;z-index:5;background:var(--brand);
+  color:#fff;padding:10px 14px;display:flex;align-items:center;gap:10px;
+  box-shadow:0 1px 4px rgba(0,0,0,.18)}
+html[data-theme="dark"] header{background:#242526;border-bottom:1px solid var(--line)}
+header img{width:36px;height:36px;border-radius:10px;object-fit:cover}
 header .t{flex:1;min-width:0}
 header .t b{display:block;font-size:15px}
-header .t span{font-size:11.5px;opacity:.85}
-header button{background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:10px;
-  padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer}
+header .t span{font-size:11.5px;opacity:.85;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header button{background:rgba(255,255,255,.16);border:none;color:#fff;border-radius:10px;
+  padding:8px 11px;font-size:15px;font-weight:700;cursor:pointer}
+html[data-theme="dark"] header button{background:var(--chip)}
+header button:active{transform:scale(.94)}
 main{flex:1;padding:14px 14px 86px;max-width:720px;width:100%;margin:0 auto}
-nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:6;background:#fff;
+nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:6;background:var(--card);
   border-top:1px solid var(--line);display:flex;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
-nav.tabs button{flex:1;background:none;border:none;color:var(--mut);font-size:11px;
+nav.tabs button{flex:1;background:none;border:none;color:var(--mut);font-size:10.5px;
   display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;cursor:pointer;
   border-radius:10px}
 nav.tabs button .ic{font-size:20px;line-height:1}
-nav.tabs button.on{color:var(--brand);background:var(--chip);font-weight:800}
+nav.tabs button.on{color:var(--brand);background:var(--brandsoft);font-weight:800}
 /* ─── عناصر ─── */
 .view{display:none}.view.on{display:block}
 h2.vt{font-size:17px;margin:4px 0 12px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
-  text-align:center}
+  text-align:center;box-shadow:var(--shadow)}
 .stat b{display:block;font-size:22px;color:var(--brand)}
 .stat span{font-size:11.5px;color:var(--mut)}
 .oilcard{border-radius:14px;padding:14px;color:#fff;margin-bottom:14px;
-  background:linear-gradient(135deg,#15803d,#166534)}
-.oilcard.warn{background:linear-gradient(135deg,#d97706,#b45309)}
-.oilcard.red{background:linear-gradient(135deg,#dc2626,#991b1b)}
+  background:linear-gradient(135deg,#31a24c,#1d7a38)}
+.oilcard.warn{background:linear-gradient(135deg,#f0b21f,#b45309)}
+.oilcard.red{background:linear-gradient(135deg,#e41e3f,#991b1b)}
 .bar{height:8px;background:rgba(255,255,255,.25);border-radius:99px;overflow:hidden;margin-top:10px}
 .bar i{display:block;height:100%;background:#fff;border-radius:99px}
 .search{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
-  background:#fff;margin-bottom:12px}
+  background:var(--card);color:var(--ink);margin-bottom:12px}
 .invhead{display:flex;align-items:center;gap:10px;margin:4px 0 12px}
 .invhead h2{flex:1;margin:0}
 .row{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px;
-  margin-bottom:9px;display:flex;align-items:center;gap:10px}
+  margin-bottom:9px;display:flex;align-items:center;gap:10px;box-shadow:var(--shadow)}
 .row .info{flex:1;min-width:0}
 .row .info b{display:block;font-size:14.5px;line-height:1.55;word-break:break-word}
 .row .info span{font-size:12px;color:var(--mut)}
 .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:800;
-  background:var(--chip);color:var(--brand);white-space:nowrap}
-.badge.g{background:#dcfce7;color:var(--ok)} .badge.r{background:#fee2e2;color:var(--bad)}
-.badge.n{background:#e0e7ff;color:#3730a3} .badge.mut{background:#f1ece6;color:var(--mut)}
+  background:var(--chip);color:var(--mut);white-space:nowrap}
+.badge.g{background:rgba(49,162,76,.14);color:var(--ok)}
+.badge.r{background:rgba(228,30,63,.12);color:var(--bad)}
+.badge.n{background:var(--brandsoft);color:var(--brand)}
+.badge.mut{background:var(--chip);color:var(--mut)}
 .row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .empty{text-align:center;color:var(--mut);padding:30px 10px;font-size:14px}
 /* حوار */
 dialog{border:none;border-radius:18px;padding:0;width:min(92vw,380px);
-  box-shadow:0 20px 60px rgba(0,0,0,.25)}
-dialog::backdrop{background:rgba(63,42,29,.45)}
+  box-shadow:0 20px 60px rgba(0,0,0,.3);background:var(--card);color:var(--ink)}
+dialog::backdrop{background:rgba(0,0,0,.5)}
 dialog .dh{background:var(--brand);color:#fff;padding:14px 18px;font-weight:800;
   border-radius:18px 18px 0 0}
 dialog .db{padding:16px 18px}
 dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius:12px;
-  padding:10px;font-family:inherit;font-size:14px;min-height:60px}
-.seg{display:flex;gap:6px;margin-bottom:12px}
-.seg button{flex:1;border:1.5px solid var(--line);background:#fff;border-radius:10px;
+  padding:10px;font-family:inherit;font-size:14px;min-height:60px;background:var(--bg);color:var(--ink)}
+.seg{display:flex;gap:6px;margin-bottom:12px;background:var(--chip);border-radius:12px;padding:4px}
+.seg button{flex:1;border:none;background:transparent;border-radius:9px;
   padding:9px 4px;font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
-.seg button.on{background:var(--brand);border-color:var(--brand);color:#fff}
-/* توست */
+.seg button.on{background:var(--brand);color:#fff}
 #toast{position:fixed;bottom:calc(84px + env(safe-area-inset-bottom));left:50%;
-  transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 18px;border-radius:12px;
+  transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:11px 18px;border-radius:12px;
   font-size:13.5px;display:none;z-index:20;max-width:88vw;text-align:center;
   box-shadow:0 8px 24px rgba(0,0,0,.3)}
-#toast.err{background:var(--bad)}
+#toast.err{background:var(--bad);color:#fff}
 .chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .chip{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:6px 14px;
   font-size:12.5px;font-weight:700;color:var(--mut)}
@@ -133,26 +149,64 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .rchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:8px 13px;
   font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
 .rchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
-/* (v31) صفوف سجل الحركة في تفاصيل السلعة */
+/* v41: فلاتر الحركة */
+.fcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
+  margin-bottom:10px;box-shadow:var(--shadow)}
+.fchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:7px 13px;
+  font-size:12.5px;font-weight:700;color:var(--mut);cursor:pointer}
+.fchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.fdates{display:flex;gap:8px;margin-top:4px}
+.fdates label{flex:1;font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
+.fdates input{border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;
+  background:var(--bg);color:var(--ink);font-size:14px}
+.prodchip{display:inline-flex;align-items:center;gap:6px;background:var(--brandsoft);
+  color:var(--brand);border:1px solid var(--brand);border-radius:99px;padding:6px 12px;
+  font-size:12.5px;font-weight:800;margin:0 0 8px;cursor:pointer;max-width:100%}
+.prodchip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60vw}
+/* v41: ملخص الفترة */
+.sumcard{display:flex;gap:8px;margin-bottom:10px}
+.sumcard div{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:9px 6px;text-align:center;box-shadow:var(--shadow)}
+.sumcard b{display:block;font-size:16px}
+.sumcard span{font-size:10.5px;color:var(--mut)}
+/* v41: ترويسة اليوم في الحركة */
+.dayhead{position:sticky;top:56px;z-index:2;background:var(--chip);color:var(--mut);
+  border-radius:10px;padding:5px 12px;margin:10px 0 8px;font-size:12px;font-weight:800;text-align:center}
 .hrow{display:flex;flex-direction:column;gap:2px;padding:7px 2px;border-bottom:1px solid var(--line)}
 .hrow:last-child{border-bottom:none}
 .hrow span{font-size:13.5px;font-weight:600}
 .hrow small{font-size:12px;color:var(--mut)}
 .hint{font-size:12px;color:var(--mut);text-align:center;margin-top:10px;line-height:1.7}
-/* ─── الإشعارات (v30) ─── */
+/* ─── الإشعارات ─── */
 .bellwrap{position:relative;flex-shrink:0}
-#nBadge{position:absolute;top:-7px;left:-7px;background:#dc2626;color:#fff;border-radius:99px;
+#nBadge{position:absolute;top:-7px;left:-7px;background:#e41e3f;color:#fff;border-radius:99px;
   min-width:18px;height:18px;font-size:11px;font-weight:800;display:none;
-  align-items:center;justify-content:center;padding:0 4px;border:2px solid #92400e;z-index:2}
+  align-items:center;justify-content:center;padding:0 4px;border:2px solid var(--brand);z-index:2}
+html[data-theme="dark"] #nBadge{border-color:#242526}
 .nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
 .nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
 .nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
 .nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}
 #notifList{max-height:55vh;overflow:auto}
-/* ─── v33: زر Google + تفعيل العضويات ─── */
-.gbtn{background:#fff !important;color:#1f2937 !important;border:1.5px solid var(--line) !important;
+/* ─── v41: الإعدادات والملف الشخصي ─── */
+.setprof{display:flex;flex-direction:column;align-items:center;gap:8px;margin-bottom:12px}
+.avwrap{position:relative}
+.avatar{width:84px;height:84px;border-radius:50%;object-fit:cover;border:3px solid var(--brand);
+  background:var(--brandsoft)}
+.avinit{display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:900;
+  color:var(--brand);width:84px;height:84px;border-radius:50%;background:var(--brandsoft)}
+.setprof .fld{width:100%;margin:8px 0 4px}
+.setprof .row2{display:flex;gap:8px;width:100%}
+.setprof .row2 .btn{flex:1}
+.urow{display:flex;align-items:center;justify-content:space-between;width:100%;gap:8px;
+  border-top:1px solid var(--line);padding-top:10px;margin-top:6px}
+.urow b{font-size:13.5px;display:block}
+.urow span{font-size:13px;color:var(--mut);direction:ltr;unicode-bidi:embed}
+.sect{font-weight:800;font-size:14px;margin:0 0 10px;color:var(--mut)}
+/* v33: زر Google */
+.gbtn{background:var(--card) !important;color:var(--ink) !important;border:1.5px solid var(--line) !important;
   display:flex;align-items:center;justify-content:center;gap:9px;font-weight:800}
-.gbtn:active{background:#f3f4f6 !important}
+.gbtn:active{filter:brightness(.96) !important}
 </style>
 </head>
 <body>
@@ -170,7 +224,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div class="fld"><label>الرقم السري</label>
         <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
       <button class="btn" id="btnLogin">دخول</button>
-      <p style="margin:10px 0 0;text-align:center"><a href="#" id="lnkForgot" style="font-size:12.5px;color:var(--brand2);text-decoration:none">نسيت كلمة المرور؟</a></p>
+      <p style="margin:10px 0 0;text-align:center"><a href="#" id="lnkForgot" style="font-size:12.5px;color:var(--brand);text-decoration:none">نسيت كلمة المرور؟</a></p>
     </div>
     <div id="gDiv" style="display:none;align-items:center;gap:10px;margin:12px 0 10px">
       <div style="flex:1;height:1px;background:var(--line)"></div>
@@ -182,7 +236,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v40</span></p>
+      <span style="opacity:.65">الإصدار v41</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -206,7 +260,6 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       تُفعّل عضويتك بعد موافقة الإدارة — بلا بريد وبلا رموز<br>
       فئة «مدير» تُمنح من الإدارة فقط</p>
   </div>
-  <!-- v39: بطاقة انتظار موافقة الإدارة بعد إرسال الطلب -->
   <div class="card" id="regWaitCard" style="display:none">
     <p style="margin:0 0 6px;font-weight:800;color:var(--ok);text-align:center;font-size:16px">🔔 وصل طلبك إلى الإدارة</p>
     <p style="margin:0 0 4px;text-align:center;font-size:13.5px;color:var(--mut);line-height:1.9">
@@ -215,10 +268,9 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       باسم دخولك ورقمك السري. إن لم تُوافق يبقى طلبك معلقاً.</p>
     <button class="btn gray" id="btnRegWaitBack" style="margin-top:12px">رجوع إلى الدخول</button>
   </div>
-  <!-- v39: نسيت كلمة المرور — طلب استعادة يصل الإدارة بضغطة -->
   <div class="card" id="forgotCard" style="display:none">
     <div id="forgotErr"></div>
-    <div id="forgotOk" style="display:none;background:#e8f7ee;color:#166534;border:1px solid #86efac;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.8;margin:0 0 10px"></div>
+    <div id="forgotOk" style="display:none;background:rgba(49,162,76,.12);color:var(--ok);border:1px solid rgba(49,162,76,.4);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.8;margin:0 0 10px"></div>
     <p style="margin:0 0 12px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🔑 نسيت كلمة المرور</p>
     <div class="fld"><label>اسم دخولك (أو بريدك إن كنت تسجل به)</label>
       <input id="fForgotUser" autocapitalize="none" placeholder="مثال: ahmed"></div>
@@ -226,7 +278,6 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <p class="hint"><a href="#" id="lnkForgotBack">← رجوع إلى الدخول</a><br>
       تصل إشعارك للإدارة فوراً وتُعطى لك كلمة مرور مؤقتة — تغيّرها بعد الدخول</p>
   </div>
-  <!-- v33: انضمام عبر حساب Google (بريد موثّق من جوجل — بلا رمز بوت) -->
   <div class="card" id="gJoinCard" style="display:none">
     <div id="gJoinErr"></div>
     <p style="margin:0 0 4px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🆕 أهلاً <span id="gJoinName">—</span></p>
@@ -269,7 +320,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <img src="/icon.png" alt="">
     <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
     <div class="bellwrap"><button id="btnNotif" title="الإشعارات">🔔</button><span id="nBadge">0</span></div>
-    <button id="btnLogout">خروج</button>
+    <button id="btnSet" title="الإعدادات والملف الشخصي">⚙️</button>
   </header>
   <main>
     <!-- الرئيسية -->
@@ -283,7 +334,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v40</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v41</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -291,11 +342,35 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
         <button class="btn mini gold" id="btnAddProd" style="display:none">＋ إضافة سلعة</button>
       </div>
       <input class="search" id="qSearch" placeholder="🔍 ابحث باسم السلعة...">
+      <div class="seg" id="invSeg">
+        <button id="segAll" class="on">الكل</button>
+        <button id="segLow">🔴 منخفضة</button>
+        <button id="segArch" style="display:none">🗑 المحذوفة</button>
+      </div>
       <div id="invList"><p class="empty">جارِ التحميل...</p></div>
     </section>
-    <!-- الحركة -->
+    <!-- الحركة v41 -->
     <section class="view" id="v-mov">
       <h2 class="vt">حركة المخزون</h2>
+      <button class="prodchip" id="movProdChip" style="display:none">📦 <span id="movProdName"></span> ✕</button>
+      <div class="fcard">
+        <div class="chips" id="movPresets" style="margin-bottom:8px">
+          <button class="fchip on" data-p="week">🗓 أسبوع بلا جمعة</button>
+          <button class="fchip" data-p="today">اليوم</button>
+          <button class="fchip" data-p="yest">أمس</button>
+          <button class="fchip" data-p="m30">٣٠ يوماً</button>
+          <button class="fchip" data-p="all">الكل</button>
+        </div>
+        <div class="fdates">
+          <label>من تاريخ<input type="date" id="movFrom"></label>
+          <label>إلى تاريخ<input type="date" id="movTo"></label>
+        </div>
+        <div class="chips" style="margin:10px 0 0">
+          <button class="fchip on" id="movNoFri">🚫 بدون الجمعة</button>
+          <button class="fchip" id="movCsv">⬇️ تصدير CSV</button>
+        </div>
+      </div>
+      <div class="sumcard" id="movSum" style="display:none"></div>
       <div id="movList"><p class="empty">جارِ التحميل...</p></div>
     </section>
     <!-- الزيت -->
@@ -322,6 +397,43 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
         <span class="chip">🚫 مطرودون <b id="cKick">0</b></span>
       </div>
       <div id="usrList"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+    <!-- الإعدادات v41 -->
+    <section class="view" id="v-set">
+      <h2 class="vt">الإعدادات</h2>
+      <div class="card setprof">
+        <div class="avwrap">
+          <img id="pAv" class="avatar" alt="" style="display:none">
+          <div id="pAvInit" class="avatar avinit">؟</div>
+        </div>
+        <div class="row2">
+          <button class="btn mini gold" id="btnAvChange">📷 تغيير الصورة</button>
+          <button class="btn mini gray" id="btnAvRemove" style="display:none">إزالة</button>
+        </div>
+        <div class="fld" style="width:100%;margin:10px 0 8px"><label>الاسم المعروض (كما يراه فريقك)</label>
+          <input id="pName" maxlength="60"></div>
+        <div class="row2">
+          <button class="btn mini" id="btnNameSave">حفظ الاسم</button>
+        </div>
+        <div class="urow">
+          <div><b>اسم الدخول</b><span id="pUname">—</span></div>
+          <button class="btn mini gold" id="btnUname">🔑 تغيير</button>
+        </div>
+        <span class="badge n" id="pRole">—</span>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <p class="sect">🎨 المظهر</p>
+        <div class="seg" style="margin-bottom:0">
+          <button id="thLight">☀️ نهاري</button>
+          <button id="thDark">🌙 ليلي</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <p class="sect">🔒 الأمان والحساب</p>
+        <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
+        <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
+      </div>
+      <p class="hint" id="setAbout">الإصدار v41</p>
     </section>
   </main>
   <nav class="tabs">
@@ -409,6 +521,39 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   </div>
 </dialog>
 
+<!-- v41: تعديل سلعة -->
+<dialog id="dlgEdit">
+  <div class="dh">✏️ تعديل السلعة</div>
+  <div class="db">
+    <p id="dlgEditOld" style="margin:0 0 12px;font-weight:800;color:var(--mut);font-size:13px"></p>
+    <div class="fld"><label>اسم السلعة</label>
+      <input id="eName" maxlength="500"></div>
+    <div class="fld"><label>الموقع</label>
+      <input id="eLoc" placeholder="مثال: الرف A1"></div>
+    <div class="fld"><label>السعر (اتركه فارغاً ليبقى كما هو)</label>
+      <input id="ePrice" type="number" inputmode="decimal" min="0" step="0.01"></div>
+    <div class="fld"><label>الحد الأدنى للتنبيه</label>
+      <input id="eMin" type="number" inputmode="numeric" min="0"></div>
+    <button class="btn" id="dlgEditGo">حفظ التعديلات</button>
+    <button class="btn gray" id="dlgEditCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
+<!-- v41: تغيير اسم الدخول -->
+<dialog id="dlgUser">
+  <div class="dh">🔑 تغيير اسم الدخول</div>
+  <div class="db">
+    <p style="margin:0 0 12px;font-size:13px;color:var(--mut)">ستستخدم الاسم الجديد في كل دخول قادم —
+      تأكيد كلمة المرور يحمي حسابك.</p>
+    <div class="fld"><label>اسم الدخول الجديد (3-40، حروف لاتينية/أرقام)</label>
+      <input id="uNew" autocapitalize="none" dir="ltr" placeholder="مثال: ahmed_dz"></div>
+    <div class="fld"><label>كلمة المرور الحالية (تأكيد)</label>
+      <input id="uPass" type="password" autocomplete="current-password"></div>
+    <button class="btn" id="dlgUserGo">حفظ</button>
+    <button class="btn gray" id="dlgUserCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
 <dialog id="dlgDetail">
   <div class="dh">📋 تفاصيل السلعة</div>
   <div class="db" id="detBody"><p class="empty">جارٍ التحميل…</p></div>
@@ -423,6 +568,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 </dialog>
 
 <input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">
+<input type="file" id="avatarFile" accept="image/*" style="display:none">
 
 <dialog id="dlgOrd">
   <div class="dh">🚚 طلب توريد جديد</div>
@@ -450,11 +596,15 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 "use strict";
 const $ = (s) => document.querySelector(s);
 const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false,
-  googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null, // v33/v34
+  googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null,
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
-             reconcile: [] } };
+             reconcile: [] },
+  /* v41: حالة سجل الحركة — «أسبوع ماضٍ بدون جمعة» افتراضياً كما طلب المدير */
+  mov: { preset: "week", from: "", to: "", nofriday: true, product: 0,
+         product_name: "", data: [], summary: null },
+  invTab: "all", invData: [], serverVersion: "" };
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -479,6 +629,23 @@ async function api(path, opts) {
   return data;
 }
 
+/* ─── v41: الوضع الليلي/النهاري ─── */
+function applyTheme(mode, save) {
+  document.documentElement.setAttribute("data-theme", mode);
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute("content", mode === "dark" ? "#242526" : "#1877f2");
+  const l = $("#thLight"), d = $("#thDark");
+  if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); }
+  if (save) { try { localStorage.setItem("ceram_theme", mode); } catch (e) {} }
+}
+function currentTheme() {
+  try {
+    const t = localStorage.getItem("ceram_theme");
+    if (t === "dark" || t === "light") return t;
+    return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  } catch (e) { return "light"; }
+}
+
 /* ─── الجلسات ─── */
 function showLogin(setupMode) {
   S.user = null; S.perms = {};
@@ -486,20 +653,19 @@ function showLogin(setupMode) {
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
   $("#setupCard").style.display = setupMode ? "" : "none";
-  $("#regCard").style.display = "none"; $("#regWaitCard").style.display = "none";   // v39
-  $("#forgotCard").style.display = "none";                                          // v39
+  $("#regCard").style.display = "none"; $("#regWaitCard").style.display = "none";
+  $("#forgotCard").style.display = "none";
   $("#lnkRegisterWrap").style.display = (!setupMode && S.selfRegister) ? "" : "none";
-  $("#gJoinCard").style.display = "none"; $("#gWaitCard").style.display = "none";  // v33
+  $("#gJoinCard").style.display = "none"; $("#gWaitCard").style.display = "none";
   $("#loginErr").style.display = "none";
   $("#fPass").value = "";
 }
-/* ─── v39: دخول باسم الدخول (أو البريد للحسابات القديمة) + الرقم السري — بلا بريد إطلاقاً ─── */
-/* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي (جوجل يحجب WebView) */
+/* v39: دخول باسم الدخول (أو البريد للحسابات القديمة) + الرقم السري — بلا بريد إطلاقاً */
+/* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي */
 $("#btnGoogle").addEventListener("click", () => {
   const app = window.AndroidBridge ? "?app=1" : "";
   location.href = "/api/auth/google/start" + app;
 });
-/* ─── v39: حساب جديد — اسم دخول + رقم سر من اختيارك، والتفعيل بموافقة الإدارة ─── */
 let regRole = "seller";
 $("#rRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
   $("#rRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
@@ -511,7 +677,6 @@ $("#lnkRegister").addEventListener("click", (e) => { e.preventDefault();
 $("#lnkBackLogin").addEventListener("click", (e) => { e.preventDefault();
   $("#regCard").style.display = "none"; $("#loginCard").style.display = "";
   $("#lnkRegisterWrap").style.display = S.selfRegister ? "" : "none"; });
-/* ─── v39: إرسال الطلب → بطاقة «بانتظار موافقة الإدارة» ─── */
 function showRegWaitCard(username) {
   $("#rwUser").textContent = username || "";
   ["#loginCard", "#regCard", "#forgotCard", "#gJoinCard", "#gWaitCard", "#setupCard"]
@@ -543,7 +708,7 @@ async function doRegister() {
 }
 $("#btnRegister").addEventListener("click", doRegister);
 $("#btnRegWaitBack").addEventListener("click", () => showLogin(false));
-/* ─── v39: نسيت كلمة المرور — طلب استعادة يصل الإدارة فوراً ─── */
+/* v39: نسيت كلمة المرور */
 $("#lnkForgot").addEventListener("click", (e) => { e.preventDefault();
   $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
   $("#forgotErr").style.display = "none"; $("#forgotOk").style.display = "none";
@@ -571,7 +736,7 @@ async function doForgot() {
 }
 $("#btnForgot").addEventListener("click", doForgot);
 $("#fForgotUser").addEventListener("keydown", (e) => { if (e.key === "Enter") doForgot(); });
-/* ─── v33: دخول بحساب Google + شاشات الانضمام والانتظار ─── */
+/* v33: دخول بحساب Google + شاشات الانضمام والانتظار */
 function showGoogleJoin(name, email, ot) {
   S.gOt = ot || ""; S.gName = name || "";
   $("#gJoinName").textContent = S.gName || "بالفريق";
@@ -590,9 +755,7 @@ function showGoogleWait() {
   $("#login").style.display = "block";
   $("#gWaitCard").style.display = "";
 }
-function backToLogin() {
-  showLogin(false);  // تعيد كل البطاقات لحالتها وتُظهر شاشة الدخول
-}
+function backToLogin() { showLogin(false); }
 $("#gRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
   $("#gRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
   b.classList.add("on"); S.gJoinRole = b.dataset.role;
@@ -624,7 +787,7 @@ function handleGoogleReturn(q) {
   if (g === "expired") { toast("⏳ انتهت صلاحية جلسة Google — أعد المحاولة", true); }
   return false;
 }
-/* ─── v33: تفعيل العضويات المنتظرة (للمدير) ─── */
+/* v33: تفعيل العضويات المنتظرة (للمدير) */
 function openApprove(reg) {
   S.apprDlg = { id: reg.id, role: reg.role };
   $("#dlgApprUser").textContent = reg.name
@@ -648,17 +811,21 @@ $("#dlgApprGo").addEventListener("click", async () => {
     $("#dlgApprove").close(); toast("✅ " + d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
 });
+function renderHeader() {
+  if (!S.user) return;
+  $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
+}
 function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
-  if (S.user.role === "pending") { showGoogleWait(); return; }  // v33: عضوية منتظرة
+  if (S.user.role === "pending") { showGoogleWait(); return; }
   $("#login").style.display = "none"; $("#app").style.display = "flex";
-  $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
+  renderHeader();
   $("#btnAddProd").style.display = S.perms.admin ? "" : "none";
+  $("#segArch").style.display = S.perms.admin ? "" : "none";
   $("#tabMov").style.display = S.perms.movements ? "" : "none";
   $("#tabOil").style.display = S.perms.oil ? "" : "none";
   $("#tabUsers").style.display = S.perms.users ? "" : "none";
   switchView("v-home");
-  loadHome();
   startNotifPolling();
   askWebNotifPerm();
 }
@@ -674,9 +841,11 @@ function switchView(id) {
   if (id === "v-oil") loadOil();
   if (id === "v-users") loadUsers();
   if (id === "v-home") loadHome();
+  if (id === "v-set") renderProfile();
 }
 document.querySelectorAll("nav.tabs button").forEach((b) =>
   b.addEventListener("click", () => switchView(b.dataset.v)));
+$("#btnSet").addEventListener("click", () => switchView("v-set"));
 
 /* ─── الرئيسية ─── */
 async function loadHome() {
@@ -731,19 +900,38 @@ window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault(); S.installEvt = e; renderInstall();
 });
 
-/* ─── المخزون ─── */
+/* ─── المخزون v41: أقسام (الكل/منخفضة/المحذوفة) + تعديل وحذف ─── */
 let searchTimer = null;
 $("#qSearch").addEventListener("input", (e) => {
   S.invQ = e.target.value.trim();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadInventory, 300);
 });
+function invSetTab(t) {
+  S.invTab = t;
+  $("#segAll").classList.toggle("on", t === "all");
+  $("#segLow").classList.toggle("on", t === "low");
+  $("#segArch").classList.toggle("on", t === "arch");
+  loadInventory();
+}
+$("#segAll").addEventListener("click", () => invSetTab("all"));
+$("#segLow").addEventListener("click", () => invSetTab("low"));
+$("#segArch").addEventListener("click", () => invSetTab("arch"));
 async function loadInventory() {
   const box = $("#invList");
+  const qp = [];
+  if (S.invQ) qp.push("q=" + encodeURIComponent(S.invQ));
+  if (S.invTab === "arch") qp.push("archived=1");
   try {
-    const d = await api("/api/products" + (S.invQ ? "?q=" + encodeURIComponent(S.invQ) : ""));
-    if (!d.products.length) { box.innerHTML = '<p class="empty">لا توجد نتائج.</p>'; return; }
-    box.innerHTML = d.products.map((p) => {
+    const d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
+    S.invData = d.products || [];
+    if (!S.invData.length) {
+      box.innerHTML = '<p class="empty">' + (S.invTab === "arch"
+        ? "لا توجد سلع محذوفة — كل السلع حية."
+        : (S.invTab === "low" ? "✅ لا توجد سلع منخفضة." : "لا توجد نتائج.")) + '</p>';
+      return;
+    }
+    box.innerHTML = S.invData.map((p) => {
       if (d.limited) {
         return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b></div>'
           + (p.available ? '<span class="badge g">متوفر</span>' : '<span class="badge r">غير متوفر</span>')
@@ -752,21 +940,85 @@ async function loadInventory() {
       const unit = p.unit ? " " + p.unit : "";
       const qtyBadge = p.low ? '<span class="badge r">' + p.qty + unit + '</span>' : '<span class="badge g">' + p.qty + unit + '</span>';
       let acts = "";
-      if (S.perms.add_qty) acts += '<button class="btn mini green" data-act="add" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➕</button>';
-      if (S.perms.remove) acts += '<button class="btn mini red" data-act="remove" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➖</button>';
-      if (S.perms.admin) acts += '<button class="btn mini gray" data-act="reconcile" data-id="' + p.id + '" data-n="' + esc(p.name) + '">جرد</button>';
+      if (S.invTab === "arch") {
+        acts += '<button class="btn mini green" data-act="restore" data-id="' + p.id + '" data-n="' + esc(p.name) + '">♻️ استعادة</button>';
+        if (S.perms.admin) acts += '<button class="btn mini gray" data-act="edit" data-id="' + p.id + '">✏️</button>';
+      } else {
+        if (S.perms.add_qty) acts += '<button class="btn mini green" data-act="add" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➕</button>';
+        if (S.perms.remove) acts += '<button class="btn mini red" data-act="remove" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➖</button>';
+        if (S.perms.admin) {
+          acts += '<button class="btn mini gray" data-act="reconcile" data-id="' + p.id + '" data-n="' + esc(p.name) + '">جرد</button>';
+          acts += '<button class="btn mini gold" data-act="edit" data-id="' + p.id + '" title="تعديل الاسم والبيانات">✏️</button>';
+          acts += '<button class="btn mini red" data-act="del" data-id="' + p.id + '" data-n="' + esc(p.name) + '">🗑</button>';
+        }
+      }
       return '<div class="row"><div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
         + '<span>' + esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + ' • 📜 للحركة اضغط الاسم</span></div>'
-        + qtyBadge
+        + (S.invTab === "arch" ? '<span class="badge mut">محذوفة</span>' : qtyBadge)
         + (acts ? '<div class="acts">' + acts + '</div>' : "")
         + '</div>';
     }).join("");
     box.querySelectorAll("button[data-act]").forEach((b) =>
-      b.addEventListener("click", () => openQty(b.dataset.act, +b.dataset.id, b.dataset.n)));
-    /* (v31) الضغط على اسم السلعة يفتح التفاصيل وسجل الحركة */
+      b.addEventListener("click", () => {
+        const act = b.dataset.act, id = +b.dataset.id, n = b.dataset.n;
+        if (act === "add" || act === "remove" || act === "reconcile") openQty(act, id, n);
+        else if (act === "edit") invEdit(id);
+        else if (act === "del") invDelete(id, n);
+        else if (act === "restore") invRestore(id, n);
+      }));
     box.querySelectorAll("[data-detail]").forEach((el) =>
       el.addEventListener("click", () => openDetail(+el.dataset.detail)));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+/* ── v41: تعديل السلعة (اسم/موقع/سعر/حد) ── */
+function invEdit(id) {
+  const p = (S.invData || []).find((x) => x.id === id);
+  if (!p) { toast("أعد تحميل القائمة أولاً.", true); return; }
+  $("#dlgEditOld").textContent = "التعديل لا يمسّ سجل الحركة إطلاقاً";
+  $("#eName").value = p.name || "";
+  $("#eLoc").value = p.location || "";
+  $("#ePrice").value = p.price ? String(p.price) : "";
+  $("#eMin").value = p.min != null ? String(p.min) : "5";
+  $("#dlgEdit").dataset.pid = String(id);
+  $("#dlgEdit").showModal();
+}
+$("#dlgEditCancel").addEventListener("click", () => $("#dlgEdit").close());
+$("#dlgEditGo").addEventListener("click", async () => {
+  const id = +($("#dlgEdit").dataset.pid || 0);
+  const name = $("#eName").value.trim();
+  if (name.length < 2) { toast("أدخل اسم السلعة (حرفان على الأقل).", true); return; }
+  const btn = $("#dlgEditGo"); btn.disabled = true;
+  try {
+    const d = await api("/api/products/edit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name, location: $("#eLoc").value.trim(),
+        price: $("#ePrice").value, minimum_stock: $("#eMin").value })
+    });
+    $("#dlgEdit").close(); toast(d.message || "تم الحفظ.");
+    loadInventory(); pollNotifs();
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
+});
+/* ── v41: حذف ناعم + استعادة ── */
+async function invDelete(id, name) {
+  if (!confirm('حذف السلعة «' + name + '»؟\n\nستُخفى من المخزون بينما يبقى سجل حركتها\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».')) return;
+  try {
+    const d = await api("/api/products/archive", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, archived: true })
+    });
+    toast(d.message || "تم الحذف."); loadInventory(); pollNotifs();
+  } catch (e) { toast(e.message, true); }
+}
+async function invRestore(id, name) {
+  if (!confirm('استعادة السلعة «' + name + '» إلى المخزون؟')) return;
+  try {
+    const d = await api("/api/products/archive", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, archived: false })
+    });
+    toast(d.message || "تمت الاستعادة."); loadInventory(); pollNotifs();
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ─── حوار الكمية ─── */
@@ -808,20 +1060,113 @@ $("#dlgGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-/* ─── الحركة ─── */
+/* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ─── */
 const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"], reconcile: ["n", "جرد"] };
+const DAY_AR = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+function isoLocal(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function movSetPreset(p) {
+  S.mov.preset = p;
+  document.querySelectorAll("#movPresets .fchip").forEach((b) =>
+    b.classList.toggle("on", b.dataset.p === p));
+  const now = new Date(); let f = "", t = "";
+  if (p === "week") { const d = new Date(now); d.setDate(d.getDate() - 6); f = isoLocal(d); t = isoLocal(now); }
+  else if (p === "today") { f = t = isoLocal(now); }
+  else if (p === "yest") { const d = new Date(now); d.setDate(d.getDate() - 1); f = t = isoLocal(d); }
+  else if (p === "m30") { const d = new Date(now); d.setDate(d.getDate() - 29); f = isoLocal(d); t = isoLocal(now); }
+  S.mov.from = f; S.mov.to = t;
+  $("#movFrom").value = f; $("#movTo").value = t;
+  loadMovements();
+}
+document.querySelectorAll("#movPresets .fchip").forEach((b) =>
+  b.addEventListener("click", () => movSetPreset(b.dataset.p)));
+$("#movFrom").addEventListener("change", () => {
+  S.mov.from = $("#movFrom").value; S.mov.preset = "custom";
+  document.querySelectorAll("#movPresets .fchip").forEach((b) => b.classList.remove("on"));
+  loadMovements();
+});
+$("#movTo").addEventListener("change", () => {
+  S.mov.to = $("#movTo").value; S.mov.preset = "custom";
+  document.querySelectorAll("#movPresets .fchip").forEach((b) => b.classList.remove("on"));
+  loadMovements();
+});
+$("#movNoFri").addEventListener("click", () => {
+  S.mov.nofriday = !S.mov.nofriday;
+  $("#movNoFri").classList.toggle("on", S.mov.nofriday);
+  loadMovements();
+});
+$("#movProdChip").addEventListener("click", () => {
+  S.mov.product = 0; S.mov.product_name = "";
+  $("#movProdChip").style.display = "none";
+  loadMovements();
+});
+$("#movCsv").addEventListener("click", () => {
+  const rows = S.mov.data || [];
+  if (!rows.length) { toast("لا بيانات للتصدير ضمن الفلتر الحالي.", true); return; }
+  const head = ["التاريخ", "السلعة", "النوع", "الكمية", "المستخدم", "السبب"];
+  const cell = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+  const lines = [head.map(cell).join(",")].concat(rows.map((m) =>
+    [m.date, m.product_name, (MOV_BADGE[m.type] || [, m.type])[1], m.quantity,
+     m.user_name || "", m.reason || ""].map(cell).join(",")));
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "movements_" + isoLocal(new Date()) + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+function movDayHeader(day) {
+  try {
+    const parts = String(day).split("-");
+    const d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+    return DAY_AR[d.getDay()] + " " + d.getDate() + "/" + (d.getMonth() + 1);
+  } catch (e) { return String(day); }
+}
 async function loadMovements() {
   const box = $("#movList");
+  if (!S.perms.movements) return;
+  const q = new URLSearchParams({ limit: "300" });
+  if (S.mov.from) q.set("from", S.mov.from);
+  if (S.mov.to) q.set("to", S.mov.to);
+  if (S.mov.nofriday) q.set("nofriday", "1");
+  if (S.mov.product) q.set("product", String(S.mov.product));
+  const prodChip = $("#movProdChip");
+  if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
+  else prodChip.style.display = "none";
+  $("#movNoFri").classList.toggle("on", S.mov.nofriday);
   try {
-    const d = await api("/api/movements?limit=80");
-    if (!d.movements.length) { box.innerHTML = '<p class="empty">لا توجد حركة بعد.</p>'; return; }
-    box.innerHTML = d.movements.map((m) => {
+    const d = await api("/api/movements?" + q.toString());
+    S.mov.data = d.movements || [];
+    S.mov.summary = d.summary || null;
+    const s = S.mov.summary;
+    if (s && s.count) {
+      $("#movSum").style.display = "flex";
+      $("#movSum").innerHTML =
+        '<div><b style="color:var(--ok)">➕ ' + s.add_qty + '</b><span>إضافة (' + s.add_cnt + ')</span></div>'
+        + '<div><b style="color:var(--bad)">➖ ' + s.remove_qty + '</b><span>إخراج (' + s.remove_cnt + ')</span></div>'
+        + '<div><b>⚖️ ' + s.rec_cnt + '</b><span>جرد</span></div>'
+        + '<div><b>' + s.count + '</b><span>عملية</span></div>';
+    } else { $("#movSum").style.display = "none"; }
+    if (!S.mov.data.length) {
+      box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر.<br><span style="font-size:12px">جرّب «الكل» أو أزل استثناء الجمعة.</span></p>';
+      return;
+    }
+    let html = "", lastDay = "";
+    for (const m of S.mov.data) {
+      const day = String(m.date || "").slice(0, 10);
+      if (day && day !== lastDay) { lastDay = day; html += '<div class="dayhead">📅 ' + esc(movDayHeader(day)) + '</div>'; }
       const b = MOV_BADGE[m.type] || ["mut", m.type];
-      return '<div class="row"><div class="info"><b>' + esc(m.product_name) + '</b>'
-        + '<span>' + esc(m.user_name || "—") + " • " + esc(m.date)
+      html += '<div class="row"><div class="info"><b>' + esc(m.product_name) + '</b>'
+        + '<span>' + esc(m.user_name || "—") + " • " + esc(String(m.date || "").slice(11, 16))
         + (m.reason ? " • " + esc(m.reason) : "") + '</span></div>'
         + '<span class="badge ' + b[0] + '">' + b[1] + " " + m.quantity + '</span></div>';
-    }).join("");
+    }
+    const shown = S.mov.data.length;
+    if (s && s.count > shown)
+      html += '<p class="hint">المعروض ' + shown + ' من ' + s.count + ' — استخدم فلاتر أدق لعرض الباقي.</p>';
+    box.innerHTML = html;
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
 
@@ -856,7 +1201,7 @@ async function loadUsers() {
     const [d, regsResp, resetsResp] = await Promise.all([
       api("/api/users"),
       api("/api/registrations").catch(() => ({ registrations: [] })),
-      api("/api/resets").catch(() => ({ resets: [] }))   // v39: طلبات استعادة كلمة المرور
+      api("/api/resets").catch(() => ({ resets: [] }))
     ]);
     $("#cAll").textContent = d.counts.all;
     $("#cWeb").textContent = d.counts.web;
@@ -864,7 +1209,7 @@ async function loadUsers() {
     let html = "";
     const waiting = (regsResp && regsResp.registrations) || [];
     if (waiting.length) {
-      html += '<p style="margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand2)">⏳ طلبات انضمام بانتظار الموافقة (' + waiting.length + ')</p>';
+      html += '<p style="margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)">⏳ طلبات انضمام بانتظار الموافقة (' + waiting.length + ')</p>';
       html += waiting.map((w) =>
         '<div class="row"><div class="info"><b>' + esc(w.name) + '</b>'
         + '<span>' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + '</span></div>'
@@ -876,7 +1221,7 @@ async function loadUsers() {
     }
     const resets = (resetsResp && resetsResp.resets) || [];
     if (resets.length) {
-      html += '<p style="margin:10px 0 8px;font-weight:800;font-size:13px;color:var(--brand2)">🔑 طلبات استعادة كلمة المرور (' + resets.length + ')</p>';
+      html += '<p style="margin:10px 0 8px;font-weight:800;font-size:13px;color:var(--brand)">🔑 طلبات استعادة كلمة المرور (' + resets.length + ')</p>';
       html += resets.map((r) =>
         '<div class="row"><div class="info"><b>' + esc(r.username) + '</b>'
         + '<span>طالب باستعادة رقمه السري' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + '</span></div>'
@@ -885,7 +1230,7 @@ async function loadUsers() {
     }
     html += d.users.map((u) => {
       const self = u.telegram_id === S.user.telegram_id;
-      const hasTg = !!u.telegram_id;   // v33: مستخدمو Google فقط بلا تلغرام
+      const hasTg = !!u.telegram_id;
       let acts = "";
       if (!self && hasTg && !u.protected) {
         acts += '<button class="btn mini blue" data-role="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
@@ -919,7 +1264,6 @@ async function loadUsers() {
     }));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
-/* ── v39: توليد رقم سر مؤقت لطلب استعادة — يُعرض مرة واحدة ── */
 async function resetGenerate(id, uname) {
   if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;
   try {
@@ -929,7 +1273,7 @@ async function resetGenerate(id, uname) {
     });
     alert("🔑 الرقم السري المؤقت لـ " + d.username + " هو:\n\n" + d.temp_password
           + "\n\nأعطه له الآن (شفهياً أو واتساب) — لن يظهر مرة أخرى.\n"
-          + "سيغيّره بنفسه من «كلمة مروري» بعد الدخول.");
+          + "سيغيّره بنفسه من الإعدادات بعد الدخول.");
     loadUsers();
   } catch (e) { toast(e.message, true); }
 }
@@ -943,7 +1287,6 @@ async function userToggle(tid, active) {
     toast(d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
 }
-/* ── v32: حوار تغيير الفئة (ترقية المدير من هنا) + حذف طلبات الانضمام ── */
 const ROLE_OPTS = [
   ["admin", "👑 مدير النظام"],
   ["manager", "🧑‍💼 مدير البوت"],
@@ -952,7 +1295,7 @@ const ROLE_OPTS = [
   ["external", "🌍 بائع خارجي"],
   ["customer", "👤 عميل"]
 ];
-S.roleDlg = null; // {tid, name, role}
+S.roleDlg = null;
 function openRole(tid, name) {
   S.roleDlg = { tid, name, role: null };
   $("#dlgRoleUser").textContent = name;
@@ -987,7 +1330,7 @@ async function regDelete(id) {
   } catch (e) { toast(e.message, true); }
 }
 /* ── حوار كلمة المرور (لنفسك وللموظفين) ── */
-S.passDlg = null; // {tid, self, name}
+S.passDlg = null;
 function openPass(tid, name, self) {
   S.passDlg = { tid, self, name };
   $("#dlgPassTitle").textContent = self ? "🔑 كلمة مروري" : "🔑 كلمة مرور موظف";
@@ -1007,6 +1350,23 @@ $("#dlgPassGo").addEventListener("click", async () => {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ old_password: $("#fOldPass").value, new_password: np })
       });
+      /* v41: تغيير كلمة المرور يُبطل الجلسات — نعيد الدخول تلقائياً بالكلمة الجديدة */
+      $("#dlgPass").close();
+      toast(d.message || "تم تغيير كلمة المرور ✅");
+      try {
+        if (S.user && S.user.web_username) {
+          await api("/api/login", {
+            noKick: true,
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: S.user.web_username, password: np })
+          });
+          const me = await api("/api/me");
+          showApp(me);
+          toast("🔑 تم التغيير وبقيت داخل التطبيق ✅");
+          switchView("v-set");
+        }
+      } catch (e2) { showLogin(false); }
+      return;
     } else {
       d = await api("/api/users/webpass", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1017,7 +1377,7 @@ $("#dlgPassGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-/* ─── الطلبات: المعلقة + التوريد ─── */
+/* ─── الطلبات ─── */
 S.ordSeg = "pend"; S.pendingData = []; S.incData = { orders: [], admin: false };
 $("#segPend").addEventListener("click", () => {
   S.ordSeg = "pend"; $("#segPend").classList.add("on"); $("#segInc").classList.remove("on"); renderOrders();
@@ -1061,7 +1421,6 @@ function renderOrders() {
       acts += '<button class="btn mini gray" data-oact="receive" data-oid="' + o.id + '">🔧 استلمت</button>';
     if (d.admin)
       acts += '<button class="btn mini green" data-oact="complete" data-oid="' + o.id + '">✅ جاهز</button>';
-    /* (v31) وصل التوريد: تصوير/استبدال لصاحب الطلب والمدير، وعرض لمن لديه صورة */
     if (o.has_photo)
       acts += '<button class="btn mini gold" data-orct="view" data-oid="' + o.id + '">🖼️ الوصل</button>';
     if (d.admin || o.mine)
@@ -1074,7 +1433,6 @@ function renderOrders() {
   }).join("") : '<p class="empty">لا توجد طلبات توريد مفتوحة.</p>';
   box.querySelectorAll("button[data-oact]").forEach((b) =>
     b.addEventListener("click", () => incomingAdvance(+b.dataset.oid, b.dataset.oact)));
-  /* (v31) ربط أزرار الوصل */
   box.querySelectorAll("button[data-orct]").forEach((b) =>
     b.addEventListener("click", () =>
       (b.dataset.orct === "view") ? receiptView(+b.dataset.oid) : receiptUpload(+b.dataset.oid)));
@@ -1104,7 +1462,7 @@ $("#dlgOrdGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-/* ─── (v31) تفاصيل السلعة + سجل الحركة — مثل «📜 سجل الحركات» في البوت ─── */
+/* ─── تفاصيل السلعة v41: أزرار تعديل/حذف/استعادة + سجل السلعة الكامل ─── */
 async function openDetail(id) {
   $("#detBody").innerHTML = '<p class="empty">جارٍ التحميل…</p>';
   $("#dlgDetail").showModal();
@@ -1127,28 +1485,64 @@ async function openDetail(id) {
         }).join("")
       : '<p class="empty">لا توجد حركات مسجلة بعد.</p>';
     let acts = "";
-    if (S.perms.add_qty) acts += '<button class="btn mini green" id="detAdd">➕ إضافة</button>';
-    if (S.perms.remove) acts += '<button class="btn mini red" id="detRem">➖ إخراج</button>';
+    if (!p.archived) {
+      if (S.perms.add_qty) acts += '<button class="btn mini green" id="detAdd">➕ إضافة</button>';
+      if (S.perms.remove) acts += '<button class="btn mini red" id="detRem">➖ إخراج</button>';
+    }
+    if (S.perms.admin)
+      acts += '<button class="btn mini gold" id="detEdit">✏️ تعديل</button>';
+    if (S.perms.movements)
+      acts += '<button class="btn mini gray" id="detMov">📜 كل الحركات</button>';
+    if (S.perms.admin)
+      acts += p.archived
+        ? '<button class="btn mini green" id="detRes">♻️ استعادة</button>'
+        : '<button class="btn mini red" id="detDel">🗑 حذف</button>';
     $("#detBody").innerHTML =
-      '<p style="font-size:17px;font-weight:700;margin:0 0 6px">' + esc(p.name) + '</p>'
-      + '<div class="hrow" style="background:var(--card,#10203a);border-radius:10px;padding:8px 10px">'
+      '<p style="font-size:17px;font-weight:700;margin:0 0 6px">' + esc(p.name)
+      + (p.archived ? ' <span class="badge mut">محذوفة</span>' : "") + '</p>'
+      + '<div class="hrow" style="background:var(--bg);border-radius:10px;padding:8px 10px">'
       + '<span>' + (p.low ? '🔴' : '🟢') + " الكمية: <b>" + p.qty + " " + esc(p.unit) + '</b></span>'
       + '<small>' + "الحد الأدنى: " + p.min
       + (p.location ? " • الموقع: " + esc(p.location) : "")
       + (p.price ? " • السعر: " + p.price : "")
       + (p.created ? " • أُضيفت: " + p.created : "") + '</small></div>'
-      + (acts ? '<div style="display:flex;gap:8px;margin:10px 0">' + acts + '</div>' : "")
+      + (acts ? '<div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">' + acts + '</div>' : "")
       + '<p style="margin:10px 0 4px;font-weight:700">📜 سجل الحركات (' + hist.length + ')</p>'
       + histHtml;
-    if (S.perms.add_qty) $("#detAdd").addEventListener("click", () => { $("#dlgDetail").close(); openQty("add", p.id, p.name); });
-    if (S.perms.remove) $("#detRem").addEventListener("click", () => { $("#dlgDetail").close(); openQty("remove", p.id, p.name); });
+    if (S.perms.add_qty && !p.archived) $("#detAdd").addEventListener("click", () => { $("#dlgDetail").close(); openQty("add", p.id, p.name); });
+    if (S.perms.remove && !p.archived) $("#detRem").addEventListener("click", () => { $("#dlgDetail").close(); openQty("remove", p.id, p.name); });
+    if (S.perms.admin) {
+      $("#detEdit").addEventListener("click", () => {
+        $("#dlgDetail").close();
+        S.invTab = p.archived ? "arch" : "all";
+        invEditFrom(p);
+      });
+      if (p.archived) $("#detRes").addEventListener("click", () => { $("#dlgDetail").close(); invRestore(p.id, p.name); });
+      else $("#detDel").addEventListener("click", () => { $("#dlgDetail").close(); invDelete(p.id, p.name); });
+    }
+    if (S.perms.movements) $("#detMov").addEventListener("click", () => {
+      $("#dlgDetail").close();
+      S.mov.product = p.id; S.mov.product_name = p.name;
+      movSetPreset("all");
+      switchView("v-mov");
+    });
   } catch (e) {
     $("#detBody").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
   }
 }
+/* فتح حوار التعديل من كائن تفاصيل كامل (بغض النظر عن القائمة) */
+function invEditFrom(p) {
+  $("#dlgEditOld").textContent = "التعديل لا يمسّ سجل الحركة إطلاقاً";
+  $("#eName").value = p.name || "";
+  $("#eLoc").value = p.location || "";
+  $("#ePrice").value = p.price ? String(p.price) : "";
+  $("#eMin").value = p.min != null ? String(p.min) : "5";
+  $("#dlgEdit").dataset.pid = String(p.id);
+  $("#dlgEdit").showModal();
+}
 $("#dlgDetail").addEventListener("click", (e) => { if (e.target === $("#dlgDetail")) $("#dlgDetail").close(); });
 
-/* ─── (v31) وصل التوريد: تصوير بالكاميرا + عارض ─── */
+/* ─── وصل التوريد: تصوير بالكاميرا + عارض ─── */
 let receiptTarget = 0;
 function shrinkImage(file, maxSide, quality) {
   return new Promise((resolve, reject) => {
@@ -1208,7 +1602,6 @@ async function receiptView(id) {
 $("#dlgPhotoClose").addEventListener("click", () => $("#dlgPhoto").close());
 
 /* ─── إضافة سلعة جديدة (مدراء) ─── */
-/* ─── (v31) نوع السلعة مثل البوت: موتيف/120-60/plante → قطع، الباقي كرتون ─── */
 S.newType = "other";
 const TYPE_META = {
   motif:  { prefix: "motif",   unit: "قطعة",  ph: "مثال: motif decor beige 60x60" },
@@ -1233,7 +1626,6 @@ $("#dlgNewCancel").addEventListener("click", () => $("#dlgNew").close());
 $("#dlgNewGo").addEventListener("click", async () => {
   let name = $("#nName").value.trim();
   if (name.length < 2) { toast("أدخل اسم السلعة.", true); return; }
-  /* (v31) بادئة النوع تلقائياً مثل البوت تماماً — القاعدة تعتمد على بداية الاسم */
   const meta = TYPE_META[S.newType] || TYPE_META.other;
   if (meta.prefix) {
     const low = name.toLowerCase();
@@ -1255,7 +1647,105 @@ $("#dlgNewGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-/* ─── الإشعارات (v30): جرس + مركز + بث حي مع البوت ─── */
+/* ─── v41: الإعدادات والملف الشخصي ─── */
+async function refreshMe() {
+  try {
+    const me = await api("/api/me");
+    S.user = me.user; S.perms = me.perms || {};
+    renderHeader();
+    renderProfile();
+  } catch (e) {}
+}
+function renderProfile() {
+  if (!S.user) return;
+  const u = S.user;
+  $("#pName").value = u.display_name || u.name || "";
+  $("#pUname").textContent = u.web_username || "—";
+  $("#pRole").textContent = "🎯 " + (u.role_label || "");
+  if (u.avatar) {
+    $("#pAv").src = u.avatar; $("#pAv").style.display = "";
+    $("#pAvInit").style.display = "none"; $("#btnAvRemove").style.display = "";
+  } else {
+    $("#pAv").style.display = "none"; $("#pAvInit").style.display = "flex";
+    $("#btnAvRemove").style.display = "none";
+    $("#pAvInit").textContent = (u.name || "؟").trim().charAt(0) || "؟";
+  }
+}
+$("#btnAvChange").addEventListener("click", () => {
+  const inp = $("#avatarFile"); inp.value = ""; inp.click();
+});
+$("#avatarFile").addEventListener("change", async () => {
+  const f = $("#avatarFile").files && $("#avatarFile").files[0];
+  if (!f) return;
+  toast("جارٍ تجهيز الصورة…");
+  try {
+    const dataUrl = await shrinkImage(f, 256, 0.82);
+    const d = await api("/api/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avatar: dataUrl })
+    });
+    toast(d.message || "تم حفظ الصورة ✅");
+    await refreshMe();
+  } catch (e) { toast(e.message, true); }
+});
+$("#btnAvRemove").addEventListener("click", async () => {
+  try {
+    const d = await api("/api/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avatar: "" })
+    });
+    toast(d.message || "تمت إزالة الصورة.");
+    await refreshMe();
+  } catch (e) { toast(e.message, true); }
+});
+$("#btnNameSave").addEventListener("click", async () => {
+  const name = $("#pName").value.trim();
+  if (name.length < 2) { toast("الاسم قصير — حرفان على الأقل.", true); return; }
+  const btn = $("#btnNameSave"); btn.disabled = true;
+  try {
+    const d = await api("/api/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    toast(d.message || "تم حفظ الاسم ✅");
+    await refreshMe();
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
+});
+$("#btnUname").addEventListener("click", () => {
+  $("#uNew").value = S.user && S.user.web_username ? S.user.web_username : "";
+  $("#uPass").value = "";
+  $("#dlgUser").showModal();
+});
+$("#dlgUserCancel").addEventListener("click", () => $("#dlgUser").close());
+$("#dlgUserGo").addEventListener("click", async () => {
+  const username = $("#uNew").value.trim().replace(/^@/, "");
+  const password = $("#uPass").value;
+  if (username.length < 3) { toast("اسم الدخول 3 أحرف على الأقل (لاتينية/أرقام).", true); return; }
+  if (!password) { toast("أدخل كلمة المرور الحالية للتأكيد.", true); return; }
+  const btn = $("#dlgUserGo"); btn.disabled = true;
+  try {
+    const d = await api("/api/profile/username", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+    $("#dlgUser").close();
+    toast(d.message || "تم التغيير ✅");
+    if (S.user) S.user.web_username = d.username || username;
+    renderProfile();
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
+});
+$("#thLight").addEventListener("click", () => applyTheme("light", true));
+$("#thDark").addEventListener("click", () => applyTheme("dark", true));
+$("#btnMyPass").addEventListener("click", () => openPass(null, S.user ? S.user.name : "", true));
+async function doLogout() {
+  try { await api("/api/logout", { method: "POST" }); } catch (e) {}
+  showLogin();
+}
+$("#btnLogout2").addEventListener("click", doLogout);
+
+/* ─── الإشعارات: جرس + مركز + بث حي — مع توفير البطارية v41 ─── */
 const KIND_IC = { add: "📥", remove: "📤", new_item: "🆕", low: "🔴", low_ok: "✅", info: "🔔" };
 function fmtAgo(ts) {
   try {
@@ -1293,7 +1783,6 @@ async function pollNotifs() {
     S.notif.unread = d.unread || 0;
     if (d.items && d.items.length) {
       S.notif.items = d.items.concat(S.notif.items).slice(0, 50);
-      /* (v30) أول جلب بعد الدخول يضبط المرجع فقط — لا إشعارات قديمة عند فتح التطبيق */
       if (S.notif.ready) {
         d.items.slice(0, 3).forEach((n) =>
           appNotify(n.title || "إشعار", n.body || ""));
@@ -1314,14 +1803,20 @@ function stopNotifPolling() {
   S.notif.items = []; S.notif.lastId = 0; S.notif.unread = 0; S.notif.ready = false;
   renderBadge();
 }
-/* v40: عند العودة للتطبيق بعد غياب (تبديل تطبيق/تشغيل الشاشة) نزامن الجرس
-   فوراً — كان المؤقت متوقفاً في الخلفية فتبدو الإشعارات متأخرة. */
+/* v41: توفير البطارية — المؤقت يتوقف كلياً عندما التطبيق مخفي، ويستأنف
+   بمزامنة فورية لحظة العودة. الإشعارات وهم يصلون عبر تلغرام والتطبيق. */
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && S.user) { try { pollNotifs(); } catch (e) {} }
+  if (!S.user) return;
+  if (document.hidden) {
+    if (S.notif.timer) { clearInterval(S.notif.timer); S.notif.timer = null; }
+  } else {
+    try { pollNotifs(); } catch (e) {}
+    if (!S.notif.timer) S.notif.timer = setInterval(pollNotifs, 20000);
+  }
 });
 function webNotifAllowed() {
   try {
-    if (window.AndroidBridge) return false;      // التطبيق يدير إشعارات النظام بنفسه
+    if (window.AndroidBridge) return false;
     return ("Notification" in window) && Notification.permission === "granted" && document.hidden;
   } catch (e) { return false; }
 }
@@ -1338,9 +1833,6 @@ function askWebNotifPerm() {
       Notification.requestPermission();
   } catch (e) {}
 }
-/* (v30) إشعار النظام داخل تطبيق APK: يمرر الجرس الجديد إلى جسر أندرويد
-   — التطبيق يعرضه كإشعار حقيقي عند العمل في الخلفية. خارج التطبيق:
-   إشعار ويب عادي فقط عند إخفاء الصفحة. */
 function appNotify(title, body) {
   try {
     if (window.AndroidBridge && typeof window.AndroidBridge.notify === "function") {
@@ -1410,13 +1902,10 @@ async function doSetup() {
 }
 $("#fPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPass").focus(); });
-$("#btnLogout").addEventListener("click", async () => {
-  try { await api("/api/logout", { method: "POST" }); } catch (e) {}
-  showLogin();
-});
 
 /* ─── إقلاع ─── */
 (async function boot() {
+  applyTheme(currentTheme(), false);
   if ("serviceWorker" in navigator) {
     try { navigator.serviceWorker.register("/sw.js"); } catch (e) {}
   }
@@ -1425,13 +1914,15 @@ $("#btnLogout").addEventListener("click", async () => {
     const st = await fetch("/api/status", { credentials: "same-origin" });
     const d = await st.json();
     setupMode = !!(d && d.setup);
-    S.selfRegister = !!(d && d.self_register); // v32: إظهار رابط «حساب جديد» حسب إعداد الخادم
-    if (d && d.reasons) S.reasons = d.reasons; // قائمة الأسباب من الخادم (مصدر واحد)
-    S.googleLogin = !!(d && d.google_login);   // v33
+    S.selfRegister = !!(d && d.self_register);
+    S.serverVersion = (d && d.version) || "";
+    if (d && d.reasons) S.reasons = d.reasons;
+    S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
+    $("#setAbout").textContent = "الإصدار v41" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
-  const q = new URLSearchParams(location.search);   // v33: عودة Google
+  const q = new URLSearchParams(location.search);
   if (q.get("google")) {
     showLogin(setupMode);
     handleGoogleReturn(q);
