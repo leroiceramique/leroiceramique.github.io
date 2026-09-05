@@ -10629,7 +10629,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v26"
+PWA_VERSION = "v27"
 PWA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pwa.html")
 
 PWA_SCHEMA_SQL = """
@@ -10715,8 +10715,15 @@ def _pwa_verify_password(password, stored):
         return False
 
 
+# إيموجي/رموز تُشال من أسماء الدخول: أعلام الدول والرموز ومحددات العرض وZWJ —
+# أسماء تلغرام تحملها («يوسف 🇩🇿») وإدخالها من لوحة مفاتيح الهاتف شبه مستحيل
+_PWA_EMOJI_RX = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF"
+    "\U0000FE00-\U0000FE0F\U0000200D\U000020E3]+")
+
+
 def _pwa_norm_username(u):
-    return re.sub(r"[\s@]+", "", str(u or "")).lower()
+    return re.sub(r"[\s@]+", "", _PWA_EMOJI_RX.sub("", str(u or ""))).lower()
 
 
 def _pwa_init_tables():
@@ -10863,19 +10870,32 @@ def _pwa_api_login(username, password):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # الحسابات قليلة — نجلبها كلها ونطابق مطابقة ذكية: المباشر أولاً
+            # ثم المطبّع (يقبل أسماء قديمة مخزّنة بها إيموجي/مسافات)
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
-                "u.role, u.active, a.pass_hash "
-                "FROM pwa_auth a JOIN users u ON u.id = a.user_id "
-                "WHERE a.username = %s", (username,))
-            row = cur.fetchone()
+                "u.role, u.active, a.username AS auth_username, a.pass_hash "
+                "FROM pwa_auth a JOIN users u ON u.id = a.user_id")
+            rows = cur.fetchall()
     except Exception as e:
         conn.rollback()
         logging.error("[PWA] login db error: " + str(e))
         return False, None, "خطأ في الخادم، أعد المحاولة."
     finally:
         release_connection(conn)
-    if not row or not _pwa_verify_password(password, row["pass_hash"]):
+    cands = []
+    for r in rows:
+        au = str(r.get("auth_username") or "")
+        if au.lower() == username:
+            cands.insert(0, r)  # تطابق مباشر باسم الدخول المخزّن — أولوية
+        elif _pwa_norm_username(au) == username:
+            cands.append(r)     # تطابق مطبّع (حساب قديم باسم فيه إيموجي)
+    row = None
+    for r in cands:
+        if _pwa_verify_password(password, r["pass_hash"]):
+            row = r
+            break
+    if row is None:
         time.sleep(0.5)  # إبطاء بسيط لتخشين محاولات التخمين
         return False, None, "اسم المستخدم أو كلمة المرور غير صحيحة."
     if not row["active"]:
