@@ -10872,7 +10872,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v42"
+PWA_VERSION = "v43"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -12387,20 +12387,21 @@ def _pwa_api_stats(user):
         "pending": n_pend, "incoming": n_inc}, "oil": oil}
 
 
-def _pwa_api_products(user, q, archived=False):
+def _pwa_api_products(user, q, archived=False, low=False):
     role = user["role"]
     external_only = role == ROLE_EXTERNAL
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             asql = "archived" if archived else "NOT archived"   # v41: قسمة المحذوفات
+            lsql = " AND (COALESCE(quantity,0) <= COALESCE(minimum_stock,0))" if low else ""   # v43: فلتر المنخفضة
             if q:
                 cur.execute(
-                    "SELECT * FROM products WHERE " + asql + " AND name ILIKE %s "
+                    "SELECT * FROM products WHERE " + asql + lsql + " AND name ILIKE %s "
                     "ORDER BY LOWER(name) LIMIT 200",
                     ("%" + q + "%",))
             else:
-                cur.execute("SELECT * FROM products WHERE " + asql +
+                cur.execute("SELECT * FROM products WHERE " + asql + lsql +
                             " ORDER BY LOWER(name) LIMIT 200")
             rows = cur.fetchall()
         conn.commit()
@@ -12418,7 +12419,7 @@ def _pwa_api_products(user, q, archived=False):
                         "price": r.get("selling_price"),
                         "unit": _get_unit_ar(r["name"]),
                         "low": (r["quantity"] or 0) <= (r["minimum_stock"] or 0)})
-    return {"ok": True, "products": out, "limited": external_only, "archived": bool(archived)}
+    return {"ok": True, "products": out, "limited": external_only, "archived": bool(archived), "low": bool(low)}
 
 
 def _pwa_api_product_detail(user, product_id):
@@ -14268,7 +14269,8 @@ async def pwa_products_handler(request):
         return _pwa_err(403, "ليست لديك صلاحية البحث.")
     q = (request.query.get("q") or "").strip()[:120]
     show_archived = (request.query.get("archived") in ("1", "true"))
-    return _pwa_jr(await _pwa_run(_pwa_api_products, user, q, show_archived))
+    show_low = (request.query.get("low") in ("1", "true"))   # v43: فلتر المنخفضة
+    return _pwa_jr(await _pwa_run(_pwa_api_products, user, q, show_archived, show_low))
 
 
 async def pwa_qty_handler(request):
