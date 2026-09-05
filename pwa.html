@@ -164,28 +164,12 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   <p class="sub">دخول فريق المؤسسة</p>
   <div class="card" id="loginCard">
     <div id="loginErr"></div>
-    <div class="ltabs">
-      <button class="ltab on" id="ltabPass" type="button">🔑 كلمة المرور</button>
-      <button class="ltab" id="ltabOtp" type="button">📲 رمز سري</button>
-    </div>
     <div id="passPane">
-      <div class="fld"><label>اسم المستخدم</label>
-        <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
-      <div class="fld"><label>كلمة المرور</label>
+      <div class="fld"><label>البريد الإلكتروني أو اسم المستخدم</label>
+        <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="you@mail.com"></div>
+      <div class="fld"><label>الرقم السري</label>
         <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
       <button class="btn" id="btnLogin">دخول</button>
-    </div>
-    <div id="otpPane" style="display:none">
-      <div class="fld"><label>رقم الهاتف أو البريد الإلكتروني</label>
-        <input id="fOtpId" inputmode="email" autocapitalize="none" placeholder="05xxxxxxxx أو you@mail.com"></div>
-      <button class="btn" id="btnOtpSend">📩 إرسال الرمز</button>
-      <div id="otpStep2" style="display:none;margin-top:12px">
-        <p style="font-size:12.5px;color:var(--mut);margin:0 0 10px" id="otpSentHint">أُرسل الرمز إلى تلغرام</p>
-        <div class="fld"><label>الرمز (6 أرقام)</label>
-          <input id="fOtpCode" inputmode="numeric" maxlength="6" placeholder="••••••" style="direction:ltr;text-align:center;font-size:20px;letter-spacing:6px"></div>
-        <button class="btn" id="btnOtpLogin">دخول</button>
-      </div>
-      <p class="hint" id="otpChanHint">يصل الرمز إلى محادثتك مع بوت المؤسسة في تلغرام<br>صالح 10 دقائق</p>
     </div>
     <div id="gDiv" style="display:none;align-items:center;gap:10px;margin:12px 0 10px">
       <div style="flex:1;height:1px;background:var(--line)"></div>
@@ -195,9 +179,9 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button class="btn gbtn" id="btnGoogle" type="button" style="display:none">
       <svg width="18" height="18" viewBox="0 0 48 48" style="flex-shrink:0"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
       الدخول بحساب Google</button>
-    <p class="hint">بيانات الدخول تُعطى من إدارة المؤسسة<br>
+    <p class="hint">حساب جديد؟ سجّل ببريدك ويصلك رمز تأكيد فوري — تفعيل تلقائي<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v33</span></p>
+      <span style="opacity:.65">الإصدار v35</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -205,28 +189,36 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <p style="margin:0 0 14px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🆕 حساب جديد — انضمام للفريق</p>
     <div class="fld"><label>الاسم الكامل</label>
       <input id="rName" placeholder="مثال: أحمد بن يوسف"></div>
-    <div class="fld"><label>رقم الهاتف</label>
-      <input id="rPhone" inputmode="tel" placeholder="05xxxxxxxx" style="direction:ltr;text-align:right"></div>
-    <div class="fld"><label>البريد الإلكتروني (اختياري)</label>
+    <div class="fld"><label>البريد الإلكتروني — اسم دخولك</label>
       <input id="rEmail" type="email" placeholder="you@mail.com" style="direction:ltr;text-align:right"></div>
+    <div class="fld"><label>الرقم السري — من اختيارك (8 أحرف على الأقل، حروف وأرقام)</label>
+      <input id="rPass" type="password" autocomplete="new-password" placeholder="••••••••"></div>
+    <div class="fld"><label>تأكيد الرقم السري</label>
+      <input id="rPass2" type="password" autocomplete="new-password" placeholder="••••••••"></div>
     <div class="fld"><label>الفئة — كيف ستعمل معنا؟</label>
       <div class="rchips" id="rRoleChips">
         <button type="button" class="rchip on" data-role="seller">🛍 بائع</button>
         <button type="button" class="rchip" data-role="stock">📦 عامل مخزون</button>
       </div></div>
-    <button class="btn" id="btnRegister">إنشاء الطلب</button>
+    <p id="smtpWarn" style="display:none;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:10px;padding:8px 10px;font-size:12px;line-height:1.7;margin:0 0 10px">⚠️ خدمة إرسال البريد غير مهيأة على الخادم بعد — لن يصل رمز التأكيد حتى يضبط المدير SMTP من لوحة مجانية (Brevo).</p>
+    <button class="btn" id="btnRegister">إنشاء الحساب ومتابعة التفعيل</button>
     <p class="hint"><a href="#" id="lnkBackLogin">← رجوع إلى الدخول</a><br>
-      بعد الطلب: افتح البوت وأرسل رمز التأكيد لتفعيل حسابك<br>
-      فئة «مدير» تُمنح من إدارة المؤسسة فقط</p>
+      يصلك رمز تأكيد فوراً على بريدك الإلكتروني — تضيفه ويتفعّل حسابك تلقائياً<br>
+      مثل فيسبوك وإنستغرام — فئة «مدير» تُمنح من الإدارة فقط</p>
   </div>
-  <div class="card" id="regDone" style="display:none">
-    <p style="margin:0 0 4px;font-weight:800;color:var(--ok);text-align:center;font-size:16px">✅ تم إنشاء طلبك بنجاح</p>
-    <p style="margin:0;text-align:center;font-size:13px;color:var(--mut)">هذا رمز التأكيد — أرسله إلى البوت:</p>
-    <div class="bigcode" id="regCode">••••••</div>
-    <a class="btn" id="regBotLink" href="#" style="text-decoration:none">📲 فتح تلغرام لتأكيد الحساب</a>
-    <button class="btn gray" id="btnCopyCode" style="margin-top:8px">📋 نسخ الرمز</button>
-    <p class="hint">إذا لم يفتح الرابط: افتح بوت المؤسسة وأرسل الرمز نصاً<br>
-      بعد التأكيد سجّل الدخول بتبويب «رمز سري»</p>
+  <!-- v35: شاشة رمز التأكيد — الرمز يصل البريد نفسه ويُدخل هنا (نمط فيسبوك) -->
+  <div class="card" id="verifyCard" style="display:none">
+    <div id="verifyErr"></div>
+    <p style="margin:0 0 6px;font-weight:800;color:var(--brand);text-align:center;font-size:16px">📬 أكّد بريدك الإلكتروني</p>
+    <p style="margin:0 0 12px;text-align:center;font-size:13px;color:var(--mut);line-height:1.8">
+      أرسلنا رمز تأكيد مكوّن من 6 أرقام إلى:<br><b id="vEmail" style="direction:ltr;unicode-bidi:embed"></b></p>
+    <div class="fld"><label>رمز التأكيد</label>
+      <input id="vCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="••••••"
+             style="direction:ltr;text-align:center;font-size:22px;letter-spacing:10px;font-weight:800"></div>
+    <button class="btn" id="btnVerify">تأكيد وتفعيل الحساب</button>
+    <button class="btn gray" id="btnResend" type="button" style="margin-top:8px">إعادة إرسال الرمز</button>
+    <p class="hint"><a href="#" id="lnkVerifyBack">← تعديل البريد أو الرقم السري</a><br>
+      إن لم يصل الرمز خلال دقائق: تحقق من مجلد الرسائل غير المرغوبة (Spam)</p>
   </div>
   <!-- v33: انضمام عبر حساب Google (بريد موثّق من جوجل — بلا رمز بوت) -->
   <div class="card" id="gJoinCard" style="display:none">
@@ -285,7 +277,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v33</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v35</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -451,8 +443,9 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
-const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false, otpIdent: "", regCode: "",
-  googleLogin: false, emailOtp: false, smsOtp: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null, // v33
+const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false,
+  googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null, // v33/v34
+  regEmail: "", smtpReady: true, resendT: null,   // v35: رمز تأكيد البريد
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
@@ -473,8 +466,12 @@ async function api(path, opts) {
   catch (e) { throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة."); }
   let data = null;
   try { data = await res.json(); } catch (e) { data = null; }
-  if (res.status === 401) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة."); }
-  if (!res.ok || (data && data.ok === false)) throw new Error((data && data.error) || "خطأ غير متوقع.");
+  if (res.status === 401 && !(opts && opts.noKick)) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة."); }
+  if (!res.ok || (data && data.ok === false)) {
+    const ex = new Error((data && data.error) || "خطأ غير متوقع.");
+    if (data && data.code) ex.code = data.code;   // v35: مثل verify_needed
+    throw ex;
+  }
   return data;
 }
 
@@ -485,70 +482,20 @@ function showLogin(setupMode) {
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
   $("#setupCard").style.display = setupMode ? "" : "none";
-  $("#regCard").style.display = "none"; $("#regDone").style.display = "none";
+  $("#regCard").style.display = "none"; $("#verifyCard").style.display = "none";
   $("#lnkRegisterWrap").style.display = (!setupMode && S.selfRegister) ? "" : "none";
-  $("#otpStep2").style.display = "none"; $("#fOtpCode").value = ""; $("#fOtpId").value = "";
   $("#gJoinCard").style.display = "none"; $("#gWaitCard").style.display = "none";  // v33
-  showLoginTab("pass");
+  clearInterval(S.resendT);
+  $("#loginErr").style.display = "none";
   $("#fPass").value = "";
 }
-/* ─── v32: تبويبات الدخول + الرمز السري + حساب جديد ─── */
-function showLoginTab(mode) {
-  const pass = mode === "pass";
-  $("#ltabPass").classList.toggle("on", pass);
-  $("#ltabOtp").classList.toggle("on", !pass);
-  $("#passPane").style.display = pass ? "" : "none";
-  $("#otpPane").style.display = pass ? "none" : "";
-  $("#loginErr").style.display = "none";
-}
-$("#ltabPass").addEventListener("click", () => showLoginTab("pass"));
-$("#ltabOtp").addEventListener("click", () => showLoginTab("otp"));
+/* ─── v34: دخول بالبريد والرقم السري — أُزيلت الرموز والهاتف نهائياً ─── */
 /* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي (جوجل يحجب WebView) */
 $("#btnGoogle").addEventListener("click", () => {
   const app = window.AndroidBridge ? "?app=1" : "";
   location.href = "/api/auth/google/start" + app;
 });
-async function doOtpSend() {
-  const err = $("#loginErr"); err.style.display = "none";
-  const ident = $("#fOtpId").value.trim();
-  if (!ident) { err.textContent = "أدخل رقم الهاتف أو البريد الإلكتروني."; err.style.display = "block"; return; }
-  const btn = $("#btnOtpSend"); btn.disabled = true; btn.textContent = "جارِ الإرسال...";
-  try {
-    const d = await api("/api/login/otp/request", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier: ident })
-    });
-    S.otpIdent = ident;
-    const ch = d.channel || "telegram";
-    const where = ch === "email" ? "بريدك الإلكتروني"
-      : (ch === "sms" ? "هاتفك برسالة SMS" : "تلغرام (بوت المؤسسة)");
-    $("#otpSentHint").textContent = "أُرسل الرمز إلى " + where + " (" + (d.masked || "") + ") — أدخله هنا:";
-    $("#otpStep2").style.display = "";
-    $("#fOtpCode").focus();
-    toast("📩 أُرسل الرمز إلى " + where);
-  } catch (e) { err.textContent = e.message; err.style.display = "block"; }
-  finally { btn.disabled = false; btn.textContent = "📩 إرسال الرمز"; }
-}
-async function doOtpLogin() {
-  const err = $("#loginErr"); err.style.display = "none";
-  const code = $("#fOtpCode").value.trim();
-  if (!/^\d{6}$/.test(code)) { err.textContent = "الرمز 6 أرقام."; err.style.display = "block"; return; }
-  const btn = $("#btnOtpLogin"); btn.disabled = true; btn.textContent = "جارِ الدخول...";
-  try {
-    await api("/api/login/otp/verify", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier: S.otpIdent, code })
-    });
-    const me = await api("/api/me");
-    showApp(me);
-  } catch (e) { err.textContent = e.message; err.style.display = "block"; }
-  finally { btn.disabled = false; btn.textContent = "دخول"; }
-}
-$("#btnOtpSend").addEventListener("click", doOtpSend);
-$("#btnOtpLogin").addEventListener("click", doOtpLogin);
-["#fOtpCode"].forEach((s) => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") doOtpLogin(); }));
-["#fOtpId"].forEach((s) => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") doOtpSend(); }));
-/* ─── v32: حساب جديد (تسجيل ذاتي) ─── */
+/* ─── v35: حساب جديد — بريد + رقم سري من اختيار العميل، ثم رمز تأكيد يصل البريد ─── */
 let regRole = "seller";
 $("#rRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
   $("#rRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
@@ -560,33 +507,94 @@ $("#lnkRegister").addEventListener("click", (e) => { e.preventDefault();
 $("#lnkBackLogin").addEventListener("click", (e) => { e.preventDefault();
   $("#regCard").style.display = "none"; $("#loginCard").style.display = "";
   $("#lnkRegisterWrap").style.display = S.selfRegister ? "" : "none"; });
+/* ─── v35: شاشة رمز التأكيد — الرمز يصل البريد ويُدخل هنا ويتفعّل الحساب تلقائياً ─── */
+function startResendCountdown() {
+  let left = 30;
+  const b = $("#btnResend");
+  clearInterval(S.resendT);
+  b.disabled = true; b.textContent = "إعادة إرسال الرمز (30)";
+  S.resendT = setInterval(() => {
+    left--;
+    b.textContent = left > 0 ? ("إعادة إرسال الرمز (" + left + ")") : "إعادة إرسال الرمز";
+    if (left <= 0) { clearInterval(S.resendT); b.disabled = false; }
+  }, 1000);
+}
+function showVerifyCard(email) {
+  S.regEmail = String(email || "").trim().toLowerCase();
+  $("#vEmail").textContent = S.regEmail;
+  const err = $("#verifyErr"); err.style.display = "none"; err.textContent = "";
+  $("#vCode").value = "";
+  ["#loginCard", "#regCard", "#gJoinCard", "#gWaitCard", "#setupCard"]
+    .forEach((s) => { $(s).style.display = "none"; });
+  $("#lnkRegisterWrap").style.display = "none";
+  $("#verifyCard").style.display = "";
+  startResendCountdown();
+  setTimeout(() => $("#vCode").focus(), 150);
+}
 async function doRegister() {
   const err = $("#regErr"); err.style.display = "none";
   const name = $("#rName").value.trim();
-  const phone = $("#rPhone").value.trim();
   const email = $("#rEmail").value.trim();
+  const p1 = $("#rPass").value, p2 = $("#rPass2").value;
   if (name.length < 3) { err.textContent = "أدخل الاسم الكامل (3 أحرف على الأقل)."; err.style.display = "block"; return; }
-  if (!phone && !email) { err.textContent = "أدخل رقم الهاتف أو البريد الإلكتروني (أحدهما على الأقل)."; err.style.display = "block"; return; }
-  const btn = $("#btnRegister"); btn.disabled = true; btn.textContent = "جارِ الإنشاء...";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) { err.textContent = "أدخل بريدك الإلكتروني بشكل صحيح — هو اسم دخولك."; err.style.display = "block"; return; }
+  if (p1.length < 8 || !/[a-zA-Z\u0600-\u06FF]/.test(p1) || !/\d/.test(p1)) {
+    err.textContent = "الرقم السري يجب أن يكون 8 أحرف على الأقل ويجمع حروفاً وأرقاماً."; err.style.display = "block"; return; }
+  if (p1 !== p2) { err.textContent = "تأكيد الرقم السري غير مطابق."; err.style.display = "block"; return; }
+  const btn = $("#btnRegister"); btn.disabled = true; btn.textContent = "جارِ إنشاء الحساب...";
   try {
     const d = await api("/api/register", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, phone, email, role: regRole })
+      body: JSON.stringify({ name, email, password: p1, role: regRole })
     });
-    S.regCode = d.registration.code;
-    $("#regCode").textContent = S.regCode;
-    const link = d.registration.bot_link || "";
-    const a = $("#regBotLink");
-    if (link) { a.href = link; a.style.display = ""; } else { a.style.display = "none"; }
-    $("#regCard").style.display = "none";
-    $("#regDone").style.display = "";
+    toast("📬 " + (d.message || "أُرسل رمز التأكيد إلى بريدك"));
+    showVerifyCard(email);
   } catch (e2) { err.textContent = e2.message; err.style.display = "block"; }
-  finally { btn.disabled = false; btn.textContent = "إنشاء الطلب"; }
+  finally { btn.disabled = false; btn.textContent = "إنشاء الحساب ومتابعة التفعيل"; }
 }
 $("#btnRegister").addEventListener("click", doRegister);
-$("#btnCopyCode").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText(S.regCode); toast("📋 تم نسخ الرمز: " + S.regCode); }
-  catch (e) { toast("الرمز: " + S.regCode); }
+async function doVerify() {
+  const err = $("#verifyErr"); err.style.display = "none";
+  const code = $("#vCode").value.replace(/\D/g, "");
+  if (code.length !== 6) { err.textContent = "أدخل رمز التأكيد المكوّن من 6 أرقام."; err.style.display = "block"; return; }
+  const btn = $("#btnVerify"); btn.disabled = true; btn.textContent = "جارِ التحقق...";
+  try {
+    const d = await api("/api/register/verify", {
+      noKick: true,   // v35: الخطأ في الرمز لا يُغلق شاشة التحقق
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: S.regEmail, code })
+    });
+    toast("🎉 " + (d.message || "تم تفعيل حسابك — أهلاً بك!"));
+    const me = await api("/api/me");
+    showApp(me);
+  } catch (e2) { err.textContent = e2.message; err.style.display = "block"; }
+  finally { btn.disabled = false; btn.textContent = "تأكيد وتفعيل الحساب"; }
+}
+$("#btnVerify").addEventListener("click", doVerify);
+$("#vCode").addEventListener("input", () => {
+  $("#vCode").value = $("#vCode").value.replace(/\D/g, "");
+  if ($("#vCode").value.length === 6) doVerify();
+});
+$("#vCode").addEventListener("keydown", (e) => { if (e.key === "Enter") doVerify(); });
+$("#btnResend").addEventListener("click", async () => {
+  const err = $("#verifyErr"); err.style.display = "none";
+  const btn = $("#btnResend"); btn.disabled = true;
+  try {
+    const d = await api("/api/register/resend", {
+      noKick: true,   // v35: حتى أخطاء الإعادة تبقى في شاشة الرمز
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: S.regEmail })
+    });
+    toast("📬 " + (d.message || "أُعيد إرسال الرمز إلى بريدك"));
+    startResendCountdown();
+  } catch (e2) {
+    err.textContent = e2.message; err.style.display = "block";
+    startResendCountdown();
+  }
+});
+$("#lnkVerifyBack").addEventListener("click", (e) => { e.preventDefault();
+  $("#verifyCard").style.display = "none";
+  $("#regCard").style.display = "";   // رجوع للنموذج — البيانات ما تزال معبّأة
 });
 /* ─── v33: دخول بحساب Google + شاشات الانضمام والانتظار ─── */
 function showGoogleJoin(name, email, ot) {
@@ -594,13 +602,13 @@ function showGoogleJoin(name, email, ot) {
   $("#gJoinName").textContent = S.gName || "بالفريق";
   $("#gJoinEmail").textContent = email || "";
   $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
-  $("#regCard").style.display = "none"; $("#regDone").style.display = "none";
+  $("#regCard").style.display = "none"; $("#verifyCard").style.display = "none";
   $("#gWaitCard").style.display = "none"; $("#gJoinErr").style.display = "none";
   $("#gJoinCard").style.display = "";
 }
 function showGoogleWait() {
   $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
-  $("#regCard").style.display = "none"; $("#regDone").style.display = "none";
+  $("#regCard").style.display = "none"; $("#verifyCard").style.display = "none";
   $("#gJoinCard").style.display = "none"; $("#app").style.display = "none";
   $("#login").style.display = "block";
   $("#gWaitCard").style.display = "";
@@ -881,7 +889,8 @@ async function loadUsers() {
       html += waiting.map((w) =>
         '<div class="row"><div class="info"><b>' + esc(w.name) + '</b>'
         + '<span>' + esc(w.role_label) + (w.phone ? " • 📞 " + esc(w.phone) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + '</span></div>'
-        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g">Google</span>' : '<span class="badge b">رمز: ' + esc(w.code) + '</span>')
+        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g">Google</span>'
+          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? '<span class="badge b">🔑 بريد + رقم سري</span>' : '<span class="badge b">رمز: ' + esc(w.code) + '</span>'))
         + '<div class="acts"><button class="btn mini green" data-appr=\'' + JSON.stringify(w).replace(/'/g, "&#39;") + '\'>✅ تفعيل</button>'
         + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
         + '</div>').join("");
@@ -904,7 +913,8 @@ async function loadUsers() {
       return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
         + '<span>' + esc(u.role_label) + (u.web ? " • اسم الدخول: " + esc(u.web_username) : "") + '</span></div>'
         + (u.active ? "" : '<span class="badge r">مطرود</span>')
-        + (u.verified ? '<span class="badge g">✓ موثّق</span>' : "")
+        + (u.verified ? '<span class="badge g">✓ موثّق</span>'
+          : (u.email && !hasTg ? '<span class="badge">⏳ بانتظار تأكيد البريد</span>' : ""))
         + (u.phone ? '<span class="badge b">📞 ' + esc(u.phone) + '</span>' : "")
         + (u.email ? '<span class="badge b">✉️ ' + esc(u.email) + '</span>' : "")
         + (u.web ? '<span class="badge n">🔑 ويب</span>' : "")
@@ -966,7 +976,7 @@ $("#dlgRoleGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 async function regDelete(id) {
-  if (!confirm("حذف طلب الانضمام هذا؟ سيتعذر على صاحبه التأكيد بالرمز.")) return;
+  if (!confirm("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.")) return;
   try {
     const d = await api("/api/registrations/delete", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1360,6 +1370,11 @@ async function doLogin() {
     showApp(me);
   } catch (e) {
     err.textContent = e.message; err.style.display = "block";
+    // v35: حساب سجّل ولم يُأكّد بريده → شاشة الرمز مباشرة بالبريد المُدخل
+    if (e.code === "verify_needed") {
+      const em = $("#fUser").value.trim();
+      if (em.indexOf("@") >= 0) { err.style.display = "none"; showVerifyCard(em); }
+    }
   } finally {
     $("#btnLogin").disabled = false; $("#btnLogin").textContent = "دخول";
   }
@@ -1412,13 +1427,10 @@ $("#btnLogout").addEventListener("click", async () => {
     S.selfRegister = !!(d && d.self_register); // v32: إظهار رابط «حساب جديد» حسب إعداد الخادم
     if (d && d.reasons) S.reasons = d.reasons; // قائمة الأسباب من الخادم (مصدر واحد)
     S.googleLogin = !!(d && d.google_login);   // v33
-    S.emailOtp = !!(d && d.email_otp);
-    S.smsOtp = !!(d && d.sms_otp);
+    S.smtpReady = !!(d && d.smtp_ready);       // v35: رمز التأكيد يصل البريد
+    if (!S.smtpReady) $("#smtpWarn").style.display = "";
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    const chan = S.emailOtp ? (S.smsOtp ? "البريد أو رسالة SMS أو تلغرام" : "بريدك الإلكتروني أو تلغرام")
-      : (S.smsOtp ? "رسالة SMS أو تلغرام" : "محادثتك مع بوت المؤسسة في تلغرام");
-    $("#otpChanHint").innerHTML = "يصل الرمز إلى " + chan + "<br>صالح 10 دقائق";
   } catch (e2) {}
   const q = new URLSearchParams(location.search);   // v33: عودة Google
   if (q.get("google")) {
