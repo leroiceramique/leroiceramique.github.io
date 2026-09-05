@@ -10629,7 +10629,9 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v27"
+PWA_VERSION = "v28"
+# مرجع تطبيق تلغرام الحي — لإشعارات الويب (تغطية المعلق، طلبات التوريد)
+TG_APP = None
 PWA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pwa.html")
 
 PWA_SCHEMA_SQL = """
@@ -10944,6 +10946,20 @@ def _pwa_api_stats(user):
             n_low = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM transactions WHERE date >= CURRENT_DATE")
             n_today = cur.fetchone()[0]
+            if perms["admin"]:
+                cur.execute("SELECT COUNT(*) FROM pending_deliveries WHERE pending_qty > 0")
+            else:
+                cur.execute("SELECT COUNT(*) FROM pending_deliveries "
+                            "WHERE pending_qty > 0 AND user_id = %s", (user["id"],))
+            n_pend = cur.fetchone()[0]
+            if perms["admin"]:
+                cur.execute("SELECT COUNT(*) FROM incoming_orders "
+                            "WHERE status IN ('pending', 'received')")
+            else:
+                cur.execute("SELECT COUNT(*) FROM incoming_orders "
+                            "WHERE status IN ('pending', 'received') AND requester_id = %s",
+                            (user["id"],))
+            n_inc = cur.fetchone()[0]
         conn.commit()
     finally:
         release_connection(conn)
@@ -10959,7 +10975,8 @@ def _pwa_api_stats(user):
                    "remaining": round(remaining, 1),
                    "level": "red" if since >= float(OIL_H_RED) else ("warn" if remaining <= 0 else "ok")}
     return {"ok": True, "stats": {
-        "products": n_products, "low": n_low, "today": n_today}, "oil": oil}
+        "products": n_products, "low": n_low, "today": n_today,
+        "pending": n_pend, "incoming": n_inc}, "oil": oil}
 
 
 def _pwa_api_products(user, q):
@@ -11053,6 +11070,168 @@ def _pwa_api_qty(user, product_id, qtype, quantity, reason):
         conn.rollback()
         logging.error("[PWA] qty failed: " + str(e))
         return False, "فشلت العملية، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_add_product(user, name, qty, min_stock, price, location):
+    """＋ إضافة سلعة جديدة (مدراء فقط) — مثل زر «إضافة سلعة» في البوت."""
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, "إضافة سلعة للمدراء فقط."
+    name = str(name or "").strip()
+    if len(name) < 2:
+        return False, "أدخل اسم السلعة (حرفان على الأقل)."
+    if len(name) > 500:
+        return False, "اسم السلعة طويل جداً."
+    try:
+        qty = int(qty)
+        min_stock = int(min_stock)
+    except (TypeError, ValueError):
+        return False, "أدخل كميات صحيحة."
+    if qty < 0 or min_stock < 0:
+        return False, "الكميات لا تقبل قيماً سالبة."
+    try:
+        price = round(float(str(price or 0).replace(",", ".")), 2)
+    except (TypeError, ValueError):
+        return False, "السعر غير صحيح."
+    if price < 0:
+        return False, "السعر لا يقبل قيماً سالبة."
+    location = str(location or "").strip()[:200]
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM products WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s)) LIMIT 1",
+                        (name,))
+            if cur.fetchone():
+                return False, "توجد سلعة بنفس الاسم بالفعل — ابحث عنها وأضف كمياتها."
+            cur.execute(
+                "INSERT INTO products (name, quantity, location, minimum_stock, selling_price) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (name, qty, location, min_stock, price))
+            pid = cur.fetchone()[0]
+            if qty > 0:
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                    "VALUES (%s, 'add', %s, %s, 'إضافة سلعة جديدة')",
+                    (pid, qty, user["id"]))
+        conn.commit()
+        return True, "تمت إضافة السلعة ✅"
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] add product failed: " + str(e))
+        return False, "فشلت الإضافة، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_pending(user):
+    """🔴 الطلبات المعلقة (عجز المخزون السالب): المدير يراها كلها
+    والموظف يرى طلباته فقط — نفس فلسفة البوت."""
+    admin = _pwa_perm_map(user["role"])["admin"]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            base = (
+                "SELECT pd.id, pd.pending_qty, pd.created_at, "
+                "p.name AS product_name, p.quantity AS product_qty, "
+                "COALESCE(u.first_name, u.username, '#' || u.telegram_id::text) AS user_name "
+                "FROM pending_deliveries pd "
+                "JOIN products p ON p.id = pd.product_id "
+                "LEFT JOIN users u ON u.id = pd.user_id "
+                "WHERE pd.pending_qty > 0 ")
+            if admin:
+                cur.execute(base + "ORDER BY pd.created_at ASC LIMIT 200")
+            else:
+                cur.execute(base + "AND pd.user_id = %s ORDER BY pd.created_at ASC LIMIT 200",
+                            (user["id"],))
+            rows = cur.fetchall()
+        conn.commit()
+        return {"ok": True, "pending": [dict(r) for r in rows], "admin": admin}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_incoming_list(user):
+    """🚚 طلبات التوريد المفتوحة: المدير يراها كلها والموظف يرى طلباته."""
+    admin = _pwa_perm_map(user["role"])["admin"]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            base = (
+                "SELECT io.id, io.product_name, io.quantity, io.status, io.created_at, "
+                "COALESCE(u.first_name, u.username, '#' || u.telegram_id::text) AS user_name "
+                "FROM incoming_orders io LEFT JOIN users u ON u.id = io.requester_id "
+                "WHERE io.status IN ('pending', 'received') ")
+            if admin:
+                cur.execute(base + "ORDER BY io.created_at ASC LIMIT 200")
+            else:
+                cur.execute(base + "AND io.requester_id = %s ORDER BY io.created_at ASC LIMIT 200",
+                            (user["id"],))
+            rows = cur.fetchall()
+        conn.commit()
+        return {"ok": True, "orders": [dict(r) for r in rows], "admin": admin}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_incoming_create(user, product_name, quantity):
+    """🚚 تسجيل طلب توريد جديد من الويب (بدون صورة — تُرسل من البوت إن لزم)."""
+    if user["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
+        return False, "لا يوجد وصول لك حالياً — راجع الإدارة."
+    product_name = str(product_name or "").strip()
+    if len(product_name) < 2:
+        return False, "أدخل اسم السلعة المطلوبة (حرفان على الأقل)."
+    if len(product_name) > 500:
+        return False, "الاسم طويل جداً."
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        return False, "أدخل كمية صحيحة."
+    if quantity < 1 or quantity > 100000:
+        return False, "الكمية يجب أن تكون بين 1 و 100000."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO incoming_orders (requester_id, product_name, quantity) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                (user["id"], product_name, quantity))
+            oid = cur.fetchone()[0]
+        conn.commit()
+        return True, {"id": oid}
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] incoming create failed: " + str(e))
+        return False, "فشل تسجيل الطلب، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_incoming_advance(user, order_id, action):
+    """إدارة طلب توريد (مدراء فقط): receive = استُلم من المورد، complete = جاهز."""
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, None, "إدارة طلبات التوريد للمدراء فقط."
+    if action not in ("receive", "complete"):
+        return False, None, "إجراء غير معروف."
+    if action == "receive":
+        row = receive_incoming_order(order_id)
+        if not row:
+            return False, None, "الطلب غير موجود أو تم تغيير حالته."
+        return True, row, None
+    row = complete_incoming_order(order_id)
+    if not row:
+        return False, None, "الطلب غير موجود أو تم إنجازه سابقاً."
+    return True, row, None
+
+
+def _pwa_incoming_requester_tid(requester_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT telegram_id FROM users WHERE id = %s", (requester_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
     finally:
         release_connection(conn)
 
@@ -11387,11 +11566,107 @@ async def pwa_qty_handler(request):
         qty = int(body.get("quantity", 0))
     except (TypeError, ValueError):
         return _pwa_err(400, "قيم غير صحيحة.")
-    ok, msg = await _pwa_run(_pwa_api_qty, user, pid,
-                             str(body.get("type", "")), qty, body.get("reason"))
+    qtype = str(body.get("type", ""))
+    ok, msg = await _pwa_run(_pwa_api_qty, user, pid, qtype, qty, body.get("reason"))
+    if not ok:
+        return _pwa_err(400, msg)
+    # التسوية الذاتية مثل البوت: كل زيادة كمية تغطي العجز المعلق FIFO
+    rec = None
+    if qtype in ("add", "reconcile"):
+        rec = await _pwa_run(auto_reconcile_product, pid, qty, user["id"])
+    if rec and rec.get("fulfilled") and TG_APP is not None:
+        asyncio.create_task(_send_fulfilled_notifications(TG_APP.bot, rec["fulfilled"]))
+    return _pwa_jr({"ok": True, "message": msg,
+                    "reconciled": (rec or {}).get("total_covered", 0)})
+
+
+async def pwa_products_create_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "إضافة سلعة للمدراء فقط.")
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(
+        _pwa_api_add_product, user, body.get("name"), body.get("quantity", 0),
+        body.get("minimum_stock", 5), body.get("price", 0), body.get("location", ""))
     if not ok:
         return _pwa_err(400, msg)
     return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_pending_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_pending, user)
+    return _pwa_jr(data)
+
+
+async def pwa_incoming_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_incoming_list, user)
+    return _pwa_jr(data)
+
+
+async def pwa_incoming_create_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, res = await _pwa_run(_pwa_api_incoming_create, user,
+                             body.get("product_name"), body.get("quantity", 1))
+    if not ok:
+        return _pwa_err(400, res)
+    if TG_APP is not None:
+        note = ("🚚 طلب توريد جديد من تطبيق الويب\n\n"
+                "📦 السلعة: " + str(body.get("product_name", ""))[:200] + "\n"
+                "🔢 الكمية: " + str(body.get("quantity", 1)) + "\n"
+                "👤 الطالب: " + str(user.get("name", "?")))
+        for aid in ADMIN_IDS:
+            try:
+                asyncio.create_task(TG_APP.bot.send_message(chat_id=aid, text=note))
+            except Exception:
+                pass
+    return _pwa_jr({"ok": True, "message": "تم تسجيل طلب التوريد ✅ — وصل للمدير فوراً."})
+
+
+async def pwa_incoming_advance_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "إدارة طلبات التوريد للمدراء فقط.")
+    try:
+        body = await request.json()
+        oid = int(body.get("id"))
+        action = str(body.get("action", ""))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "قيم غير صحيحة.")
+    ok, row, msg = await _pwa_run(_pwa_api_incoming_advance, user, oid, action)
+    if not ok:
+        return _pwa_err(400, msg)
+    if action == "complete" and TG_APP is not None and row:
+        tid = await _pwa_run(_pwa_incoming_requester_tid, row.get("requester_id"))
+        if tid:
+            note = ("✅ طلب التوريد الذي طلبته أصبح جاهزاً\n\n"
+                    "📦 " + str(row.get("product_name", ""))[:200] + "\n"
+                    "🔢 الكمية: " + str(row.get("quantity", "?")))
+            try:
+                asyncio.create_task(TG_APP.bot.send_message(chat_id=tid, text=note))
+            except Exception:
+                pass
+    return _pwa_jr({"ok": True,
+                    "message": "تم الاستلام — الطلب قيد التجهيز." if action == "receive"
+                    else "تم تعليم الطلب جاهزاً ✅"})
 
 
 async def pwa_movements_handler(request):
@@ -11569,7 +11844,7 @@ async def webpass_command(update, context):
 
 
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
-const CACHE = "ceram-pwa-v3";
+const CACHE = "ceram-pwa-v4";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11645,7 +11920,12 @@ def register_pwa_routes(app):
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (20 مساراً)")
+    app.router.add_post("/api/products/create", pwa_products_create_handler)
+    app.router.add_get("/api/pending", pwa_pending_handler)
+    app.router.add_get("/api/incoming", pwa_incoming_handler)
+    app.router.add_post("/api/incoming/create", pwa_incoming_create_handler)
+    app.router.add_post("/api/incoming/advance", pwa_incoming_advance_handler)
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (25 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -11718,6 +11998,7 @@ if __name__ == "__main__":
         import secrets as _secrets
         secret_token = os.getenv("WEBHOOK_SECRET_TOKEN") or _secrets.token_hex(32)
         logging.info("[BOT] Webhook secret token validation enabled.")
+        TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
             secret_token=secret_token,
@@ -11727,8 +12008,9 @@ if __name__ == "__main__":
         health_app.router.add_get("/health", _health_handler)
         register_pwa_routes(health_app)
         async def on_startup(aio_app):
-            global _startup_restore_notice
+            global _startup_restore_notice, TG_APP
             await tg_app.initialize()
+            TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
             await tg_app.start()
             try:
                 await tg_app.bot.delete_webhook(drop_pending_updates=True)

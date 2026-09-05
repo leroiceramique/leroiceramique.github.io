@@ -81,10 +81,12 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .bar i{display:block;height:100%;background:#fff;border-radius:99px}
 .search{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
   background:#fff;margin-bottom:12px}
+.invhead{display:flex;align-items:center;gap:10px;margin:4px 0 12px}
+.invhead h2{flex:1;margin:0}
 .row{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px;
   margin-bottom:9px;display:flex;align-items:center;gap:10px}
 .row .info{flex:1;min-width:0}
-.row .info b{display:block;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .info b{display:block;font-size:14.5px;line-height:1.55;word-break:break-word}
 .row .info span{font-size:12px;color:var(--mut)}
 .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:800;
   background:var(--chip);color:var(--brand);white-space:nowrap}
@@ -134,7 +136,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button class="btn" id="btnLogin">دخول</button>
     <p class="hint">بيانات الدخول تُعطى من إدارة المؤسسة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v26</span></p>
+      <span style="opacity:.65">الإصدار v28</span></p>
   </div>
   <div class="card" id="setupCard" style="display:none">
     <div id="setupErr"></div>
@@ -167,13 +169,16 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
         <div class="stat"><b id="sLow">—</b><span>منخفض</span></div>
         <div class="stat"><b id="sToday">—</b><span>حركة اليوم</span></div>
       </div>
+      <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v26</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v28</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
-      <h2 class="vt">المخزون</h2>
+      <div class="invhead"><h2 class="vt">المخزون</h2>
+        <button class="btn mini gold" id="btnAddProd" style="display:none">＋ إضافة سلعة</button>
+      </div>
       <input class="search" id="qSearch" placeholder="🔍 ابحث باسم السلعة...">
       <div id="invList"><p class="empty">جارِ التحميل...</p></div>
     </section>
@@ -186,6 +191,16 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <section class="view" id="v-oil">
       <h2 class="vt">زيت الرافعة الشوكية</h2>
       <div id="oilBox"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+    <!-- الطلبات -->
+    <section class="view" id="v-ord">
+      <h2 class="vt">الطلبات</h2>
+      <div class="seg">
+        <button id="segPend" class="on">🔴 المعلقة</button>
+        <button id="segInc">🚚 التوريد</button>
+      </div>
+      <div id="ordBar"></div>
+      <div id="ordList"><p class="empty">جارِ التحميل...</p></div>
     </section>
     <!-- المستخدمون -->
     <section class="view" id="v-users">
@@ -202,6 +217,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button data-v="v-home" class="on"><span class="ic">🏠</span>الرئيسية</button>
     <button data-v="v-inv"><span class="ic">📦</span>المخزون</button>
     <button data-v="v-mov" id="tabMov"><span class="ic">📋</span>الحركة</button>
+    <button data-v="v-ord" id="tabOrders"><span class="ic">🚚</span>الطلبات</button>
     <button data-v="v-oil" id="tabOil"><span class="ic">🔧</span>الزيت</button>
     <button data-v="v-users" id="tabUsers"><span class="ic">👥</span>المستخدمون</button>
   </nav>
@@ -230,6 +246,36 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <input id="fNewPass" type="password" autocomplete="new-password"></div>
     <button class="btn" id="dlgPassGo">حفظ</button>
     <button class="btn gray" id="dlgPassCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
+<dialog id="dlgNew">
+  <div class="dh">＋ إضافة سلعة جديدة</div>
+  <div class="db">
+    <div class="fld"><label>اسم السلعة (كامل وواضح)</label>
+      <input id="nName" placeholder="مثال: hexa ceram decor beige 30/90"></div>
+    <div class="fld"><label>الكمية الأولية</label>
+      <input id="nQty" type="number" inputmode="numeric" min="0" value="0"></div>
+    <div class="fld"><label>الحد الأدنى للتنبيه</label>
+      <input id="nMin" type="number" inputmode="numeric" min="0" value="5"></div>
+    <div class="fld"><label>السعر (اختياري)</label>
+      <input id="nPrice" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0"></div>
+    <div class="fld"><label>الموقع (اختياري)</label>
+      <input id="nLoc" placeholder="مثال: الرف A1"></div>
+    <button class="btn" id="dlgNewGo">إضافة</button>
+    <button class="btn gray" id="dlgNewCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
+<dialog id="dlgOrd">
+  <div class="dh">🚚 طلب توريد جديد</div>
+  <div class="db">
+    <div class="fld"><label>اسم السلعة المطلوبة</label>
+      <input id="oName" placeholder="مثال: بورسلان ابيك 60x60"></div>
+    <div class="fld"><label>الكمية</label>
+      <input id="oQty" type="number" inputmode="numeric" min="1" value="1"></div>
+    <button class="btn" id="dlgOrdGo">إرسال الطلب</button>
+    <button class="btn gray" id="dlgOrdCancel" style="margin-top:8px">إلغاء</button>
   </div>
 </dialog>
 
@@ -272,6 +318,7 @@ function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
   $("#login").style.display = "none"; $("#app").style.display = "flex";
   $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
+  $("#btnAddProd").style.display = S.perms.admin ? "" : "none";
   $("#tabMov").style.display = S.perms.movements ? "" : "none";
   $("#tabOil").style.display = S.perms.oil ? "" : "none";
   $("#tabUsers").style.display = S.perms.users ? "" : "none";
@@ -285,6 +332,7 @@ function switchView(id) {
     b.classList.toggle("on", b.dataset.v === id));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === id));
   if (id === "v-inv") loadInventory();
+  if (id === "v-ord") loadOrders();
   if (id === "v-mov") loadMovements();
   if (id === "v-oil") loadOil();
   if (id === "v-users") loadUsers();
@@ -300,6 +348,16 @@ async function loadHome() {
     $("#sProd").textContent = d.stats.products;
     $("#sLow").textContent = d.stats.low;
     $("#sToday").textContent = d.stats.today;
+    const np = d.stats.pending || 0, ni = d.stats.incoming || 0;
+    const ordBox = $("#homeOrd");
+    if (np || ni) {
+      ordBox.innerHTML = '<div class="row" style="cursor:pointer" id="homeOrdRow"><div class="info"><b>الطلبات</b>'
+        + '<span>' + (np ? "🔴 " + np + " معلق" : "") + (np && ni ? " • " : "")
+        + (ni ? "🚚 " + ni + " توريد" : "") + '</span></div>'
+        + '<span class="badge">عرض ←</span></div>';
+    } else { ordBox.innerHTML = ""; }
+    const hr = $("#homeOrdRow");
+    if (hr) hr.addEventListener("click", () => switchView("v-ord"));
     const oil = $("#homeOil");
     if (d.oil) {
       const pct = Math.max(0, Math.min(100, Math.round((d.oil.since / d.oil.limit) * 100)));
@@ -507,6 +565,106 @@ $("#dlgPassGo").addEventListener("click", async () => {
       });
     }
     $("#dlgPass").close(); toast(d.message || "تم الحفظ."); loadUsers();
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ─── الطلبات: المعلقة + التوريد ─── */
+S.ordSeg = "pend"; S.pendingData = []; S.incData = { orders: [], admin: false };
+$("#segPend").addEventListener("click", () => {
+  S.ordSeg = "pend"; $("#segPend").classList.add("on"); $("#segInc").classList.remove("on"); renderOrders();
+});
+$("#segInc").addEventListener("click", () => {
+  S.ordSeg = "inc"; $("#segInc").classList.add("on"); $("#segPend").classList.remove("on"); renderOrders();
+});
+async function loadOrders() {
+  const box = $("#ordList");
+  try {
+    const results = await Promise.all([api("/api/pending"), api("/api/incoming")]);
+    S.pendingData = results[0].pending || [];
+    S.incData = results[1];
+    renderOrders();
+  } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+function fmtDate(s) { return String(s || "").replace("T", " ").slice(0, 16); }
+function renderOrders() {
+  const bar = $("#ordBar"), box = $("#ordList");
+  if (S.ordSeg === "pend") {
+    bar.innerHTML = "";
+    const list = S.pendingData || [];
+    box.innerHTML = list.length ? list.map((p) =>
+      '<div class="row"><div class="info"><b>' + esc(p.product_name) + '</b>'
+      + '<span>' + esc(p.user_name || "—") + " • " + fmtDate(p.created_at)
+      + " • متوفر الآن: " + p.product_qty + '</span></div>'
+      + '<span class="badge r">⏳ ' + p.pending_qty + '</span></div>').join("")
+      : '<p class="empty">✅ لا توجد طلبات معلقة.</p>';
+    return;
+  }
+  const d = S.incData || { orders: [], admin: false };
+  bar.innerHTML = '<button class="btn mini gold" id="btnNewOrd" style="margin-bottom:10px">＋ طلب توريد جديد</button>';
+  $("#btnNewOrd").addEventListener("click", () => {
+    $("#oName").value = ""; $("#oQty").value = 1; $("#dlgOrd").showModal();
+  });
+  const ST = { pending: ["r", "⏳ قيد التوريد"], received: ["n", "🔧 جاري التجهيز"] };
+  box.innerHTML = d.orders.length ? d.orders.map((o) => {
+    const st = ST[o.status] || ["mut", o.status];
+    let acts = "";
+    if (d.admin && o.status === "pending")
+      acts += '<button class="btn mini gray" data-oact="receive" data-oid="' + o.id + '">🔧 استلمت</button>';
+    if (d.admin)
+      acts += '<button class="btn mini green" data-oact="complete" data-oid="' + o.id + '">✅ جاهز</button>';
+    return '<div class="row"><div class="info"><b>' + esc(o.product_name) + '</b>'
+      + '<span>' + esc(o.user_name || "—") + " • " + fmtDate(o.created_at) + '</span></div>'
+      + '<span class="badge ' + st[0] + '">' + st[1] + " " + o.quantity + '</span>'
+      + (acts ? '<div class="acts">' + acts + '</div>' : "")
+      + '</div>';
+  }).join("") : '<p class="empty">لا توجد طلبات توريد مفتوحة.</p>';
+  box.querySelectorAll("button[data-oact]").forEach((b) =>
+    b.addEventListener("click", () => incomingAdvance(+b.dataset.oid, b.dataset.oact)));
+}
+async function incomingAdvance(id, action) {
+  if (!confirm(action === "receive" ? "تأكيد استلام الطلب من المورد؟" : "تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;
+  try {
+    const d = await api("/api/incoming/advance", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action })
+    });
+    toast(d.message || "تم."); loadOrders();
+  } catch (e) { toast(e.message, true); }
+}
+$("#dlgOrdCancel").addEventListener("click", () => $("#dlgOrd").close());
+$("#dlgOrdGo").addEventListener("click", async () => {
+  const name = $("#oName").value.trim();
+  const qty = parseInt($("#oQty").value, 10) || 0;
+  if (name.length < 2) { toast("أدخل اسم السلعة المطلوبة.", true); return; }
+  if (qty < 1) { toast("أدخل كمية صحيحة.", true); return; }
+  try {
+    const d = await api("/api/incoming/create", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_name: name, quantity: qty })
+    });
+    $("#dlgOrd").close(); toast(d.message || "تم إرسال الطلب."); loadOrders();
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ─── إضافة سلعة جديدة (مدراء) ─── */
+$("#btnAddProd").addEventListener("click", () => {
+  $("#nName").value = ""; $("#nQty").value = 0; $("#nMin").value = 5;
+  $("#nPrice").value = ""; $("#nLoc").value = "";
+  $("#dlgNew").showModal();
+});
+$("#dlgNewCancel").addEventListener("click", () => $("#dlgNew").close());
+$("#dlgNewGo").addEventListener("click", async () => {
+  const name = $("#nName").value.trim();
+  if (name.length < 2) { toast("أدخل اسم السلعة.", true); return; }
+  const qty = parseInt($("#nQty").value, 10) || 0;
+  const min = parseInt($("#nMin").value, 10) || 0;
+  try {
+    const d = await api("/api/products/create", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, quantity: qty, minimum_stock: min,
+        price: $("#nPrice").value || 0, location: $("#nLoc").value.trim() })
+    });
+    $("#dlgNew").close(); toast(d.message || "تمت الإضافة."); loadInventory();
   } catch (e) { toast(e.message, true); }
 });
 
