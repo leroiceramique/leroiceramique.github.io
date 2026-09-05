@@ -10284,6 +10284,7 @@ def build_application():
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backup_test", backup_test_command))
     app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("webpass", webpass_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.UpdateType.EDITED, handle_receipt_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
@@ -10628,6 +10629,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
+PWA_VERSION = "v26"
 PWA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pwa.html")
 
 PWA_SCHEMA_SQL = """
@@ -11448,12 +11450,12 @@ async def pwa_users_webpass_handler(request):
 
 
 async def pwa_status_handler(request):
-    """عام: هل يحتاج التطبيق إلى إعداد أول مدير؟"""
+    """عام: هل يحتاج التطبيق إلى إعداد أول مدير؟ + رقم الإصدار للتشخيص."""
     try:
         has = await _pwa_run(_pwa_has_accounts)
     except Exception:
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
-    return _pwa_jr({"ok": True, "setup": not has})
+    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION})
 
 
 async def pwa_setup_handler(request):
@@ -11493,8 +11495,61 @@ async def pwa_changepass_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
-_PWA_SW_JS = """// Service Worker — مخزون السيراميك (غلاف مخزّن + API شبكة أولاً)
-const CACHE = "ceram-pwa-v2";
+# ── أمر تلغرام /webpass: استعادة/ضبط كلمة مرور الويب من داخل البوت ──
+
+def _webpass_set(telegram_id, password):
+    """متزامن: يجد مستخدم البوت ويضبط كلمة ويبه. يرجع (username, name) أو None."""
+    user = get_user(telegram_id)
+    if not user:
+        return None
+    name = user.get("first_name") or user.get("username") or str(telegram_id)
+    uname = pwa_set_password(user["id"], name, password)
+    return uname, name
+
+
+async def webpass_command(update, context):
+    """🔑 /webpass <كلمة جديدة> — للمدراء فقط: ضبط كلمة مرور الويب
+    الخاصة بحسابك من تلغرام مباشرة (استعادة عند نسيان الكلمة)."""
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        await update.effective_message.reply_text("⛔ هذا الأمر للمدراء فقط.")
+        return
+    args = context.args or []
+    if not args:
+        await update.effective_message.reply_text(
+            "🔑 ضبط كلمة مرور التطبيق (الويب) الخاصة بك\n\n"
+            "اكتب:\n"
+            "/webpass كلمة123\n\n"
+            "(6 أحرف على الأقل — ستدخل بها التطبيق من المتصفح)")
+        return
+    password = str(args[0]).strip()
+    if len(password) < 6:
+        await update.effective_message.reply_text("⚠️ كلمة المرور قصيرة — 6 أحرف على الأقل.")
+        return
+    try:
+        row = await asyncio.get_running_loop().run_in_executor(
+            None, _webpass_set, uid, password)
+    except Exception as e:
+        logging.error("[WEBPASS] failed: " + str(e))
+        await update.effective_message.reply_text("⚠️ فشل الضبط، أعد المحاولة.")
+        return
+    if row is None:
+        await update.effective_message.reply_text(
+            "⚠️ حسابك غير مسجل في النظام بعد — افتح البوت بالضغط على /start أولاً.")
+        return
+    uname, name = row
+    await update.effective_message.reply_text(
+        "✅ تم ضبط كلمة مرور التطبيق\n\n"
+        "👤 الاسم: " + name + "\n"
+        "🔖 اسم الدخول: " + uname + "\n"
+        "🔑 كلمة المرور: " + password + "\n\n"
+        "ادخل الآن من رابط التطبيق بهذين البينين.\n"
+        "💡 وللموظفين: من شاشة المستخدمين في التطبيق زر 🔑 أمام كل موظف.")
+    logging.info("[WEBPASS] ضبط المدير " + uname + " كلمة مرور ويب من تلغرام")
+
+
+_PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
+const CACHE = "ceram-pwa-v3";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11511,6 +11566,21 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(fetch(e.request).catch(() =>
       new Response(JSON.stringify({ok: false, error: "لا يوجد اتصال — أعد المحاولة عند رجوع الشبكة."}),
         {status: 503, headers: {"Content-Type": "application/json"}})));
+    return;
+  }
+  // صفحات التطبيق: شبكة أولاً دائماً — التحديثات تظهر من أول فتح،
+  // وعند انقطاع الشبكة نرجع لآخر نسخة مخزنة.
+  if (e.request.mode === "navigate" || url.pathname === "/"
+      || url.pathname === "/pwa" || url.pathname === "/app") {
+    e.respondWith(
+      fetch(e.request).then((res) => {
+        if (res && res.status === 200 && url.origin === location.origin) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      }).catch(() => caches.match(e.request).then((h) => h || caches.match("/")))
+    );
     return;
   }
   e.respondWith(
