@@ -10521,6 +10521,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_oil_handler, pattern="^oil_"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backup_test", backup_test_command))
+    app.add_handler(CommandHandler("testmail", testmail_command))  # v36: اختبار البريد
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CommandHandler("webpass", webpass_command))
     app.add_handler(CommandHandler("audit", audit_command))
@@ -10868,7 +10869,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v35"
+PWA_VERSION = "v36"
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -11645,8 +11646,9 @@ def _pwa_api_register(name, email_raw, password, role, ip):
                 conn.rollback()
             finally:
                 release_connection(conn)
-        return False, None, ("تعذّر إرسال رمز التأكيد إلى بريدك — "
-                             "تأكد من صحة البريد وأعد المحاولة بعد قليل.")
+        detail = _PWA_SMTP_LAST_ERR or "إعدادات SMTP على الخادم غير مكتملة."
+        return False, None, ("تعذّر إرسال رمز التأكيد إلى بريدك — المشكلة من إعدادات "
+                             "الخادم وليست من بريدك. السبب: " + detail)
     return True, {"email": email, "masked": _pwa_mask_identifier(email),
                   "reused": reused}, None
 
@@ -11754,9 +11756,71 @@ def _pwa_otp_sms_ready():
     return bool(TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID)
 
 
+async def testmail_command(update, context):
+    """v36: /testmail — للمدير فقط: يرسل بريداً تجريبياً إلى BACKUP_EMAIL ويعرض
+    نتيجة الإرسال مع السبب المصنَّف عند الفشل (لتشخيص إعدادات Brevo/SMTP)."""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await update.message.reply_text("هذا الأمر للمدير فقط.")
+        return
+    if not _pwa_otp_email_ready() or not BACKUP_EMAIL:
+        await update.message.reply_text(
+            "⚠️ الإعداد ناقص — المطلوب على Render (Environment):\n"
+            "SMTP_HOST = smtp-relay.brevo.com\n"
+            "SMTP_PORT = 587\n"
+            "SMTP_EMAIL = بريد تسجيلك في Brevo\n"
+            "SMTP_PASSWORD = مفتاح SMTP من Brevo (يبدأ بـ xkeysib-)\n"
+            "BACKUP_EMAIL = بريدك لاستقبال التجربة\n"
+            "ثم اضغط Manual Deploy.")
+        return
+    await update.message.reply_text("⏳ جارٍ إرسال بريد تجريبي إلى " + BACKUP_EMAIL + " …")
+    ok = await asyncio.to_thread(
+        _pwa_send_email_sync, BACKUP_EMAIL,
+        "✅ بريد تجريبي — مخزون السيراميك",
+        "هذا بريد تجريبي للتأكد من عمل إعدادات SMTP على الخادم.\n"
+        "إذا وصلك فالإرسال يعمل، وسيصل رمز التأكيد لكل مسجل جديد مباشرة.\n\n"
+        "إن لم يصلك: افحص مجلد Spam ثم راجع السبب المعروض في البوت.")
+    if ok:
+        await update.message.reply_text(
+            "✅ وصل البريد التجريبي إلى " + BACKUP_EMAIL + "\n"
+            "الإعدادات سليمة — رموز التأكيد ستصل للمسجلين الجدد.")
+    else:
+        await update.message.reply_text(
+            "❌ فشل الإرسال — السبب:\n" + (_PWA_SMTP_LAST_ERR or "غير معروف"))
+
+
+# v36: تشخيص فشل إرسال البريد — آخر خطأ مصنّف بالعربية يُعرض للمدير وللمسجلين
+_PWA_SMTP_LAST_ERR = ""
+
+
+def _pwa_smtp_classify(e):
+    """v36: تصنيف استثناء SMTP إلى نص عربي واضح (سبب قابل للإصلاح)."""
+    s = str(e or "")
+    low = s.lower()
+    if ("535" in s or "530" in s or "badcredentials" in low
+            or "authentic" in low or "username and password" in low
+            or "authorization failed" in low or "login failed" in low):
+        return ("بيانات دخول SMTP مرفوضة — تأكد أن SMTP_PASSWORD هو مفتاح SMTP من "
+                "Brevo (يبدأ بـ xkeysib-) وليس كلمة سر حساب Brevo، وأن SMTP_EMAIL "
+                "هو بريد تسجيلك في Brevo نفسه.")
+    if "getaddrinfo" in low or "name or service not known" in low or "nodename" in low:
+        return "تعذر الوصول لخادم البريد — تحقق من SMTP_HOST (smtp-relay.brevo.com)."
+    if ("timed out" in low or "timeout" in low or "refused" in low
+            or "unreachable" in low):
+        return ("تعذر الاتصال بخادم البريد — تحقق من SMTP_PORT (587 لـ Brevo) "
+                "وأعد المحاولة.")
+    if ("sender" in low and ("reject" in low or "denied" in low)) or "553" in s:
+        return ("بريد المُرسِل مرفوض — في Brevo استعمل SMTP_EMAIL بنفس بريد تسجيل "
+                "الحساب (مُرسِل موثَّق تلقائياً) أو فعّل المُرسِل من لوحة Brevo.")
+    if "550" in s or "551" in s or "recipient" in low:
+        return "البريد المُرسَل إليه مرفوض من خادم البريد — تحقق من صحة البريد."
+    return "خطأ غير متوقع في SMTP — راجع سجلات Render (سطر [PWA] email failed)."
+
+
 def _pwa_send_email_sync(to_email, subject, body):
     """v34: إرسال بريد عام عبر SMTP المُهيأ (متزامن — يُستدعى في executor).
-    يُستخدم لإشعار الموافقة على التسجيل ورموز الدخول. يعيد True عند النجاح."""
+    يُستخدم لإشعار الموافقة على التسجيل ورموز الدخول. يعيد True عند النجاح.
+    v36: عند الفشل يُخزَّن السبب المصنَّف في _PWA_SMTP_LAST_ERR للعرض."""
+    global _PWA_SMTP_LAST_ERR
     import smtplib
     import ssl as _ssl
     from email.mime.text import MIMEText
@@ -11780,9 +11844,12 @@ def _pwa_send_email_sync(to_email, subject, body):
             server.login(SMTP_EMAIL, SMTP_PASSWORD)
             server.sendmail(SMTP_EMAIL, [to_email], msg.as_string())
         logging.info("[PWA] email sent to " + str(to_email))
+        _PWA_SMTP_LAST_ERR = ""
         return True
     except Exception as e:
-        logging.error("[PWA] email failed: " + str(e))
+        _PWA_SMTP_LAST_ERR = _pwa_smtp_classify(e)
+        logging.error("[PWA] email failed: " + str(e) + " | السبب: "
+                      + _PWA_SMTP_LAST_ERR)
         return False
 
 
@@ -12821,7 +12888,8 @@ async def pwa_register_resend_handler(request):
     sent = await asyncio.to_thread(_pwa_send_verify_email_sync, email, code_or_msg,
                                    found["first_name"] or "")
     if not sent:
-        return _pwa_err(503, "تعذّر إرسال الرمز الآن — أعد المحاولة بعد قليل.")
+        detail = _PWA_SMTP_LAST_ERR or "إعدادات SMTP على الخادم غير مكتملة."
+        return _pwa_err(503, "تعذّر إرسال الرمز الآن — السبب: " + detail)
     await _pwa_run(_audit_log, "reg_resend", {"id": found["id"]}, ip=ip)
     return _pwa_jr({"ok": True, "masked": _pwa_mask_identifier(email),
                     "message": "أُعيد إرسال الرمز إلى بريدك — تحقق أيضاً من مجلد Spam."})
@@ -13953,6 +14021,7 @@ async def pwa_status_handler(request):
     return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
                     "self_register": _pwa_self_register_enabled(),
                     "smtp_ready": _pwa_otp_email_ready(),  # v35: رمز تأكيد التسجيل يصل البريد
+                    "smtp_last_err": _PWA_SMTP_LAST_ERR,   # v36: سبب آخر فشل إرسال (تشخيص)
                     "email_otp": _pwa_otp_email_ready(),   # v33: الرمز يصل البريد الحقيقي
                     "sms_otp": _pwa_otp_sms_ready(),       # v33: الرمز يصل SMS عبر TextBee
                     "google_login": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),  # v33
@@ -14088,7 +14157,7 @@ async def audit_command(update, context):
 
 
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
-const CACHE = "ceram-pwa-v11";
+const CACHE = "ceram-pwa-v12";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

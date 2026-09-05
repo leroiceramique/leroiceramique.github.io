@@ -181,7 +181,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ سجّل ببريدك ويصلك رمز تأكيد فوري — تفعيل تلقائي<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v35</span></p>
+      <span style="opacity:.65">الإصدار v36</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -277,7 +277,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v35</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v36</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -445,7 +445,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 const $ = (s) => document.querySelector(s);
 const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false,
   googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null, // v33/v34
-  regEmail: "", smtpReady: true, resendT: null,   // v35: رمز تأكيد البريد
+  regEmail: "", smtpReady: true, smtpErr: "", resendT: null,   // v35: رمز التأكيد — v36: سبب آخر فشل
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
@@ -1428,7 +1428,11 @@ $("#btnLogout").addEventListener("click", async () => {
     if (d && d.reasons) S.reasons = d.reasons; // قائمة الأسباب من الخادم (مصدر واحد)
     S.googleLogin = !!(d && d.google_login);   // v33
     S.smtpReady = !!(d && d.smtp_ready);       // v35: رمز التأكيد يصل البريد
-    if (!S.smtpReady) $("#smtpWarn").style.display = "";
+    S.smtpErr = (d && d.smtp_last_err) || "";  // v36: سبب آخر فشل إرسال (تشخيص)
+    if (!S.smtpReady) {
+      $("#smtpWarn").style.display = "";
+      if (S.smtpErr) $("#smtpWarn").textContent = "⚠️ خدمة البريد فيها مشكلة — السبب: " + S.smtpErr;
+    }
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
   } catch (e2) {}
