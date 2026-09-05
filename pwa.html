@@ -236,7 +236,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v43</span></p>
+      <span style="opacity:.65">الإصدار v44</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -334,7 +334,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v43</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v44</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -433,7 +433,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
-      <p class="hint" id="setAbout">الإصدار v43</p>
+      <p class="hint" id="setAbout">الإصدار v44</p>
     </section>
   </main>
   <nav class="tabs">
@@ -587,6 +587,17 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
   <div class="db">
     <div id="notifList"><p class="empty">لا إشعارات بعد.</p></div>
     <button class="btn gray" id="dlgNotifClose" style="margin-top:10px">إغلاق</button>
+  </div>
+</dialog>
+
+<!-- v44: التحديث الداخلي — تنبيه بإصدار جديد وتحديث بنقرة دون إعادة تثبيت التطبيق -->
+<dialog id="dlgUpd">
+  <div class="dh">🔄 تحديث جديد</div>
+  <div class="db">
+    <p style="margin:0 0 12px;font-size:14px;color:var(--mut);text-align:center">
+      يوجد تحديث جديد للتطبيق.<br>يرجى الضغط على «نعم» للتحميل — التحديث داخلي ولا يحتاج إعادة تثبيت.</p>
+    <button class="btn" id="btnUpdYes">✅ نعم، حدّث الآن</button>
+    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً</button>
   </div>
 </dialog>
 
@@ -1921,7 +1932,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v43" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v44" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -1937,6 +1948,65 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     showLogin(setupMode);
   }
 })();
+
+/* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
+const APP_VER = "v44";
+S.updDismissed = "";
+function swCleanup() {
+  try {
+    if ("caches" in window && caches.keys) {
+      caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
+    }
+    if ("serviceWorker" in navigator && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations()
+        .then((rs) => rs.forEach((r) => { try { r.unregister(); } catch (e) {} }))
+        .catch(() => {});
+    }
+    if (window.AndroidBridge && typeof window.AndroidBridge.clearCache === "function") {
+      try { window.AndroidBridge.clearCache(); } catch (e) {}
+    }
+  } catch (e) {}
+}
+function doAppUpdate() {
+  toast("جارٍ التحديث…");
+  swCleanup();
+  const v = S.serverVersion || String(Date.now());
+  setTimeout(() => {
+    try {
+      location.replace(location.pathname + "?upd=" + encodeURIComponent(v) + (location.hash || ""));
+    } catch (e) { location.reload(); }
+  }, 400);
+}
+function checkAppUpdate() {
+  fetch("/api/status", { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
+    const v = (d && d.version) || "";
+    if (v) S.serverVersion = v;
+    const about = $("#setAbout");
+    if (about) about.textContent = "الإصدار " + APP_VER + (v ? " — الخادم " + v : "");
+    if (v && v !== APP_VER && v !== S.updDismissed) {
+      const dlg = $("#dlgUpd");
+      if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
+    }
+  }).catch(() => {});
+}
+$("#btnUpdYes").addEventListener("click", () => {
+  try { $("#dlgUpd").close(); } catch (e) {}
+  doAppUpdate();
+});
+$("#btnUpdLater").addEventListener("click", () => {
+  S.updDismissed = S.serverVersion || "";
+  try { $("#dlgUpd").close(); } catch (e) {}
+});
+try {
+  if (new URLSearchParams(location.search).get("upd")) {
+    history.replaceState(null, "", location.pathname);
+  }
+} catch (e) {}
+setInterval(checkAppUpdate, 300000);  /* كل 5 دقائق */
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) checkAppUpdate();  /* فحص لحظة العودة للتطبيق */
+});
+setTimeout(checkAppUpdate, 8000);     /* فحص أول بعد الإقلاع بقليل */
 </script>
 </body>
 </html>
