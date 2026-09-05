@@ -44,8 +44,20 @@ input,select{font-family:inherit;font-size:16px}
 .btn.mini{width:auto;padding:7px 12px;font-size:13px;border-radius:10px}
 .btn.gold{background:var(--brand2)}
 .btn.red{background:var(--bad)} .btn.green{background:var(--ok)}
-#loginErr,#setupErr{display:none;background:#fdecec;color:var(--bad);border:1px solid #f5c2c2;
+#loginErr,#setupErr,#regErr{display:none;background:#fdecec;color:var(--bad);border:1px solid #f5c2c2;
   padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
+/* ─── v32: تبويبات الدخول + حساب جديد ─── */
+.ltabs{display:flex;gap:6px;margin-bottom:14px;background:#f6efe7;border-radius:12px;padding:4px}
+.ltab{flex:1;border:none;background:transparent;border-radius:9px;padding:9px 6px;
+  font-size:13.5px;font-weight:700;color:var(--mut);cursor:pointer}
+.ltab.on{background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(180,83,9,.25)}
+.reglink{margin:2px 0 0;font-size:13.5px;text-align:center}
+.reglink a{color:var(--brand);font-weight:800;text-decoration:none}
+.bigcode{font-size:34px;font-weight:900;letter-spacing:8px;text-align:center;
+  color:var(--brand);background:#fff7ed;border:2px dashed var(--brand2);
+  border-radius:14px;padding:14px 6px;margin:12px 0;direction:ltr;user-select:all}
+.badge.g{background:#e7f6ec;color:#15803d}
+.badge.b{background:#e8f1fd;color:#1d4ed8}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
 header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--brand),#92400e);
@@ -121,6 +133,11 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .rchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:8px 13px;
   font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
 .rchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
+/* (v31) صفوف سجل الحركة في تفاصيل السلعة */
+.hrow{display:flex;flex-direction:column;gap:2px;padding:7px 2px;border-bottom:1px solid var(--line)}
+.hrow:last-child{border-bottom:none}
+.hrow span{font-size:13.5px;font-weight:600}
+.hrow small{font-size:12px;color:var(--mut)}
 .hint{font-size:12px;color:var(--mut);text-align:center;margin-top:10px;line-height:1.7}
 /* ─── الإشعارات (v30) ─── */
 .bellwrap{position:relative;flex-shrink:0}
@@ -132,6 +149,10 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
 .nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}
 #notifList{max-height:55vh;overflow:auto}
+/* ─── v33: زر Google + تفعيل العضويات ─── */
+.gbtn{background:#fff !important;color:#1f2937 !important;border:1.5px solid var(--line) !important;
+  display:flex;align-items:center;justify-content:center;gap:9px;font-weight:800}
+.gbtn:active{background:#f3f4f6 !important}
 </style>
 </head>
 <body>
@@ -143,14 +164,91 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   <p class="sub">دخول فريق المؤسسة</p>
   <div class="card" id="loginCard">
     <div id="loginErr"></div>
-    <div class="fld"><label>اسم المستخدم</label>
-      <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
-    <div class="fld"><label>كلمة المرور</label>
-      <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
-    <button class="btn" id="btnLogin">دخول</button>
+    <div class="ltabs">
+      <button class="ltab on" id="ltabPass" type="button">🔑 كلمة المرور</button>
+      <button class="ltab" id="ltabOtp" type="button">📲 رمز سري</button>
+    </div>
+    <div id="passPane">
+      <div class="fld"><label>اسم المستخدم</label>
+        <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
+      <div class="fld"><label>كلمة المرور</label>
+        <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+      <button class="btn" id="btnLogin">دخول</button>
+    </div>
+    <div id="otpPane" style="display:none">
+      <div class="fld"><label>رقم الهاتف أو البريد الإلكتروني</label>
+        <input id="fOtpId" inputmode="email" autocapitalize="none" placeholder="05xxxxxxxx أو you@mail.com"></div>
+      <button class="btn" id="btnOtpSend">📩 إرسال الرمز</button>
+      <div id="otpStep2" style="display:none;margin-top:12px">
+        <p style="font-size:12.5px;color:var(--mut);margin:0 0 10px" id="otpSentHint">أُرسل الرمز إلى تلغرام</p>
+        <div class="fld"><label>الرمز (6 أرقام)</label>
+          <input id="fOtpCode" inputmode="numeric" maxlength="6" placeholder="••••••" style="direction:ltr;text-align:center;font-size:20px;letter-spacing:6px"></div>
+        <button class="btn" id="btnOtpLogin">دخول</button>
+      </div>
+      <p class="hint" id="otpChanHint">يصل الرمز إلى محادثتك مع بوت المؤسسة في تلغرام<br>صالح 10 دقائق</p>
+    </div>
+    <div id="gDiv" style="display:none;align-items:center;gap:10px;margin:12px 0 10px">
+      <div style="flex:1;height:1px;background:var(--line)"></div>
+      <span style="font-size:11.5px;color:var(--mut)">أو</span>
+      <div style="flex:1;height:1px;background:var(--line)"></div>
+    </div>
+    <button class="btn gbtn" id="btnGoogle" type="button" style="display:none">
+      <svg width="18" height="18" viewBox="0 0 48 48" style="flex-shrink:0"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
+      الدخول بحساب Google</button>
     <p class="hint">بيانات الدخول تُعطى من إدارة المؤسسة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v30</span></p>
+      <span style="opacity:.65">الإصدار v33</span></p>
+  </div>
+  <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
+  <div class="card" id="regCard" style="display:none">
+    <div id="regErr"></div>
+    <p style="margin:0 0 14px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🆕 حساب جديد — انضمام للفريق</p>
+    <div class="fld"><label>الاسم الكامل</label>
+      <input id="rName" placeholder="مثال: أحمد بن يوسف"></div>
+    <div class="fld"><label>رقم الهاتف</label>
+      <input id="rPhone" inputmode="tel" placeholder="05xxxxxxxx" style="direction:ltr;text-align:right"></div>
+    <div class="fld"><label>البريد الإلكتروني (اختياري)</label>
+      <input id="rEmail" type="email" placeholder="you@mail.com" style="direction:ltr;text-align:right"></div>
+    <div class="fld"><label>الفئة — كيف ستعمل معنا؟</label>
+      <div class="rchips" id="rRoleChips">
+        <button type="button" class="rchip on" data-role="seller">🛍 بائع</button>
+        <button type="button" class="rchip" data-role="stock">📦 عامل مخزون</button>
+      </div></div>
+    <button class="btn" id="btnRegister">إنشاء الطلب</button>
+    <p class="hint"><a href="#" id="lnkBackLogin">← رجوع إلى الدخول</a><br>
+      بعد الطلب: افتح البوت وأرسل رمز التأكيد لتفعيل حسابك<br>
+      فئة «مدير» تُمنح من إدارة المؤسسة فقط</p>
+  </div>
+  <div class="card" id="regDone" style="display:none">
+    <p style="margin:0 0 4px;font-weight:800;color:var(--ok);text-align:center;font-size:16px">✅ تم إنشاء طلبك بنجاح</p>
+    <p style="margin:0;text-align:center;font-size:13px;color:var(--mut)">هذا رمز التأكيد — أرسله إلى البوت:</p>
+    <div class="bigcode" id="regCode">••••••</div>
+    <a class="btn" id="regBotLink" href="#" style="text-decoration:none">📲 فتح تلغرام لتأكيد الحساب</a>
+    <button class="btn gray" id="btnCopyCode" style="margin-top:8px">📋 نسخ الرمز</button>
+    <p class="hint">إذا لم يفتح الرابط: افتح بوت المؤسسة وأرسل الرمز نصاً<br>
+      بعد التأكيد سجّل الدخول بتبويب «رمز سري»</p>
+  </div>
+  <!-- v33: انضمام عبر حساب Google (بريد موثّق من جوجل — بلا رمز بوت) -->
+  <div class="card" id="gJoinCard" style="display:none">
+    <div id="gJoinErr"></div>
+    <p style="margin:0 0 4px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🆕 أهلاً <span id="gJoinName">—</span></p>
+    <p style="margin:0 0 12px;text-align:center;font-size:13px;color:var(--mut)">
+      تم توثيق بريدك عبر حساب Google: <b id="gJoinEmail" style="direction:ltr;unicode-bidi:embed"></b><br>
+      اختر كيف ستعمل معنا — ثم تُفعّل عضويتك من الإدارة:</p>
+    <div class="fld"><label>الفئة</label>
+      <div class="rchips" id="gRoleChips">
+        <button type="button" class="rchip on" data-role="stock">📦 عامل مخزون</button>
+        <button type="button" class="rchip" data-role="seller">🛍 بائع</button>
+      </div></div>
+    <button class="btn" id="btnGJoin">إرسال طلب الانضمام</button>
+    <button class="btn gray" id="btnGJoinBack" style="margin-top:8px">رجوع إلى الدخول</button>
+  </div>
+  <div class="card" id="gWaitCard" style="display:none">
+    <p style="margin:0 0 6px;font-weight:800;color:var(--ok);text-align:center;font-size:15px">⏳ عضويتك في انتظار التفعيل</p>
+    <p style="margin:0;text-align:center;font-size:13px;color:var(--mut)">
+      وصل طلبك إلى إدارة المؤسسة — ستُفعَّل عضويتك من لوحة المستخدمين،
+      ثم سجّل الدخول بحساب Google مجدداً.</p>
+    <button class="btn gray" id="btnGWaitBack" style="margin-top:12px">رجوع إلى الدخول</button>
   </div>
   <div class="card" id="setupCard" style="display:none">
     <div id="setupErr"></div>
@@ -187,7 +285,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v30</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v33</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -266,12 +364,41 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   </div>
 </dialog>
 
+<dialog id="dlgRole">
+  <div class="dh" id="dlgRoleTitle">🎯 فئة المستخدم</div>
+  <div class="db">
+    <p id="dlgRoleUser" style="margin:0 0 12px;font-weight:800"></p>
+    <div class="fld"><label>اختر الفئة الجديدة</label>
+      <div class="rchips" id="dlgRoleChips"></div></div>
+    <button class="btn" id="dlgRoleGo">تطبيق</button>
+    <button class="btn gray" id="dlgRoleCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
+<dialog id="dlgApprove">
+  <div class="dh">✅ تفعيل عضوية منتظرة</div>
+  <div class="db">
+    <p id="dlgApprUser" style="margin:0 0 12px;font-weight:800"></p>
+    <div class="fld"><label>فئة العضو بعد التفعيل</label>
+      <div class="rchips" id="dlgApprChips"></div></div>
+    <button class="btn" id="dlgApprGo">تفعيل</button>
+    <button class="btn gray" id="dlgApprCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
 <dialog id="dlgNew">
   <div class="dh">＋ إضافة سلعة جديدة</div>
   <div class="db">
+    <div class="fld"><label>نوع السلعة — مثل البوت</label>
+      <div class="rchips" id="nTypeChips" style="display:flex;flex-wrap:wrap;gap:6px">
+        <button type="button" class="rchip" data-t="motif">🎨 موتيف (قطع)</button>
+        <button type="button" class="rchip" data-t="12060">🎨 120/60 (قطع)</button>
+        <button type="button" class="rchip" data-t="plante">🌿 plante (قطع)</button>
+        <button type="button" class="rchip on" data-t="other">📦 باقي السلع (كرتون)</button>
+      </div></div>
     <div class="fld"><label>اسم السلعة (كامل وواضح)</label>
       <input id="nName" placeholder="مثال: hexa ceram decor beige 30/90"></div>
-    <div class="fld"><label>الكمية الأولية</label>
+    <div class="fld"><label id="nQtyLbl">الكمية الأولية (كرتون)</label>
       <input id="nQty" type="number" inputmode="numeric" min="0" value="0"></div>
     <div class="fld"><label>الحد الأدنى للتنبيه</label>
       <input id="nMin" type="number" inputmode="numeric" min="0" value="5"></div>
@@ -283,6 +410,21 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button class="btn gray" id="dlgNewCancel" style="margin-top:8px">إلغاء</button>
   </div>
 </dialog>
+
+<dialog id="dlgDetail">
+  <div class="dh">📋 تفاصيل السلعة</div>
+  <div class="db" id="detBody"><p class="empty">جارٍ التحميل…</p></div>
+</dialog>
+
+<dialog id="dlgPhoto">
+  <div class="dh">🖼️ وصل التوريد</div>
+  <div class="db">
+    <img id="photoImg" style="width:100%;border-radius:10px;background:#0b1626" alt="وصل التوريد">
+    <button class="btn gray" id="dlgPhotoClose" style="margin-top:8px">إغلاق</button>
+  </div>
+</dialog>
+
+<input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">
 
 <dialog id="dlgOrd">
   <div class="dh">🚚 طلب توريد جديد</div>
@@ -309,7 +451,8 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
-const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null,
+const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRegister: false, otpIdent: "", regCode: "",
+  googleLogin: false, emailOtp: false, smsOtp: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null, // v33
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
@@ -342,10 +485,186 @@ function showLogin(setupMode) {
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
   $("#setupCard").style.display = setupMode ? "" : "none";
+  $("#regCard").style.display = "none"; $("#regDone").style.display = "none";
+  $("#lnkRegisterWrap").style.display = (!setupMode && S.selfRegister) ? "" : "none";
+  $("#otpStep2").style.display = "none"; $("#fOtpCode").value = ""; $("#fOtpId").value = "";
+  $("#gJoinCard").style.display = "none"; $("#gWaitCard").style.display = "none";  // v33
+  showLoginTab("pass");
   $("#fPass").value = "";
 }
+/* ─── v32: تبويبات الدخول + الرمز السري + حساب جديد ─── */
+function showLoginTab(mode) {
+  const pass = mode === "pass";
+  $("#ltabPass").classList.toggle("on", pass);
+  $("#ltabOtp").classList.toggle("on", !pass);
+  $("#passPane").style.display = pass ? "" : "none";
+  $("#otpPane").style.display = pass ? "none" : "";
+  $("#loginErr").style.display = "none";
+}
+$("#ltabPass").addEventListener("click", () => showLoginTab("pass"));
+$("#ltabOtp").addEventListener("click", () => showLoginTab("otp"));
+/* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي (جوجل يحجب WebView) */
+$("#btnGoogle").addEventListener("click", () => {
+  const app = window.AndroidBridge ? "?app=1" : "";
+  location.href = "/api/auth/google/start" + app;
+});
+async function doOtpSend() {
+  const err = $("#loginErr"); err.style.display = "none";
+  const ident = $("#fOtpId").value.trim();
+  if (!ident) { err.textContent = "أدخل رقم الهاتف أو البريد الإلكتروني."; err.style.display = "block"; return; }
+  const btn = $("#btnOtpSend"); btn.disabled = true; btn.textContent = "جارِ الإرسال...";
+  try {
+    const d = await api("/api/login/otp/request", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: ident })
+    });
+    S.otpIdent = ident;
+    const ch = d.channel || "telegram";
+    const where = ch === "email" ? "بريدك الإلكتروني"
+      : (ch === "sms" ? "هاتفك برسالة SMS" : "تلغرام (بوت المؤسسة)");
+    $("#otpSentHint").textContent = "أُرسل الرمز إلى " + where + " (" + (d.masked || "") + ") — أدخله هنا:";
+    $("#otpStep2").style.display = "";
+    $("#fOtpCode").focus();
+    toast("📩 أُرسل الرمز إلى " + where);
+  } catch (e) { err.textContent = e.message; err.style.display = "block"; }
+  finally { btn.disabled = false; btn.textContent = "📩 إرسال الرمز"; }
+}
+async function doOtpLogin() {
+  const err = $("#loginErr"); err.style.display = "none";
+  const code = $("#fOtpCode").value.trim();
+  if (!/^\d{6}$/.test(code)) { err.textContent = "الرمز 6 أرقام."; err.style.display = "block"; return; }
+  const btn = $("#btnOtpLogin"); btn.disabled = true; btn.textContent = "جارِ الدخول...";
+  try {
+    await api("/api/login/otp/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: S.otpIdent, code })
+    });
+    const me = await api("/api/me");
+    showApp(me);
+  } catch (e) { err.textContent = e.message; err.style.display = "block"; }
+  finally { btn.disabled = false; btn.textContent = "دخول"; }
+}
+$("#btnOtpSend").addEventListener("click", doOtpSend);
+$("#btnOtpLogin").addEventListener("click", doOtpLogin);
+["#fOtpCode"].forEach((s) => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") doOtpLogin(); }));
+["#fOtpId"].forEach((s) => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") doOtpSend(); }));
+/* ─── v32: حساب جديد (تسجيل ذاتي) ─── */
+let regRole = "seller";
+$("#rRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
+  $("#rRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
+  b.classList.add("on"); regRole = b.dataset.role;
+}));
+$("#lnkRegister").addEventListener("click", (e) => { e.preventDefault();
+  $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
+  $("#regCard").style.display = ""; $("#regErr").style.display = "none"; });
+$("#lnkBackLogin").addEventListener("click", (e) => { e.preventDefault();
+  $("#regCard").style.display = "none"; $("#loginCard").style.display = "";
+  $("#lnkRegisterWrap").style.display = S.selfRegister ? "" : "none"; });
+async function doRegister() {
+  const err = $("#regErr"); err.style.display = "none";
+  const name = $("#rName").value.trim();
+  const phone = $("#rPhone").value.trim();
+  const email = $("#rEmail").value.trim();
+  if (name.length < 3) { err.textContent = "أدخل الاسم الكامل (3 أحرف على الأقل)."; err.style.display = "block"; return; }
+  if (!phone && !email) { err.textContent = "أدخل رقم الهاتف أو البريد الإلكتروني (أحدهما على الأقل)."; err.style.display = "block"; return; }
+  const btn = $("#btnRegister"); btn.disabled = true; btn.textContent = "جارِ الإنشاء...";
+  try {
+    const d = await api("/api/register", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, phone, email, role: regRole })
+    });
+    S.regCode = d.registration.code;
+    $("#regCode").textContent = S.regCode;
+    const link = d.registration.bot_link || "";
+    const a = $("#regBotLink");
+    if (link) { a.href = link; a.style.display = ""; } else { a.style.display = "none"; }
+    $("#regCard").style.display = "none";
+    $("#regDone").style.display = "";
+  } catch (e2) { err.textContent = e2.message; err.style.display = "block"; }
+  finally { btn.disabled = false; btn.textContent = "إنشاء الطلب"; }
+}
+$("#btnRegister").addEventListener("click", doRegister);
+$("#btnCopyCode").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(S.regCode); toast("📋 تم نسخ الرمز: " + S.regCode); }
+  catch (e) { toast("الرمز: " + S.regCode); }
+});
+/* ─── v33: دخول بحساب Google + شاشات الانضمام والانتظار ─── */
+function showGoogleJoin(name, email, ot) {
+  S.gOt = ot || ""; S.gName = name || "";
+  $("#gJoinName").textContent = S.gName || "بالفريق";
+  $("#gJoinEmail").textContent = email || "";
+  $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
+  $("#regCard").style.display = "none"; $("#regDone").style.display = "none";
+  $("#gWaitCard").style.display = "none"; $("#gJoinErr").style.display = "none";
+  $("#gJoinCard").style.display = "";
+}
+function showGoogleWait() {
+  $("#loginCard").style.display = "none"; $("#lnkRegisterWrap").style.display = "none";
+  $("#regCard").style.display = "none"; $("#regDone").style.display = "none";
+  $("#gJoinCard").style.display = "none"; $("#app").style.display = "none";
+  $("#login").style.display = "block";
+  $("#gWaitCard").style.display = "";
+}
+function backToLogin() {
+  showLogin(false);  // تعيد كل البطاقات لحالتها وتُظهر شاشة الدخول
+}
+$("#gRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
+  $("#gRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
+  b.classList.add("on"); S.gJoinRole = b.dataset.role;
+}));
+$("#btnGJoin").addEventListener("click", async () => {
+  const err = $("#gJoinErr"); err.style.display = "none";
+  if (!S.gOt) { err.textContent = "انتهت صلاحية الطلب — سجّل الدخول بجوجل من جديد."; err.style.display = "block"; return; }
+  const btn = $("#btnGJoin"); btn.disabled = true; btn.textContent = "جارِ الإرسال...";
+  try {
+    const d = await api("/api/auth/google/join", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ot: S.gOt, role: S.gJoinRole })
+    });
+    S.gOt = ""; toast("✅ " + (d.message || "تم إرسال الطلب"));
+    showGoogleWait();
+  } catch (e) { err.textContent = e.message; err.style.display = "block"; }
+  finally { btn.disabled = false; btn.textContent = "إرسال طلب الانضمام"; }
+});
+$("#btnGJoinBack").addEventListener("click", backToLogin);
+$("#btnGWaitBack").addEventListener("click", backToLogin);
+function handleGoogleReturn(q) {
+  const g = q.get("google");
+  if (g === "join") {
+    showLogin(false);
+    showGoogleJoin(q.get("name") || "", q.get("email") || "", q.get("ot") || "");
+    return true;
+  }
+  if (g === "wait") { showLogin(false); showGoogleWait(); return true; }
+  if (g === "expired") { toast("⏳ انتهت صلاحية جلسة Google — أعد المحاولة", true); }
+  return false;
+}
+/* ─── v33: تفعيل العضويات المنتظرة (للمدير) ─── */
+function openApprove(reg) {
+  S.apprDlg = { id: reg.id, role: reg.role };
+  $("#dlgApprUser").textContent = reg.name + " — " + (reg.email ? reg.email : "بلا بريد");
+  $("#dlgApprChips").innerHTML = ROLE_OPTS.map((o) =>
+    '<button type="button" class="rchip' + (o[0] === reg.role ? " on" : "") + '" data-role="' + o[0] + '">' + o[1] + '</button>').join("");
+  $("#dlgApprChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
+    $("#dlgApprChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on"); S.apprDlg.role = b.dataset.role;
+  }));
+  $("#dlgApprove").showModal();
+}
+$("#dlgApprCancel").addEventListener("click", () => $("#dlgApprove").close());
+$("#dlgApprGo").addEventListener("click", async () => {
+  if (!S.apprDlg) return;
+  try {
+    const d = await api("/api/registrations/approve", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: S.apprDlg.id, role: S.apprDlg.role })
+    });
+    $("#dlgApprove").close(); toast("✅ " + d.message); loadUsers();
+  } catch (e) { toast(e.message, true); }
+});
 function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
+  if (S.user.role === "pending") { showGoogleWait(); return; }  // v33: عضوية منتظرة
   $("#login").style.display = "none"; $("#app").style.display = "flex";
   $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
   $("#btnAddProd").style.display = S.perms.admin ? "" : "none";
@@ -444,19 +763,23 @@ async function loadInventory() {
           + (p.available ? '<span class="badge g">متوفر</span>' : '<span class="badge r">غير متوفر</span>')
           + '</div>';
       }
-      const qtyBadge = p.low ? '<span class="badge r">' + p.qty + '</span>' : '<span class="badge g">' + p.qty + '</span>';
+      const unit = p.unit ? " " + p.unit : "";
+      const qtyBadge = p.low ? '<span class="badge r">' + p.qty + unit + '</span>' : '<span class="badge g">' + p.qty + unit + '</span>';
       let acts = "";
       if (S.perms.add_qty) acts += '<button class="btn mini green" data-act="add" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➕</button>';
       if (S.perms.remove) acts += '<button class="btn mini red" data-act="remove" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➖</button>';
       if (S.perms.admin) acts += '<button class="btn mini gray" data-act="reconcile" data-id="' + p.id + '" data-n="' + esc(p.name) + '">جرد</button>';
-      return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b>'
-        + '<span>' + esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + '</span></div>'
+      return '<div class="row"><div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
+        + '<span>' + esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + ' • 📜 للحركة اضغط الاسم</span></div>'
         + qtyBadge
         + (acts ? '<div class="acts">' + acts + '</div>' : "")
         + '</div>';
     }).join("");
     box.querySelectorAll("button[data-act]").forEach((b) =>
       b.addEventListener("click", () => openQty(b.dataset.act, +b.dataset.id, b.dataset.n)));
+    /* (v31) الضغط على اسم السلعة يفتح التفاصيل وسجل الحركة */
+    box.querySelectorAll("[data-detail]").forEach((el) =>
+      el.addEventListener("click", () => openDetail(+el.dataset.detail)));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
 
@@ -544,30 +867,56 @@ async function loadOil() {
 async function loadUsers() {
   const box = $("#usrList");
   try {
-    const d = await api("/api/users");
+    const [d, regsResp] = await Promise.all([
+      api("/api/users"),
+      api("/api/registrations").catch(() => ({ registrations: [] }))
+    ]);
     $("#cAll").textContent = d.counts.all;
     $("#cWeb").textContent = d.counts.web;
     $("#cKick").textContent = d.counts.kicked;
-    box.innerHTML = d.users.map((u) => {
+    let html = "";
+    const waiting = (regsResp && regsResp.registrations) || [];
+    if (waiting.length) {
+      html += '<p style="margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand2)">⏳ طلبات انضمام بانتظار التفعيل (' + waiting.length + ')</p>';
+      html += waiting.map((w) =>
+        '<div class="row"><div class="info"><b>' + esc(w.name) + '</b>'
+        + '<span>' + esc(w.role_label) + (w.phone ? " • 📞 " + esc(w.phone) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + '</span></div>'
+        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g">Google</span>' : '<span class="badge b">رمز: ' + esc(w.code) + '</span>')
+        + '<div class="acts"><button class="btn mini green" data-appr=\'' + JSON.stringify(w).replace(/'/g, "&#39;") + '\'>✅ تفعيل</button>'
+        + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
+        + '</div>').join("");
+    }
+    html += d.users.map((u) => {
       const self = u.telegram_id === S.user.telegram_id;
+      const hasTg = !!u.telegram_id;   // v33: مستخدمو Google فقط بلا تلغرام
       let acts = "";
-      if (!self && !u.protected && u.role !== "admin") {
-        acts += u.active
-          ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
-          : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
+      if (!self && hasTg && !u.protected) {
+        acts += '<button class="btn mini blue" data-role="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
+        if (u.role !== "admin") {
+          acts += u.active
+            ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
+            : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
+        }
       }
       acts += self
         ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
-        : '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>';
+        : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
       return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
         + '<span>' + esc(u.role_label) + (u.web ? " • اسم الدخول: " + esc(u.web_username) : "") + '</span></div>'
         + (u.active ? "" : '<span class="badge r">مطرود</span>')
+        + (u.verified ? '<span class="badge g">✓ موثّق</span>' : "")
+        + (u.phone ? '<span class="badge b">📞 ' + esc(u.phone) + '</span>' : "")
+        + (u.email ? '<span class="badge b">✉️ ' + esc(u.email) + '</span>' : "")
         + (u.web ? '<span class="badge n">🔑 ويب</span>' : "")
         + '<div class="acts">' + acts + '</div>'
         + '</div>';
     }).join("");
-    box.querySelectorAll("button[data-tg]").forEach((b) => b.addEventListener("click", () => {
-      if (b.dataset.self) openPass(null, b.dataset.n, true);
+    box.innerHTML = html;
+    box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr]").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
+      else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
+      else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);
+      else if (b.dataset.self) openPass(null, b.dataset.n, true);
       else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
       else openPass(+b.dataset.tg, b.dataset.n, false);
     }));
@@ -579,6 +928,49 @@ async function userToggle(tid, active) {
     const d = await api("/api/users/toggle", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ telegram_id: tid, active })
+    });
+    toast(d.message); loadUsers();
+  } catch (e) { toast(e.message, true); }
+}
+/* ── v32: حوار تغيير الفئة (ترقية المدير من هنا) + حذف طلبات الانضمام ── */
+const ROLE_OPTS = [
+  ["admin", "👑 مدير النظام"],
+  ["manager", "🧑‍💼 مدير البوت"],
+  ["stock", "📦 عامل مخزون"],
+  ["seller", "🛍 بائع"],
+  ["external", "🌍 بائع خارجي"],
+  ["customer", "👤 عميل"]
+];
+S.roleDlg = null; // {tid, name, role}
+function openRole(tid, name) {
+  S.roleDlg = { tid, name, role: null };
+  $("#dlgRoleUser").textContent = name;
+  $("#dlgRoleChips").innerHTML = ROLE_OPTS.map((o) =>
+    '<button type="button" class="rchip" data-r="' + o[0] + '">' + o[1] + '</button>').join("");
+  $("#dlgRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
+    $("#dlgRoleChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on"); S.roleDlg.role = b.dataset.r;
+  }));
+  $("#dlgRole").showModal();
+}
+$("#dlgRoleCancel").addEventListener("click", () => $("#dlgRole").close());
+$("#dlgRoleGo").addEventListener("click", async () => {
+  if (!S.roleDlg || !S.roleDlg.role) { toast("اختر الفئة أولاً.", true); return; }
+  if (S.roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;
+  try {
+    const d = await api("/api/users/role", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ telegram_id: S.roleDlg.tid, role: S.roleDlg.role })
+    });
+    toast(d.message); $("#dlgRole").close(); loadUsers();
+  } catch (e) { toast(e.message, true); }
+});
+async function regDelete(id) {
+  if (!confirm("حذف طلب الانضمام هذا؟ سيتعذر على صاحبه التأكيد بالرمز.")) return;
+  try {
+    const d = await api("/api/registrations/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id })
     });
     toast(d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
@@ -658,6 +1050,11 @@ function renderOrders() {
       acts += '<button class="btn mini gray" data-oact="receive" data-oid="' + o.id + '">🔧 استلمت</button>';
     if (d.admin)
       acts += '<button class="btn mini green" data-oact="complete" data-oid="' + o.id + '">✅ جاهز</button>';
+    /* (v31) وصل التوريد: تصوير/استبدال لصاحب الطلب والمدير، وعرض لمن لديه صورة */
+    if (o.has_photo)
+      acts += '<button class="btn mini gold" data-orct="view" data-oid="' + o.id + '">🖼️ الوصل</button>';
+    if (d.admin || o.mine)
+      acts += '<button class="btn mini gray" data-orct="up" data-oid="' + o.id + '">📸 ' + (o.has_photo ? "استبدال" : "تصوير") + '</button>';
     return '<div class="row"><div class="info"><b>' + esc(o.product_name) + '</b>'
       + '<span>' + esc(o.user_name || "—") + " • " + fmtDate(o.created_at) + '</span></div>'
       + '<span class="badge ' + st[0] + '">' + st[1] + " " + o.quantity + '</span>'
@@ -666,6 +1063,10 @@ function renderOrders() {
   }).join("") : '<p class="empty">لا توجد طلبات توريد مفتوحة.</p>';
   box.querySelectorAll("button[data-oact]").forEach((b) =>
     b.addEventListener("click", () => incomingAdvance(+b.dataset.oid, b.dataset.oact)));
+  /* (v31) ربط أزرار الوصل */
+  box.querySelectorAll("button[data-orct]").forEach((b) =>
+    b.addEventListener("click", () =>
+      (b.dataset.orct === "view") ? receiptView(+b.dataset.oid) : receiptUpload(+b.dataset.oid)));
 }
 async function incomingAdvance(id, action) {
   if (!confirm(action === "receive" ? "تأكيد استلام الطلب من المورد؟" : "تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;
@@ -692,7 +1093,126 @@ $("#dlgOrdGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
+/* ─── (v31) تفاصيل السلعة + سجل الحركة — مثل «📜 سجل الحركات» في البوت ─── */
+async function openDetail(id) {
+  $("#detBody").innerHTML = '<p class="empty">جارٍ التحميل…</p>';
+  $("#dlgDetail").showModal();
+  try {
+    const d = await api("/api/product/" + id);
+    const p = d.product;
+    if (p.limited) {
+      $("#detBody").innerHTML = '<p><b>' + esc(p.name) + '</b></p>'
+        + (p.available ? '<p class="badge g">✅ متوفرة حالياً</p>' : '<p class="badge r">❌ غير متوفرة حالياً</p>');
+      return;
+    }
+    const hist = p.history || [];
+    const histHtml = hist.length
+      ? hist.map((t) => {
+          const ic = t.t === "add" ? "🟢" : (t.t === "reconcile" ? "⚖️" : "🔴");
+          const sign = t.t === "add" ? "+" : (t.t === "reconcile" ? "=" : "-");
+          return '<div class="hrow"><span>' + ic + " " + esc(t.date) + " — " + sign + esc(t.q)
+            + " " + esc(p.unit) + '</span>'
+            + '<small>' + esc(t.op) + (t.reason ? " • " + esc(t.reason) : "") + '</small></div>';
+        }).join("")
+      : '<p class="empty">لا توجد حركات مسجلة بعد.</p>';
+    let acts = "";
+    if (S.perms.add_qty) acts += '<button class="btn mini green" id="detAdd">➕ إضافة</button>';
+    if (S.perms.remove) acts += '<button class="btn mini red" id="detRem">➖ إخراج</button>';
+    $("#detBody").innerHTML =
+      '<p style="font-size:17px;font-weight:700;margin:0 0 6px">' + esc(p.name) + '</p>'
+      + '<div class="hrow" style="background:var(--card,#10203a);border-radius:10px;padding:8px 10px">'
+      + '<span>' + (p.low ? '🔴' : '🟢') + " الكمية: <b>" + p.qty + " " + esc(p.unit) + '</b></span>'
+      + '<small>' + "الحد الأدنى: " + p.min
+      + (p.location ? " • الموقع: " + esc(p.location) : "")
+      + (p.price ? " • السعر: " + p.price : "")
+      + (p.created ? " • أُضيفت: " + p.created : "") + '</small></div>'
+      + (acts ? '<div style="display:flex;gap:8px;margin:10px 0">' + acts + '</div>' : "")
+      + '<p style="margin:10px 0 4px;font-weight:700">📜 سجل الحركات (' + hist.length + ')</p>'
+      + histHtml;
+    if (S.perms.add_qty) $("#detAdd").addEventListener("click", () => { $("#dlgDetail").close(); openQty("add", p.id, p.name); });
+    if (S.perms.remove) $("#detRem").addEventListener("click", () => { $("#dlgDetail").close(); openQty("remove", p.id, p.name); });
+  } catch (e) {
+    $("#detBody").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
+  }
+}
+$("#dlgDetail").addEventListener("click", (e) => { if (e.target === $("#dlgDetail")) $("#dlgDetail").close(); });
+
+/* ─── (v31) وصل التوريد: تصوير بالكاميرا + عارض ─── */
+let receiptTarget = 0;
+function shrinkImage(file, maxSide, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        let w = img.width, h = img.height;
+        const sc = Math.min(1, maxSide / Math.max(w, h));
+        w = Math.max(1, Math.round(w * sc)); h = Math.max(1, Math.round(h * sc));
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL("image/jpeg", quality));
+      } catch (e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("تعذر قراءة الصورة")); };
+    img.src = url;
+  });
+}
+function receiptUpload(id) {
+  receiptTarget = id;
+  const inp = $("#receiptFile");
+  inp.value = "";
+  inp.click();
+}
+$("#receiptFile").addEventListener("change", async () => {
+  const f = $("#receiptFile").files && $("#receiptFile").files[0];
+  if (!f || !receiptTarget) return;
+  toast("جارٍ تجهيز الصورة…");
+  try {
+    const dataUrl = await shrinkImage(f, 1280, 0.75);
+    const d = await api("/api/incoming/receipt", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: receiptTarget, photo: dataUrl, mime: "image/jpeg" })
+    });
+    toast(d.message || "تم حفظ الوصل."); loadOrders();
+  } catch (e) { toast(e.message || "فشل رفع الوصل", true); }
+});
+async function receiptView(id) {
+  try {
+    const res = await fetch("/api/incoming/" + id + "/receipt", { credentials: "same-origin" });
+    if (!res.ok) {
+      let m = "تعذر عرض الوصل";
+      try { m = (await res.json()).error || m; } catch (e) {}
+      toast(m, true); return;
+    }
+    const blob = await res.blob();
+    const img = $("#photoImg");
+    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    img.dataset.url = URL.createObjectURL(blob);
+    img.src = img.dataset.url;
+    $("#dlgPhoto").showModal();
+  } catch (e) { toast("تعذر عرض الوصل", true); }
+}
+$("#dlgPhotoClose").addEventListener("click", () => $("#dlgPhoto").close());
+
 /* ─── إضافة سلعة جديدة (مدراء) ─── */
+/* ─── (v31) نوع السلعة مثل البوت: موتيف/120-60/plante → قطع، الباقي كرتون ─── */
+S.newType = "other";
+const TYPE_META = {
+  motif:  { prefix: "motif",   unit: "قطعة",  ph: "مثال: motif decor beige 60x60" },
+  "12060":{ prefix: "120/60",  unit: "قطعة",  ph: "مثال: 120/60 loire gris" },
+  plante: { prefix: "plante",  unit: "قطعة",  ph: "مثال: plante blanche 30/60" },
+  other:  { prefix: "",        unit: "كرتون", ph: "مثال: hexa ceram decor beige 30/90" }
+};
+$("#nTypeChips").querySelectorAll(".rchip").forEach((b) =>
+  b.addEventListener("click", () => {
+    $("#nTypeChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on");
+    S.newType = b.dataset.t;
+    $("#nQtyLbl").textContent = "الكمية الأولية (" + TYPE_META[S.newType].unit + ")";
+    $("#nName").placeholder = TYPE_META[S.newType].ph;
+  }));
 $("#btnAddProd").addEventListener("click", () => {
   $("#nName").value = ""; $("#nQty").value = 0; $("#nMin").value = 5;
   $("#nPrice").value = ""; $("#nLoc").value = "";
@@ -700,8 +1220,17 @@ $("#btnAddProd").addEventListener("click", () => {
 });
 $("#dlgNewCancel").addEventListener("click", () => $("#dlgNew").close());
 $("#dlgNewGo").addEventListener("click", async () => {
-  const name = $("#nName").value.trim();
+  let name = $("#nName").value.trim();
   if (name.length < 2) { toast("أدخل اسم السلعة.", true); return; }
+  /* (v31) بادئة النوع تلقائياً مثل البوت تماماً — القاعدة تعتمد على بداية الاسم */
+  const meta = TYPE_META[S.newType] || TYPE_META.other;
+  if (meta.prefix) {
+    const low = name.toLowerCase();
+    const okp = S.newType === "12060"
+      ? (low.startsWith("120/60") || low.startsWith("120x60") || low.startsWith("120×60"))
+      : low.startsWith(meta.prefix);
+    if (!okp) name = meta.prefix + " " + name;
+  }
   const qty = parseInt($("#nQty").value, 10) || 0;
   const min = parseInt($("#nMin").value, 10) || 0;
   try {
@@ -880,8 +1409,24 @@ $("#btnLogout").addEventListener("click", async () => {
     const st = await fetch("/api/status", { credentials: "same-origin" });
     const d = await st.json();
     setupMode = !!(d && d.setup);
+    S.selfRegister = !!(d && d.self_register); // v32: إظهار رابط «حساب جديد» حسب إعداد الخادم
     if (d && d.reasons) S.reasons = d.reasons; // قائمة الأسباب من الخادم (مصدر واحد)
+    S.googleLogin = !!(d && d.google_login);   // v33
+    S.emailOtp = !!(d && d.email_otp);
+    S.smsOtp = !!(d && d.sms_otp);
+    $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
+    $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
+    const chan = S.emailOtp ? (S.smsOtp ? "البريد أو رسالة SMS أو تلغرام" : "بريدك الإلكتروني أو تلغرام")
+      : (S.smsOtp ? "رسالة SMS أو تلغرام" : "محادثتك مع بوت المؤسسة في تلغرام");
+    $("#otpChanHint").innerHTML = "يصل الرمز إلى " + chan + "<br>صالح 10 دقائق";
   } catch (e2) {}
+  const q = new URLSearchParams(location.search);   // v33: عودة Google
+  if (q.get("google")) {
+    showLogin(setupMode);
+    handleGoogleReturn(q);
+    try { history.replaceState(null, "", location.pathname); } catch (e3) {}
+    return;
+  }
   try {
     const me = await api("/api/me");
     showApp(me);

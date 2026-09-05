@@ -10,6 +10,7 @@ import unicodedata
 import time
 import hashlib
 import base64
+import secrets
 import io
 import threading
 import aiohttp
@@ -1048,6 +1049,18 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")       # sender email
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # app password
 BACKUP_EMAIL = os.getenv("BACKUP_EMAIL", "")     # recipient email
+# ── v33: قنوات تسليم رمز الدخول (OTP) ──
+# البريد: نفس متغيرات SMTP_* أعلاه (مجاني: Brevo smtp-relay.brevo.com:587 أو Gmail smtp.gmail.com مع App Password)
+# SMS: TextBee (textbee.dev) — هاتفك الاحتياطي يصبح بوابة إرسال SMS — مجاني
+TEXTBEE_API_KEY = os.getenv("TEXTBEE_API_KEY", "")
+TEXTBEE_DEVICE_ID = os.getenv("TEXTBEE_DEVICE_ID", "")
+TEXTBEE_API_BASE = os.getenv("TEXTBEE_API_BASE", "https://api.textbee.dev/api/v1")
+SMTP_TLS = os.getenv("SMTP_TLS", "").strip().lower()  # "" = 465→SSL وإلا STARTTLS | "ssl" | "none" (اختبار فقط)
+# ── v33: دخول بحساب Google (OAuth مجاني) ──
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "").strip()  # يُضبط يدوياً للاختبار المحلي؛ على Render يُشتق من RENDER_EXTERNAL_URL
+GOOGLE_TOKEN_URL = os.getenv("GOOGLE_TOKEN_URL", "https://oauth2.googleapis.com/token")  # قابل للتوجيه في الاختبار
 IMAP_HOST = os.getenv("IMAP_HOST", "")  # e.g. imap.gmail.com
 BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID", "")  # Telegram channel ID for backup files (e.g. "-1001234567890")
 
@@ -1885,6 +1898,15 @@ def init_db():
                 -- Migration: add photo_file_id column for receipt photos
                 DO $$ BEGIN
                     ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS photo_file_id TEXT;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                -- Migration (v31): صورة وصل التوريد من الويب/APK — تُخزن في القاعدة
+                -- (ملفات Render مؤقتة وتمحى مع كل نشر، لذا القرص غير صالح للتخزين)
+                DO $$ BEGIN
+                    ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo BYTEA;
+                    ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_mime VARCHAR(60);
+                    ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_at TIMESTAMPTZ;
+                    ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_by INTEGER;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
                 -- Migration: create extraction_requests table
@@ -3951,7 +3973,7 @@ async def _broadcast_update_notification(update, context):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer')")
+            cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL AND role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer')")
             user_rows = cur.fetchall()
         conn.commit()
     except Exception:
@@ -4004,7 +4026,7 @@ async def _broadcast_to_all_users(bot, message):
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer') AND active = TRUE")
+                cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL AND role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer') AND active = TRUE")
                 rows = cur.fetchall()
             conn.commit()
         except Exception:
@@ -5814,6 +5836,27 @@ async def start_command(update, context):
     await sweep_screen(update, context)
     user = update.effective_user
     sync_user_info(user)
+    # ── v32: deep link تسجيل من التطبيق: ?start=reg_123456 ──
+    try:
+        _start_args = list(getattr(context, "args", None) or [])
+    except Exception:
+        _start_args = []
+    if (_start_args and str(_start_args[0]).startswith("reg_")
+            and getattr(update.effective_chat, "type", None) == "private"):
+        _reg_code = str(_start_args[0])[4:]
+        if _reg_code.isdigit() and len(_reg_code) == 6:
+            ok, msg = await asyncio.to_thread(_bot_confirm_registration, user, _reg_code)
+            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            if ok:
+                try:
+                    db_reg = await asyncio.to_thread(_reg_lookup_by_user, user.id)
+                    await _notify_admins_registration(
+                        context, user,
+                        db_reg.get("full_name"), ROLE_LABELS.get(db_reg.get("role"), db_reg.get("role")),
+                        db_reg.get("phone"), db_reg.get("email"))
+                except Exception as e:
+                    logging.error("[REG] post-confirm notify failed: " + str(e))
+            return
     # Notify admins about new pending user
     if not is_admin(user.id):
         db_user = get_user(user.id)
@@ -8474,7 +8517,7 @@ async def handle_admin_message(update, context):
             conn = get_connection()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer')")
+                    cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL AND role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer')")
                     users = [r[0] for r in cur.fetchall()]
                 conn.commit()
             except Exception:
@@ -8835,6 +8878,129 @@ async def handle_customer_message(update, context):
     await process_search(update, context, text, admin_view=False)
 
 
+# ═══════════ v32: تأكيد التسجيل الذاتي عبر البوت ═══════════
+
+def _bot_confirm_registration(tg_user, code):
+    """تأكيد تسجيل قادم من التطبيق: إرسال الرمز للبوت يربط تلغرام ويفعّل الفئة المختارة.
+    القواعد: الرمز صالح 48 ساعة، والمُرسل إما مستخدم جديد أو صف pending/customer فقط.
+    يعيد (ok, رسالة جاهزة للمحادثة)."""
+    code = str(code or "").strip()
+    if not code.isdigit() or len(code) != 6:
+        return False, "❌ رمز غير صالح — أرسل الرمز المكوّن من 6 أرقام."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, full_name, email, phone, role, status, user_id "
+                "FROM pwa_registrations WHERE code = %s AND status = 'waiting' "
+                "AND created_at > NOW() - INTERVAL '" + str(_PWA_REG_EXPIRE_HOURS) + " hours'",
+                (code,))
+            reg = cur.fetchone()
+            if reg is None:
+                return False, "❌ الرمز غير صحيح أو منتهي الصلاحية (صلاحيته " + str(_PWA_REG_EXPIRE_HOURS) + " ساعة)."
+            existing = None
+            cur.execute("SELECT id, role FROM users WHERE telegram_id = %s", (tg_user.id,))
+            existing = cur.fetchone()
+            if existing and existing["role"] not in (ROLE_PENDING, ROLE_CUSTOMER):
+                return False, ("ℹ️ حسابك مرتبط مسبقاً بالبوت بفئة "
+                               + ROLE_LABELS.get(existing["role"], existing["role"])
+                               + " — لا حاجة لرمز تأكيد.")
+            role = reg["role"] if reg["role"] in _PWA_ROLES_SELF else ROLE_SELLER
+            if existing:
+                cur.execute(
+                    "UPDATE users SET first_name = %s, email = COALESCE(%s, email), "
+                    "phone = COALESCE(%s, phone), role = %s, requested_role = NULL, "
+                    "active = TRUE, identity_verified = TRUE WHERE id = %s RETURNING id",
+                    (reg["full_name"], reg["email"], reg["phone"], role, existing["id"]))
+                uid = cur.fetchone()["id"]
+            else:
+                cur.execute(
+                    "INSERT INTO users (telegram_id, username, first_name, role, active, "
+                    "email, phone, identity_verified) "
+                    "VALUES (%s, %s, %s, %s, TRUE, %s, %s, TRUE) RETURNING id",
+                    (tg_user.id, tg_user.username, reg["full_name"], role,
+                     reg["email"], reg["phone"]))
+                uid = cur.fetchone()["id"]
+            cur.execute(
+                "UPDATE pwa_registrations SET status = 'confirmed', confirmed_at = NOW(), "
+                "user_id = %s WHERE id = %s", (uid, reg["id"]))
+            # نظّف رموز دخول قديمة معلقة (احتياطاً)
+            cur.execute("DELETE FROM pwa_otp WHERE user_id = %s AND used_at IS NULL", (uid,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[REG] confirm failed: " + str(e))
+        return False, "⚠️ خطأ في الخادم — أعد إرسال الرمز بعد لحظات."
+    finally:
+        release_connection(conn)
+    try:
+        _audit_log("register_confirm", {"id": uid, "name": reg["full_name"]},
+                   details="رمز:" + code + " فئة:" + str(role))
+    except Exception:
+        pass
+    return True, (
+        "✅ تم تأكيد حسابك يا <b>" + html.escape(reg["full_name"]) + "</b>\n"
+        "🎯 الفئة: <b>" + ROLE_LABELS.get(role, role) + "</b>\n"
+        + ("📞 " + html.escape(str(reg["phone"])) + "\n" if reg["phone"] else "")
+        + ("✉️ " + html.escape(str(reg["email"])) + "\n" if reg["email"] else "")
+        + "\n🔑 سجّل دخولك في التطبيق الآن:\n"
+        "«رمز سري» ← أدخل هاتفك أو إيميلك ← يصلك الرمز هنا.\n"
+        "كلمة المرور تُعطى من المدير عند الحاجة.")
+
+
+def _reg_lookup_by_user(telegram_id):
+    """آخر تسجيل مؤكد لحساب تلغرام معيّن (لبيانات إشعار المديرين بعد التأكيد)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT r.full_name, r.role, r.phone, r.email FROM pwa_registrations r "
+                "JOIN users u ON u.id = r.user_id WHERE u.telegram_id = %s "
+                "ORDER BY r.confirmed_at DESC NULLS LAST LIMIT 1", (telegram_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    except Exception:
+        conn.rollback()
+        return {}
+    finally:
+        release_connection(conn)
+
+
+async def _notify_admins_registration(context, tg_user, full_name, role_label, reg_phone, reg_email):
+    """إشعار المديرين بانضمام مؤكد جديد مع أزرار إدارة سريعة."""
+    if TG_APP is None:
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎯 تغيير الفئة", callback_data="askrole_" + str(tg_user.id))],
+        [InlineKeyboardButton("👥 لوحة المستخدمين", callback_data="users_refresh")],
+    ])
+    lines = [
+        "🔔 انضمام جديد مؤكد (تسجيل من التطبيق):",
+        "👤 " + str(full_name or ""),
+        "🎯 الفئة: " + str(role_label or ""),
+        "🆔 " + str(tg_user.id),
+    ]
+    if reg_phone:
+        lines.append("📞 " + str(reg_phone))
+    if reg_email:
+        lines.append("✉️ " + str(reg_email))
+    text = "\n".join(lines)
+    seen = set()
+    for admin_id in list(ADMIN_IDS) + list(OWNER_IDS or []):
+        try:
+            aid = int(admin_id)
+        except (TypeError, ValueError):
+            continue
+        if aid in seen:
+            continue
+        seen.add(aid)
+        try:
+            await TG_APP.bot.send_message(chat_id=aid, text=text, reply_markup=kb)
+        except Exception as e:
+            logging.error("[REG] admin notify failed for " + str(aid) + ": " + str(e))
+
+
 async def route_message(update, context):
     # Deduplication: skip already-processed updates
     if is_duplicate_update(update):
@@ -8856,6 +9022,23 @@ async def route_message(update, context):
         is_adm = user.id in ADMIN_IDS
         is_appr = is_adm
     if not is_adm and not is_appr:
+        # ── v32: رمز تأكيد تسجيل من التطبيق (6 أرقام، خاص فقط) —
+        #   يمرّ هنا لأن المُرسل إمّا جديد أو pending/customer،
+        #   فلا تُختطف أرقام الكميات من المستخدمين المعتمدين ──
+        if (text.isdigit() and len(text) == 6
+                and getattr(update.effective_chat, "type", None) == "private"):
+            ok, msg = await asyncio.to_thread(_bot_confirm_registration, user, text)
+            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            if ok:
+                try:
+                    db_reg = await asyncio.to_thread(_reg_lookup_by_user, user.id)
+                    await _notify_admins_registration(
+                        context, user,
+                        db_reg.get("full_name"), ROLE_LABELS.get(db_reg.get("role"), db_reg.get("role")),
+                        db_reg.get("phone"), db_reg.get("email"))
+                except Exception as e:
+                    logging.error("[REG] post-confirm notify failed: " + str(e))
+            return
         if db_error:
             await update.message.reply_text("حاول مرة ثانية")
         elif text == "/cancel":
@@ -9202,7 +9385,7 @@ def oil_manager_ids():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager') AND active = TRUE")
+                cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL AND role IN ('admin', 'manager') AND active = TRUE")
                 for r in cur.fetchall():
                     ids.add(r[0])
             conn.commit()
@@ -10683,7 +10866,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v30"
+PWA_VERSION = "v33"
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -10719,6 +10902,42 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip        VARCHAR(64)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
+-- ═══ v32: الهوية (إيميل/هاتف) + التسجيل الذاتي + الرمز السري ═══
+DO $$ BEGIN
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS identity_verified BOOLEAN NOT NULL DEFAULT FALSE;
+    -- حسابات التسجيل من التطبيق تولد بلا تلغرام قبل تأكيد الرمز عبر البوت
+    ALTER TABLE users ALTER COLUMN telegram_id DROP NOT NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_uniq ON users (email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_phone_uniq ON users (phone) WHERE phone IS NOT NULL;
+CREATE TABLE IF NOT EXISTS pwa_registrations (
+    id           SERIAL PRIMARY KEY,
+    code         CHAR(6) UNIQUE NOT NULL,
+    full_name    VARCHAR(255) NOT NULL,
+    email        VARCHAR(255),
+    phone        VARCHAR(32),
+    role         VARCHAR(20) NOT NULL CHECK (role IN ('stock', 'seller')),
+    status       VARCHAR(12) NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'confirmed', 'cancelled')),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    confirmed_at TIMESTAMPTZ,
+    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ip           VARCHAR(64)
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_reg_status ON pwa_registrations (status, created_at DESC);
+CREATE TABLE IF NOT EXISTS pwa_otp (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash  TEXT NOT NULL,
+    ip         VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at    TIMESTAMPTZ,
+    attempts   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_otp_user ON pwa_otp (user_id, created_at DESC);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -10874,6 +11093,16 @@ AUDIT_LABELS = {
     "qty_add": "➕ إضافة كمية", "qty_remove": "➖ إخراج كمية", "qty_reconcile": "⚖️ جرد",
     "product_create": "📦 سلعة جديدة", "incoming_create": "🚚 طلب توريد",
     "incoming_advance": "🚚 تحديث توريد",
+    # ── v32: الهوية والتسجيل الذاتي والرمز السري ──
+    "register": "🆕 طلب انضمام جديد", "register_fail": "❌ طلب انضمام مرفوض",
+    "register_delete": "🗑 حذف طلب انضمام", "register_delete_fail": "⚠️ فشل حذف طلب انضمام",
+    "register_confirm": "✅ تأكيد انضمام عبر البوت",
+    "otp_request": "📲 طلب رمز دخول", "otp_request_fail": "❌ طلب رمز لمعرف غير معروف",
+    "google_login": "🔐 دخول بحساب Google", "google_login_fail": "🚫 دخول Google مرفوض",
+    "google_join_start": "🆕 بداية انضمام عبر Google", "google_join": "🆕 طلب انضمام (Google)",
+    "registration_approve": "✅ تفعيل عضوية من التطبيق", "registration_approve_fail": "❌ فشل تفعيل عضوية",
+    "otp_login": "✅ دخول برمز سري", "otp_fail": "❌ رمز سري خاطئ",
+    "user_role": "🎯 تغيير فئة مستخدم", "user_role_fail": "⚠️ فشل تغيير فئة",
 }
 
 
@@ -10961,7 +11190,7 @@ def _notify_recipients():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT telegram_id FROM users WHERE role IN "
+            cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL AND role IN "
                         "('admin', 'manager', 'stock', 'seller', 'external', 'customer') "
                         "AND active = TRUE")
             return cur.fetchall()
@@ -11222,6 +11451,349 @@ def _pwa_api_me(user):
     }, "perms": _pwa_perm_map(user["role"])}
 
 
+# ═══════════ v32: الهوية (إيميل/هاتف) + التسجيل الذاتي + الرمز السري ═══════════
+
+_PWA_ROLES_SELF = (ROLE_STOCK, ROLE_SELLER)   # الفئات المتاحة للتسجيل الذاتي
+_PWA_REG_EXPIRE_HOURS = 48                    # صلاحية رمز التسجيل بالساعات
+_PWA_OTP_EXPIRE_MIN = 10                      # صلاحية رمز الدخول بالدقائق
+_PWA_OTP_MAX_ATTEMPTS = 5                     # محاولات خاطئة قبل إبطال الرمز
+_PWA_OTP_MAX_PER_10MIN = 3                    # سقف طلبات الرموز لكل مستخدم/10 دقائق
+
+
+def _pwa_norm_phone(p):
+    """تطبيع الهاتف: أرقام فقط، يُسقط + و00 ويوحّد 213xxxxxxxx → 0xxxxxxxxx."""
+    p = str(p or "").strip().replace(" ", "").replace("-", "").replace(".", "")
+    if p.startswith("+"):
+        p = p[1:]
+    elif p.startswith("00"):
+        p = p[2:]
+    digits = "".join(ch for ch in p if ch.isdigit())
+    if digits.startswith("213") and len(digits) >= 11:
+        digits = "0" + digits[3:]
+    return digits
+
+
+def _pwa_self_register_enabled():
+    """التسجيل الذاتي من التطبيق — يُعطّل بـ PWA_SELF_REGISTER=0 على Render."""
+    return os.getenv("PWA_SELF_REGISTER", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _pwa_mask_identifier(ident):
+    """تعشية المعرف في الردود: a•••@x.com / 05••••12."""
+    ident = str(ident or "").strip()
+    if len(ident) < 4:
+        return "•••"
+    if "@" in ident:
+        at = ident.find("@")
+        return ident[0] + "•••" + ident[at:]
+    return ident[:2] + "••••" + ident[-2:]
+
+
+def _pwa_api_register(name, phone_raw, email_raw, role, ip):
+    """طلب انضمام من التطبيق: بيانات + فئة (بائع/عامل مخزون) → رمز تأكيد عبر البوت.
+    يرجع (ok, payload_or_err). المدير وحده يعيّن فئة المدير — لا يُطلب هنا أبداً."""
+    if not _pwa_self_register_enabled():
+        return False, None, "التسجيل الذاتي معطّل حالياً — راجع إدارة المؤسسة."
+    name = str(name or "").strip()
+    if len(name) < 3 or len(name) > 120:
+        return False, None, "أدخل الاسم الكامل (3 أحرف على الأقل)."
+    role = str(role or "").strip()
+    if role not in _PWA_ROLES_SELF:
+        return False, None, "الفئة المتاحة: بائع أو عامل مخزون فقط."
+    phone = _pwa_norm_phone(phone_raw)
+    email = str(email_raw or "").strip().lower()
+    if email:
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$", email) or len(email) > 254:
+            return False, None, "صيغة البريد الإلكتروني غير صحيحة."
+    if not phone and not email:
+        return False, None, "أدخل رقم الهاتف أو البريد الإلكتروني (أحدهما على الأقل)."
+    if phone and (len(phone) < 8 or len(phone) > 15):
+        return False, None, "رقم الهاتف غير صالح (8 أرقام على الأقل)."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # منع التكرار: نفس الهاتف/الإيميل لدى مستخدم نشط أو طلب منتظر حديث
+            for _col, _val in (("phone", phone), ("email", email)):
+                if not _val:
+                    continue
+                cur.execute("SELECT 1 FROM users WHERE " + _col + " = %s AND active = TRUE LIMIT 1", (_val,))
+                if cur.fetchone():
+                    return False, None, "هذه البيانات مرتبطة بحساب قائم — سجّل الدخول أو راجع الإدارة."
+                cur.execute(
+                    "SELECT 1 FROM pwa_registrations WHERE " + _col + " = %s AND status = 'waiting' "
+                    "AND created_at > NOW() - INTERVAL '" + str(_PWA_REG_EXPIRE_HOURS) + " hours' LIMIT 1", (_val,))
+                if cur.fetchone():
+                    return False, None, "لديك طلب تسجيل قائم بهذه البيانات — أكّد رمزه عبر البوت أو أرسله للإدارة لحذفه."
+            code = "".join(secrets.choice("0123456789") for _ in range(6))
+            for _try in range(20):
+                cur.execute("SELECT 1 FROM pwa_registrations WHERE code = %s", (code,))
+                if not cur.fetchone():
+                    break
+                code = "".join(secrets.choice("0123456789") for _ in range(6))
+            else:
+                return False, None, "تعذّر توليد الرمز — أعد المحاولة."
+            cur.execute(
+                "INSERT INTO pwa_registrations (code, full_name, email, phone, role, ip) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (code, name, email or None, phone or None, role, ip))
+            reg_id = cur.fetchone()[0]
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] register failed: " + str(e))
+        return False, None, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+    bot_user = None
+    try:
+        if TG_APP is not None:
+            bot_user = getattr(TG_APP.bot, "username", None)
+    except Exception:
+        bot_user = None
+    bot_link = "https://t.me/" + str(bot_user) + "?start=reg_" + code if bot_user else ""
+    return True, {"id": reg_id, "code": code, "bot_link": bot_link, "role": role,
+                  "role_label": ROLE_LABELS.get(role, role)}, None
+
+
+def _pwa_api_registrations_list(user):
+    """قائمة طلبات التسجيل المنتظرة (للمدير فقط) — ضمن /api/users."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, code, full_name, email, phone, role, "
+                "created_at::text AS created_at, ip FROM pwa_registrations "
+                "WHERE status = 'waiting' AND created_at > NOW() - INTERVAL '"
+                + str(_PWA_REG_EXPIRE_HOURS) + " hours' ORDER BY created_at DESC LIMIT 50")
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] registrations list failed: " + str(e))
+        return []
+    finally:
+        release_connection(conn)
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"], "code": r["code"], "name": r["full_name"],
+            "email": r["email"], "phone": r["phone"], "role": r["role"],
+            "role_label": ROLE_LABELS.get(r["role"], r["role"]),
+            "created_at": (r.get("created_at") or "")[:16], "ip": r.get("ip"),
+        })
+    return out
+
+
+def _pwa_api_registration_delete(user, reg_id):
+    """حذف طلب تسجيل منتظر (للمدير فقط)."""
+    try:
+        reg_id = int(reg_id)
+    except (TypeError, ValueError):
+        return False, "معرّف غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pwa_registrations WHERE id = %s AND status = 'waiting'", (reg_id,))
+            n = cur.rowcount
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] registration delete failed: " + str(e))
+        return False, "خطأ في الخادم."
+    finally:
+        release_connection(conn)
+    if not n:
+        return False, "الطلب غير موجود أو مؤكّد مسبقاً."
+    return True, "تم حذف الطلب."
+
+
+# ── v33: قنوات تسليم الرمز — البريد الإلكتروني (SMTP) وSMS عبر TextBee ──
+def _pwa_otp_email_ready():
+    """هل مرسل البريد مهيأ؟ (نفس إعدادات SMTP_* الخاصة بالنسخة الاحتياطية)"""
+    return bool(SMTP_HOST and SMTP_EMAIL and SMTP_PASSWORD)
+
+
+def _pwa_otp_sms_ready():
+    """هل بوابة SMS مهيأة؟ (TextBee — هاتفك كبوابة إرسال، مجاني)"""
+    return bool(TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID)
+
+
+def _pwa_send_otp_email_sync(to_email, code):
+    """إرسال رمز الدخول إلى البريد الإلكتروني (متزامن — يُستدعى عبر asyncio.to_thread).
+    يعيد True عند النجاح؛ عند الفشل يتحول المسار تلقائياً إلى تلغرام في المعالج."""
+    import smtplib
+    import ssl as _ssl
+    from email.mime.text import MIMEText
+    from email.header import Header
+    from email.utils import formataddr
+    try:
+        body = ("مرحباً،\n\n"
+                "رمز الدخول إلى تطبيق مخزون السيراميك:\n\n"
+                + code + "\n\n"
+                "⏳ صالح " + str(_PWA_OTP_EXPIRE_MIN) + " دقائق — لا تشاركه مع أحد.\n"
+                "إن لم تطلب هذا الرمز فتجاهل هذه الرسالة.\n")
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = Header("🔑 رمز الدخول: " + code, "utf-8")
+        msg["From"] = formataddr((str(Header("تطبيق المخزون", "utf-8")), SMTP_EMAIL))
+        msg["To"] = to_email
+        ctx = _ssl.create_default_context()
+        if SMTP_TLS == "none":
+            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25)
+        elif SMTP_PORT == 465 or SMTP_TLS == "ssl":
+            server_ctx = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=25, context=ctx)
+        else:
+            server_ctx = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25)
+        with server_ctx as server:
+            if SMTP_TLS != "none" and SMTP_PORT != 465 and SMTP_TLS != "ssl":
+                server.starttls(context=ctx)
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.sendmail(SMTP_EMAIL, [to_email], msg.as_string())
+        logging.info("[PWA] otp email sent to " + to_email)
+        return True
+    except Exception as e:
+        logging.error("[PWA] otp email failed: " + str(e))
+        return False
+
+
+async def _pwa_send_otp_sms(phone_norm, code):
+    """إرسال الرمز رسالة SMS عبر بوابة TextBee (هاتفك الاحتياطي كمُرسل — مجاني).
+    يعيد True عند النجاح؛ عند الفشل يتحول المسار تلقائياً إلى تلغرام في المعالج."""
+    if not phone_norm:
+        return False
+    intl = phone_norm
+    if intl.startswith("0") and len(intl) >= 10:
+        intl = "+213" + intl[1:]  # 0xxxxxxxxx → +213xxxxxxxxx
+    elif not intl.startswith("+"):
+        intl = "+" + intl
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.post(
+                    TEXTBEE_API_BASE.rstrip("/") + "/gateways/" + TEXTBEE_DEVICE_ID + "/send-sms",
+                    headers={"x-api-key": TEXTBEE_API_KEY,
+                             "Content-Type": "application/json"},
+                    json={"recipients": [intl],
+                          "message": "رمز الدخول إلى تطبيق المخزون: " + code
+                                     + " (صالح " + str(_PWA_OTP_EXPIRE_MIN)
+                                     + " دقائق — لا تشاركه مع أحد)"}) as resp:
+                if resp.status < 300:
+                    logging.info("[PWA] otp sms sent to " + intl)
+                    return True
+                txt = await resp.text()
+                logging.error("[PWA] otp sms http " + str(resp.status) + ": " + txt[:200])
+                return False
+    except Exception as e:
+        logging.error("[PWA] otp sms failed: " + str(e))
+        return False
+
+
+def _pwa_otp_find_user(identifier):
+    """إيميل أو هاتف → صف مستخدم مؤهل للرمز السري (نشط + مربوط بالبوت)."""
+    ident = str(identifier or "").strip()
+    if not ident:
+        return None
+    email = ident.lower() if "@" in ident else ""
+    phone = _pwa_norm_phone(ident) if "@" not in ident else ""
+    if not email and not phone:
+        return None
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                "u.role, u.active, u.email, u.phone, a.username AS web_username "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE u.active = TRUE AND u.telegram_id IS NOT NULL "
+                "AND u.role NOT IN (%s, %s) AND ("
+                "(%s <> '' AND u.email = %s) OR (%s <> '' AND u.phone = %s)) LIMIT 1",
+                (ROLE_CUSTOMER, ROLE_PENDING, email, email, phone, phone))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] otp find user failed: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _pwa_otp_issue(user_id, ip):
+    """توليد رمز دخول مخزّن مُهشَّراً (متزامن) — يعيد (ok, code_or_msg)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM pwa_otp WHERE user_id = %s "
+                        "AND created_at > NOW() - INTERVAL '10 minutes'", (user_id,))
+            if cur.fetchone()[0] >= _PWA_OTP_MAX_PER_10MIN:
+                return False, "طلبات رموز كثيرة — انتظر نحو 10 دقائق ثم أعد المحاولة."
+            code = "".join(secrets.choice("0123456789") for _ in range(6))
+            cur.execute(
+                "INSERT INTO pwa_otp (user_id, code_hash, ip, expires_at) "
+                "VALUES (%s, %s, %s, NOW() + INTERVAL '" + str(_PWA_OTP_EXPIRE_MIN) + " minutes')",
+                (user_id, _pwa_hash_password(code), ip))
+        conn.commit()
+        return True, code
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] otp issue failed: " + str(e))
+        return False, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_otp_verify(user_id, code):
+    """تحقق من الرمز (متزامن) — يعيد (ok, err). يُبطل الرمز بعد المحاولات القصوى."""
+    try:
+        code = str(code or "").strip()
+    except Exception:
+        return False, "رمز غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, code_hash, expires_at, used_at, attempts FROM pwa_otp "
+                        "WHERE user_id = %s AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                        (user_id,))
+            row = cur.fetchone()
+            if row is None:
+                return False, "لا يوجد رمز فعّال — اطلب رمزاً جديداً."
+            if row["attempts"] >= _PWA_OTP_MAX_ATTEMPTS:
+                return False, "أُبطل الرمز بعد محاولات خاطئة كثيرة — اطلب رمزاً جديداً."
+            if row["expires_at"] <= datetime.datetime.now(datetime.timezone.utc):
+                return False, "انتهت صلاحية الرمز — اطلب رمزاً جديداً."
+            if not _pwa_verify_password(code, row["code_hash"]):
+                cur.execute("UPDATE pwa_otp SET attempts = attempts + 1 WHERE id = %s", (row["id"],))
+                conn.commit()
+                left = _PWA_OTP_MAX_ATTEMPTS - (row["attempts"] + 1)
+                return False, "رمز خاطئ." + (" تبقّت " + str(left) + " محاولات." if left > 0 else "")
+            cur.execute("UPDATE pwa_otp SET used_at = NOW() WHERE id = %s", (row["id"],))
+        conn.commit()
+        return True, None
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] otp verify failed: " + str(e))
+        return False, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_user_role(user, target_tid, role):
+    """تغيير فئة مستخدم من التطبيق (للمدير فقط) — نفس نظام البوت."""
+    if role not in ROLE_LABELS:
+        return False, "فئة غير معروفة."
+    if target_tid == user["telegram_id"]:
+        return False, "لا يمكنك تغيير فئتك بنفسك — استخدم حساب مدير آخر احتياطاً."
+    if _protected_account(target_tid):
+        return False, "🔒 هذا الحساب محمي (المالك/متغيرات البيئة) — لا يمكن تعديل فئته."
+    try:
+        changed = set_user_role(target_tid, role)
+    except Exception as e:
+        return False, "خطأ في تغيير الفئة: " + str(e)
+    if not changed:
+        return False, "المستخدم غير موجود."
+    return True, "تم تعيين الفئة: " + ROLE_LABELS[role]
+
+
 def _pwa_api_stats(user):
     perms = _pwa_perm_map(user["role"])
     conn = get_connection()
@@ -11292,8 +11864,55 @@ def _pwa_api_products(user, q):
                         "qty": r["quantity"], "min": r["minimum_stock"],
                         "location": r.get("location") or "",
                         "price": r.get("selling_price"),
+                        "unit": _get_unit_ar(r["name"]),
                         "low": (r["quantity"] or 0) <= (r["minimum_stock"] or 0)})
     return {"ok": True, "products": out, "limited": external_only}
+
+
+def _pwa_api_product_detail(user, product_id):
+    """📋 تفاصيل السلعة + سجل حركاتها (v31) — نفس ما يعرضه البوت:
+    الخارجي يرى التوفر فقط، والباقي يرى الكميات والحركة بالسبب والفاعل."""
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return None, "معرّف غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+            prod = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not prod:
+        return None, "السلعة غير موجودة."
+    p = dict(prod)
+    if user["role"] == ROLE_EXTERNAL:
+        return {"limited": True, "id": p["id"], "name": p["name"],
+                "available": (p["quantity"] or 0) > 0}, None
+    txns = []
+    try:
+        txns = _filter_test_pairs(get_product_transactions(product_id, limit=30)) or []
+    except Exception:
+        txns = []
+    hist = []
+    for t in txns:
+        t = dict(t)
+        hist.append({
+            "t": t.get("tx_type"), "q": t.get("quantity"),
+            "date": t["date"].strftime("%Y-%m-%d %H:%M") if t.get("date") else "",
+            "op": t.get("operator_name") or "مجهول",
+            "reason": t.get("reason") or "",
+        })
+    return {
+        "limited": False,
+        "id": p["id"], "name": p["name"], "qty": p["quantity"],
+        "min": p["minimum_stock"], "location": p.get("location") or "",
+        "price": p.get("selling_price"), "unit": _get_unit_ar(p["name"]),
+        "low": (p["quantity"] or 0) <= (p["minimum_stock"] or 0),
+        "created": p["created_at"].strftime("%Y-%m-%d") if p.get("created_at") else "",
+        "history": hist,
+    }, None
 
 
 def _pwa_api_qty(user, product_id, qtype, quantity, reason):
@@ -11439,13 +12058,15 @@ def _pwa_api_pending(user):
 
 
 def _pwa_api_incoming_list(user):
-    """🚚 طلبات التوريد المفتوحة: المدير يراها كلها والموظف يرى طلباته."""
+    """🚚 طلبات التوريد المفتوحة: المدير يراها كلها والموظف يرى طلباته.
+    (v31) تضيف has_photo لزر «تصوير الوصل» و mine لتحديد من يملك الطلب."""
     admin = _pwa_perm_map(user["role"])["admin"]
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             base = (
                 "SELECT io.id, io.product_name, io.quantity, io.status, io.created_at, "
+                "io.requester_id, (io.web_photo IS NOT NULL) AS has_photo, "
                 "COALESCE(u.first_name, u.username, '#' || u.telegram_id::text) AS user_name "
                 "FROM incoming_orders io LEFT JOIN users u ON u.id = io.requester_id "
                 "WHERE io.status IN ('pending', 'received') ")
@@ -11456,9 +12077,96 @@ def _pwa_api_incoming_list(user):
                             (user["id"],))
             rows = cur.fetchall()
         conn.commit()
-        return {"ok": True, "orders": [dict(r) for r in rows], "admin": admin}
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["mine"] = (d.get("requester_id") == user["id"])
+            out.append(d)
+        return {"ok": True, "orders": out, "admin": admin}
     finally:
         release_connection(conn)
+
+
+_PWA_PHOTO_MAX = 3 * 1024 * 1024  # 3MB بعد فك الترميز (الصورة تُضغط في المتصفح قبله)
+_PWA_PHOTO_MIMES = {"image/jpeg", "image/png", "image/webp"}
+
+
+def _pwa_receipt_allowed(user, order_row):
+    """المدير/المدير العام — أو صاحب الطلب نفسه."""
+    return _pwa_perm_map(user["role"])["admin"] or (order_row and order_row.get("requester_id") == user["id"])
+
+
+def _pwa_api_receipt_upload(user, order_id, photo_b64, mime):
+    """📸 رفع/استبدال صورة وصل التوريد من التطبيق (v31)."""
+    admin = _pwa_perm_map(user["role"])["admin"]
+    if not admin and user["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
+        return False, "لا يوجد وصول لك حالياً — راجع الإدارة."
+    try:
+        order_id = int(order_id)
+    except (TypeError, ValueError):
+        return False, "طلب غير صالح."
+    photo_b64 = str(photo_b64 or "")
+    if "," in photo_b64 and photo_b64.strip().startswith("data:"):
+        photo_b64 = photo_b64.split(",", 1)[1]  # تقبل data URL أو base64 خام
+    try:
+        import base64 as _b64
+        data = _b64.b64decode(photo_b64, validate=False)
+    except Exception:
+        return False, "صورة غير صالحة."
+    if not data:
+        return False, "الصورة فارغة."
+    if len(data) > _PWA_PHOTO_MAX:
+        return False, "الصورة كبيرة جداً (الحد 3 ميغابايت)."
+    mime = str(mime or "image/jpeg").split(";")[0].strip().lower()
+    if mime not in _PWA_PHOTO_MIMES:
+        mime = "image/jpeg"
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT requester_id FROM incoming_orders WHERE id = %s", (order_id,))
+            row = cur.fetchone()
+            if not row:
+                return False, "الطلب غير موجود."
+            order = {"requester_id": row[0]}
+            if not _pwa_receipt_allowed(user, order):
+                return False, "يمكنك رفع وصل طلباتك فقط."
+            cur.execute(
+                "UPDATE incoming_orders SET web_photo = %s, web_photo_mime = %s, "
+                "web_photo_at = NOW(), web_photo_by = %s WHERE id = %s",
+                (psycopg2.Binary(data), mime, user["id"], order_id))
+        conn.commit()
+        return True, "تم حفظ صورة الوصل ✅"
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] receipt upload failed: " + str(e))
+        return False, "فشل الحفظ، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_receipt_get(user, order_id):
+    """🖼️ قراءة صورة الوصل — المدير الكل، وصاحب الطلب طلبه فقط. يعيد (bytes, mime) أو (None, رسالة)."""
+    try:
+        order_id = int(order_id)
+    except (TypeError, ValueError):
+        return None, None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT requester_id, web_photo, web_photo_mime FROM incoming_orders WHERE id = %s",
+                        (order_id,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row:
+        return None, None, "الطلب غير موجود."
+    order = {"requester_id": row[0]}
+    if not _pwa_receipt_allowed(user, order):
+        return None, None, "لا تملك صلاحية عرض هذا الوصل."
+    if not row[1]:
+        return None, None, "لا توجد صورة وصل لهذا الطلب بعد."
+    return bytes(row[1]), (row[2] or "image/jpeg"), None
 
 
 def _pwa_api_incoming_create(user, product_name, quantity):
@@ -11581,7 +12289,8 @@ def _pwa_api_users(user):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
-                "u.role, u.active, a.username AS web_username "
+                "u.role, u.active, u.email, u.phone, u.identity_verified, "
+                "a.username AS web_username "
                 "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "ORDER BY u.active DESC, u.role, LOWER(COALESCE(u.first_name, u.username, ''))")
             rows = cur.fetchall()
@@ -11594,6 +12303,8 @@ def _pwa_api_users(user):
             "telegram_id": r["telegram_id"], "name": r["first_name"] or r["tg_username"] or str(r["telegram_id"]),
             "role": r["role"], "role_label": ROLE_LABELS.get(r["role"], r["role"]),
             "active": bool(r["active"]), "web": bool(r["web_username"]),
+            "email": r.get("email"), "phone": r.get("phone"),
+            "verified": bool(r.get("identity_verified")),
             "protected": bool(_protected_account(r["telegram_id"])),
         })
     counts = {"all": len(out), "kicked": sum(1 for u in out if not u["active"]),
@@ -11834,6 +12545,592 @@ async def pwa_logout_handler(request):
     return resp
 
 
+# ═══════════ v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ═══════════
+
+async def pwa_register_handler(request):
+    """طلب انضمام جديد من التطبيق (عام — بلا جلسة)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ip = request.remote or "؟"
+    ok, result, err = await _pwa_run(_pwa_api_register,
+                                     str(body.get("name", "")),
+                                     str(body.get("phone", "")),
+                                     str(body.get("email", "")),
+                                     str(body.get("role", "")), ip)
+    if not ok:
+        await _pwa_run(_audit_log, "register_fail", None,
+                       details="دور: " + str(body.get("role", "?")), ip=ip)
+        return _pwa_err(400, err)
+    await _pwa_run(_audit_log, "register", None,
+                   details="طلب #" + str(result["id"]) + " فئة: " + str(result["role"]), ip=ip)
+    return _pwa_jr({"ok": True, "registration": result})
+
+
+async def pwa_registrations_handler(request):
+    """قائمة طلبات التسجيل المنتظرة (للمدير)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["users"]:
+        return _pwa_err(403, "هذه الشاشة للمديرين فقط.")
+    regs = await _pwa_run(_pwa_api_registrations_list, user)
+    return _pwa_jr({"ok": True, "registrations": regs})
+
+
+async def pwa_registration_delete_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["users"]:
+        return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
+    try:
+        body = await request.json()
+        reg_id = int(body.get("id", 0))
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_registration_delete, user, reg_id)
+    await _pwa_run(_audit_log, "register_delete" if ok else "register_delete_fail",
+                   user, details=str(reg_id), ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_otp_request_handler(request):
+    """طلب رمز دخول سري (عام): إيميل/هاتف → يُسلَّم عبر تلغرام."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    identifier = str(body.get("identifier", "")).strip()
+    ip = request.remote or "؟"
+    key = ip + "|otp:" + identifier.lower()
+    try:
+        await _pwa_run(_pwa_login_gate, key)
+    except PwaLocked as lk:
+        await _pwa_run(_audit_log, "lockout", None, details="otp", ip=ip)
+        mins = max(1, int(lk.retry_after // 60) + 1)
+        return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
+                        + " دقيقة ثم أعد المحاولة.")
+    found = await _pwa_run(_pwa_otp_find_user, identifier)
+    if not found:
+        alerted = await _pwa_run(_pwa_login_fail, key)
+        await _pwa_run(_audit_log, "otp_request_fail", None, ip=ip)
+        if alerted:
+            await _pwa_run(_audit_log, "brute_force_lock", None, details="otp", ip=ip)
+            asyncio.create_task(_pwa_alert_owner(
+                "🚨 تنبيه أمني\nمحاولات تخمين متكررة لرموز الدخول (otp)\n🌐 IP: " + ip))
+        return _pwa_err(401, "لا يوجد حساب مؤهل بهذه البيانات "
+                             "(أو الحساب غير مربوط بالبوت / موقوف).")
+    ok, code = await _pwa_run(_pwa_otp_issue, found["id"], ip)
+    if not ok:
+        return _pwa_err(429, code)
+    # v33: القناة الأفضل أولاً — بريد حقيقي للإيميل / SMS للهاتف — وتلغرام شبكة أمان
+    is_email = "@" in identifier
+    channel = "telegram"
+    sent = False
+    if is_email and _pwa_otp_email_ready():
+        sent = await asyncio.to_thread(
+            _pwa_send_otp_email_sync, found.get("email") or identifier.lower(), code)
+        if sent:
+            channel = "email"
+    elif not is_email and _pwa_otp_sms_ready():
+        sent = await _pwa_send_otp_sms(found.get("phone"), code)
+        if sent:
+            channel = "sms"
+    if not sent and TG_APP is not None:
+        try:
+            await TG_APP.bot.send_message(
+                chat_id=found["telegram_id"],
+                text="🔑 رمز الدخول إلى تطبيق المخزون:\n\n"
+                     "<b>" + code + "</b>\n\n"
+                     "⏳ صالح " + str(_PWA_OTP_EXPIRE_MIN) + " دقائق — لا تشاركه مع أحد.\n"
+                     "إن لم تطلب هذا الرمز فتجاهل الرسالة.",
+                parse_mode=ParseMode.HTML)
+            sent = True
+            channel = "telegram"
+        except Exception as e:
+            logging.error("[PWA] otp send failed: " + str(e))
+    if not sent:
+        await _pwa_run(_pwa_login_clear, key)
+        return _pwa_err(503, "تعذّر إرسال الرمز — تأكد من إعدادات البريد/SMS على الخادم، "
+                             "أو افتح بوت المؤسسة واضغط «ابدأ» ثم أعد المحاولة.")
+    await _pwa_run(_audit_log, "otp_request", {"id": found["id"], "name": found["first_name"] or ""},
+                   details=channel, ip=ip)
+    return _pwa_jr({"ok": True, "masked": _pwa_mask_identifier(identifier), "channel": channel})
+
+
+async def pwa_otp_verify_handler(request):
+    """تحقق من الرمز وإنشاء الجلسة (عام)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    identifier = str(body.get("identifier", "")).strip()
+    code = str(body.get("code", "")).strip()
+    ip = request.remote or "؟"
+    key = ip + "|otp:" + identifier.lower()
+    try:
+        await _pwa_run(_pwa_login_gate, key)
+    except PwaLocked as lk:
+        await _pwa_run(_audit_log, "lockout", None, details="otp", ip=ip)
+        mins = max(1, int(lk.retry_after // 60) + 1)
+        return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
+                        + " دقيقة ثم أعد المحاولة.")
+    found = await _pwa_run(_pwa_otp_find_user, identifier)
+    if not found:
+        await _pwa_run(_pwa_login_fail, key)
+        await _pwa_run(_audit_log, "otp_fail", None, details="مستخدم غير معروف", ip=ip)
+        return _pwa_err(401, "لا يوجد حساب مؤهل بهذه البيانات.")
+    ok, err = await _pwa_run(_pwa_otp_verify, found["id"], code)
+    if not ok:
+        alerted = await _pwa_run(_pwa_login_fail, key)
+        await _pwa_run(_audit_log, "otp_fail", {"id": found["id"], "name": found["first_name"] or ""}, ip=ip)
+        if alerted:
+            await _pwa_run(_audit_log, "brute_force_lock", None, details="otp", ip=ip)
+            asyncio.create_task(_pwa_alert_owner(
+                "🚨 تنبيه أمني\nمحاولات رموز خاطئة متكررة (otp)\n🌐 IP: " + ip))
+        return _pwa_err(401, err)
+    token = await _pwa_run(_pwa_create_session, found["id"])
+    user = {"id": found["id"], "telegram_id": found["telegram_id"],
+            "name": found["first_name"] or found["tg_username"] or identifier,
+            "role": found["role"],
+            "role_label": ROLE_LABELS.get(found["role"], found["role"]),
+            "web_username": found.get("web_username")}
+    await _pwa_run(_pwa_login_clear, key)
+    await _pwa_run(_audit_log, "otp_login", user, ip=ip)
+    resp = _pwa_jr({"ok": True, "user": user})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
+# ═══════════ v33: دخول بحساب Google (OAuth 2.0 — مجاني) ═══════════
+# ملاحظة APK: جوجل يحجب نافذة الدخول داخل WebView — التطبيق يفتحها في المتصفح الخارجي
+# ثم يعود عبر الرابط العميق ceramicstock://auth?next=... (معالَج في MainActivity).
+import base64 as _b64
+import urllib.parse as _uparse
+
+
+def _pwa_base_url(request):
+    """العنوان الأساسي للتطبيق: RENDER_EXTERNAL_URL على Render، وإلا عنوان الطلب نفسه."""
+    env = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if env:
+        return env
+    try:
+        return str(request.url.origin())   # scheme://host[:port] — جذر التطبيق
+    except Exception:
+        return "http://" + str(getattr(request, "host", "localhost"))
+
+_GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_STATE_TTL = 600          # صلاحية حالة CSRF بالثواني
+_GOOGLE_OT_TTL = 900             # صلاحية رمز العودة/الانضمام بالثواني
+_google_oauth_states = {}        # state → {"exp": epoch, "apk": bool}
+_google_ots = {}                 # ot → {"exp": epoch, "kind": "session"|"join", ...}
+
+
+def _google_redirect_uri():
+    """عنوان العودة المسجّل في Google Console — يُضبط بمتغير GOOGLE_REDIRECT_URI
+    أو يُشتق من RENDER_EXTERNAL_URL تلقائياً."""
+    if GOOGLE_REDIRECT_URI:
+        return GOOGLE_REDIRECT_URI
+    base = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if base:
+        return base + "/api/auth/google/callback"
+    return ""
+
+
+def _google_state_new(apk):
+    state = secrets.token_urlsafe(24)
+    now = time.time()
+    for k in [k for k, v in _google_oauth_states.items() if v["exp"] < now]:
+        _google_oauth_states.pop(k, None)
+    _google_oauth_states[state] = {"exp": now + _GOOGLE_STATE_TTL, "apk": apk}
+    return state
+
+
+def _google_state_take(state):
+    rec = _google_oauth_states.pop(str(state or ""), None)
+    if not rec or rec["exp"] < time.time():
+        return None
+    return rec
+
+
+def _google_ot_new(kind, data):
+    ot = secrets.token_urlsafe(24)
+    now = time.time()
+    for k in [k for k, v in _google_ots.items() if v["exp"] < now]:
+        _google_ots.pop(k, None)
+    rec = {"exp": now + _GOOGLE_OT_TTL, "kind": kind}
+    rec.update(data)
+    _google_ots[ot] = rec
+    return ot
+
+
+def _google_ot_peek(ot):
+    rec = _google_ots.get(str(ot or ""))
+    if not rec or rec["exp"] < time.time():
+        return None
+    return rec
+
+
+def _google_ot_take(ot):
+    rec = _google_ot_peek(ot)
+    if rec:
+        _google_ots.pop(str(ot or ""), None)
+    return rec
+
+
+async def _google_exchange_code(code, redirect_uri):
+    """استبدال كود التفويض بحِمْل id_token من خوادم جوجل مباشرة (TLS خادم←خادم).
+    يعيد dict الحمولة (email/name/...) أو يرفع استثناء."""
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as sess:
+        async with sess.post(GOOGLE_TOKEN_URL, data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code"}) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status != 200 or not isinstance(data, dict) or not data.get("id_token"):
+                raise RuntimeError("google token http " + str(resp.status)
+                                   + ": " + json.dumps(data, ensure_ascii=False)[:200])
+    idt = str(data["id_token"]).split(".")
+    if len(idt) < 2:
+        raise RuntimeError("google id_token malformed")
+    pad = "=" * (-len(idt[1]) % 4)
+    payload = json.loads(_b64.urlsafe_b64decode(idt[1] + pad).decode("utf-8"))
+    if payload.get("aud") != GOOGLE_CLIENT_ID:
+        raise RuntimeError("google aud mismatch")
+    if payload.get("exp", 0) < time.time():
+        raise RuntimeError("google id_token expired")
+    if not payload.get("email_verified"):
+        raise RuntimeError("google email not verified")
+    return payload
+
+
+def _pwa_google_find_user(email):
+    """بريد Google → مستخدم فريق نشط (غير زبون/منتظر) — بلا اشتراط تلغرام."""
+    email = str(email or "").strip().lower()
+    if not email:
+        return None
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                "u.role, u.active, a.username AS web_username "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE u.active = TRUE AND u.role NOT IN (%s, %s) "
+                "AND lower(u.email) = %s LIMIT 1",
+                (ROLE_CUSTOMER, ROLE_PENDING, email))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] google find user failed: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _pwa_google_find_any_user(email):
+    """بريد Google → أي صف مستخدم بهذا البريد (لعرض حالة الانتظار/التوقف)."""
+    email = str(email or "").strip().lower()
+    if not email:
+        return None
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, role, active FROM users WHERE lower(email) = %s LIMIT 1",
+                        (email,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _pwa_google_add_registration(email, name, role, ip):
+    """طلب انضمام عبر Google — إن وُجد طلب منتظر بنفس البريد نحدّث فئته بدل التكرار."""
+    email = str(email or "").strip().lower()
+    name = str(name or "").strip()[:120] or email.split("@")[0]
+    if not email:
+        return False, "بريد غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM pwa_registrations "
+                        "WHERE status = 'waiting' AND lower(email) = %s LIMIT 1", (email,))
+            row = cur.fetchone()
+            if row:
+                cur.execute("UPDATE pwa_registrations SET full_name = %s, role = %s "
+                            "WHERE id = %s", (name, role, row[0]))
+            else:
+                # عمود code = CHAR(6) — بادئة GO تميّز انضمام Google عن رموز البوت الرقمية
+                for _ in range(3):
+                    try:
+                        cur.execute(
+                            "INSERT INTO pwa_registrations (code, full_name, email, phone, role, ip) "
+                            "VALUES (%s, %s, %s, %s, %s, %s)",
+                            ("GO" + secrets.token_hex(2).upper(), name, email, "", role, ip))
+                        break
+                    except Exception:
+                        conn.rollback()
+                        cur = conn.cursor()
+                else:
+                    raise RuntimeError("registration code collision")
+        conn.commit()
+        return True, None
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] google add registration failed: " + str(e))
+        return False, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_registration_approve(reg_id, role):
+    """تفعيل طلب انضمام من التطبيق (للمدير): إنشاء/تحديث حساب المستخدم وتأكيد الطلب.
+    يعيد (ok, msg). الحساب يُربط بالبريد — تلغرام يُربط لاحقاً من البوت إن رغب."""
+    try:
+        reg_id = int(reg_id)
+    except (TypeError, ValueError):
+        return False, "معرّف غير صالح."
+    if role not in ROLE_LABELS or role == ROLE_PENDING:
+        return False, "فئة غير صالحة."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT full_name, email, role FROM pwa_registrations "
+                        "WHERE id = %s AND status = 'waiting'", (reg_id,))
+            reg = cur.fetchone()
+            if not reg:
+                return False, "الطلب غير موجود أو مُفعَّل مسبقاً."
+            full_name, reg_email, reg_role = reg[0], (reg[1] or "").strip().lower(), reg[2]
+            final_role = role if role != ROLE_CUSTOMER else reg_role
+            if reg_email:
+                cur.execute("UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
+                            "first_name = COALESCE(NULLIF(first_name, ''), %s) "
+                            "WHERE lower(email) = %s RETURNING id",
+                            (final_role, full_name, reg_email))
+                uid = cur.fetchone()
+                if not uid:
+                    cur.execute(
+                        "INSERT INTO users (first_name, email, role, active, identity_verified) "
+                        "VALUES (%s, %s, %s, TRUE, TRUE) RETURNING id",
+                        (full_name, reg_email, final_role))
+                    uid = cur.fetchone()
+            else:
+                cur.execute(
+                    "INSERT INTO users (first_name, role, active, identity_verified) "
+                    "VALUES (%s, %s, TRUE, TRUE) RETURNING id", (full_name, final_role))
+            cur.execute("UPDATE pwa_registrations SET status = 'confirmed', confirmed_at = NOW() "
+                        "WHERE id = %s", (reg_id,))
+        conn.commit()
+        return True, "تم تفعيل العضوية: " + str(full_name) + " ← " + ROLE_LABELS.get(final_role, final_role)
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] registration approve failed: " + str(e))
+        return False, "خطأ في الخادم."
+    finally:
+        release_connection(conn)
+
+
+def _google_return_redirect(base, apk, next_url):
+    """عودة ما بعد الموافقة: متصفح عادي → توجيه مباشر؛ APK → رابط عميق للمتصفح."""
+    if apk:
+        raise web.HTTPFound("ceramicstock://auth?next=" + _uparse.quote(next_url, safe=""))
+    raise web.HTTPFound(next_url)
+
+
+async def pwa_google_start_handler(request):
+    """زر «الدخول بحساب Google» → نافذة اختيار الحسابات في جوجل."""
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        return _pwa_err(503, "دخول Google غير مهيأ على الخادم.")
+    ip = request.remote or "؟"
+    try:
+        await _pwa_run(_pwa_login_gate, "gstart|" + ip)
+    except PwaLocked as lk:
+        return _pwa_err(429, "محاولات كثيرة — انتظر قليلاً ثم أعد المحاولة.")
+    redirect_uri = _google_redirect_uri()
+    if not redirect_uri:
+        return _pwa_err(503, "لم يُضبط عنوان العودة (GOOGLE_REDIRECT_URI / RENDER_EXTERNAL_URL).")
+    apk = request.query.get("app", "") == "1"
+    state = _google_state_new(apk)
+    url = (_GOOGLE_AUTH_URL + "?client_id=" + _uparse.quote(GOOGLE_CLIENT_ID)
+           + "&redirect_uri=" + _uparse.quote(redirect_uri)
+           + "&response_type=code&scope=" + _uparse.quote("openid email profile")
+           + "&state=" + _uparse.quote(state) + "&prompt=select_account")
+    raise web.HTTPFound(url)
+
+
+async def pwa_google_callback_handler(request):
+    """عودة جوجل بعد الموافقة: جلسة كاملة لأعضاء الفريق، أو طلب انضمام لبريد جديد."""
+    ip = request.remote or "؟"
+    try:
+        await _pwa_run(_pwa_login_gate, "gcb|" + ip)
+    except PwaLocked as lk:
+        return _pwa_err(429, "محاولات كثيرة — انتظر قليلاً ثم أعد المحاولة.")
+    st = _google_state_take(request.query.get("state", ""))
+    if not st:
+        return _pwa_err(400, "جلسة Google منتهية أو مستهلكة — اضغط زر الدخول من جديد.")
+    code = request.query.get("code", "")
+    if not code:
+        return _pwa_err(400, "لم تصل موافقة من Google — أعد المحاولة.")
+    try:
+        payload = await _google_exchange_code(code, _google_redirect_uri())
+    except Exception as e:
+        logging.error("[PWA] google callback failed: " + str(e))
+        return _pwa_err(502, "تعذّر إتمام الدخول مع Google — أعد المحاولة.")
+    email = str(payload.get("email") or "").strip().lower()
+    if not email:
+        return _pwa_err(502, "لم يُرجع Google بريداً صالحاً.")
+    name = str(payload.get("name") or email.split("@")[0])[:120]
+    base = _pwa_base_url(request)
+    apk = bool(st.get("apk"))
+    found = await _pwa_run(_pwa_google_find_user, email)
+    if found:
+        token = await _pwa_run(_pwa_create_session, found["id"])
+        user = {"id": found["id"], "name": found["first_name"] or found["tg_username"] or name,
+                "role": found["role"]}
+        await _pwa_run(_audit_log, "google_login", user, details=email, ip=ip)
+        if apk:
+            ot = _google_ot_new("session", {"token": token})
+            _google_return_redirect(base, True, base + "/api/auth/google/exchange?ot=" + _uparse.quote(ot))
+        secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+        resp = web.HTTPFound(base + "/")
+        resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                        httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+        raise resp
+    # بريد غير معروف → عضوية قيد التفعيل؟
+    any_row = await _pwa_run(_pwa_google_find_any_user, email)
+    if any_row:
+        # موجود لكنه منتظر/موقوف/زبون
+        await _pwa_run(_audit_log, "google_login_fail", None,
+                       details=email + " — الفئة: " + str(any_row.get("role")), ip=ip)
+        _google_return_redirect(base, apk, base + "/?google=wait")
+    if not _pwa_self_register_enabled():
+        return _pwa_err(403, "التسجيل الذاتي معطّل حالياً — راجع إدارة المؤسسة.")
+    ot = _google_ot_new("join", {"email": email, "name": name})
+    await _pwa_run(_audit_log, "google_join_start", None, details=email, ip=ip)
+    if apk:
+        _google_return_redirect(base, True, base + "/api/auth/google/exchange?ot=" + _uparse.quote(ot))
+    _google_return_redirect(base, False, base + "/?google=join&ot=" + _uparse.quote(ot)
+                            + "&name=" + _uparse.quote(name) + "&email=" + _uparse.quote(email))
+
+
+async def pwa_google_exchange_handler(request):
+    """APK: تحويل رمز العودة إلى جلسة داخل WebView (كوكي) أو شاشة انضمام."""
+    ot = request.query.get("ot", "")
+    rec = _google_ot_take(ot)
+    base = _pwa_base_url(request)
+    if not rec:
+        raise web.HTTPFound(base + "/?google=expired")
+    if rec["kind"] == "session":
+        secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+        resp = web.HTTPFound(base + "/")
+        resp.set_cookie(PWA_COOKIE, rec["token"], max_age=PWA_SESSION_DAYS * 86400,
+                        httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+        raise resp
+    if rec["kind"] == "join":
+        # لا نستهلك الرمز هنا — يُستهلك عند إرسال الفئة فعلياً
+        ot2 = _google_ot_new("join", {"email": rec["email"], "name": rec.get("name", "")})
+        raise web.HTTPFound(base + "/?google=join&ot=" + _uparse.quote(ot2)
+                            + "&name=" + _uparse.quote(rec.get("name", ""))
+                            + "&email=" + _uparse.quote(rec.get("email", "")))
+    raise web.HTTPFound(base + "/")
+
+
+async def pwa_google_join_handler(request):
+    """إرسال الفئة المختارة لطلب انضمام Google (عام — بمفتاح ot)."""
+    try:
+        body = await request.json()
+        ot = str(body.get("ot", "")).strip()
+        role = str(body.get("role", "")).strip()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ip = request.remote or "؟"
+    try:
+        await _pwa_run(_pwa_login_gate, "gjoin|" + ip)
+    except PwaLocked as lk:
+        return _pwa_err(429, "محاولات كثيرة — انتظر قليلاً ثم أعد المحاولة.")
+    rec = _google_ot_peek(ot)
+    if not rec or rec.get("kind") != "join":
+        return _pwa_err(400, "انتهت صلاحية طلب الانضمام — سجّل الدخول بجوجل من جديد.")
+    if role not in _PWA_ROLES_SELF:
+        return _pwa_err(400, "الفئة المتاحة: بائع أو عامل مخزون فقط.")
+    _google_ot_take(ot)   # الرمز يُستهلك فقط بعد نجاح التحقق من الفئة
+    ok, err = await _pwa_run(_pwa_google_add_registration, rec["email"], rec.get("name", ""), role, ip)
+    if not ok:
+        return _pwa_err(500, err or "خطأ في الخادم.")
+    await _pwa_run(_audit_log, "google_join",
+                   {"name": rec.get("name", "")}, details=rec["email"] + " ← " + role, ip=ip)
+    return _pwa_jr({"ok": True,
+                    "message": "تم استلام طلبك — عضويتك في انتظار تفعيل الإدارة. "
+                               "سجّل الدخول بجوجل مجدداً بعد التفعيل."})
+
+
+async def pwa_registration_approve_handler(request):
+    """تفعيل عضوية منتظرة من التطبيق (للمدير) — دخول Google بلا تلغرام."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["users"]:
+        return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
+    try:
+        body = await request.json()
+        reg_id = body.get("id")
+        role = str(body.get("role", "")).strip()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_registration_approve, reg_id, role)
+    await _pwa_run(_audit_log, "registration_approve" if ok else "registration_approve_fail",
+                   user, details=str(msg)[:120], ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_users_role_handler(request):
+    """تغيير فئة مستخدم من التطبيق (للمدير) — ترقية المدير من هنا أيضاً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["users"]:
+        return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
+    try:
+        body = await request.json()
+        target_tid = int(body.get("telegram_id", 0))
+        role = str(body.get("role", "")).strip()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_user_role, user, target_tid, role)
+    await _pwa_run(_audit_log, "user_role" if ok else "user_role_fail", user,
+                   details="الهدف: " + str(target_tid) + " ← " + str(role),
+                   ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    # إشعار المستخدم في تلغرام إن أمكن (مثل نظام البوت)
+    if TG_APP is not None:
+        try:
+            await TG_APP.bot.send_message(
+                chat_id=target_tid,
+                text="🎯 حدّثت إدارة المؤسسة فئتك في نظام المخزون:\n"
+                     "<b>" + ROLE_LABELS.get(role, role) + "</b>",
+                parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logging.error("[PWA] role notify failed: " + str(e))
+    return _pwa_jr({"ok": True, "message": msg})
+
+
 def _pwa_guard(user, need):
     """فحص موحّد: جلسة صالحة + نشط + صلاحية مطلوبة. يرجع (user, error_response)."""
     if user is None:
@@ -11966,6 +13263,53 @@ async def pwa_incoming_handler(request):
         return err
     data = await _pwa_run(_pwa_api_incoming_list, user)
     return _pwa_jr(data)
+
+
+async def pwa_receipt_upload_handler(request):
+    """📸 (v31) رفع صورة وصل التوريد من التطبيق — base64 في JSON."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_receipt_upload, user,
+                             body.get("id"), body.get("photo"), body.get("mime"))
+    if not ok:
+        return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "receipt_upload", user,
+                   details="وصل طلب توريد #" + str(body.get("id")),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_receipt_get_handler(request):
+    """🖼️ (v31) عرض صورة الوصل — رد ثنائي بصورة المايم المناسبة."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        oid = int(request.match_info["oid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data, mime, err2 = await _pwa_run(_pwa_api_receipt_get, user, oid)
+    if err2:
+        return _pwa_err(404, err2)
+    return web.Response(body=data, content_type=(mime or "image/jpeg"),
+                        headers={"Cache-Control": "no-store"})
+
+
+async def pwa_product_detail_handler(request):
+    """📋 (v31) تفاصيل السلعة + سجل حركاتها."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data, err2 = await _pwa_run(_pwa_api_product_detail, user,
+                                request.match_info.get("pid"))
+    if err2:
+        return _pwa_err(404, err2)
+    return _pwa_jr({"ok": True, "product": data})
 
 
 async def pwa_incoming_create_handler(request):
@@ -12208,6 +13552,10 @@ async def pwa_status_handler(request):
     except Exception:
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
     return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
+                    "self_register": _pwa_self_register_enabled(),
+                    "email_otp": _pwa_otp_email_ready(),   # v33: الرمز يصل البريد الحقيقي
+                    "sms_otp": _pwa_otp_sms_ready(),       # v33: الرمز يصل SMS عبر TextBee
+                    "google_login": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),  # v33
                     "reasons": PWA_REASONS})
 
 
@@ -12340,7 +13688,7 @@ async def audit_command(update, context):
 
 
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
-const CACHE = "ceram-pwa-v6";
+const CACHE = "ceram-pwa-v9";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -12413,6 +13761,19 @@ def register_pwa_routes(app):
     app.router.add_get("/manifest.webmanifest", pwa_manifest_handler)
     app.router.add_get("/icon.png", pwa_icon_handler)
     app.router.add_post("/api/login", pwa_login_handler)
+    # ── v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ──
+    app.router.add_post("/api/register", pwa_register_handler)
+    app.router.add_post("/api/login/otp/request", pwa_otp_request_handler)
+    app.router.add_post("/api/login/otp/verify", pwa_otp_verify_handler)
+    # ── v33: دخول Google + قنوات OTP الحقيقية + تفعيل العضويات ──
+    app.router.add_get("/api/auth/google/start", pwa_google_start_handler)
+    app.router.add_get("/api/auth/google/callback", pwa_google_callback_handler)
+    app.router.add_get("/api/auth/google/exchange", pwa_google_exchange_handler)
+    app.router.add_post("/api/auth/google/join", pwa_google_join_handler)
+    app.router.add_post("/api/registrations/approve", pwa_registration_approve_handler)
+    app.router.add_get("/api/registrations", pwa_registrations_handler)
+    app.router.add_post("/api/registrations/delete", pwa_registration_delete_handler)
+    app.router.add_post("/api/users/role", pwa_users_role_handler)
     app.router.add_post("/api/logout", pwa_logout_handler)
     app.router.add_get("/api/status", pwa_status_handler)
     app.router.add_post("/api/setup", pwa_setup_handler)
@@ -12433,6 +13794,10 @@ def register_pwa_routes(app):
     app.router.add_post("/api/products/create", pwa_products_create_handler)
     app.router.add_get("/api/pending", pwa_pending_handler)
     app.router.add_get("/api/incoming", pwa_incoming_handler)
+    # (v31) الوصل + تفاصيل السلعة — المسارات الديناميكية بعد الثابتة
+    app.router.add_post("/api/incoming/receipt", pwa_receipt_upload_handler)
+    app.router.add_get("/api/incoming/{oid}/receipt", pwa_receipt_get_handler)
+    app.router.add_get("/api/product/{pid}", pwa_product_detail_handler)
     app.router.add_post("/api/incoming/create", pwa_incoming_create_handler)
     app.router.add_post("/api/incoming/advance", pwa_incoming_advance_handler)
     logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (25 مساراً)")
