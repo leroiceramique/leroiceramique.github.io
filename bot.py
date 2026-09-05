@@ -10761,7 +10761,9 @@ def pwa_set_password(user_id, username, password):
 
 
 def pwa_bootstrap_admin():
-    """زرع اختياري لكلمة مرور المدير أول مرة عبر متغير البيئة PWA_ADMIN_PASSWORD."""
+    """زرع اختياري لكلمة مرور المدير أول مرة عبر متغير البيئة PWA_ADMIN_PASSWORD.
+    آمن ضد إعادة التشغيل: لا يكتب أبداً فوق مدير لديه كلمة مرور بالفعل —
+    والمسار الأساسي الآن هو شاشة «الإعداد الأول» من /api/setup."""
     pwd = os.getenv("PWA_ADMIN_PASSWORD", "").strip()
     if not pwd:
         return
@@ -10770,14 +10772,16 @@ def pwa_bootstrap_admin():
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, COALESCE(username, first_name) FROM users "
-                    "WHERE role = 'admin' AND active ORDER BY id LIMIT 1")
+                    "SELECT u.id, COALESCE(u.username, u.first_name) FROM users u "
+                    "WHERE u.role = 'admin' AND u.active "
+                    "AND NOT EXISTS (SELECT 1 FROM pwa_auth a WHERE a.user_id = u.id) "
+                    "ORDER BY u.id LIMIT 1")
                 row = cur.fetchone()
             conn.commit()
         finally:
             release_connection(conn)
         if not row:
-            logging.warning("[PWA] PWA_ADMIN_PASSWORD مضبوط لكن لا يوجد مستخدم admin في القاعدة")
+            logging.info("[PWA] PWA_ADMIN_PASSWORD: كل المدراء لديهم كلمة مرور — تخطّي (حماية من الكتابة فوقها)")
             return
         uname = pwa_set_password(row[0], row[1] or "admin", pwd)
         logging.info("[PWA] تم زرع كلمة مرور ويب للمدير: " + uname)
@@ -11165,6 +11169,83 @@ def _pwa_api_webpass(user, target_tid, password):
     return True, "تم ضبط كلمة مرور الويب. اسم الدخول: " + uname
 
 
+def _pwa_has_accounts():
+    """هل توجد أي حسابات ويب؟ (يحدد ظهور شاشة الإعداد الأول)"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM pwa_auth")
+            n = cur.fetchone()[0]
+        conn.commit()
+        return n > 0
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_setup(name, password, confirm):
+    """الإعداد الأول: أول من يفتح الرابط ينشئ حساب المدير بنفسه —
+    بدون متغيرات بيئة ولا سكربتات. يعمل فقط ما دامت لا توجد أي
+    حسابات ويب (pwa_auth فارغ)، وبعدها يُغلق للأبد.
+    يربط الحساب بمدير فعلي من جدول users (يُفضّل المالك OWNER_IDS)."""
+    name = str(name or "").strip()
+    password = str(password or "")
+    confirm = str(confirm or "")
+    if _pwa_has_accounts():
+        return False, None, "يوجد حساب مدير بالفعل — سجّل الدخول من الشاشة السابقة."
+    if len(name) < 2:
+        return False, None, "أدخل اسم مستخدم (حرفان على الأقل)."
+    if len(password) < 6:
+        return False, None, "كلمة المرور يجب أن تكون 6 أحرف على الأقل."
+    if confirm and confirm != password:
+        return False, None, "تأكيد كلمة المرور غير مطابق."
+    try:
+        owner_ids = [int(t) for t in (OWNER_IDS or [])]
+    except Exception:
+        owner_ids = []
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, COALESCE(username, first_name) FROM users "
+                "WHERE role = 'admin' AND active "
+                "ORDER BY (telegram_id = ANY(%s)) DESC, id LIMIT 1",
+                (owner_ids,))
+            row = cur.fetchone()
+    finally:
+        release_connection(conn)
+    if not row:
+        return False, None, "لا يوجد مدير في النظام بعد — افتح بوت تلغرام أولاً واضغط /start."
+    try:
+        uname = pwa_set_password(row[0], name or row[1] or "admin", password)
+    except Exception as e:
+        logging.error("[PWA] setup failed: " + str(e))
+        return False, None, "فشل الإنشاء، أعد المحاولة."
+    logging.info("[PWA] الإعداد الأول: أُنشئ حساب المدير «" + uname + "» من الويب")
+    token = _pwa_create_session(row[0])
+    return True, (token, uname), None
+
+
+def _pwa_api_changepass(user, old_password, new_password):
+    """تغيير كلمة مرور الويب الخاصة بالمستخدم الحالي نفسه."""
+    old_password = str(old_password or "")
+    new_password = str(new_password or "")
+    if len(new_password) < 6:
+        return False, "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pass_hash, username FROM pwa_auth WHERE user_id = %s",
+                        (user["id"],))
+            row = cur.fetchone()
+    finally:
+        release_connection(conn)
+    if not row or not _pwa_verify_password(old_password, row[0]):
+        time.sleep(0.4)
+        return False, "كلمة المرور الحالية غير صحيحة."
+    uname = pwa_set_password(user["id"], row[1] or user["name"], new_password)
+    return True, "تم تغيير كلمة مرورك. اسم الدخول: " + uname
+
+
 # ── معالجات aiohttp ──
 
 async def _pwa_run(fn, *a, **kw):
@@ -11366,8 +11447,54 @@ async def pwa_users_webpass_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
+async def pwa_status_handler(request):
+    """عام: هل يحتاج التطبيق إلى إعداد أول مدير؟"""
+    try:
+        has = await _pwa_run(_pwa_has_accounts)
+    except Exception:
+        has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
+    return _pwa_jr({"ok": True, "setup": not has})
+
+
+async def pwa_setup_handler(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    try:
+        ok, result, err = await _pwa_run(
+            _pwa_api_setup, str(body.get("name", "")),
+            str(body.get("password", "")), str(body.get("confirm", "")))
+    except Exception:
+        return _pwa_err(500, "خطأ في الخادم، أعد المحاولة.")
+    if not ok:
+        return _pwa_err(400, err)
+    token, uname = result
+    resp = _pwa_jr({"ok": True, "username": uname})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
+async def pwa_changepass_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_changepass, user,
+                             str(body.get("old_password", "")),
+                             str(body.get("new_password", "")))
+    if not ok:
+        return _pwa_err(400, msg)
+    return _pwa_jr({"ok": True, "message": msg})
+
+
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (غلاف مخزّن + API شبكة أولاً)
-const CACHE = "ceram-pwa-v1";
+const CACHE = "ceram-pwa-v2";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11415,6 +11542,9 @@ def register_pwa_routes(app):
     app.router.add_get("/icon.png", pwa_icon_handler)
     app.router.add_post("/api/login", pwa_login_handler)
     app.router.add_post("/api/logout", pwa_logout_handler)
+    app.router.add_get("/api/status", pwa_status_handler)
+    app.router.add_post("/api/setup", pwa_setup_handler)
+    app.router.add_post("/api/changepass", pwa_changepass_handler)
     app.router.add_get("/api/me", pwa_me_handler)
     app.router.add_get("/api/stats", pwa_stats_handler)
     app.router.add_get("/api/products", pwa_products_handler)
@@ -11425,7 +11555,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (17 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (20 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════

@@ -42,8 +42,9 @@ input,select{font-family:inherit;font-size:16px}
 .btn:active{transform:scale(.98)}
 .btn.gray{background:#efe7de;color:var(--ink)}
 .btn.mini{width:auto;padding:7px 12px;font-size:13px;border-radius:10px}
+.btn.gold{background:var(--brand2)}
 .btn.red{background:var(--bad)} .btn.green{background:var(--ok)}
-#loginErr{display:none;background:#fdecec;color:var(--bad);border:1px solid #f5c2c2;
+#loginErr,#setupErr{display:none;background:#fdecec;color:var(--bad);border:1px solid #f5c2c2;
   padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
@@ -124,7 +125,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   <img class="logo" src="/icon.png" alt="">
   <h1>مخزون السيراميك</h1>
   <p class="sub">دخول فريق المؤسسة</p>
-  <div class="card">
+  <div class="card" id="loginCard">
     <div id="loginErr"></div>
     <div class="fld"><label>اسم المستخدم</label>
       <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
@@ -133,6 +134,19 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button class="btn" id="btnLogin">دخول</button>
     <p class="hint">بيانات الدخول تُعطى من إدارة المؤسسة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية</p>
+  </div>
+  <div class="card" id="setupCard" style="display:none">
+    <div id="setupErr"></div>
+    <p style="margin:0 0 14px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🔑 الإعداد الأول — أنشئ حسابك كمدير</p>
+    <div class="fld"><label>اسم المستخدم (تدخل به لاحقاً)</label>
+      <input id="sUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
+    <div class="fld"><label>كلمة المرور (6 أحرف على الأقل)</label>
+      <input id="sPass" type="password" autocomplete="new-password" placeholder="••••••••"></div>
+    <div class="fld"><label>تأكيد كلمة المرور</label>
+      <input id="sPass2" type="password" autocomplete="new-password" placeholder="••••••••"></div>
+    <button class="btn" id="btnSetup">إنشاء الحساب والدخول</button>
+    <p class="hint">هذه الشاشة تظهر أول مرة فقط ثم تختفي للأبد<br>
+      بعد الدخول: تبويب «المستخدمون» ← زر 🔑 أمام كل موظف لأعطائه كلمة مرور</p>
   </div>
 </div>
 
@@ -204,6 +218,19 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   </div>
 </dialog>
 
+<dialog id="dlgPass">
+  <div class="dh" id="dlgPassTitle">🔑 كلمة مرور</div>
+  <div class="db">
+    <p id="dlgPassUser" style="margin:0 0 12px;font-weight:800"></p>
+    <div class="fld" id="oldWrap" style="display:none"><label>كلمة المرور الحالية</label>
+      <input id="fOldPass" type="password" autocomplete="current-password"></div>
+    <div class="fld"><label>كلمة المرور الجديدة (6 أحرف على الأقل)</label>
+      <input id="fNewPass" type="password" autocomplete="new-password"></div>
+    <button class="btn" id="dlgPassGo">حفظ</button>
+    <button class="btn gray" id="dlgPassCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
@@ -226,15 +253,17 @@ async function api(path, opts) {
   catch (e) { throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة."); }
   let data = null;
   try { data = await res.json(); } catch (e) { data = null; }
-  if (res.status === 401) { showLogin(); throw new Error((data && data.error) || "انتهت الجلسة."); }
+  if (res.status === 401) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة."); }
   if (!res.ok || (data && data.ok === false)) throw new Error((data && data.error) || "خطأ غير متوقع.");
   return data;
 }
 
 /* ─── الجلسات ─── */
-function showLogin() {
+function showLogin(setupMode) {
   S.user = null; S.perms = {};
   $("#app").style.display = "none"; $("#login").style.display = "flex";
+  $("#loginCard").style.display = setupMode ? "none" : "";
+  $("#setupCard").style.display = setupMode ? "" : "none";
   $("#fPass").value = "";
 }
 function showApp(me) {
@@ -414,26 +443,27 @@ async function loadUsers() {
     $("#cWeb").textContent = d.counts.web;
     $("#cKick").textContent = d.counts.kicked;
     box.innerHTML = d.users.map((u) => {
-      const me = u.telegram_id === S.user.telegram_id;
+      const self = u.telegram_id === S.user.telegram_id;
       let acts = "";
-      if (!me && !u.protected && u.role !== "admin") {
+      if (!self && !u.protected && u.role !== "admin") {
         acts += u.active
           ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
           : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
       }
-      if (!me) {
-        acts += '<button class="btn mini gray" data-tg="' + u.telegram_id + '" data-pass="1">🔑 كلمة مرور</button>';
-      }
-      return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + '</b>'
+      acts += self
+        ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
+        : '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>';
+      return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
         + '<span>' + esc(u.role_label) + (u.web ? " • اسم الدخول: " + esc(u.web_username) : "") + '</span></div>'
         + (u.active ? "" : '<span class="badge r">مطرود</span>')
         + (u.web ? '<span class="badge n">🔑 ويب</span>' : "")
-        + (acts ? '<div class="acts">' + acts + '</div>' : "")
+        + '<div class="acts">' + acts + '</div>'
         + '</div>';
     }).join("");
     box.querySelectorAll("button[data-tg]").forEach((b) => b.addEventListener("click", () => {
-      if (b.dataset.pass) userSetPass(+b.dataset.tg);
-      else userToggle(+b.dataset.tg, b.dataset.to === "1");
+      if (b.dataset.self) openPass(null, b.dataset.n, true);
+      else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
+      else openPass(+b.dataset.tg, b.dataset.n, false);
     }));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
@@ -447,18 +477,36 @@ async function userToggle(tid, active) {
     toast(d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
 }
-async function userSetPass(tid) {
-  const pwd = prompt("كلمة مرور ويب جديدة (6 أحرف على الأقل):\nأعطها للموظف ليدخل بها من المتصفح.");
-  if (pwd === null) return;
-  if (pwd.length < 6) { toast("كلمة المرور قصيرة — 6 أحرف على الأقل.", true); return; }
-  try {
-    const d = await api("/api/users/webpass", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ telegram_id: tid, password: pwd })
-    });
-    toast(d.message); loadUsers();
-  } catch (e) { toast(e.message, true); }
+/* ── حوار كلمة المرور (لنفسك وللموظفين) ── */
+S.passDlg = null; // {tid, self, name}
+function openPass(tid, name, self) {
+  S.passDlg = { tid, self, name };
+  $("#dlgPassTitle").textContent = self ? "🔑 كلمة مروري" : "🔑 كلمة مرور موظف";
+  $("#dlgPassUser").textContent = name;
+  $("#oldWrap").style.display = self ? "" : "none";
+  $("#fOldPass").value = ""; $("#fNewPass").value = "";
+  $("#dlgPass").showModal();
 }
+$("#dlgPassCancel").addEventListener("click", () => $("#dlgPass").close());
+$("#dlgPassGo").addEventListener("click", async () => {
+  const np = $("#fNewPass").value;
+  if (np.length < 6) { toast("كلمة المرور قصيرة — 6 أحرف على الأقل.", true); return; }
+  try {
+    let d;
+    if (S.passDlg.self) {
+      d = await api("/api/changepass", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_password: $("#fOldPass").value, new_password: np })
+      });
+    } else {
+      d = await api("/api/users/webpass", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ telegram_id: S.passDlg.tid, password: np })
+      });
+    }
+    $("#dlgPass").close(); toast(d.message || "تم الحفظ."); loadUsers();
+  } catch (e) { toast(e.message, true); }
+});
 
 /* ─── دخول/خروج ─── */
 async function doLogin() {
@@ -477,7 +525,34 @@ async function doLogin() {
     $("#btnLogin").disabled = false; $("#btnLogin").textContent = "دخول";
   }
 }
+$("#btnSetup").addEventListener("click", doSetup);
+["#sUser", "#sPass", "#sPass2"].forEach((s) =>
+  $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") doSetup(); }));
+
 $("#btnLogin").addEventListener("click", doLogin);
+
+/* ─── الإعداد الأول (أول مدير) ─── */
+async function doSetup() {
+  const err = $("#setupErr"); err.style.display = "none";
+  const name = $("#sUser").value.trim(), p1 = $("#sPass").value, p2 = $("#sPass2").value;
+  if (name.length < 2) { err.textContent = "أدخل اسم مستخدم (حرفان على الأقل)."; err.style.display = "block"; return; }
+  if (p1.length < 6) { err.textContent = "كلمة المرور يجب أن تكون 6 أحرف على الأقل."; err.style.display = "block"; return; }
+  if (p1 !== p2) { err.textContent = "تأكيد كلمة المرور غير مطابق."; err.style.display = "block"; return; }
+  const btn = $("#btnSetup"); btn.disabled = true; btn.textContent = "جارِ الإنشاء...";
+  try {
+    await api("/api/setup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, password: p1, confirm: p2 })
+    });
+    const me = await api("/api/me");
+    toast("تم إنشاء حسابك — أنت المدير الآن ✅");
+    showApp(me);
+  } catch (e) {
+    err.textContent = e.message; err.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = "إنشاء الحساب والدخول";
+  }
+}
 $("#fPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPass").focus(); });
 $("#btnLogout").addEventListener("click", async () => {
@@ -493,7 +568,15 @@ $("#btnLogout").addEventListener("click", async () => {
   try {
     const me = await api("/api/me");
     showApp(me);
-  } catch (e) { showLogin(); }
+  } catch (e) {
+    let setupMode = false;
+    try {
+      const st = await fetch("/api/status", { credentials: "same-origin" });
+      const d = await st.json();
+      setupMode = !!(d && d.setup);
+    } catch (e2) {}
+    showLogin(setupMode);
+  }
 })();
 </script>
 </body>
