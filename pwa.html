@@ -1,0 +1,500 @@
+<!doctype html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#b45309">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>مخزون السيراميك</title>
+<style>
+:root{
+  --bg:#fdf6f0; --card:#ffffff; --ink:#3f2a1d; --mut:#8a6f5c;
+  --brand:#b45309; --brand2:#d97706; --ok:#15803d; --bad:#b91c1c; --warn:#b45309;
+  --line:#f0e2d4; --chip:#fbe8d7; --radius:16px;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
+  min-height:100vh; font-size:15px}
+button{font-family:inherit}
+input,select{font-family:inherit;font-size:16px}
+/* ─── شاشة الدخول ─── */
+#login{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;padding:24px;gap:14px}
+#login .logo{width:88px;height:88px;border-radius:22px;object-fit:contain;background:#fff;
+  box-shadow:0 6px 24px rgba(180,83,9,.18)}
+#login h1{font-size:22px;margin:6px 0 2px}
+#login p.sub{color:var(--mut);margin:0 0 10px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px;width:100%;max-width:380px;box-shadow:0 4px 18px rgba(63,42,29,.06)}
+.fld{margin-bottom:12px}
+.fld label{display:block;font-size:13px;color:var(--mut);margin-bottom:5px}
+.fld input{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
+  background:#fffdfb;color:var(--ink)}
+.fld input:focus{outline:none;border-color:var(--brand2)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;
+  border-radius:12px;padding:12px 18px;font-size:15px;font-weight:700;cursor:pointer;
+  background:var(--brand);color:#fff;width:100%}
+.btn:active{transform:scale(.98)}
+.btn.gray{background:#efe7de;color:var(--ink)}
+.btn.mini{width:auto;padding:7px 12px;font-size:13px;border-radius:10px}
+.btn.red{background:var(--bad)} .btn.green{background:var(--ok)}
+#loginErr{display:none;background:#fdecec;color:var(--bad);border:1px solid #f5c2c2;
+  padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
+/* ─── الهيكل ─── */
+#app{display:none;flex-direction:column;min-height:100vh}
+header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--brand),#92400e);
+  color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;
+  box-shadow:0 2px 10px rgba(0,0,0,.12)}
+header img{width:34px;height:34px;border-radius:9px;background:#fff;object-fit:contain}
+header .t{flex:1;min-width:0}
+header .t b{display:block;font-size:15px}
+header .t span{font-size:11.5px;opacity:.85}
+header button{background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:10px;
+  padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer}
+main{flex:1;padding:14px 14px 86px;max-width:720px;width:100%;margin:0 auto}
+nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:6;background:#fff;
+  border-top:1px solid var(--line);display:flex;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+nav.tabs button{flex:1;background:none;border:none;color:var(--mut);font-size:11px;
+  display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;cursor:pointer;
+  border-radius:10px}
+nav.tabs button .ic{font-size:20px;line-height:1}
+nav.tabs button.on{color:var(--brand);background:var(--chip);font-weight:800}
+/* ─── عناصر ─── */
+.view{display:none}.view.on{display:block}
+h2.vt{font-size:17px;margin:4px 0 12px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
+  text-align:center}
+.stat b{display:block;font-size:22px;color:var(--brand)}
+.stat span{font-size:11.5px;color:var(--mut)}
+.oilcard{border-radius:14px;padding:14px;color:#fff;margin-bottom:14px;
+  background:linear-gradient(135deg,#15803d,#166534)}
+.oilcard.warn{background:linear-gradient(135deg,#d97706,#b45309)}
+.oilcard.red{background:linear-gradient(135deg,#dc2626,#991b1b)}
+.bar{height:8px;background:rgba(255,255,255,.25);border-radius:99px;overflow:hidden;margin-top:10px}
+.bar i{display:block;height:100%;background:#fff;border-radius:99px}
+.search{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
+  background:#fff;margin-bottom:12px}
+.row{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px;
+  margin-bottom:9px;display:flex;align-items:center;gap:10px}
+.row .info{flex:1;min-width:0}
+.row .info b{display:block;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .info span{font-size:12px;color:var(--mut)}
+.badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:800;
+  background:var(--chip);color:var(--brand);white-space:nowrap}
+.badge.g{background:#dcfce7;color:var(--ok)} .badge.r{background:#fee2e2;color:var(--bad)}
+.badge.n{background:#e0e7ff;color:#3730a3} .badge.mut{background:#f1ece6;color:var(--mut)}
+.row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.empty{text-align:center;color:var(--mut);padding:30px 10px;font-size:14px}
+/* حوار */
+dialog{border:none;border-radius:18px;padding:0;width:min(92vw,380px);
+  box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(63,42,29,.45)}
+dialog .dh{background:var(--brand);color:#fff;padding:14px 18px;font-weight:800;
+  border-radius:18px 18px 0 0}
+dialog .db{padding:16px 18px}
+dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius:12px;
+  padding:10px;font-family:inherit;font-size:14px;min-height:60px}
+.seg{display:flex;gap:6px;margin-bottom:12px}
+.seg button{flex:1;border:1.5px solid var(--line);background:#fff;border-radius:10px;
+  padding:9px 4px;font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
+.seg button.on{background:var(--brand);border-color:var(--brand);color:#fff}
+/* توست */
+#toast{position:fixed;bottom:calc(84px + env(safe-area-inset-bottom));left:50%;
+  transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 18px;border-radius:12px;
+  font-size:13.5px;display:none;z-index:20;max-width:88vw;text-align:center;
+  box-shadow:0 8px 24px rgba(0,0,0,.3)}
+#toast.err{background:var(--bad)}
+.chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.chip{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:6px 14px;
+  font-size:12.5px;font-weight:700;color:var(--mut)}
+.chip b{color:var(--brand)}
+.hint{font-size:12px;color:var(--mut);text-align:center;margin-top:10px;line-height:1.7}
+</style>
+</head>
+<body>
+
+<!-- شاشة الدخول -->
+<div id="login">
+  <img class="logo" src="/icon.png" alt="">
+  <h1>مخزون السيراميك</h1>
+  <p class="sub">دخول فريق المؤسسة</p>
+  <div class="card">
+    <div id="loginErr"></div>
+    <div class="fld"><label>اسم المستخدم</label>
+      <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
+    <div class="fld"><label>كلمة المرور</label>
+      <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+    <button class="btn" id="btnLogin">دخول</button>
+    <p class="hint">بيانات الدخول تُعطى من إدارة المؤسسة<br>
+      بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية</p>
+  </div>
+</div>
+
+<!-- التطبيق -->
+<div id="app">
+  <header>
+    <img src="/icon.png" alt="">
+    <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
+    <button id="btnLogout">خروج</button>
+  </header>
+  <main>
+    <!-- الرئيسية -->
+    <section class="view on" id="v-home">
+      <h2 class="vt">الرئيسية</h2>
+      <div class="grid">
+        <div class="stat"><b id="sProd">—</b><span>سلعة</span></div>
+        <div class="stat"><b id="sLow">—</b><span>منخفض</span></div>
+        <div class="stat"><b id="sToday">—</b><span>حركة اليوم</span></div>
+      </div>
+      <div id="homeOil"></div>
+      <div id="installBox"></div>
+    </section>
+    <!-- المخزون -->
+    <section class="view" id="v-inv">
+      <h2 class="vt">المخزون</h2>
+      <input class="search" id="qSearch" placeholder="🔍 ابحث باسم السلعة...">
+      <div id="invList"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+    <!-- الحركة -->
+    <section class="view" id="v-mov">
+      <h2 class="vt">حركة المخزون</h2>
+      <div id="movList"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+    <!-- الزيت -->
+    <section class="view" id="v-oil">
+      <h2 class="vt">زيت الرافعة الشوكية</h2>
+      <div id="oilBox"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+    <!-- المستخدمون -->
+    <section class="view" id="v-users">
+      <h2 class="vt">المستخدمون</h2>
+      <div class="chips">
+        <span class="chip">الكل <b id="cAll">0</b></span>
+        <span class="chip">🔑 ويب <b id="cWeb">0</b></span>
+        <span class="chip">🚫 مطرودون <b id="cKick">0</b></span>
+      </div>
+      <div id="usrList"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+  </main>
+  <nav class="tabs">
+    <button data-v="v-home" class="on"><span class="ic">🏠</span>الرئيسية</button>
+    <button data-v="v-inv"><span class="ic">📦</span>المخزون</button>
+    <button data-v="v-mov" id="tabMov"><span class="ic">📋</span>الحركة</button>
+    <button data-v="v-oil" id="tabOil"><span class="ic">🔧</span>الزيت</button>
+    <button data-v="v-users" id="tabUsers"><span class="ic">👥</span>المستخدمون</button>
+  </nav>
+</div>
+
+<dialog id="dlg">
+  <div class="dh" id="dlgTitle">—</div>
+  <div class="db">
+    <p id="dlgProd" style="margin:0 0 12px;font-weight:800"></p>
+    <div class="fld"><label>الكمية</label>
+      <input id="dlgQty" type="number" inputmode="numeric" min="0" value=""></div>
+    <div class="fld"><label>السبب / ملاحظة (اختياري)</label>
+      <textarea id="dlgReason" placeholder="مثال: توريد مصنع X"></textarea></div>
+    <button class="btn" id="dlgGo">تنفيذ</button>
+    <button class="btn gray" id="dlgCancel" style="margin-top:8px">إلغاء</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null };
+
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function toast(msg, isErr) {
+  const t = $("#toast"); t.textContent = msg; t.className = isErr ? "err" : "";
+  t.style.display = "block"; clearTimeout(t._h);
+  t._h = setTimeout(() => { t.style.display = "none"; }, 3200);
+}
+
+async function api(path, opts) {
+  let res;
+  try { res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts || {})); }
+  catch (e) { throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة."); }
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (res.status === 401) { showLogin(); throw new Error((data && data.error) || "انتهت الجلسة."); }
+  if (!res.ok || (data && data.ok === false)) throw new Error((data && data.error) || "خطأ غير متوقع.");
+  return data;
+}
+
+/* ─── الجلسات ─── */
+function showLogin() {
+  S.user = null; S.perms = {};
+  $("#app").style.display = "none"; $("#login").style.display = "flex";
+  $("#fPass").value = "";
+}
+function showApp(me) {
+  S.user = me.user; S.perms = me.perms || {};
+  $("#login").style.display = "none"; $("#app").style.display = "flex";
+  $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
+  $("#tabMov").style.display = S.perms.movements ? "" : "none";
+  $("#tabOil").style.display = S.perms.oil ? "" : "none";
+  $("#tabUsers").style.display = S.perms.users ? "" : "none";
+  switchView("v-home");
+  loadHome();
+}
+
+/* ─── التنقل ─── */
+function switchView(id) {
+  document.querySelectorAll("nav.tabs button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.v === id));
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === id));
+  if (id === "v-inv") loadInventory();
+  if (id === "v-mov") loadMovements();
+  if (id === "v-oil") loadOil();
+  if (id === "v-users") loadUsers();
+  if (id === "v-home") loadHome();
+}
+document.querySelectorAll("nav.tabs button").forEach((b) =>
+  b.addEventListener("click", () => switchView(b.dataset.v)));
+
+/* ─── الرئيسية ─── */
+async function loadHome() {
+  try {
+    const d = await api("/api/stats");
+    $("#sProd").textContent = d.stats.products;
+    $("#sLow").textContent = d.stats.low;
+    $("#sToday").textContent = d.stats.today;
+    const oil = $("#homeOil");
+    if (d.oil) {
+      const pct = Math.max(0, Math.min(100, Math.round((d.oil.since / d.oil.limit) * 100)));
+      const lvl = d.oil.level === "red" ? "red" : (d.oil.level === "warn" ? "warn" : "");
+      const txt = d.oil.level === "red" ? "🔴 تغيير إجباري فوراً"
+        : (d.oil.level === "warn" ? "🟠 حان وقت التغيير" : "✅ الحالة جيدة");
+      oil.innerHTML = '<div class="oilcard ' + lvl + '"><b>🔧 زيت الرافعة الشوكية</b>'
+        + '<div style="font-size:13px;margin-top:4px">' + txt
+        + ' — منذ آخر تغيير: ' + d.oil.since + ' ساعة (الحد ' + d.oil.limit + ')</div>'
+        + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+    } else { oil.innerHTML = ""; }
+    renderInstall();
+  } catch (e) { toast(e.message, true); }
+}
+function renderInstall() {
+  const box = $("#installBox");
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+  if (standalone) { box.innerHTML = ""; return; }
+  if (S.installEvt) {
+    box.innerHTML = '<button class="btn" id="btnInstall" style="max-width:380px">⬇️ تثبيت التطبيق على هذا الجهاز</button>';
+    $("#btnInstall").onclick = async () => {
+      S.installEvt.prompt();
+      const c = await S.installEvt.userChoice;
+      if (c && c.outcome === "accepted") { box.innerHTML = ""; }
+    };
+  } else if (ios) {
+    box.innerHTML = '<p class="hint">📲 للتثبيت على آيفون: زر المشاركة ⬆️ ← «إضافة إلى الشاشة الرئيسية»</p>';
+  } else {
+    box.innerHTML = '<p class="hint">📲 للتثبيت: قائمة المتصفح ⋮ ← «تثبيت التطبيق / إضافة إلى الشاشة الرئيسية»</p>';
+  }
+}
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault(); S.installEvt = e; renderInstall();
+});
+
+/* ─── المخزون ─── */
+let searchTimer = null;
+$("#qSearch").addEventListener("input", (e) => {
+  S.invQ = e.target.value.trim();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadInventory, 300);
+});
+async function loadInventory() {
+  const box = $("#invList");
+  try {
+    const d = await api("/api/products" + (S.invQ ? "?q=" + encodeURIComponent(S.invQ) : ""));
+    if (!d.products.length) { box.innerHTML = '<p class="empty">لا توجد نتائج.</p>'; return; }
+    box.innerHTML = d.products.map((p) => {
+      if (d.limited) {
+        return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b></div>'
+          + (p.available ? '<span class="badge g">متوفر</span>' : '<span class="badge r">غير متوفر</span>')
+          + '</div>';
+      }
+      const qtyBadge = p.low ? '<span class="badge r">' + p.qty + '</span>' : '<span class="badge g">' + p.qty + '</span>';
+      let acts = "";
+      if (S.perms.add_qty) acts += '<button class="btn mini green" data-act="add" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➕</button>';
+      if (S.perms.remove) acts += '<button class="btn mini red" data-act="remove" data-id="' + p.id + '" data-n="' + esc(p.name) + '">➖</button>';
+      if (S.perms.admin) acts += '<button class="btn mini gray" data-act="reconcile" data-id="' + p.id + '" data-n="' + esc(p.name) + '">جرد</button>';
+      return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b>'
+        + '<span>' + esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + '</span></div>'
+        + qtyBadge
+        + (acts ? '<div class="acts">' + acts + '</div>' : "")
+        + '</div>';
+    }).join("");
+    box.querySelectorAll("button[data-act]").forEach((b) =>
+      b.addEventListener("click", () => openQty(b.dataset.act, +b.dataset.id, b.dataset.n)));
+  } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+
+/* ─── حوار الكمية ─── */
+const TITLES = { add: "➕ إضافة كمية", remove: "➖ إخراج كمية", reconcile: "⚖️ جرد — ضبط الكمية" };
+function openQty(act, id, name) {
+  S.dlg = { act, id };
+  $("#dlgTitle").textContent = TITLES[act] || act;
+  $("#dlgProd").textContent = name;
+  $("#dlgQty").value = ""; $("#dlgReason").value = "";
+  $("#dlgGo").textContent = act === "reconcile" ? "ضبط الكمية" : "تنفيذ";
+  $("#dlg").showModal();
+}
+$("#dlgCancel").addEventListener("click", () => $("#dlg").close());
+$("#dlgGo").addEventListener("click", async () => {
+  const qty = parseInt($("#dlgQty").value, 10);
+  if (isNaN(qty) || qty < 0 || (S.dlg.act !== "reconcile" && qty <= 0)) {
+    toast("أدخل كمية صحيحة.", true); return;
+  }
+  try {
+    const d = await api("/api/qty", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: S.dlg.id, type: S.dlg.act, quantity: qty, reason: $("#dlgReason").value })
+    });
+    $("#dlg").close(); toast(d.message || "تمت العملية."); loadInventory();
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ─── الحركة ─── */
+const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"], reconcile: ["n", "جرد"] };
+async function loadMovements() {
+  const box = $("#movList");
+  try {
+    const d = await api("/api/movements?limit=80");
+    if (!d.movements.length) { box.innerHTML = '<p class="empty">لا توجد حركة بعد.</p>'; return; }
+    box.innerHTML = d.movements.map((m) => {
+      const b = MOV_BADGE[m.type] || ["mut", m.type];
+      return '<div class="row"><div class="info"><b>' + esc(m.product_name) + '</b>'
+        + '<span>' + esc(m.user_name || "—") + " • " + esc(m.date)
+        + (m.reason ? " • " + esc(m.reason) : "") + '</span></div>'
+        + '<span class="badge ' + b[0] + '">' + b[1] + " " + m.quantity + '</span></div>';
+    }).join("");
+  } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+
+/* ─── الزيت ─── */
+async function loadOil() {
+  const box = $("#oilBox");
+  try {
+    const d = await api("/api/oil");
+    if (!d.oil || !d.oil.has_cycle) {
+      box.innerHTML = '<p class="empty">لا توجد دورة زيت مسجلة بعد — سجّل أول تغيير من بوت تلغرام.</p>';
+      return;
+    }
+    const o = d.oil;
+    const pct = Math.max(0, Math.min(100, Math.round((o.since / o.limit) * 100)));
+    box.innerHTML = '<div class="oilcard ' + (o.since >= o.red ? "red" : (o.since >= o.limit ? "warn" : "")) + '">'
+      + '<b>الساعات منذ آخر تغيير: ' + o.since + '</b>'
+      + '<div style="font-size:13px;margin-top:4px">الحد: ' + o.limit + ' — الأحمر: ' + o.red + ' ساعة'
+      + (o.rate ? " — المعدل المتعلَّم: " + o.rate + " ساعة/أسبوع" : "") + '</div>'
+      + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>'
+      + '<h2 class="vt">آخر القراءات</h2>'
+      + (o.readings.length ? o.readings.map((r) =>
+          '<div class="row"><div class="info"><span>' + esc(r.at) + '</span></div>'
+          + '<span class="badge">' + r.reading + ' ساعة</span></div>').join("")
+        : '<p class="empty">لا قراءات مسجلة.</p>');
+  } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+
+/* ─── المستخدمون ─── */
+async function loadUsers() {
+  const box = $("#usrList");
+  try {
+    const d = await api("/api/users");
+    $("#cAll").textContent = d.counts.all;
+    $("#cWeb").textContent = d.counts.web;
+    $("#cKick").textContent = d.counts.kicked;
+    box.innerHTML = d.users.map((u) => {
+      const me = u.telegram_id === S.user.telegram_id;
+      let acts = "";
+      if (!me && !u.protected && u.role !== "admin") {
+        acts += u.active
+          ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
+          : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
+      }
+      if (!me) {
+        acts += '<button class="btn mini gray" data-tg="' + u.telegram_id + '" data-pass="1">🔑 كلمة مرور</button>';
+      }
+      return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + '</b>'
+        + '<span>' + esc(u.role_label) + (u.web ? " • اسم الدخول: " + esc(u.web_username) : "") + '</span></div>'
+        + (u.active ? "" : '<span class="badge r">مطرود</span>')
+        + (u.web ? '<span class="badge n">🔑 ويب</span>' : "")
+        + (acts ? '<div class="acts">' + acts + '</div>' : "")
+        + '</div>';
+    }).join("");
+    box.querySelectorAll("button[data-tg]").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.pass) userSetPass(+b.dataset.tg);
+      else userToggle(+b.dataset.tg, b.dataset.to === "1");
+    }));
+  } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+async function userToggle(tid, active) {
+  if (!confirm(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.")) return;
+  try {
+    const d = await api("/api/users/toggle", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ telegram_id: tid, active })
+    });
+    toast(d.message); loadUsers();
+  } catch (e) { toast(e.message, true); }
+}
+async function userSetPass(tid) {
+  const pwd = prompt("كلمة مرور ويب جديدة (6 أحرف على الأقل):\nأعطها للموظف ليدخل بها من المتصفح.");
+  if (pwd === null) return;
+  if (pwd.length < 6) { toast("كلمة المرور قصيرة — 6 أحرف على الأقل.", true); return; }
+  try {
+    const d = await api("/api/users/webpass", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ telegram_id: tid, password: pwd })
+    });
+    toast(d.message); loadUsers();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ─── دخول/خروج ─── */
+async function doLogin() {
+  const err = $("#loginErr"); err.style.display = "none";
+  $("#btnLogin").disabled = true; $("#btnLogin").textContent = "جارِ الدخول...";
+  try {
+    const r = await api("/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
+    });
+    const me = await api("/api/me");
+    showApp(me);
+  } catch (e) {
+    err.textContent = e.message; err.style.display = "block";
+  } finally {
+    $("#btnLogin").disabled = false; $("#btnLogin").textContent = "دخول";
+  }
+}
+$("#btnLogin").addEventListener("click", doLogin);
+$("#fPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+$("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPass").focus(); });
+$("#btnLogout").addEventListener("click", async () => {
+  try { await api("/api/logout", { method: "POST" }); } catch (e) {}
+  showLogin();
+});
+
+/* ─── إقلاع ─── */
+(async function boot() {
+  if ("serviceWorker" in navigator) {
+    try { navigator.serviceWorker.register("/sw.js"); } catch (e) {}
+  }
+  try {
+    const me = await api("/api/me");
+    showApp(me);
+  } catch (e) { showLogin(); }
+})();
+</script>
+</body>
+</html>

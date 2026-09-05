@@ -10611,6 +10611,827 @@ async def _health_handler(request):
                         content_type="application/json")
 
 
+# ═══════════════════════════════════════════════════════════
+#  📱 PWA WEB — v24: تطبيق ويب مثبّت من المتصفح داخل bot.py
+#  نفس أسلوب «main.py + pwa.html»: البوت يخدم صفحة pwa.html
+#  من مجلده + مسارات API محمية بالجلسات، على نفس منفذ Render
+#  ($PORT) في وضعي التشغيل (webhook / polling+health).
+#  المصادقة: جدولا pwa_auth + pwa_sessions (scrypt + كوكيز
+#  httpOnly) — بلا أي تأثير على جداول البوت الموجودة.
+#  الصلاحيات: نفس نظام role_permissions المشترك مع البوت،
+#  والطرد (active=False) يمنع الدخول من الويب أيضاً.
+# ═══════════════════════════════════════════════════════════
+import functools as _pwa_functools
+import secrets as _pwa_secrets
+import hmac as _pwa_hmac
+import decimal as _pwa_decimal
+
+PWA_COOKIE = "pwa_sess"
+PWA_SESSION_DAYS = 30
+PWA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pwa.html")
+
+PWA_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS pwa_auth (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    username   VARCHAR(100) UNIQUE NOT NULL,
+    pass_hash  TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS pwa_sessions (
+    token_hash CHAR(64) PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_sessions_user ON pwa_sessions(user_id);
+"""
+
+_pwa_html_cache = {"mtime": None, "body": None}
+_pwa_icon_cache = None
+
+
+def _pwa_json_default(o):
+    if isinstance(o, (datetime.datetime, datetime.date)):
+        return o.strftime("%Y-%m-%d %H:%M")
+    if isinstance(o, _pwa_decimal.Decimal):
+        return float(o)
+    return str(o)
+
+
+def _pwa_jr(data, status=200):
+    return web.json_response(
+        data, status=status,
+        dumps=lambda o: json.dumps(o, ensure_ascii=False, default=_pwa_json_default))
+
+
+def _pwa_err(status, msg):
+    return _pwa_jr({"ok": False, "error": msg}, status=status)
+
+
+def _pwa_read_html():
+    """يقرأ pwa.html من مجلد bot.py مع كاش حسب تاريخ التعديل."""
+    global _pwa_html_cache
+    try:
+        mtime = os.path.getmtime(PWA_HTML_PATH)
+        if _pwa_html_cache["mtime"] != mtime or _pwa_html_cache["body"] is None:
+            with open(PWA_HTML_PATH, "rb") as f:
+                _pwa_html_cache = {"mtime": mtime, "body": f.read()}
+        return _pwa_html_cache["body"]
+    except Exception as e:
+        logging.warning("[PWA] pwa.html missing: " + str(e))
+        return ("<!doctype html><html dir=rtl lang=ar><meta charset=utf-8>"
+                "<body style='font-family:sans-serif;text-align:center;padding:40px'>"
+                "<h2>⚠️ ملف pwa.html غير موجود بجانب bot.py</h2></body>").encode("utf-8")
+
+
+def _pwa_icon_bytes():
+    global _pwa_icon_cache
+    if _pwa_icon_cache is None:
+        try:
+            _pwa_icon_cache = base64.b64decode(_THEME_LOGO_B64)
+        except Exception:
+            _pwa_icon_cache = b""
+    return _pwa_icon_cache
+
+
+# ── كلمات المرور: scrypt بملح عشوائي ──
+
+def _pwa_hash_password(password, salt=None):
+    if salt is None:
+        salt = os.urandom(16)
+    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return "s1$" + salt.hex() + "$" + dk.hex()
+
+
+def _pwa_verify_password(password, stored):
+    try:
+        _, salt_hex, hash_hex = str(stored).split("$")
+        salt = bytes.fromhex(salt_hex)
+        dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+        return _pwa_hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
+
+
+def _pwa_norm_username(u):
+    return re.sub(r"[\s@]+", "", str(u or "")).lower()
+
+
+def _pwa_init_tables():
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(PWA_SCHEMA_SQL)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def pwa_set_password(user_id, username, password):
+    """زرع/تحديث كلمة مرور ويب لمستخدم + إلغاء جلساته القديمة."""
+    username = _pwa_norm_username(username)
+    if not username:
+        username = "u" + str(user_id)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # تفرد اسم المستخدم: إن كان محجوزاً لغيره نلحقة بمعرّفه
+            cur.execute("SELECT user_id FROM pwa_auth WHERE username = %s", (username,))
+            row = cur.fetchone()
+            if row and row[0] != user_id:
+                username = username + "_" + str(user_id)
+            cur.execute(
+                "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
+                "VALUES (%s, %s, %s, NOW()) "
+                "ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username, "
+                "pass_hash = EXCLUDED.pass_hash, updated_at = NOW()",
+                (user_id, username, _pwa_hash_password(password)),
+            )
+            cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (user_id,))
+        conn.commit()
+        return username
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def pwa_bootstrap_admin():
+    """زرع اختياري لكلمة مرور المدير أول مرة عبر متغير البيئة PWA_ADMIN_PASSWORD."""
+    pwd = os.getenv("PWA_ADMIN_PASSWORD", "").strip()
+    if not pwd:
+        return
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, COALESCE(username, first_name) FROM users "
+                    "WHERE role = 'admin' AND active ORDER BY id LIMIT 1")
+                row = cur.fetchone()
+            conn.commit()
+        finally:
+            release_connection(conn)
+        if not row:
+            logging.warning("[PWA] PWA_ADMIN_PASSWORD مضبوط لكن لا يوجد مستخدم admin في القاعدة")
+            return
+        uname = pwa_set_password(row[0], row[1] or "admin", pwd)
+        logging.info("[PWA] تم زرع كلمة مرور ويب للمدير: " + uname)
+    except Exception as e:
+        logging.warning("[PWA] bootstrap failed: " + str(e))
+
+
+def _pwa_create_session(user_id):
+    token = _pwa_secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO pwa_sessions (token_hash, user_id, expires_at) "
+                "VALUES (%s, %s, NOW() + (%s * INTERVAL '1 day'))",
+                (token_hash, user_id, PWA_SESSION_DAYS),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return token
+
+
+def _pwa_kill_sessions(user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (user_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        release_connection(conn)
+
+
+def _pwa_session_user(request):
+    """يقرأ الكوكي ويرجع dict المستخدم الكامل أو None (فحص في executor)."""
+    token = request.cookies.get(PWA_COOKIE, "")
+    if not token or len(token) > 128:
+        return None
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                "u.role, u.active, a.username AS web_username "
+                "FROM pwa_sessions s JOIN users u ON u.id = s.user_id "
+                "LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE s.token_hash = %s AND s.expires_at > NOW()",
+                (token_hash,))
+            row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        d = dict(row)
+        d["name"] = (d.get("first_name") or d.get("tg_username")
+                     or d.get("web_username") or str(d.get("telegram_id")))
+        return d
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+# ── منطق API (دوال متزامنة تُستدعى في executor) ──
+
+def _pwa_api_login(username, password):
+    username = _pwa_norm_username(username)
+    if not username or not password:
+        return False, None, "أدخل اسم المستخدم وكلمة المرور."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                "u.role, u.active, a.pass_hash "
+                "FROM pwa_auth a JOIN users u ON u.id = a.user_id "
+                "WHERE a.username = %s", (username,))
+            row = cur.fetchone()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] login db error: " + str(e))
+        return False, None, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+    if not row or not _pwa_verify_password(password, row["pass_hash"]):
+        time.sleep(0.5)  # إبطاء بسيط لتخشين محاولات التخمين
+        return False, None, "اسم المستخدم أو كلمة المرور غير صحيحة."
+    if not row["active"]:
+        return False, None, KICK_NOTICE
+    if row["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
+        return False, None, "لا يوجد وصول ويب لفئتك حالياً — راجع الإدارة."
+    user_id = row["id"]
+    token = _pwa_create_session(user_id)
+    user = {"id": user_id, "telegram_id": row["telegram_id"],
+            "name": row["first_name"] or row["tg_username"] or username,
+            "role": row["role"], "role_label": ROLE_LABELS.get(row["role"], row["role"])}
+    return True, (token, user), None
+
+
+def _pwa_perm_map(role):
+    """خريطة صلاحيات الواجهة للفئة — نفس نظام الصلاحيات المشترك."""
+    admin = role in (ROLE_ADMIN, ROLE_MANAGER)
+    return {
+        "admin": admin,
+        "search": admin or role_perm_enabled(role, PERM_SEARCH),
+        "add_qty": admin or role_perm_enabled(role, PERM_ADD_QTY),
+        "remove": admin or role_perm_enabled(role, PERM_REMOVE),
+        "movements": admin or role_perm_enabled(role, PERM_MOVEMENTS),
+        "low_stock": admin or role_perm_enabled(role, PERM_LOW_STOCK),
+        "oil": admin,
+        "users": admin,
+    }
+
+
+def _pwa_api_me(user):
+    return {"ok": True, "user": {
+        "name": user["name"], "role": user["role"],
+        "role_label": ROLE_LABELS.get(user["role"], user["role"]),
+        "web_username": user.get("web_username"),
+    }, "perms": _pwa_perm_map(user["role"])}
+
+
+def _pwa_api_stats(user):
+    perms = _pwa_perm_map(user["role"])
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM products")
+            n_products = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM products WHERE quantity <= minimum_stock")
+            n_low = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM transactions WHERE date >= CURRENT_DATE")
+            n_today = cur.fetchone()[0]
+        conn.commit()
+    finally:
+        release_connection(conn)
+    oil = None
+    if perms["oil"]:
+        st = oil_ensure_row()
+        if st.get("has_cycle"):
+            base = float(st.get("baseline_hours") or 0)
+            cur_h = float(st.get("current_hours") or base)
+            since = max(0.0, cur_h - base)
+            remaining = float(OIL_H_LIMIT) - since
+            oil = {"since": round(since, 1), "limit": float(OIL_H_LIMIT),
+                   "remaining": round(remaining, 1),
+                   "level": "red" if since >= float(OIL_H_RED) else ("warn" if remaining <= 0 else "ok")}
+    return {"ok": True, "stats": {
+        "products": n_products, "low": n_low, "today": n_today}, "oil": oil}
+
+
+def _pwa_api_products(user, q):
+    role = user["role"]
+    external_only = role == ROLE_EXTERNAL
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if q:
+                cur.execute(
+                    "SELECT * FROM products WHERE name ILIKE %s ORDER BY LOWER(name) LIMIT 200",
+                    ("%" + q + "%",))
+            else:
+                cur.execute("SELECT * FROM products ORDER BY LOWER(name) LIMIT 200")
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    out = []
+    for r in rows:
+        if external_only:
+            out.append({"id": r["id"], "name": r["name"],
+                        "available": (r["quantity"] or 0) > 0})
+        else:
+            out.append({"id": r["id"], "name": r["name"],
+                        "qty": r["quantity"], "min": r["minimum_stock"],
+                        "location": r.get("location") or "",
+                        "price": r.get("selling_price"),
+                        "low": (r["quantity"] or 0) <= (r["minimum_stock"] or 0)})
+    return {"ok": True, "products": out, "limited": external_only}
+
+
+def _pwa_api_qty(user, product_id, qtype, quantity, reason):
+    role = user["role"]
+    if qtype == "add":
+        if not role_perm_enabled(role, PERM_ADD_QTY) and role not in (ROLE_ADMIN, ROLE_MANAGER):
+            return False, "ليست لديك صلاحية إضافة الكميات."
+    elif qtype == "remove":
+        if not role_perm_enabled(role, PERM_REMOVE) and role not in (ROLE_ADMIN, ROLE_MANAGER):
+            return False, "ليست لديك صلاحية إخراج الكميات."
+    elif qtype == "reconcile":
+        if role not in (ROLE_ADMIN, ROLE_MANAGER):
+            return False, "الجرد للمدراء فقط."
+    else:
+        return False, "نوع عملية غير معروف."
+    if not isinstance(quantity, int) or quantity < 0:
+        return False, "أدخل كمية صحيحة."
+    if qtype in ("add", "remove") and quantity <= 0:
+        return False, "أدخل كمية أكبر من صفر."
+    reason = (str(reason or "").strip())[:200]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM products WHERE id = %s FOR UPDATE", (product_id,))
+            prod = cur.fetchone()
+            if not prod:
+                conn.rollback()
+                return False, "السلعة غير موجودة."
+            old_qty = prod["quantity"] or 0
+            if qtype == "add":
+                new_qty = old_qty + quantity
+                cur.execute("UPDATE products SET quantity = %s WHERE id = %s", (new_qty, product_id))
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                    "VALUES (%s, 'add', %s, %s, %s)",
+                    (product_id, quantity, user["id"], reason or None))
+            elif qtype == "remove":
+                if old_qty < quantity:
+                    conn.rollback()
+                    return False, "الكمية المتوفرة (" + str(old_qty) + ") أقل من المطلوب."
+                new_qty = old_qty - quantity
+                cur.execute("UPDATE products SET quantity = %s WHERE id = %s", (new_qty, product_id))
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                    "VALUES (%s, 'remove', %s, %s, %s)",
+                    (product_id, quantity, user["id"], reason or None))
+            else:  # reconcile → جرد: ضبط الكمية على قيمة معلومة
+                new_qty = quantity
+                delta = abs(new_qty - old_qty)
+                cur.execute("UPDATE products SET quantity = %s WHERE id = %s", (new_qty, product_id))
+                if delta > 0:
+                    cur.execute(
+                        "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                        "VALUES (%s, 'reconcile', %s, %s, %s)",
+                        (product_id, delta, user["id"],
+                         ("جرد: من " + str(old_qty) + " إلى " + str(new_qty) +
+                          (" — " + reason if reason else ""))))
+        conn.commit()
+        return True, "تمت العملية بنجاح."
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] qty failed: " + str(e))
+        return False, "فشلت العملية، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_movements(user, limit):
+    if not _pwa_perm_map(user["role"])["movements"]:
+        return None
+    limit = max(1, min(int(limit or 60), 200))
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT t.id, t.type, t.quantity, t.date, t.reason, "
+                "p.name AS product_name, "
+                "COALESCE(u.first_name, u.username, '#' || u.telegram_id::text) AS user_name "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "ORDER BY t.date DESC LIMIT %s", (limit,))
+            rows = cur.fetchall()
+        conn.commit()
+        return {"ok": True, "movements": [dict(r) for r in rows]}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_low(user):
+    if not _pwa_perm_map(user["role"])["low_stock"]:
+        return None
+    rows = get_low_stock_products()
+    return {"ok": True, "products": [
+        {"id": r["id"], "name": r["name"], "qty": r["quantity"],
+         "min": r["minimum_stock"]} for r in rows]}
+
+
+def _pwa_api_oil(user):
+    if not _pwa_perm_map(user["role"])["oil"]:
+        return None
+    st = oil_ensure_row()
+    readings = oil_recent_readings(6)
+    rate = oil_compute_rate(readings)
+    base = float(st.get("baseline_hours") or 0)
+    cur_h = float(st.get("current_hours") or base)
+    since = max(0.0, cur_h - base)
+    return {"ok": True, "oil": {
+        "has_cycle": bool(st.get("has_cycle")),
+        "baseline": base, "current": cur_h, "since": round(since, 1),
+        "limit": float(OIL_H_LIMIT), "red": float(OIL_H_RED),
+        "rate": round(float(rate), 2) if rate else None,
+        "last_change": st.get("last_change_at"),
+        "readings": [{"reading": float(r[0]), "at": r[1]} for r in reversed(readings[-8:])],
+    }}
+
+
+def _pwa_api_users(user):
+    if not _pwa_perm_map(user["role"])["users"]:
+        return None
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                "u.role, u.active, a.username AS web_username "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "ORDER BY u.active DESC, u.role, LOWER(COALESCE(u.first_name, u.username, ''))")
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    out = []
+    for r in rows:
+        out.append({
+            "telegram_id": r["telegram_id"], "name": r["first_name"] or r["tg_username"] or str(r["telegram_id"]),
+            "role": r["role"], "role_label": ROLE_LABELS.get(r["role"], r["role"]),
+            "active": bool(r["active"]), "web": bool(r["web_username"]),
+            "protected": bool(_protected_account(r["telegram_id"])),
+        })
+    counts = {"all": len(out), "kicked": sum(1 for u in out if not u["active"]),
+              "web": sum(1 for u in out if u["web"])}
+    return {"ok": True, "users": out, "counts": counts}
+
+
+def _pwa_api_toggle(user, target_tid, active):
+    if not _pwa_perm_map(user["role"])["users"]:
+        return None
+    if target_tid == user["telegram_id"]:
+        return False, "لا يمكنك تنفيذ هذا الإجراء على نفسك."
+    if not active and _protected_account(target_tid):
+        return False, "لا يمكن إيقاف حساب محمي (مالك/بيئة)."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role FROM users WHERE telegram_id = %s", (target_tid,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row:
+        return False, "المستخدم غير موجود."
+    if not active and row[0] == ROLE_ADMIN:
+        return False, "لا يمكن إيقاف حساب بفئة إدارية — خفّض فئته أولاً."
+    set_user_active(target_tid, bool(active))
+    if not active:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE telegram_id = %s", (target_tid,))
+                r2 = cur.fetchone()
+                if r2:
+                    cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (r2[0],))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            release_connection(conn)
+    return True, ("تم إيقاف المستخدم." if not active else "تم إعادة تنشيط المستخدم.")
+
+
+def _pwa_api_webpass(user, target_tid, password):
+    if not _pwa_perm_map(user["role"])["users"]:
+        return None
+    password = str(password or "")
+    if len(password) < 6:
+        return False, "كلمة المرور يجب أن تكون 6 أحرف على الأقل."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, COALESCE(username, first_name) FROM users WHERE telegram_id = %s", (target_tid,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row:
+        return False, "المستخدم غير موجود."
+    uname = pwa_set_password(row[0], row[1] or ("u" + str(target_tid)), password)
+    return True, "تم ضبط كلمة مرور الويب. اسم الدخول: " + uname
+
+
+# ── معالجات aiohttp ──
+
+async def _pwa_run(fn, *a, **kw):
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _pwa_functools.partial(fn, *a, **kw))
+
+
+async def _pwa_auth_user(request):
+    """يعيد المستخدم من الجلسة أو None (مع فحص الجلسة في executor)."""
+    return await _pwa_run(_pwa_session_user, request)
+
+
+async def pwa_page_handler(request):
+    if request.path == "/sw.js":
+        return web.Response(text=_PWA_SW_JS, content_type="application/javascript",
+                            charset="utf-8", headers={"Cache-Control": "no-cache"})
+    return web.Response(body=_pwa_read_html(), content_type="text/html", charset="utf-8",
+                        headers={"Cache-Control": "no-cache"})
+
+
+async def pwa_manifest_handler(request):
+    manifest = {
+        "name": "مخزون السيراميك",
+        "short_name": "المخزون",
+        "dir": "rtl", "lang": "ar",
+        "start_url": "/", "scope": "/",
+        "display": "standalone",
+        "background_color": "#fdf6f0",
+        "theme_color": "#b45309",
+        "icons": [{"src": "/icon.png", "sizes": "512x512",
+                   "type": "image/png", "purpose": "any"},
+                  {"src": "/icon.png", "sizes": "512x512",
+                   "type": "image/png", "purpose": "maskable"}],
+    }
+    return web.json_response(manifest, dumps=lambda o: json.dumps(o, ensure_ascii=False))
+
+
+async def pwa_icon_handler(request):
+    body = _pwa_icon_bytes()
+    if not body:
+        raise web.HTTPNotFound()
+    return web.Response(body=body, content_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+async def pwa_login_handler(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, result, err = await _pwa_run(_pwa_api_login,
+                                     str(body.get("username", "")), str(body.get("password", "")))
+    if not ok:
+        return _pwa_err(401, err)
+    token, user = result
+    resp = _pwa_jr({"ok": True, "user": user})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
+async def pwa_logout_handler(request):
+    user = await _pwa_auth_user(request)
+    if user:
+        await _pwa_run(_pwa_kill_sessions, user["id"])
+    resp = _pwa_jr({"ok": True})
+    resp.del_cookie(PWA_COOKIE, path="/")
+    return resp
+
+
+def _pwa_guard(user, need):
+    """فحص موحّد: جلسة صالحة + نشط + صلاحية مطلوبة. يرجع (user, error_response)."""
+    if user is None:
+        return None, _pwa_err(401, "انتهت الجلسة — سجّل الدخول من جديد.")
+    if not user["active"]:
+        return None, _pwa_err(403, KICK_NOTICE)
+    if need and not _pwa_perm_map(user["role"])[need]:
+        return None, _pwa_err(403, "ليست لديك صلاحية لهذه الشاشة.")
+    return user, None
+
+
+async def pwa_me_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    return _pwa_jr(await _pwa_run(_pwa_api_me, user))
+
+
+async def pwa_stats_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    return _pwa_jr(await _pwa_run(_pwa_api_stats, user))
+
+
+async def pwa_products_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["search"]:
+        return _pwa_err(403, "ليست لديك صلاحية البحث.")
+    q = (request.query.get("q") or "").strip()[:120]
+    return _pwa_jr(await _pwa_run(_pwa_api_products, user, q))
+
+
+async def pwa_qty_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    try:
+        pid = int(body.get("product_id"))
+        qty = int(body.get("quantity", 0))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "قيم غير صحيحة.")
+    ok, msg = await _pwa_run(_pwa_api_qty, user, pid,
+                             str(body.get("type", "")), qty, body.get("reason"))
+    if not ok:
+        return _pwa_err(400, msg)
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_movements_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_movements, user, request.query.get("limit"))
+    if data is None:
+        return _pwa_err(403, "ليست لديك صلاحية الحركة.")
+    return _pwa_jr(data)
+
+
+async def pwa_low_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_low, user)
+    if data is None:
+        return _pwa_err(403, "ليست لديك صلاحية المخزون المنخفض.")
+    return _pwa_jr(data)
+
+
+async def pwa_oil_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_oil, user)
+    if data is None:
+        return _pwa_err(403, "شاشة الزيت للمدراء فقط.")
+    return _pwa_jr(data)
+
+
+async def pwa_users_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_users, user)
+    if data is None:
+        return _pwa_err(403, "شاشة المستخدمين للمدراء فقط.")
+    return _pwa_jr(data)
+
+
+async def pwa_users_toggle_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        tid = int(body.get("telegram_id"))
+        active = bool(body.get("active"))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_toggle, user, tid, active)
+    if ok is None:
+        return _pwa_err(403, "للمدراء فقط.")
+    if not ok:
+        return _pwa_err(400, msg)
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_users_webpass_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        tid = int(body.get("telegram_id"))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_webpass, user, tid, str(body.get("password", "")))
+    if ok is None:
+        return _pwa_err(403, "للمدراء فقط.")
+    if not ok:
+        return _pwa_err(400, msg)
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+_PWA_SW_JS = """// Service Worker — مخزون السيراميك (غلاف مخزّن + API شبكة أولاً)
+const CACHE = "ceram-pwa-v1";
+const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener("activate", (e) => {
+  e.waitUntil(caches.keys().then((keys) =>
+    Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+  ).then(() => self.clients.claim()));
+});
+self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== "GET") return;
+  if (url.pathname.startsWith("/api/")) {
+    e.respondWith(fetch(e.request).catch(() =>
+      new Response(JSON.stringify({ok: false, error: "لا يوجد اتصال — أعد المحاولة عند رجوع الشبكة."}),
+        {status: 503, headers: {"Content-Type": "application/json"}})));
+    return;
+  }
+  e.respondWith(
+    caches.match(e.request).then((hit) => {
+      const net = fetch(e.request).then((res) => {
+        if (res && res.status === 200 && url.origin === location.origin) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      }).catch(() => hit);
+      return hit || net;
+    })
+  );
+});
+"""
+
+
+def register_pwa_routes(app):
+    """تركيب مسارات PWA على خادم aiohttp الموجود (webhook أو polling+health).
+    آمنة إضافياً بالكامل: لا تمس مسارات البوت ولا جداوله."""
+    _pwa_init_tables()
+    pwa_bootstrap_admin()
+    app.router.add_get("/", pwa_page_handler)
+    app.router.add_get("/pwa", pwa_page_handler)
+    app.router.add_get("/app", pwa_page_handler)
+    app.router.add_get("/sw.js", pwa_page_handler)
+    app.router.add_get("/manifest.webmanifest", pwa_manifest_handler)
+    app.router.add_get("/icon.png", pwa_icon_handler)
+    app.router.add_post("/api/login", pwa_login_handler)
+    app.router.add_post("/api/logout", pwa_logout_handler)
+    app.router.add_get("/api/me", pwa_me_handler)
+    app.router.add_get("/api/stats", pwa_stats_handler)
+    app.router.add_get("/api/products", pwa_products_handler)
+    app.router.add_post("/api/qty", pwa_qty_handler)
+    app.router.add_get("/api/movements", pwa_movements_handler)
+    app.router.add_get("/api/low", pwa_low_handler)
+    app.router.add_get("/api/oil", pwa_oil_handler)
+    app.router.add_get("/api/users", pwa_users_handler)
+    app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
+    app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (17 مساراً)")
+
+
+# ═════════════════════ نهاية قسم PWA WEB ═════════════════════
+
+
+
 if __name__ == "__main__":
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
@@ -10671,7 +11492,7 @@ if __name__ == "__main__":
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
         webhook_app = web.Application()
         webhook_app.router.add_get("/health", _health_handler)
-        webhook_app.router.add_get("/", _health_handler)
+        register_pwa_routes(webhook_app)
         # ── Security: Telegram sends X-Telegram-Bot-Api-Secret-Token on every update;
         # PTB validates it against this value and rejects spoofed requests.
         import secrets as _secrets
@@ -10684,7 +11505,7 @@ if __name__ == "__main__":
     elif render_port:
         health_app = web.Application()
         health_app.router.add_get("/health", _health_handler)
-        health_app.router.add_get("/", _health_handler)
+        register_pwa_routes(health_app)
         async def on_startup(aio_app):
             global _startup_restore_notice
             await tg_app.initialize()
