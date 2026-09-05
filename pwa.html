@@ -117,7 +117,21 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .chip{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:6px 14px;
   font-size:12.5px;font-weight:700;color:var(--mut)}
 .chip b{color:var(--brand)}
+.rchips{display:flex;gap:8px;flex-wrap:wrap}
+.rchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:8px 13px;
+  font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
+.rchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
 .hint{font-size:12px;color:var(--mut);text-align:center;margin-top:10px;line-height:1.7}
+/* ─── الإشعارات (v30) ─── */
+.bellwrap{position:relative;flex-shrink:0}
+#nBadge{position:absolute;top:-7px;left:-7px;background:#dc2626;color:#fff;border-radius:99px;
+  min-width:18px;height:18px;font-size:11px;font-weight:800;display:none;
+  align-items:center;justify-content:center;padding:0 4px;border:2px solid #92400e;z-index:2}
+.nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
+.nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
+.nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
+.nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}
+#notifList{max-height:55vh;overflow:auto}
 </style>
 </head>
 <body>
@@ -136,14 +150,14 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <button class="btn" id="btnLogin">دخول</button>
     <p class="hint">بيانات الدخول تُعطى من إدارة المؤسسة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v28</span></p>
+      <span style="opacity:.65">الإصدار v30</span></p>
   </div>
   <div class="card" id="setupCard" style="display:none">
     <div id="setupErr"></div>
     <p style="margin:0 0 14px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🔑 الإعداد الأول — أنشئ حسابك كمدير</p>
     <div class="fld"><label>اسم المستخدم (تدخل به لاحقاً)</label>
       <input id="sUser" autocomplete="username" autocapitalize="none" placeholder="مثال: admin"></div>
-    <div class="fld"><label>كلمة المرور (6 أحرف على الأقل)</label>
+    <div class="fld"><label>كلمة المرور (8 أحرف على الأقل، حروف وأرقام)</label>
       <input id="sPass" type="password" autocomplete="new-password" placeholder="••••••••"></div>
     <div class="fld"><label>تأكيد كلمة المرور</label>
       <input id="sPass2" type="password" autocomplete="new-password" placeholder="••••••••"></div>
@@ -158,6 +172,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   <header>
     <img src="/icon.png" alt="">
     <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
+    <div class="bellwrap"><button id="btnNotif" title="الإشعارات">🔔</button><span id="nBadge">0</span></div>
     <button id="btnLogout">خروج</button>
   </header>
   <main>
@@ -172,7 +187,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v28</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v30</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -229,8 +244,10 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <p id="dlgProd" style="margin:0 0 12px;font-weight:800"></p>
     <div class="fld"><label>الكمية</label>
       <input id="dlgQty" type="number" inputmode="numeric" min="0" value=""></div>
-    <div class="fld"><label>السبب / ملاحظة (اختياري)</label>
-      <textarea id="dlgReason" placeholder="مثال: توريد مصنع X"></textarea></div>
+    <div class="fld" id="reasonChipsWrap"><label>سبب سريع (اختر)</label>
+      <div class="rchips" id="dlgChips"></div></div>
+    <div class="fld"><label>سبب آخر / ملاحظة (اختياري)</label>
+      <textarea id="dlgReason" placeholder="اكتب اسم الزبون أو سبباً خاصاً إن لزم"></textarea></div>
     <button class="btn" id="dlgGo">تنفيذ</button>
     <button class="btn gray" id="dlgCancel" style="margin-top:8px">إلغاء</button>
   </div>
@@ -242,7 +259,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
     <p id="dlgPassUser" style="margin:0 0 12px;font-weight:800"></p>
     <div class="fld" id="oldWrap" style="display:none"><label>كلمة المرور الحالية</label>
       <input id="fOldPass" type="password" autocomplete="current-password"></div>
-    <div class="fld"><label>كلمة المرور الجديدة (6 أحرف على الأقل)</label>
+    <div class="fld"><label>كلمة المرور الجديدة (8 أحرف على الأقل)</label>
       <input id="fNewPass" type="password" autocomplete="new-password"></div>
     <button class="btn" id="dlgPassGo">حفظ</button>
     <button class="btn gray" id="dlgPassCancel" style="margin-top:8px">إلغاء</button>
@@ -279,12 +296,24 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   </div>
 </dialog>
 
+<dialog id="dlgNotif">
+  <div class="dh">🔔 الإشعارات</div>
+  <div class="db">
+    <div id="notifList"><p class="empty">لا إشعارات بعد.</p></div>
+    <button class="btn gray" id="dlgNotifClose" style="margin-top:10px">إغلاق</button>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
-const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null };
+const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null,
+  notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false },
+  reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
+             remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
+             reconcile: [] } };
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -309,6 +338,7 @@ async function api(path, opts) {
 /* ─── الجلسات ─── */
 function showLogin(setupMode) {
   S.user = null; S.perms = {};
+  stopNotifPolling();
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
   $("#setupCard").style.display = setupMode ? "" : "none";
@@ -324,6 +354,8 @@ function showApp(me) {
   $("#tabUsers").style.display = S.perms.users ? "" : "none";
   switchView("v-home");
   loadHome();
+  startNotifPolling();
+  askWebNotifPerm();
 }
 
 /* ─── التنقل ─── */
@@ -431,10 +463,21 @@ async function loadInventory() {
 /* ─── حوار الكمية ─── */
 const TITLES = { add: "➕ إضافة كمية", remove: "➖ إخراج كمية", reconcile: "⚖️ جرد — ضبط الكمية" };
 function openQty(act, id, name) {
-  S.dlg = { act, id };
+  S.dlg = { act, id, chip: null };
   $("#dlgTitle").textContent = TITLES[act] || act;
   $("#dlgProd").textContent = name;
   $("#dlgQty").value = ""; $("#dlgReason").value = "";
+  const chips = (S.reasons && S.reasons[act]) || [];
+  const wrap = $("#reasonChipsWrap");
+  wrap.style.display = chips.length ? "" : "none";
+  $("#dlgChips").innerHTML = chips.map((r) =>
+    '<button type="button" class="rchip" data-r="' + esc(r) + '">' + esc(r) + '</button>').join("");
+  $("#dlgChips").querySelectorAll(".rchip").forEach((b) =>
+    b.addEventListener("click", () => {
+      const was = b.classList.contains("on");
+      $("#dlgChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
+      if (was) { S.dlg.chip = null; } else { b.classList.add("on"); S.dlg.chip = b.dataset.r; }
+    }));
   $("#dlgGo").textContent = act === "reconcile" ? "ضبط الكمية" : "تنفيذ";
   $("#dlg").showModal();
 }
@@ -445,11 +488,14 @@ $("#dlgGo").addEventListener("click", async () => {
     toast("أدخل كمية صحيحة.", true); return;
   }
   try {
+    const chip = S.dlg.chip, extra = $("#dlgReason").value.trim();
+    const reason = [chip, extra].filter(Boolean).join(" — ");
     const d = await api("/api/qty", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ product_id: S.dlg.id, type: S.dlg.act, quantity: qty, reason: $("#dlgReason").value })
+      body: JSON.stringify({ product_id: S.dlg.id, type: S.dlg.act, quantity: qty, reason: reason })
     });
     $("#dlg").close(); toast(d.message || "تمت العملية."); loadInventory();
+    pollNotifs();
   } catch (e) { toast(e.message, true); }
 });
 
@@ -550,7 +596,7 @@ function openPass(tid, name, self) {
 $("#dlgPassCancel").addEventListener("click", () => $("#dlgPass").close());
 $("#dlgPassGo").addEventListener("click", async () => {
   const np = $("#fNewPass").value;
-  if (np.length < 6) { toast("كلمة المرور قصيرة — 6 أحرف على الأقل.", true); return; }
+  if (np.length < 8) { toast("كلمة المرور قصيرة — 8 أحرف على الأقل مع حروف وأرقام.", true); return; }
   try {
     let d;
     if (S.passDlg.self) {
@@ -665,8 +711,112 @@ $("#dlgNewGo").addEventListener("click", async () => {
         price: $("#nPrice").value || 0, location: $("#nLoc").value.trim() })
     });
     $("#dlgNew").close(); toast(d.message || "تمت الإضافة."); loadInventory();
+    pollNotifs();
   } catch (e) { toast(e.message, true); }
 });
+
+/* ─── الإشعارات (v30): جرس + مركز + بث حي مع البوت ─── */
+const KIND_IC = { add: "📥", remove: "📤", new_item: "🆕", low: "🔴", low_ok: "✅", info: "🔔" };
+function fmtAgo(ts) {
+  try {
+    const ms = Date.now() - new Date(ts).getTime();
+    if (!(ms >= 0)) return "";
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return "الآن";
+    if (m < 60) return "منذ " + m + " د";
+    const h = Math.floor(m / 60);
+    if (h < 24) return "منذ " + h + " س";
+    return "منذ " + Math.floor(h / 24) + " ي";
+  } catch (e) { return ""; }
+}
+function renderBadge() {
+  const b = $("#nBadge"), n = S.notif.unread || 0;
+  b.textContent = n > 99 ? "99+" : String(n);
+  b.style.display = n > 0 ? "flex" : "none";
+}
+function renderNotifList() {
+  const box = $("#notifList");
+  const items = S.notif.items || [];
+  if (!items.length) { box.innerHTML = '<p class="empty">لا إشعارات بعد.</p>'; return; }
+  box.innerHTML = items.map((n) =>
+    '<div class="nrow"><div class="nt">' + (KIND_IC[n.kind] || "🔔") + " " + esc(n.title) + '</div>'
+    + (n.body ? '<div class="nb">' + esc(n.body) + '</div>' : "")
+    + '<div class="nm">' + esc(n.actor || "") + (n.actor ? " • " : "")
+    + (n.source === "web" ? "من التطبيق" : "من تلغرام")
+    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div>').join("");
+}
+async function pollNotifs() {
+  if (!S.user) return;
+  try {
+    const d = await api("/api/notifications?after=" + S.notif.lastId + "&limit=30");
+    S.notif.lastId = d.last_id || S.notif.lastId;
+    S.notif.unread = d.unread || 0;
+    if (d.items && d.items.length) {
+      S.notif.items = d.items.concat(S.notif.items).slice(0, 50);
+      /* (v30) أول جلب بعد الدخول يضبط المرجع فقط — لا إشعارات قديمة عند فتح التطبيق */
+      if (S.notif.ready) {
+        d.items.slice(0, 3).forEach((n) =>
+          appNotify(n.title || "إشعار", n.body || ""));
+      }
+      S.notif.ready = true;
+      if ($("#dlgNotif").open) renderNotifList();
+    }
+    renderBadge();
+  } catch (e) {}
+}
+function startNotifPolling() {
+  stopNotifPolling();
+  S.notif.timer = setInterval(pollNotifs, 20000);
+  pollNotifs();
+}
+function stopNotifPolling() {
+  if (S.notif.timer) { clearInterval(S.notif.timer); S.notif.timer = null; }
+  S.notif.items = []; S.notif.lastId = 0; S.notif.unread = 0; S.notif.ready = false;
+  renderBadge();
+}
+function webNotifAllowed() {
+  try {
+    if (window.AndroidBridge) return false;      // التطبيق يدير إشعارات النظام بنفسه
+    return ("Notification" in window) && Notification.permission === "granted" && document.hidden;
+  } catch (e) { return false; }
+}
+function webNotify(title, body, icon) {
+  try {
+    if (("Notification" in window) && Notification.permission === "granted" && document.hidden)
+      new Notification(title, { body: String(body || "").slice(0, 250), icon: icon || "/icon.png" });
+  } catch (e) {}
+}
+function askWebNotifPerm() {
+  try {
+    if (window.AndroidBridge) return;
+    if (("Notification" in window) && Notification.permission === "default")
+      Notification.requestPermission();
+  } catch (e) {}
+}
+/* (v30) إشعار النظام داخل تطبيق APK: يمرر الجرس الجديد إلى جسر أندرويد
+   — التطبيق يعرضه كإشعار حقيقي عند العمل في الخلفية. خارج التطبيق:
+   إشعار ويب عادي فقط عند إخفاء الصفحة. */
+function appNotify(title, body) {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.notify === "function") {
+      window.AndroidBridge.notify(String(title || "إشعار"), String(body || "").slice(0, 300));
+      return;
+    }
+  } catch (e) {}
+  webNotify(title, body, "/icon.png");
+}
+$("#btnNotif").addEventListener("click", () => {
+  renderNotifList();
+  $("#dlgNotif").showModal();
+  if (S.notif.unread > 0) {
+    S.notif.unread = 0; renderBadge();
+    api("/api/notifications/read", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ last_id: S.notif.lastId })
+    }).catch(() => {});
+  }
+});
+$("#dlgNotifClose").addEventListener("click", () => $("#dlgNotif").close());
 
 /* ─── دخول/خروج ─── */
 async function doLogin() {
@@ -696,7 +846,7 @@ async function doSetup() {
   const err = $("#setupErr"); err.style.display = "none";
   const name = $("#sUser").value.trim(), p1 = $("#sPass").value, p2 = $("#sPass2").value;
   if (name.length < 2) { err.textContent = "أدخل اسم مستخدم (حرفان على الأقل)."; err.style.display = "block"; return; }
-  if (p1.length < 6) { err.textContent = "كلمة المرور يجب أن تكون 6 أحرف على الأقل."; err.style.display = "block"; return; }
+  if (p1.length < 8) { err.textContent = "كلمة المرور يجب أن تكون 8 أحرف على الأقل وتجمع حروف وأرقاماً."; err.style.display = "block"; return; }
   if (p1 !== p2) { err.textContent = "تأكيد كلمة المرور غير مطابق."; err.style.display = "block"; return; }
   const btn = $("#btnSetup"); btn.disabled = true; btn.textContent = "جارِ الإنشاء...";
   try {
@@ -725,16 +875,17 @@ $("#btnLogout").addEventListener("click", async () => {
   if ("serviceWorker" in navigator) {
     try { navigator.serviceWorker.register("/sw.js"); } catch (e) {}
   }
+  let setupMode = false;
+  try {
+    const st = await fetch("/api/status", { credentials: "same-origin" });
+    const d = await st.json();
+    setupMode = !!(d && d.setup);
+    if (d && d.reasons) S.reasons = d.reasons; // قائمة الأسباب من الخادم (مصدر واحد)
+  } catch (e2) {}
   try {
     const me = await api("/api/me");
     showApp(me);
   } catch (e) {
-    let setupMode = false;
-    try {
-      const st = await fetch("/api/status", { credentials: "same-origin" });
-      const d = await st.json();
-      setupMode = !!(d && d.setup);
-    } catch (e2) {}
     showLogin(setupMode);
   }
 })();

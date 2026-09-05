@@ -1731,6 +1731,23 @@ CREATE TABLE IF NOT EXISTS incoming_orders (
 
 CREATE INDEX IF NOT EXISTS idx_incoming_orders_status ON incoming_orders (status);
 
+CREATE TABLE IF NOT EXISTS notifications (
+    id         SERIAL PRIMARY KEY,
+    kind       VARCHAR(20) NOT NULL DEFAULT 'info',
+    title      VARCHAR(300) NOT NULL,
+    body       TEXT DEFAULT '',
+    actor      VARCHAR(255) DEFAULT '',
+    source     VARCHAR(10) DEFAULT 'bot',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notification_reads (
+    user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    last_read_id INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_id ON notifications (id DESC);
+
 
 CREATE TABLE IF NOT EXISTS bot_updates (
     id          SERIAL PRIMARY KEY,
@@ -4007,6 +4024,13 @@ async def _broadcast_to_all_users(bot, message):
 async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
     """Broadcast add-notification to all users with reason (truck arrival or customer return)."""
     pname = product.get("name", "") if isinstance(product, dict) else str(product)
+    # (v30) أرشف الإشعار في القاعدة ليظهر في جرس تطبيق الويب أيضاً
+    try:
+        db_insert_notification("add",
+            "🚚 وصول بضاعة جديدة" if reason == "truck" else "↩️ إرجاع سلعة من زبون",
+            "📦 " + pname + "\n➕ الكمية: " + str(qty), str(actor or ""), "bot")
+    except Exception:
+        pass
     if reason == "truck":
         msg = ("🚚 وصول بضاعة جديدة!" + chr(10) + chr(10)
                + "📦 " + pname + chr(10)
@@ -4028,6 +4052,12 @@ async def _broadcast_remove_notification(bot, product, qty, actor, reason="sale"
         "carthago": "🏪 بيع لحسان Carthago",
     }
     reason_text = reason_msgs.get(reason, "🚚 بيع لزبون")
+    # (v30) أرشف الإشعار في القاعدة ليظهر في جرس تطبيق الويب أيضاً
+    try:
+        db_insert_notification("remove", reason_text,
+            "📦 " + pname + "\n➖ الكمية: " + str(qty), str(actor or ""), "bot")
+    except Exception:
+        pass
     msg = (reason_text + chr(10) + chr(10)
            + "📦 " + pname + chr(10)
            + "➖ الكمية: " + str(qty))
@@ -4058,6 +4088,12 @@ async def send_low_stock_alerts(bot):
                     + chr(10) + chr(10)
                     + "📦 " + name + chr(10)
                     + "📏 الكمية: " + str(qty) + " " + unit)
+                # (v30) أرشف تنبيه المخزون في جرس تطبيق الويب أيضاً
+                try:
+                    db_insert_notification("low", "🔴 مخزون منخفض",
+                        "📦 " + name + "\n📏 الكمية: " + str(qty) + " " + unit, "", "bot")
+                except Exception:
+                    pass
                 await _broadcast_to_all_users(bot, msg)
 
         # Products that LEFT low stock (restocked)
@@ -4088,6 +4124,12 @@ async def send_low_stock_alerts(bot):
                     + chr(10) + chr(10)
                     + "📦 " + name + chr(10)
                     + "📏 الكمية: " + str(qty) + " " + unit)
+                # (v30) أرشف عودة السلعة في جرس تطبيق الويب أيضاً
+                try:
+                    db_insert_notification("low_ok", "✅ عادت السلعة للمستوى الآمن",
+                        "📦 " + name + "\n📏 الكمية: " + str(qty) + " " + unit, "", "bot")
+                except Exception:
+                    pass
                 await _broadcast_to_all_users(bot, msg)
 
         # Update tracked dict
@@ -4517,6 +4559,17 @@ async def callback_add_handler(update, context):
             await context.bot.send_message(chat_id=query.message.chat_id, text="\u2714\ufe0f", reply_markup=get_admin_keyboard())
             # Auto-broadcast new product notification to all users
             pname = product.get("name", "")
+            # (v30) أرشف «سلعة جديدة» في القاعدة لجرس تطبيق الويب أيضاً
+            try:
+                _actor = ""
+                try:
+                    _actor = (query.from_user.first_name if query.from_user else "") or ""
+                except Exception:
+                    _actor = ""
+                db_insert_notification("new_item", "🆕 سلعة جديدة!",
+                    "📦 " + pname + "\n➕ الكمية: " + str(qty), _actor, "bot")
+            except Exception:
+                pass
             new_msg = ("\U0001f195 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629!" + chr(10) + chr(10)
                       + "\U0001f4e6 " + pname + chr(10)
                       + "\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(qty))
@@ -10285,6 +10338,7 @@ def build_application():
     app.add_handler(CommandHandler("backup_test", backup_test_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CommandHandler("webpass", webpass_command))
+    app.add_handler(CommandHandler("audit", audit_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.UpdateType.EDITED, handle_receipt_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
@@ -10629,7 +10683,14 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v28"
+PWA_VERSION = "v30"
+
+# أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
+PWA_REASONS = {
+    "add":    ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
+    "remove": ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
+    "reconcile": [],
+}
 # مرجع تطبيق تلغرام الحي — لإشعارات الويب (تغطية المعلق، طلبات التوريد)
 TG_APP = None
 PWA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pwa.html")
@@ -10648,6 +10709,16 @@ CREATE TABLE IF NOT EXISTS pwa_sessions (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_sessions_user ON pwa_sessions(user_id);
+CREATE TABLE IF NOT EXISTS audit_log (
+    id        SERIAL PRIMARY KEY,
+    ts        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_id   INTEGER,
+    username  VARCHAR(200),
+    action    VARCHAR(60) NOT NULL,
+    details   VARCHAR(500),
+    ip        VARCHAR(64)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -10741,6 +10812,215 @@ def _pwa_init_tables():
         release_connection(conn)
 
 
+# ═══════════ حزمة الحماية v29: حصار التخمين + سجل تدقيق + تنبيه المالك ═══════════
+
+_PWA_LOGIN_MAX_FAILS = 5     # محاولات فاشلة قبل القفل
+_PWA_LOGIN_WINDOW = 600      # نافذة عدّ المحاولات: 10 دقائق
+_PWA_LOGIN_LOCKOUT = 900     # مدة القفل: 15 دقيقة
+_PWA_LOGIN_FAILS = {}        # مفتاح ip|اسم → {"marks": [ts], "until": ts, "alerted": bool}
+_PWA_LOGIN_LOCK = threading.Lock()
+_PWA_LOCK_ALERT_TEXT = "تم رصد محاولات دخول فاشلة متكررة على تطبيق الويب — يُحتمل أنها تخمين كلمات مرور:"
+
+
+class PwaLocked(Exception):
+    """يُرفع عند حصار محاولات الدخول — يحمل ثواني الانتظار المتبقية."""
+    def __init__(self, retry_after):
+        super().__init__("locked")
+        self.retry_after = int(retry_after)
+
+
+def _pwa_login_gate(key):
+    """يعيد True إن سُمح بالمحاولة، وإلا يرفع PwaLocked."""
+    now = time.time()
+    with _PWA_LOGIN_LOCK:
+        st = _PWA_LOGIN_FAILS.get(key)
+        if st and st.get("until") and now < st["until"]:
+            raise PwaLocked(st["until"] - now + 1)
+    return True
+
+
+def _pwa_login_fail(key):
+    """يسجّل محاولة فاشلة. يعيد True فقط عند لحظة تفعيل القفل (لتنبيه المالك)."""
+    now = time.time()
+    with _PWA_LOGIN_LOCK:
+        # تنظيف: إسقاط مفاتيح قديمة منتهية
+        for k in list(_PWA_LOGIN_FAILS.keys()):
+            s = _PWA_LOGIN_FAILS[k]
+            if (not s.get("marks") or now - s["marks"][-1] > 3600) and \
+               (not s.get("until") or now > s["until"]):
+                del _PWA_LOGIN_FAILS[k]
+        st = _PWA_LOGIN_FAILS.setdefault(key, {"marks": [], "until": 0, "alerted": False})
+        st["marks"] = [m for m in st["marks"] if now - m < _PWA_LOGIN_WINDOW]
+        st["marks"].append(now)
+        if len(st["marks"]) >= _PWA_LOGIN_MAX_FAILS:
+            if now >= st.get("until", 0):
+                st["until"] = now + _PWA_LOGIN_LOCKOUT
+            if not st.get("alerted"):
+                st["alerted"] = True
+                return True
+    return False
+
+
+def _pwa_login_clear(key):
+    with _PWA_LOGIN_LOCK:
+        _PWA_LOGIN_FAILS.pop(key, None)
+
+
+AUDIT_LABELS = {
+    "login": "✅ دخول ناجح", "login_fail": "❌ دخول فاشل",
+    "lockout": "🔒 رفض (حساب مقفول)", "brute_force_lock": "🚨 قفل محاولات تخمين",
+    "setup": "🛠 إعداد أول مدير", "changepass": "🔑 تغيير كلمة مرور",
+    "webpass_set": "🔑 ضبط كلمة موظف", "user_toggle": "🚫 تفعيل/طرد مستخدم",
+    "qty_add": "➕ إضافة كمية", "qty_remove": "➖ إخراج كمية", "qty_reconcile": "⚖️ جرد",
+    "product_create": "📦 سلعة جديدة", "incoming_create": "🚚 طلب توريد",
+    "incoming_advance": "🚚 تحديث توريد",
+}
+
+
+def _audit_log(action, user=None, details="", ip=""):
+    """سجل تدقيق مقاوم للأعطال — لا يكسر العملية الأساسية أبداً."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO audit_log (user_id, username, action, details, ip) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    ((user or {}).get("id"),
+                     str((user or {}).get("name") or (user or {}).get("web_username") or "")[:200],
+                     str(action)[:60], str(details or "")[:500], str(ip or "")[:64]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            release_connection(conn)
+    except Exception:
+        pass
+
+
+def _audit_recent(limit=15):
+    """آخر أحداث التدقيق (متزامن)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT ts, username, action, details, ip FROM audit_log "
+                "ORDER BY ts DESC LIMIT %s", (max(1, min(int(limit), 50)),))
+            return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+    finally:
+        release_connection(conn)
+
+
+# ═══════════ نظام الإشعارات الموحّد (v30): قاعدة بيانات + بث تلغرام ═══════════
+# كل عملية (سلعة جديدة / إضافة / إخراج / مخزون منخفض) من أي طرف
+# (بوت تلغرام أو تطبيق الويب) تُسجّل في جدول notifications — تظهر في جرس
+# التطبيق للجميع — وتُبثّ عبر تلغرام لكل المستخدمين النشطين: تزامن تام.
+
+def db_insert_notification(kind, title, body, actor="", source="bot"):
+    """إدراج إشعار في القاعدة — مقاوم للأعطال مثل _audit_log، لا يرفع استثناءات."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO notifications (kind, title, body, actor, source) "
+                    "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (str(kind)[:20], str(title)[:300], str(body or "")[:1000],
+                     str(actor or "")[:200], str(source or "bot")[:10]))
+                nid = cur.fetchone()[0]
+            conn.commit()
+            return nid
+        except Exception:
+            conn.rollback()
+            return None
+        finally:
+            release_connection(conn)
+    except Exception:
+        return None
+
+
+def _product_name_fast(pid):
+    """اسم السلعة من معرفها — لرسائل الإشعار فقط، مقاوم للأعطال."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM products WHERE id = %s", (pid,))
+                r = cur.fetchone()
+                return str(r[0]) if r else "سلعة #" + str(pid)
+        finally:
+            release_connection(conn)
+    except Exception:
+        return "سلعة #" + str(pid)
+
+
+def _notify_recipients():
+    """معرفات تلغرام لكل المستخدمين النشطين (نفس قاعدة _broadcast_to_all_users)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT telegram_id FROM users WHERE role IN "
+                        "('admin', 'manager', 'stock', 'seller', 'external', 'customer') "
+                        "AND active = TRUE")
+            return cur.fetchall()
+    except Exception:
+        return []
+    finally:
+        release_connection(conn)
+
+
+async def notify_everyone(kind, title, body, actor="", source="web"):
+    """(v30) تسجيل إشعار في القاعدة ثم بثه تلغرامياً للجميع —
+    تزامن تام بين تطبيق الويب وبوت تلغرام. آمنة للاستدعاء من أي سياق."""
+    try:
+        await _pwa_run(db_insert_notification, kind, title, body, actor, source)
+    except Exception:
+        pass
+    if TG_APP is None:
+        return
+    text = str(title) + "\n\n" + str(body or "") + \
+        "\n\n👤 " + (str(actor) if actor else "موظف") + " • عبر التطبيق 📱"
+    try:
+        rows = await _pwa_run(_notify_recipients)
+        for r in rows or []:
+            try:
+                await TG_APP.bot.send_message(chat_id=r[0], text=text)
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+    except Exception as e:
+        logging.warning("[NOTIFY] broadcast failed: " + str(e))
+
+
+async def _pwa_alert_owner(text):
+    """تنبيه المالك عبر تلغرام عند الأحداث الأمنية الخطيرة."""
+    if TG_APP is None:
+        return
+    try:
+        owner_ids = [int(t) for t in (OWNER_IDS or [])][:3]
+    except Exception:
+        owner_ids = []
+    for tid in owner_ids:
+        try:
+            await TG_APP.bot.send_message(chat_id=tid, text=text)
+        except Exception as e:
+            logging.error("[PWA] owner alert failed: " + str(e))
+
+
+def _pwa_password_ok(p):
+    """سياسة الكلمات: 8+ أحرف تجمع حروف وأرقاماً — تعطب القواميس والتخمين."""
+    p = str(p or "")
+    if len(p) < 8:
+        return False, "كلمة المرور يجب أن تكون 8 أحرف على الأقل."
+    if not any(ch.isalpha() for ch in p):
+        return False, "كلمة المرور يجب أن تحوي حروفاً أبجدية."
+    if not any(ch.isdigit() for ch in p):
+        return False, "كلمة المرور يجب أن تحوي أرقاماً."
+    return True, ""
+
+
 def pwa_set_password(user_id, username, password):
     """زرع/تحديث كلمة مرور ويب لمستخدم + إلغاء جلساته القديمة."""
     username = _pwa_norm_username(username)
@@ -10811,6 +11091,13 @@ def _pwa_create_session(user_id):
                 "VALUES (%s, %s, NOW() + (%s * INTERVAL '1 day'))",
                 (token_hash, user_id, PWA_SESSION_DAYS),
             )
+            # عناية الجلسات: إسقاط المنتهية وحدّ أعلى 10 جلسات لكل مستخدم
+            # (يمنع تضخم الجدول وسيء الاستخدام)
+            cur.execute("DELETE FROM pwa_sessions WHERE expires_at < NOW()")
+            cur.execute(
+                "DELETE FROM pwa_sessions WHERE user_id = %s AND token_hash NOT IN ("
+                "SELECT token_hash FROM pwa_sessions WHERE user_id = %s "
+                "ORDER BY created_at DESC LIMIT 10)", (user_id, user_id))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -11354,8 +11641,9 @@ def _pwa_api_webpass(user, target_tid, password):
     if not _pwa_perm_map(user["role"])["users"]:
         return None
     password = str(password or "")
-    if len(password) < 6:
-        return False, "كلمة المرور يجب أن تكون 6 أحرف على الأقل."
+    pol_ok, pol_msg = _pwa_password_ok(password)
+    if not pol_ok:
+        return False, pol_msg
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -11395,8 +11683,9 @@ def _pwa_api_setup(name, password, confirm):
         return False, None, "يوجد حساب مدير بالفعل — سجّل الدخول من الشاشة السابقة."
     if len(name) < 2:
         return False, None, "أدخل اسم مستخدم (حرفان على الأقل)."
-    if len(password) < 6:
-        return False, None, "كلمة المرور يجب أن تكون 6 أحرف على الأقل."
+    pol_ok, pol_msg = _pwa_password_ok(password)
+    if not pol_ok:
+        return False, None, pol_msg
     if confirm and confirm != password:
         return False, None, "تأكيد كلمة المرور غير مطابق."
     try:
@@ -11430,8 +11719,9 @@ def _pwa_api_changepass(user, old_password, new_password):
     """تغيير كلمة مرور الويب الخاصة بالمستخدم الحالي نفسه."""
     old_password = str(old_password or "")
     new_password = str(new_password or "")
-    if len(new_password) < 6:
-        return False, "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل."
+    pol_ok, pol_msg = _pwa_password_ok(new_password)
+    if not pol_ok:
+        return False, pol_msg
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -11497,11 +11787,37 @@ async def pwa_login_handler(request):
         body = await request.json()
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
+    username_raw = str(body.get("username", "")).strip()
+    ip = request.remote or "؟"
+    key = ip + "|" + username_raw.lower()
+    # 🔒 حارس التخمين: قفل مؤقت بعد محاولات فاشلة متكررة (IP + اسم)
+    try:
+        await _pwa_run(_pwa_login_gate, key)
+    except PwaLocked as lk:
+        await _pwa_run(_audit_log, "lockout", None,
+                       details="اسم: " + username_raw, ip=ip)
+        mins = max(1, int(lk.retry_after // 60) + 1)
+        return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
+                        + " دقيقة ثم أعد المحاولة.")
     ok, result, err = await _pwa_run(_pwa_api_login,
-                                     str(body.get("username", "")), str(body.get("password", "")))
+                                     username_raw, str(body.get("password", "")))
     if not ok:
+        alerted = await _pwa_run(_pwa_login_fail, key)
+        await _pwa_run(_audit_log, "login_fail", None,
+                       details="اسم: " + username_raw, ip=ip)
+        if alerted:
+            # 🚨 لحظة تفعيل القفل: سجّل وأبلغ المالك عبر تلغرام
+            await _pwa_run(_audit_log, "brute_force_lock", None,
+                           details="اسم: " + username_raw, ip=ip)
+            asyncio.create_task(_pwa_alert_owner(
+                "🚨 تنبيه أمني\n" + _PWA_LOCK_ALERT_TEXT
+                + "\n👤 الاسم المُجرّب: " + username_raw
+                + "\n🌐 IP: " + ip
+                + "\n⏳ تم قفل المحاولات 15 دقيقة."))
         return _pwa_err(401, err)
     token, user = result
+    await _pwa_run(_pwa_login_clear, key)
+    await _pwa_run(_audit_log, "login", user, ip=ip)
     resp = _pwa_jr({"ok": True, "user": user})
     secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
     resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
@@ -11570,12 +11886,36 @@ async def pwa_qty_handler(request):
     ok, msg = await _pwa_run(_pwa_api_qty, user, pid, qtype, qty, body.get("reason"))
     if not ok:
         return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "qty_" + qtype, user,
+                   details="سلعة #" + str(pid) + " × " + str(qty)
+                           + (" — سبب: " + str(body.get("reason", "")).strip()[:150]
+                              if str(body.get("reason", "")).strip() else ""),
+                   ip=request.remote or "؟")
     # التسوية الذاتية مثل البوت: كل زيادة كمية تغطي العجز المعلق FIFO
     rec = None
     if qtype in ("add", "reconcile"):
         rec = await _pwa_run(auto_reconcile_product, pid, qty, user["id"])
     if rec and rec.get("fulfilled") and TG_APP is not None:
         asyncio.create_task(_send_fulfilled_notifications(TG_APP.bot, rec["fulfilled"]))
+    # (v30) إشعار الجميع: جرس تطبيق الويب + بث تلغرام — تزامن تام بين الطرفين
+    try:
+        _reason = str(body.get("reason") or "").strip()
+        _pname = await _pwa_run(_product_name_fast, pid)
+        if qtype == "add":
+            _title = ("🚚 وصول شاحنة" if "شاحنة" in _reason
+                      else ("↩️ إرجاع من زبون" if ("إرجاع" in _reason or "ارجاع" in _reason)
+                            else "📥 إضافة كمية"))
+            _line = "➕ الكمية: " + str(qty)
+        elif qtype == "remove":
+            _title = ("💰 " + _reason) if _reason else "📤 إخراج كمية"
+            _line = "➖ الكمية: " + str(qty)
+        else:
+            _title, _line = "⚖️ جرد المخزون", "⚖️ الكمية بعد الجرد: " + str(qty)
+        _body = "📦 " + _pname + "\n" + _line + (("\n📌 " + _reason) if _reason else "")
+        asyncio.create_task(notify_everyone(qtype, _title, _body,
+                                            str(user.get("name") or ""), "web"))
+    except Exception as _ne:
+        logging.warning("[PWA] notify failed: " + str(_ne))
     return _pwa_jr({"ok": True, "message": msg,
                     "reconciled": (rec or {}).get("total_covered", 0)})
 
@@ -11595,6 +11935,20 @@ async def pwa_products_create_handler(request):
         body.get("minimum_stock", 5), body.get("price", 0), body.get("location", ""))
     if not ok:
         return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "product_create", user,
+                   details="اسم: " + str(body.get("name", ""))[:150],
+                   ip=request.remote or "؟")
+    # (v30) إشعار الجميع بسلعة جديدة — جرس التطبيق + تلغرام
+    try:
+        _nqty = int(body.get("quantity", 0) or 0)
+        _nloc = str(body.get("location") or "").strip()
+        _nbody = "📦 " + str(body.get("name", ""))[:200] + "\n➕ الكمية الابتدائية: " + str(_nqty)
+        if _nloc:
+            _nbody += "\n📍 الموقع: " + _nloc[:100]
+        asyncio.create_task(notify_everyone(
+            "new_item", "🆕 سلعة جديدة!", _nbody, str(user.get("name") or ""), "web"))
+    except Exception:
+        pass
     return _pwa_jr({"ok": True, "message": msg})
 
 
@@ -11626,6 +11980,10 @@ async def pwa_incoming_create_handler(request):
                              body.get("product_name"), body.get("quantity", 1))
     if not ok:
         return _pwa_err(400, res)
+    await _pwa_run(_audit_log, "incoming_create", user,
+                   details="سلعة: " + str(body.get("product_name", ""))[:150]
+                           + " × " + str(body.get("quantity", 1)),
+                   ip=request.remote or "؟")
     if TG_APP is not None:
         note = ("🚚 طلب توريد جديد من تطبيق الويب\n\n"
                 "📦 السلعة: " + str(body.get("product_name", ""))[:200] + "\n"
@@ -11654,6 +12012,9 @@ async def pwa_incoming_advance_handler(request):
     ok, row, msg = await _pwa_run(_pwa_api_incoming_advance, user, oid, action)
     if not ok:
         return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "incoming_advance", user,
+                   details="طلب #" + str(oid) + " ← " + action,
+                   ip=request.remote or "؟")
     if action == "complete" and TG_APP is not None and row:
         tid = await _pwa_run(_pwa_incoming_requester_tid, row.get("requester_id"))
         if tid:
@@ -11724,6 +12085,9 @@ async def pwa_users_toggle_handler(request):
         return _pwa_err(403, "للمدراء فقط.")
     if not ok:
         return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "user_toggle", user,
+                   details=("تفعيل" if active else "طرد") + " المستخدم #" + str(tid),
+                   ip=request.remote or "؟")
     return _pwa_jr({"ok": True, "message": msg})
 
 
@@ -11741,7 +12105,100 @@ async def pwa_users_webpass_handler(request):
         return _pwa_err(403, "للمدراء فقط.")
     if not ok:
         return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "webpass_set", user,
+                   details="للمستخدم #" + str(tid),
+                   ip=request.remote or "؟")
     return _pwa_jr({"ok": True, "message": msg})
+
+
+# ═══════════ (v30) مركز إشعارات التطبيق: جرس + عدّاد غير المقروء + تعليم كمقروء ═══════════
+
+def _pwa_api_notifications(user, after, limit):
+    """قائمة إشعارات المستخدم + عدد غير المقروء + آخر معرف (متزامن)."""
+    try:
+        after = max(0, int(after))
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        after, limit = 0, 30
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT COALESCE(MAX(id), 0) AS last_id FROM notifications")
+            last_id = int(cur.fetchone()["last_id"])
+            cur.execute("SELECT last_read_id FROM notification_reads WHERE user_id = %s",
+                        (user["id"],))
+            rr = cur.fetchone()
+            read_upto = int(rr["last_read_id"]) if rr else 0
+            cur.execute("SELECT COUNT(*) AS c FROM notifications WHERE id > %s", (read_upto,))
+            unread = min(int(cur.fetchone()["c"]), 99)
+            cur.execute(
+                "SELECT id, kind, title, body, actor, source, created_at "
+                "FROM notifications WHERE id > %s ORDER BY id DESC LIMIT %s",
+                (after, limit))
+            items = []
+            for r in cur.fetchall():
+                d = dict(r)
+                if d.get("created_at"):
+                    try:
+                        d["ts"] = d["created_at"].isoformat()
+                        d["created_at"] = d["created_at"].strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        d["ts"] = str(d["created_at"])
+                else:
+                    d["ts"] = ""
+                items.append(d)
+        return {"ok": True, "items": items, "unread": unread, "last_id": last_id}
+    except Exception as e:
+        logging.error("[PWA] notifications failed: " + str(e))
+        return {"ok": True, "items": [], "unread": 0, "last_id": 0}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_notifications_read(user, last_id):
+    """تعليم إشعارات المستخدم كمقروء حتى معرف معيّن (متزامن)."""
+    try:
+        last_id = max(0, int(last_id))
+    except (TypeError, ValueError):
+        last_id = 0
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO notification_reads (user_id, last_read_id) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET last_read_id = "
+                "GREATEST(notification_reads.last_read_id, EXCLUDED.last_read_id)",
+                (user["id"], last_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] notif read failed: " + str(e))
+        return False
+    finally:
+        release_connection(conn)
+
+
+async def pwa_notifications_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    return _pwa_jr(await _pwa_run(
+        _pwa_api_notifications, user,
+        request.query.get("after", 0), request.query.get("limit", 30)))
+
+
+async def pwa_notifications_read_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        last_id = int(body.get("last_id", 0))
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    await _pwa_run(_pwa_api_notifications_read, user, last_id)
+    return _pwa_jr({"ok": True})
 
 
 async def pwa_status_handler(request):
@@ -11750,7 +12207,8 @@ async def pwa_status_handler(request):
         has = await _pwa_run(_pwa_has_accounts)
     except Exception:
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
-    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION})
+    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
+                    "reasons": PWA_REASONS})
 
 
 async def pwa_setup_handler(request):
@@ -11758,6 +12216,13 @@ async def pwa_setup_handler(request):
         body = await request.json()
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
+    ip = request.remote or "؟"
+    # 🔒 حتى الإعداد الأول محمي من التخمين العشوائي
+    try:
+        await _pwa_run(_pwa_login_gate, "setup|" + ip)
+    except PwaLocked as lk:
+        mins = max(1, int(lk.retry_after // 60) + 1)
+        return _pwa_err(429, "محاولات كثيرة — انتظر نحو " + str(mins) + " دقيقة.")
     try:
         ok, result, err = await _pwa_run(
             _pwa_api_setup, str(body.get("name", "")),
@@ -11765,8 +12230,13 @@ async def pwa_setup_handler(request):
     except Exception:
         return _pwa_err(500, "خطأ في الخادم، أعد المحاولة.")
     if not ok:
+        await _pwa_run(_pwa_login_fail, "setup|" + ip)
+        await _pwa_run(_audit_log, "login_fail", None,
+                       details="setup: " + str(body.get("name", "")), ip=ip)
         return _pwa_err(400, err)
     token, uname = result
+    await _pwa_run(_pwa_login_clear, "setup|" + ip)
+    await _pwa_run(_audit_log, "setup", None, details="اسم: " + str(uname), ip=ip)
     resp = _pwa_jr({"ok": True, "username": uname})
     secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
     resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
@@ -11787,6 +12257,8 @@ async def pwa_changepass_handler(request):
                              str(body.get("new_password", "")))
     if not ok:
         return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "changepass", user,
+                   ip=request.remote or "؟")
     return _pwa_jr({"ok": True, "message": msg})
 
 
@@ -11815,11 +12287,12 @@ async def webpass_command(update, context):
             "🔑 ضبط كلمة مرور التطبيق (الويب) الخاصة بك\n\n"
             "اكتب:\n"
             "/webpass كلمة123\n\n"
-            "(6 أحرف على الأقل — ستدخل بها التطبيق من المتصفح)")
+            "(8 أحرف على الأقل مع حروف وأرقام — ستدخل بها التطبيق من المتصفح)")
         return
     password = str(args[0]).strip()
-    if len(password) < 6:
-        await update.effective_message.reply_text("⚠️ كلمة المرور قصيرة — 6 أحرف على الأقل.")
+    pol_ok, pol_msg = _pwa_password_ok(password)
+    if not pol_ok:
+        await update.effective_message.reply_text("⚠️ " + pol_msg)
         return
     try:
         row = await asyncio.get_running_loop().run_in_executor(
@@ -11843,8 +12316,31 @@ async def webpass_command(update, context):
     logging.info("[WEBPASS] ضبط المدير " + uname + " كلمة مرور ويب من تلغرام")
 
 
+async def audit_command(update, context):
+    """🔒 /audit — للمدراء فقط: آخر أحداث التدقيق الأمني (دخول، كلمات، كميات...)."""
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        await update.effective_message.reply_text("⛔ هذا الأمر للمدراء فقط.")
+        return
+    rows = await asyncio.get_running_loop().run_in_executor(None, _audit_recent, 15)
+    if not rows:
+        await update.effective_message.reply_text(
+            "🔒 لا توجد أحداث تدقيق بعد.\n"
+            "كل عملية دخول/كلمة/كمية/توريد ستُسجَّل هنا تلقائياً.")
+        return
+    lines = ["🔒 آخر " + str(len(rows)) + " أحداث أمنية:\n"]
+    for r in rows:
+        ts = r["ts"].strftime("%m-%d %H:%M") if r.get("ts") else "؟"
+        who = r.get("username") or "؟"
+        act = AUDIT_LABELS.get(r.get("action"), r.get("action") or "؟")
+        det = (" — " + str(r["details"])) if r.get("details") else ""
+        ip = (" (" + str(r["ip"]) + ")") if r.get("ip") and r["ip"] != "؟" else ""
+        lines.append("• " + ts + " " + act + " — " + str(who) + det + ip)
+    await update.effective_message.reply_text("\n".join(lines)[:4000])
+
+
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
-const CACHE = "ceram-pwa-v4";
+const CACHE = "ceram-pwa-v6";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11894,6 +12390,17 @@ self.addEventListener("fetch", (e) => {
 """
 
 
+@web.middleware
+async def _pwa_sec_middleware(request, handler):
+    """ترويسات أمنية على كل ردود الخادم (صفحة + API)."""
+    resp = await handler(request)
+    h = resp.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "no-referrer")
+    return resp
+
+
 def register_pwa_routes(app):
     """تركيب مسارات PWA على خادم aiohttp الموجود (webhook أو polling+health).
     آمنة إضافياً بالكامل: لا تمس مسارات البوت ولا جداوله."""
@@ -11916,6 +12423,9 @@ def register_pwa_routes(app):
     app.router.add_post("/api/qty", pwa_qty_handler)
     app.router.add_get("/api/movements", pwa_movements_handler)
     app.router.add_get("/api/low", pwa_low_handler)
+    # (v30) مركز الإشعارات
+    app.router.add_get("/api/notifications", pwa_notifications_handler)
+    app.router.add_post("/api/notifications/read", pwa_notifications_read_handler)
     app.router.add_get("/api/oil", pwa_oil_handler)
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
@@ -11990,7 +12500,7 @@ if __name__ == "__main__":
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
-        webhook_app = web.Application()
+        webhook_app = web.Application(middlewares=[_pwa_sec_middleware])
         webhook_app.router.add_get("/health", _health_handler)
         register_pwa_routes(webhook_app)
         # ── Security: Telegram sends X-Telegram-Bot-Api-Secret-Token on every update;
@@ -12004,7 +12514,7 @@ if __name__ == "__main__":
             secret_token=secret_token,
             drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
-        health_app = web.Application()
+        health_app = web.Application(middlewares=[_pwa_sec_middleware])
         health_app.router.add_get("/health", _health_handler)
         register_pwa_routes(health_app)
         async def on_startup(aio_app):
