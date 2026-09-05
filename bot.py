@@ -10869,7 +10869,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v36"
+PWA_VERSION = "v37"
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -11756,9 +11756,35 @@ def _pwa_otp_sms_ready():
     return bool(TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID)
 
 
+def _pwa_tcp_probe(host, port, timeout=8):
+    """v37: فحص TCP خام — هل يمكن فتح اتصال بمضيف:منفذ؟ يعيد (متصل؟، نص الخطأ)."""
+    import socket
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        try:
+            s.close()
+        except Exception:
+            pass
+        return True, ""
+    except Exception as e:
+        return False, type(e).__name__ + ": " + str(e)[:70]
+
+
+def _pwa_mask_password(pw):
+    """v37: وصف آمن للمفتاح — بلا كشف قيمته."""
+    pw = str(pw or "")
+    if not pw:
+        return "(فارغ ⚠️)"
+    if pw.startswith("xkeysib-"):
+        return "مفتاح Brevo صحيح الشكل (xkeysib-…) ✓"
+    return "طوله " + str(len(pw)) + " — ⚠️ لا يبدأ بـ xkeysib- (ليس مفتاح Brevo SMTP!)"
+
+
 async def testmail_command(update, context):
-    """v36: /testmail — للمدير فقط: يرسل بريداً تجريبياً إلى BACKUP_EMAIL ويعرض
-    نتيجة الإرسال مع السبب المصنَّف عند الفشل (لتشخيص إعدادات Brevo/SMTP)."""
+    """v37: /testmail — للمدير فقط: فاحص شامل لإعدادات البريد:
+    1) عرض الإعدادات الحالية كما يراها الخادم (كشف الأخطاء المطبعية)
+    2) مصفوفة اتصال TCP: مضيفك + Brevo 587/465 + Gmail كمرجع
+    3) إرسال فعلي إلى BACKUP_EMAIL مع السبب عند الفشل."""
     if not update.effective_user or not is_admin(update.effective_user.id):
         await update.message.reply_text("هذا الأمر للمدير فقط.")
         return
@@ -11772,6 +11798,51 @@ async def testmail_command(update, context):
             "BACKUP_EMAIL = بريدك لاستقبال التجربة\n"
             "ثم اضغط Manual Deploy.")
         return
+
+    # 1) الإعدادات كما يراها الخادم — هنا تظهر الأخطاء المطبعية فوراً
+    pw_desc = _pwa_mask_password(SMTP_PASSWORD)
+    email_desc = _pwa_mask_identifier(SMTP_EMAIL) if SMTP_EMAIL else "(فارغ)"
+    await update.message.reply_text(
+        "🔧 الإعدادات الحالية كما يراها الخادم:\n"
+        "SMTP_HOST = «" + str(SMTP_HOST) + "»\n"
+        "SMTP_PORT = " + str(SMTP_PORT) + "\n"
+        "SMTP_TLS = «" + (SMTP_TLS or "") + "»\n"
+        "SMTP_EMAIL = " + email_desc + "\n"
+        "SMTP_PASSWORD = " + pw_desc + "\n"
+        "↩️ قارنها بالقيم المطلوبة — أي اختلاف حرف أو مسافة هو السبب.")
+
+    # 2) مصفوفة اتصال TCP سريعة
+    await update.message.reply_text("📡 جارٍ فحص الشبكة…")
+    probes = [
+        ("إعداداتك (" + str(SMTP_HOST) + ":" + str(SMTP_PORT) + ")",
+         SMTP_HOST, SMTP_PORT),
+        ("Brevo 587 (الصحيح)", "smtp-relay.brevo.com", 587),
+        ("Brevo 465 (بديل SSL)", "smtp-relay.brevo.com", 465),
+        ("Gmail 465 (مرجع عام)", "smtp.gmail.com", 465),
+    ]
+    lines = []
+    mine_ok = False
+    for label, h, p in probes:
+        ok, err = await asyncio.to_thread(_pwa_tcp_probe, h, p)
+        if label.startswith("إعداداتك"):
+            mine_ok = ok
+        lines.append(("✅ " if ok else "❌ ") + label
+                     + ("" if ok else " — " + err))
+    await update.message.reply_text("📡 نتائج الاتصال:\n" + "\n".join(lines))
+
+    # 3) تشخيص مباشر إن كان مضيفك غير متصل والباقي متصل
+    if not mine_ok:
+        await update.message.reply_text(
+            "🎯 التشخيص: إعداداتك الحالية لا تفتح اتصالاً، بينما Brevo نفسه متاح!\n"
+            "→ الخطأ في SMTP_HOST أو SMTP_PORT على Render.\n"
+            "القيم الصحيحة:\n"
+            "SMTP_HOST = smtp-relay.brevo.com\n"
+            "SMTP_PORT = 587\n"
+            "(بلا مسافات زائدة، وحرفياً كما هي)\n"
+            "عدّلها ثم Manual Deploy وأعد /testmail.")
+        return
+
+    # 4) إرسال فعلي
     await update.message.reply_text("⏳ جارٍ إرسال بريد تجريبي إلى " + BACKUP_EMAIL + " …")
     ok = await asyncio.to_thread(
         _pwa_send_email_sync, BACKUP_EMAIL,
@@ -11785,7 +11856,8 @@ async def testmail_command(update, context):
             "الإعدادات سليمة — رموز التأكيد ستصل للمسجلين الجدد.")
     else:
         await update.message.reply_text(
-            "❌ فشل الإرسال — السبب:\n" + (_PWA_SMTP_LAST_ERR or "غير معروف"))
+            "❌ الاتصال بخادم البريد سليم لكن الإرسال فشل — السبب:\n"
+            + (_PWA_SMTP_LAST_ERR or "غير معروف"))
 
 
 # v36: تشخيص فشل إرسال البريد — آخر خطأ مصنّف بالعربية يُعرض للمدير وللمسجلين
@@ -11806,8 +11878,10 @@ def _pwa_smtp_classify(e):
         return "تعذر الوصول لخادم البريد — تحقق من SMTP_HOST (smtp-relay.brevo.com)."
     if ("timed out" in low or "timeout" in low or "refused" in low
             or "unreachable" in low):
-        return ("تعذر الاتصال بخادم البريد — تحقق من SMTP_PORT (587 لـ Brevo) "
-                "وأعد المحاولة.")
+        return ("تعذر الاتصال بخادم البريد — القيم الصحيحة حرفياً: "
+                "SMTP_HOST = smtp-relay.brevo.com وSMTP_PORT = 587 "
+                "(المنفذ 25 محجوب في الاستضافة، وتحقق من عدم وجود مسافات "
+                "أو خطأ مطبعي في القيمتين). أرسل /testmail في البوت لتشخيص فوري.")
     if ("sender" in low and ("reject" in low or "denied" in low)) or "553" in s:
         return ("بريد المُرسِل مرفوض — في Brevo استعمل SMTP_EMAIL بنفس بريد تسجيل "
                 "الحساب (مُرسِل موثَّق تلقائياً) أو فعّل المُرسِل من لوحة Brevo.")
@@ -14157,7 +14231,7 @@ async def audit_command(update, context):
 
 
 _PWA_SW_JS = """// Service Worker — مخزون السيراميك (الصفحات شبكة أولاً + غلاف للأصول)
-const CACHE = "ceram-pwa-v12";
+const CACHE = "ceram-pwa-v13";
 const SHELL = ["/", "/icon.png", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
