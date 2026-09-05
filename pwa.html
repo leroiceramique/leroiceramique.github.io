@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#1877f2">
+<meta name="theme-color" content="#b45309">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>مخزون السيراميك</title>
 <script>
-/* v41: تطبيق الوضع المحفوظ قبل الرسم — لا وميض أبيض عند فتح الوضع الليلي */
+/* v42: تطبيق الوضع المحفوظ قبل الرسم — لا وميض أبيض عند فتح الوضع الليلي */
 (function(){
   try{
     var t = localStorage.getItem("ceram_theme");
@@ -21,19 +21,19 @@
 })();
 </script>
 <style>
-/* ═══ v41: نظام تصميم احترافي بنمط فيسبوك — فاتح + داكن ═══ */
+/* ═══ v42: هوية السيراميك الأصلية (فاتح + داكن) ═══ */
 :root{
-  --bg:#f0f2f5; --card:#ffffff; --ink:#050505; --mut:#65676b;
-  --brand:#1877f2; --brand2:#0a5fd0; --brandsoft:#e7f3ff;
-  --ok:#31a24c; --bad:#e41e3f; --warn:#b45309;
-  --line:#e4e6eb; --chip:#f0f2f5; --radius:14px;
-  --shadow:0 1px 2px rgba(0,0,0,.08), 0 2px 12px rgba(0,0,0,.05);
+  --bg:#fdf6f0; --card:#ffffff; --ink:#3f2a1d; --mut:#8a6f5c;
+  --brand:#b45309; --brand2:#d97706; --brandsoft:#fbe8d7;
+  --ok:#15803d; --bad:#b91c1c; --warn:#b45309;
+  --line:#f0e2d4; --chip:#fbe8d7; --radius:16px;
+  --shadow:0 1px 2px rgba(63,42,29,.06), 0 2px 12px rgba(63,42,29,.05);
 }
 html[data-theme="dark"]{
-  --bg:#18191a; --card:#242526; --ink:#e4e6eb; --mut:#b0b3b8;
-  --brand:#2d88ff; --brand2:#1877f2; --brandsoft:#263951;
-  --ok:#2e9e49; --bad:#ff6b76; --warn:#f0b21f;
-  --line:#3e4042; --chip:#3a3b3c;
+  --bg:#1c1713; --card:#282019; --ink:#f1e9df; --mut:#b6a08f;
+  --brand:#e59036; --brand2:#f0a44c; --brandsoft:#3b2d1f;
+  --ok:#45b36b; --bad:#f16a5a; --warn:#f0b21f;
+  --line:#3c3128; --chip:#332a21;
   --shadow:0 1px 2px rgba(0,0,0,.4);
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
@@ -45,8 +45,8 @@ input,select,textarea{font-family:inherit;font-size:16px}
 /* ─── شاشة الدخول ─── */
 #login{display:flex;flex-direction:column;align-items:center;justify-content:center;
   min-height:100vh;padding:24px;gap:14px}
-#login .logo{width:88px;height:88px;border-radius:24px;object-fit:cover;
-  box-shadow:0 6px 24px rgba(24,119,242,.28)}
+#login .logo{width:88px;height:88px;border-radius:22px;object-fit:contain;background:#fff;
+  box-shadow:0 6px 24px rgba(180,83,9,.18)}
 #login h1{font-size:22px;margin:6px 0 2px}
 #login p.sub{color:var(--mut);margin:0 0 10px;font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
@@ -64,19 +64,19 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .btn.mini{width:auto;padding:7px 12px;font-size:13px;border-radius:10px}
 .btn.gold{background:var(--warn);color:#fff}
 .btn.red{background:var(--bad)} .btn.green{background:var(--ok)}
-#loginErr,#setupErr,#regErr{display:none;background:rgba(228,30,63,.1);color:var(--bad);border:1px solid rgba(228,30,63,.35);
+#loginErr,#setupErr,#regErr{display:none;background:rgba(185,28,28,.1);color:var(--bad);border:1px solid rgba(185,28,28,.35);
   padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
 .reglink{margin:2px 0 0;font-size:13.5px;text-align:center}
 .reglink a{color:var(--brand);font-weight:800;text-decoration:none}
-.badge.g{background:rgba(49,162,76,.14);color:var(--ok)}
+.badge.g{background:rgba(21,128,61,.14);color:var(--ok)}
 .badge.b{background:var(--brandsoft);color:var(--brand)}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
-header{position:sticky;top:0;z-index:5;background:var(--brand);
-  color:#fff;padding:10px 14px;display:flex;align-items:center;gap:10px;
-  box-shadow:0 1px 4px rgba(0,0,0,.18)}
-html[data-theme="dark"] header{background:#242526;border-bottom:1px solid var(--line)}
-header img{width:36px;height:36px;border-radius:10px;object-fit:cover}
+header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--brand),#92400e);
+  color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;
+  box-shadow:0 2px 10px rgba(0,0,0,.12)}
+html[data-theme="dark"] header{background:#241d16;border-bottom:1px solid var(--line)}
+header img{width:34px;height:34px;border-radius:9px;background:#fff;object-fit:contain}
 header .t{flex:1;min-width:0}
 header .t b{display:block;font-size:15px}
 header .t span{font-size:11.5px;opacity:.85;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -101,9 +101,9 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .stat b{display:block;font-size:22px;color:var(--brand)}
 .stat span{font-size:11.5px;color:var(--mut)}
 .oilcard{border-radius:14px;padding:14px;color:#fff;margin-bottom:14px;
-  background:linear-gradient(135deg,#31a24c,#1d7a38)}
-.oilcard.warn{background:linear-gradient(135deg,#f0b21f,#b45309)}
-.oilcard.red{background:linear-gradient(135deg,#e41e3f,#991b1b)}
+  background:linear-gradient(135deg,#15803d,#166534)}
+.oilcard.warn{background:linear-gradient(135deg,#d97706,#b45309)}
+.oilcard.red{background:linear-gradient(135deg,#dc2626,#991b1b)}
 .bar{height:8px;background:rgba(255,255,255,.25);border-radius:99px;overflow:hidden;margin-top:10px}
 .bar i{display:block;height:100%;background:#fff;border-radius:99px}
 .search{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
@@ -117,8 +117,8 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .row .info span{font-size:12px;color:var(--mut)}
 .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:800;
   background:var(--chip);color:var(--mut);white-space:nowrap}
-.badge.g{background:rgba(49,162,76,.14);color:var(--ok)}
-.badge.r{background:rgba(228,30,63,.12);color:var(--bad)}
+.badge.g{background:rgba(21,128,61,.14);color:var(--ok)}
+.badge.r{background:rgba(185,28,28,.12);color:var(--bad)}
 .badge.n{background:var(--brandsoft);color:var(--brand)}
 .badge.mut{background:var(--chip);color:var(--mut)}
 .row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
@@ -126,7 +126,7 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 /* حوار */
 dialog{border:none;border-radius:18px;padding:0;width:min(92vw,380px);
   box-shadow:0 20px 60px rgba(0,0,0,.3);background:var(--card);color:var(--ink)}
-dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog::backdrop{background:rgba(63,42,29,.45)}
 dialog .dh{background:var(--brand);color:#fff;padding:14px 18px;font-weight:800;
   border-radius:18px 18px 0 0}
 dialog .db{padding:16px 18px}
@@ -179,10 +179,10 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .hint{font-size:12px;color:var(--mut);text-align:center;margin-top:10px;line-height:1.7}
 /* ─── الإشعارات ─── */
 .bellwrap{position:relative;flex-shrink:0}
-#nBadge{position:absolute;top:-7px;left:-7px;background:#e41e3f;color:#fff;border-radius:99px;
+#nBadge{position:absolute;top:-7px;left:-7px;background:#b91c1c;color:#fff;border-radius:99px;
   min-width:18px;height:18px;font-size:11px;font-weight:800;display:none;
   align-items:center;justify-content:center;padding:0 4px;border:2px solid var(--brand);z-index:2}
-html[data-theme="dark"] #nBadge{border-color:#242526}
+html[data-theme="dark"] #nBadge{border-color:#241d16}
 .nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
 .nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
 .nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
@@ -236,7 +236,7 @@ html[data-theme="dark"] #nBadge{border-color:#242526}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v41</span></p>
+      <span style="opacity:.65">الإصدار v42</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -334,7 +334,7 @@ html[data-theme="dark"] #nBadge{border-color:#242526}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v41</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v42</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -433,7 +433,7 @@ html[data-theme="dark"] #nBadge{border-color:#242526}
         <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
-      <p class="hint" id="setAbout">الإصدار v41</p>
+      <p class="hint" id="setAbout">الإصدار v42</p>
     </section>
   </main>
   <nav class="tabs">
@@ -633,7 +633,7 @@ async function api(path, opts) {
 function applyTheme(mode, save) {
   document.documentElement.setAttribute("data-theme", mode);
   const m = document.querySelector('meta[name="theme-color"]');
-  if (m) m.setAttribute("content", mode === "dark" ? "#242526" : "#1877f2");
+  if (m) m.setAttribute("content", mode === "dark" ? "#241d16" : "#b45309");
   const l = $("#thLight"), d = $("#thDark");
   if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); }
   if (save) { try { localStorage.setItem("ceram_theme", mode); } catch (e) {} }
@@ -1920,7 +1920,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v41" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v42" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
