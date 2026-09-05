@@ -10871,7 +10871,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v39"
+PWA_VERSION = "v40"
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -11659,8 +11659,9 @@ def _pwa_api_register(name, username_raw, password, role, ip):
         "اسم الدخول: " + username + " — الفئة المطلوبة: "
         + ROLE_LABELS.get(role, role) + " — بانتظار موافقة الإدارة.",
         actor=name, source="web")
+    # v40: جدولة آمنة من خيط executor — create_task هنا كان يُسقط الطلب بعد نجاح الحفظ
     if TG_APP is not None:
-        asyncio.create_task(_notify_admins_pwa_registration(
+        _pwa_schedule(_notify_admins_pwa_registration(
             reused_id, name, username, ROLE_LABELS.get(role, role)))
     return True, {"username": username, "reg_id": reused_id, "reused": reused}, None
 
@@ -11776,8 +11777,9 @@ def _pwa_api_forgot_request(username_raw, ip):
             "reg", "🔑 طلب استعادة رقم سر: " + username,
             "طالب باستعادة رقمه السري — ولّد رقماً مؤقتاً له من لوحة المستخدمين.",
             actor=username, source="web")
+        # v40: جدولة آمنة من خيط executor — نفس إصلاح التسجيل
         if TG_APP is not None:
-            asyncio.create_task(_notify_admins_pwa_reset(new_reset_id, username))
+            _pwa_schedule(_notify_admins_pwa_reset(new_reset_id, username))
     # ردّ موحّد دائماً — لا نكشف إن كان الاسم موجوداً أم لا (حماية من الاستكشاف)
     return True, None
 
@@ -12983,7 +12985,53 @@ def _pwa_api_changepass(user, old_password, new_password):
 
 # ── معالجات aiohttp ──
 
+# ── v40: جدولة آمنة من أي خيط ──
+# درس v40 المؤلم: الدوال المتزامنة (تسجيل/نسيت كلمة المرور) تُنفَّذ عبر _pwa_run
+# في خيط executor — وasyncio.create_task من ذلك الخيط يرفع
+# «RuntimeError: no running event loop» فيسقط الطلب كلياً برسالة 500
+# رغم أن الحفظ في القاعدة تمّ قبله! (اختبارات v39 لم تلتقطه لأن TG_APP
+# كان None عندها، وفي الإنتاج موجود). الحل: مرجع للحلقة الرئيسية + جدولة آمنة.
+_PWA_MAIN_LOOP = None
+
+
+def _pwa_set_main_loop():
+    """تثبيت مرجع حلقة الأحداث الرئيسية — يُستدعى من داخل اللوب فقط."""
+    global _PWA_MAIN_LOOP
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if _PWA_MAIN_LOOP is not loop:
+        _PWA_MAIN_LOOP = loop
+
+
+def _pwa_schedule(coro):
+    """جدولة كوروتين من أي سياق — بديل asyncio.create_task داخل الدوال
+    المتزامنة التي تُنفَّذ في خيط executor. تعمل من اللوب ومن الخيوط معاً.
+    يعيد Task (من اللوب) أو concurrent Future (من خيط) أو None عند الفشل."""
+    if coro is None:
+        return None
+    try:
+        asyncio.get_running_loop()
+        return asyncio.create_task(coro)  # أنا داخل اللوب أصلاً
+    except RuntimeError:
+        pass
+    loop = _PWA_MAIN_LOOP
+    if loop is not None and not loop.is_closed():
+        try:
+            return asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception as e:
+            logging.error("[PWA] schedule threadsafe failed: " + str(e))
+    try:
+        coro.close()
+    except Exception:
+        pass
+    logging.error("[PWA] schedule failed: لا توجد حلقة أحداث رئيسية — أسقطت الكوروتين")
+    return None
+
+
 async def _pwa_run(fn, *a, **kw):
+    _pwa_set_main_loop()  # v40: التقاط الحلقة الرئيسية تلقائياً لأول طلب
     return await asyncio.get_running_loop().run_in_executor(
         None, _pwa_functools.partial(fn, *a, **kw))
 
@@ -13090,11 +13138,16 @@ async def pwa_register_handler(request):
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
     ip = request.remote or "؟"
-    ok, result, err = await _pwa_run(_pwa_api_register,
-                                     str(body.get("name", "")),
-                                     str(body.get("username", "")),
-                                     str(body.get("password", "")),
-                                     str(body.get("role", "")), ip)
+    try:
+        ok, result, err = await _pwa_run(_pwa_api_register,
+                                         str(body.get("name", "")),
+                                         str(body.get("username", "")),
+                                         str(body.get("password", "")),
+                                         str(body.get("role", "")), ip)
+    except Exception as e:
+        # v40: أي عطل غير متوقع يعيد JSON واضحاً — لا صفحة 500 HTML تغذّي «خطأ غير متوقع»
+        logging.error("[PWA] register handler crashed: " + str(e))
+        return _pwa_err(500, "خطأ في الخادم، أعد المحاولة.")
     if not ok:
         await _pwa_run(_audit_log, "register_fail", None,
                        details="دور: " + str(body.get("role", "?")), ip=ip)
@@ -13123,8 +13176,13 @@ async def pwa_forgot_handler(request):
         mins = max(1, int(lk.retry_after // 60) + 1)
         return _pwa_err(429, "محاولات كثيرة — انتظر نحو " + str(mins)
                         + " دقيقة ثم أعد المحاولة.")
-    ok, err = await _pwa_run(_pwa_api_forgot_request,
-                             str(body.get("username", "")), ip)
+    try:
+        ok, err = await _pwa_run(_pwa_api_forgot_request,
+                                 str(body.get("username", "")), ip)
+    except Exception as e:
+        # v40: عطل غير متوقع يعيد JSON واضحاً — لا 500 HTML
+        logging.error("[PWA] forgot handler crashed: " + str(e))
+        return _pwa_err(500, "خطأ في الخادم، أعد المحاولة.")
     if not ok:
         return _pwa_err(400, err)
     await _pwa_run(_audit_log, "forgot_request", None,
@@ -14676,6 +14734,7 @@ if __name__ == "__main__":
         register_pwa_routes(health_app)
         async def on_startup(aio_app):
             global _startup_restore_notice, TG_APP
+            _pwa_set_main_loop()  # v40: تثبيت الحلقة الرئيسية مبكراً للجدولة من الخيوط
             await tg_app.initialize()
             TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
             await tg_app.start()

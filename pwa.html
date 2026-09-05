@@ -182,7 +182,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v39</span></p>
+      <span style="opacity:.65">الإصدار v40</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -283,7 +283,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v39</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v40</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -1314,6 +1314,11 @@ function stopNotifPolling() {
   S.notif.items = []; S.notif.lastId = 0; S.notif.unread = 0; S.notif.ready = false;
   renderBadge();
 }
+/* v40: عند العودة للتطبيق بعد غياب (تبديل تطبيق/تشغيل الشاشة) نزامن الجرس
+   فوراً — كان المؤقت متوقفاً في الخلفية فتبدو الإشعارات متأخرة. */
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && S.user) { try { pollNotifs(); } catch (e) {} }
+});
 function webNotifAllowed() {
   try {
     if (window.AndroidBridge) return false;      // التطبيق يدير إشعارات النظام بنفسه
