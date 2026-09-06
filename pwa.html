@@ -143,8 +143,12 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .badge.n{background:var(--brandsoft);color:var(--brand)}
 .badge.mut{background:var(--chip);color:var(--mut)}
 .row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-/* v48: بطاقة توريد مثل البوت — صورة الوصل ظاهرة على البطاقة + عنوان «طلب #n» */
-.ordcard{align-items:flex-start}
+/* v49: بطاقة توريد مثل البوت — إصلاح التداخل: التفاف مرن + أسطر بيانات منفصلة واضحة
+   (كانت الصورة 92px + الشارة + الأزرار تسحق عمود النص فتظهر كلمة فوق كلمة) */
+.ordcard{align-items:flex-start;flex-wrap:wrap;row-gap:7px}
+.ordcard .info{flex:1 1 170px}
+.ordcard .info span{display:block;line-height:1.8;word-break:break-word}
+.ordcard .badge{margin-inline-start:auto}
 .ordph{flex:none;width:92px;height:92px;border-radius:12px;object-fit:cover;cursor:pointer;
   border:1px solid var(--line);background:var(--bg)}
 .ordph.none{display:flex;align-items:center;justify-content:center;text-align:center;
@@ -295,7 +299,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v48</span></p>
+      <span style="opacity:.65">الإصدار v49</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -393,7 +397,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v48</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v49</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -499,7 +503,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v48</p>
+      <p class="hint" id="setAbout">الإصدار v49</p>
     </section>
   </main>
   <nav class="tabs">
@@ -722,7 +726,29 @@ function toast(msg, isErr) {
 
 /* ─── طبقة API الموحدة v45: مهلة زمنية + رسائل عربية + JSON صالح + قطع الطلبات المعلقة ─── */
 const API_TIMEOUT = 25000;  /* مهلة افتراضية — لا إعادة محاولة تلقائية للعمليات المتغيرة (منع التكرار) */
+/* ─── v49: طبقة تسريع الاستجابة ───
+   كاش GET قصير (10 ثوانٍ) + منع تكرار نفس الطلب الجاري:
+   التنقل بين الأقسام يرسم فوراً من آخر بيانات بدل انتظار الشبكة كل مرة،
+   وأي عملية تغيير (إضافة/خصم/جرد/تعديل/إرسال) تمسح الكاش تلقائياً فتبقى البيانات صحيحة. */
+const _getCache = new Map(), _getInflight = new Map(), _GET_TTL = 10000;
+function apiCacheClear() { _getCache.clear(); }
 async function api(path, opts) {
+  opts = opts || {};
+  const m = (opts.method || "GET").toUpperCase();
+  if (m === "GET" && !opts.noCache) {
+    const hit = _getCache.get(path);
+    if (hit && Date.now() - hit.t < _GET_TTL) return hit.data;
+    if (_getInflight.has(path)) return _getInflight.get(path);
+    const p = _apiRaw(path, opts)
+      .then((d) => { _getCache.set(path, { t: Date.now(), data: d }); return d; })
+      .finally(() => _getInflight.delete(path));
+    _getInflight.set(path, p);
+    return p;
+  }
+  if (m !== "GET") apiCacheClear();
+  return _apiRaw(path, opts);
+}
+async function _apiRaw(path, opts) {
   opts = opts || {};
   const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
   const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, opts.timeout || API_TIMEOUT) : null;
@@ -1719,7 +1745,7 @@ function renderOrders() {
     if (d.admin || o.mine)
       acts += '<button class="btn mini gray" data-orct="up" data-oid="' + o.id + '">📸 ' + (o.has_photo ? "استبدال الوصل" : "تصوير الوصل") + '</button>';
     const ph = o.has_photo
-      ? '<img class="ordph" loading="lazy" alt="وصل التوريد" src="/api/incoming/' + o.id + '/receipt" data-view="' + o.id + '">'
+      ? '<img class="ordph" loading="lazy" alt="وصل التوريد" src="/api/incoming/' + o.id + '/thumb" data-view="' + o.id + '">'
       : '<div class="ordph none" ' + ((d.admin || o.mine) ? 'data-up="' + o.id + '" title="أضف صورة الوصل"' : "") + '>⚠️<br>بدون صورة وصل</div>';
     return '<div class="row ordcard">' + ph
       + '<div class="info"><b>🚚 طلب #' + o.id + '</b>'
@@ -2267,7 +2293,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v48" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v49" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2285,7 +2311,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v48";
+const APP_VER = "v49";
 S.updDismissed = "";
 function swCleanup() {
   try {

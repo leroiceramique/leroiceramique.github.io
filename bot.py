@@ -10900,7 +10900,7 @@ import decimal as _pwa_decimal
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90            # v47: كانت 30 — كانت سبب الخروج التلقائي الشهري
 PWA_REMEMBER_DAYS = 180          # v47: تذكّر الجهاز — دخول بضغطة زر
-PWA_VERSION = "v48"
+PWA_VERSION = "v49"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -14746,6 +14746,59 @@ async def pwa_receipt_get_handler(request):
                         headers={"Cache-Control": "no-store"})
 
 
+_receipt_thumb_cache: dict = {}
+_receipt_thumb_lock = threading.Lock()
+
+
+def _receipt_thumb_bytes(data: bytes) -> bytes:
+    """v49: مصغّر صورة الوصل (أقصى بعد 320px، JPEG جودة 78) —
+    البطاقات تعرض المصغّر الخفيف (~10-30KB) بدل الصورة الكاملة (قد تبلغ ميغابايتات)،
+    والصورة الكاملة تبقى متاحة في نافذة العرض كما هي."""
+    from PIL import Image
+    import io as _io
+    im = Image.open(_io.BytesIO(data))
+    if im.mode not in ("RGB", "L"):
+        im = im.convert("RGB")
+    im.thumbnail((320, 320))
+    out = _io.BytesIO()
+    im.save(out, "JPEG", quality=78, optimize=True)
+    return out.getvalue()
+
+
+async def pwa_receipt_thumb_handler(request):
+    """⚡🖼️ (v49) مصغّر وصل التوريد لبطاقة الطلب — ETag + كاش متصفح 5 دقائق.
+    الاستبدال يولّد بصمة جديدة فوراً (المفتاح md5 للبايتات)، و304 يوفر التحميل الكامل."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        oid = int(request.match_info["oid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data, mime, err2 = await _pwa_run(_pwa_api_receipt_get, user, oid)
+    if err2:
+        return _pwa_err(404, err2)
+    etag = hashlib.md5(data).hexdigest()
+    inm = request.headers.get("If-None-Match", "")
+    if inm and etag in inm:
+        return web.Response(status=304, headers={"ETag": etag,
+                                                 "Cache-Control": "private, max-age=300"})
+    key = (oid, etag)
+    thumb = _receipt_thumb_cache.get(key)
+    if thumb is None:
+        try:
+            thumb = data if len(data) <= 45 * 1024 else await _pwa_run(_receipt_thumb_bytes, data)
+        except Exception:
+            thumb = data
+        with _receipt_thumb_lock:
+            if len(_receipt_thumb_cache) > 300:
+                _receipt_thumb_cache.clear()
+            _receipt_thumb_cache[key] = thumb
+    ctype = mime if (mime and str(mime).startswith("image/")) else "image/jpeg"
+    return web.Response(body=thumb, content_type=ctype,
+                        headers={"Cache-Control": "private, max-age=300", "ETag": etag})
+
+
 async def pwa_product_detail_handler(request):
     """📋 (v31) تفاصيل السلعة + سجل حركاتها."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
@@ -15298,13 +15351,39 @@ self.addEventListener("fetch", (e) => {
 
 @web.middleware
 async def _pwa_sec_middleware(request, handler):
-    """ترويسات أمنية على كل ردود الخادم (صفحة + API)."""
+    """ترويسات أمنية على كل ردود الخادم (صفحة + API) + v49: ضغط gzip شفاف.
+    على شبكة الهاتف يقلّل الحجم 3-5 مرات (الصفحة 129KB → ~30KB والقوائم أوفر) —
+    لا يمسّ الردود المتدفقة ولا ما ضُغط سلفاً ولا الردود الصغيرة المرموقة."""
     resp = await handler(request)
     h = resp.headers
     h.setdefault("X-Content-Type-Options", "nosniff")
     h.setdefault("X-Frame-Options", "DENY")
     h.setdefault("Referrer-Policy", "no-referrer")
+    try:
+        if ("gzip" in request.headers.get("Accept-Encoding", "")
+                and "Content-Encoding" not in h
+                and isinstance(resp, web.Response)
+                and resp.body is not None
+                and (resp.content_type or "").split(";")[0].strip() in _GZIP_TYPES):
+            body = resp.body
+            if isinstance(body, str):
+                body = body.encode("utf-8")
+            if isinstance(body, (bytes, bytearray)) and len(body) >= 500:
+                import gzip as _gzip
+                resp.body = _gzip.compress(bytes(body), 5)
+                h["Content-Encoding"] = "gzip"
+                h.setdefault("Vary", "Accept-Encoding")
+                h.pop("Content-Length", None)
+    except Exception:
+        pass
     return resp
+
+
+_GZIP_TYPES = frozenset({
+    "text/html", "application/json", "text/css", "text/javascript",
+    "application/javascript", "application/manifest+json",
+    "text/plain", "text/csv",
+})
 
 
 def register_pwa_routes(app):
@@ -15366,6 +15445,7 @@ def register_pwa_routes(app):
     # (v31) الوصل + تفاصيل السلعة — المسارات الديناميكية بعد الثابتة
     app.router.add_post("/api/incoming/receipt", pwa_receipt_upload_handler)
     app.router.add_get("/api/incoming/{oid}/receipt", pwa_receipt_get_handler)
+    app.router.add_get("/api/incoming/{oid}/thumb", pwa_receipt_thumb_handler)   # v49: مصغّر سريع
     app.router.add_get("/api/product/{pid}", pwa_product_detail_handler)
     app.router.add_post("/api/incoming/create", pwa_incoming_create_handler)
     app.router.add_post("/api/incoming/advance", pwa_incoming_advance_handler)
