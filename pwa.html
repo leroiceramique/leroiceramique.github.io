@@ -26,6 +26,9 @@
   --bg:#fdf6f0; --card:#ffffff; --ink:#3f2a1d; --mut:#8a6f5c;
   --brand:#b45309; --brand2:#d97706; --brandsoft:#fbe8d7;
   --ok:#15803d; --bad:#b91c1c; --warn:#b45309;
+  --oksoft:rgba(21,128,61,.09); --okline:rgba(21,128,61,.28);
+  --badsoft:rgba(185,28,28,.07); --badline:rgba(185,28,28,.30);
+  --edsoft:rgba(146,64,14,.08); --edline:rgba(146,64,14,.30); --edink:#92400e;
   --line:#f0e2d4; --chip:#fbe8d7; --radius:16px;
   --shadow:0 1px 2px rgba(63,42,29,.06), 0 2px 12px rgba(63,42,29,.05);
 }
@@ -33,6 +36,9 @@ html[data-theme="dark"]{
   --bg:#1c1713; --card:#282019; --ink:#f1e9df; --mut:#b6a08f;
   --brand:#e59036; --brand2:#f0a44c; --brandsoft:#3b2d1f;
   --ok:#45b36b; --bad:#f16a5a; --warn:#f0b21f;
+  --oksoft:rgba(69,179,107,.13); --okline:rgba(69,179,107,.35);
+  --badsoft:rgba(241,106,90,.12); --badline:rgba(241,106,90,.38);
+  --edsoft:rgba(240,178,31,.11); --edline:rgba(240,178,31,.35); --edink:#f0b21f;
   --line:#3c3128; --chip:#332a21;
   --shadow:0 1px 2px rgba(0,0,0,.4);
 }
@@ -64,6 +70,10 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .btn.mini{width:auto;padding:7px 12px;font-size:13px;border-radius:10px}
 .btn.gold{background:var(--warn);color:#fff}
 .btn.red{background:var(--bad)} .btn.green{background:var(--ok)}
+/* v46: أزرار هادئة احترافية — لون خفيف مع نص ملوّن بدل الكتل الصريحة */
+.btn.soft-g{background:var(--oksoft);color:var(--ok);border:1px solid var(--okline)}
+.btn.soft-r{background:var(--badsoft);color:var(--bad);border:1px solid var(--badline)}
+.btn.soft-e{background:var(--edsoft);color:var(--edink);border:1px solid var(--edline)}
 #loginErr,#setupErr,#regErr{display:none;background:rgba(185,28,28,.1);color:var(--bad);border:1px solid rgba(185,28,28,.35);
   padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
 .reglink{margin:2px 0 0;font-size:13.5px;text-align:center}
@@ -254,7 +264,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v45</span></p>
+      <span style="opacity:.65">الإصدار v46</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -352,7 +362,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v45</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v46</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -452,7 +462,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v45</p>
+      <p class="hint" id="setAbout">الإصدار v46</p>
     </section>
   </main>
   <nav class="tabs">
@@ -1024,22 +1034,45 @@ function invSetTab(t, silent) {  /* v45: silent = تبديل التبويب دو
 $("#segAll").addEventListener("click", () => invSetTab("all"));
 $("#segLow").addEventListener("click", () => invSetTab("low"));
 $("#segArch").addEventListener("click", () => invSetTab("arch"));
+/* v46: وحدة القياس من اسم السلعة — نفس منطق السيرفر (_get_unit_ar) */
+function unitOf(name) {
+  const n = String(name || "").trim().toLowerCase();
+  return (n.startsWith("motif") || n.startsWith("plante")
+    || n.startsWith("120/60") || n.startsWith("120x60") || n.startsWith("120×60"))
+    ? "قطعة" : "كرتون";
+}
 async function loadInventory() {
   const box = $("#invList");
   const fresh = freshGen("inv");   /* v45: استجابة قديمة لا ترسم */
   if (!(S.invData || []).length) box.innerHTML = '<div class="skl"><i></i><i></i></div>'.repeat(4);
-  const qp = [];
-  if (S.invQ) qp.push("q=" + encodeURIComponent(S.invQ));
-  if (S.invTab === "arch") qp.push("archived=1");
-  if (S.invTab === "low") qp.push("low=1");   /* v43: فلتر المنخفضة يعمل فعلياً */
   try {
-    const d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
+    let d;
+    if (S.invTab === "low" && S.perms.low_stock) {
+      /* v46: القائمة الكاملة للسلع المنخفضة من /api/low \u2014 بلا حدّ 200 ولا فلتر ناقص */
+      let rows = (await api("/api/low")).products || [];
+      const ql = (S.invQ || "").toLowerCase();
+      if (ql) rows = rows.filter((p) => String(p.name || "").toLowerCase().indexOf(ql) >= 0);
+      try {   /* v46: استبعاد المحذوفة من قائمة المنخفضة */
+        const arch = await api("/api/products?archived=1");
+        const hidden = {};
+        (arch.products || []).forEach((p) => { hidden[p.id] = 1; });
+        rows = rows.filter((p) => !hidden[p.id]);
+      } catch (e2) {}
+      d = { products: rows.map((p) => ({ id: p.id, name: p.name, qty: p.qty, min: p.min,
+        low: true, unit: p.unit || unitOf(p.name), location: null, price: null })) };
+    } else {
+      const qp = [];
+      if (S.invQ) qp.push("q=" + encodeURIComponent(S.invQ));
+      if (S.invTab === "arch") qp.push("archived=1");
+      if (S.invTab === "low") qp.push("low=1");   /* v46: بديل للفئات بلا صلاحية low_stock */
+      d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
+    }
     if (!fresh()) return;
     S.invData = d.products || [];
     if (!S.invData.length) {
       box.innerHTML = '<p class="empty">' + (S.invTab === "arch"
         ? "لا توجد سلع محذوفة — كل السلع حية."
-        : (S.invTab === "low" ? "✅ لا توجد سلع منخفضة." : "لا توجد نتائج.")) + '</p>';
+        : (S.invTab === "low" ? (S.invQ ? "لا توجد نتائج." : "✅ لا توجد سلع منخفضة.") : "لا توجد نتائج.")) + '</p>';
       return;
     }
     box.innerHTML = S.invData.map((p) => {
@@ -1058,7 +1091,9 @@ async function loadInventory() {
         : "";
       return '<div class="row">' + menuBtn
         + '<div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
-        + '<span>' + esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + ' • 📜 للحركة اضغط الاسم</span></div>'
+        + '<span>' + (p.location == null
+          ? "📜 للحركة اضغط الاسم"
+          : esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + " • 📜 للحركة اضغط الاسم") + '</span></div>'
         + (S.invTab === "arch" ? '<span class="badge mut">محذوفة</span>' : qtyBadge)
         + '</div>';
     }).join("");
@@ -1076,13 +1111,13 @@ function openRowMenu(id, n) {
   let h = "";
   if (S.invTab === "arch") {
     h += mk("restore", "♻️ استعادة إلى المخزون", "green");
-    if (S.perms.admin) h += mk("edit", "✏️ تعديل البيانات", "gray");
+    if (S.perms.admin) h += mk("edit", "✏️ تعديل البيانات", "soft-e");
   } else {
-    if (S.perms.add_qty) h += mk("add", "➕ إضافة كمية", "green");
-    if (S.perms.remove) h += mk("remove", "➖ خصم كمية", "red");
+    if (S.perms.add_qty) h += mk("add", "➕ إضافة كمية", "soft-g");
+    if (S.perms.remove) h += mk("remove", "➖ خصم كمية", "soft-r");
     if (S.perms.admin) {
       h += mk("reconcile", "🧮 جرد وتسوية", "gray");
-      h += mk("edit", "✏️ تعديل البيانات", "gold");
+      h += mk("edit", "✏️ تعديل البيانات", "soft-e");
       h += mk("del", "🗑 حذف (أرشفة)", "red");
     }
   }
@@ -1102,9 +1137,15 @@ function openRowMenu(id, n) {
 }
 $("#dlgMenuClose").addEventListener("click", () => { try { $("#dlgMenu").close(); } catch (e) {} });
 /* ── v41: تعديل السلعة (اسم/موقع/سعر/حد) ── */
-function invEdit(id) {
-  const p = (S.invData || []).find((x) => x.id === id);
+async function invEdit(id) {
+  let p = (S.invData || []).find((x) => x.id === id);
   if (!p) { toast("أعد تحميل القائمة أولاً.", true); return; }
+  if (p.location == null) {   /* v46: سطر من /api/low — اجلب البيانات كاملة قبل التعديل */
+    try {
+      const d = await api("/api/product/" + id);
+      if (d && d.product && !d.product.limited) p = { ...p, ...d.product };
+    } catch (e) {}
+  }
   $("#dlgEditOld").textContent = "التعديل لا يمسّ سجل الحركة إطلاقاً";
   $("#eName").value = p.name || "";
   $("#eLoc").value = p.location || "";
@@ -2087,7 +2128,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v45" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v46" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2105,7 +2146,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v45";
+const APP_VER = "v46";
 S.updDismissed = "";
 function swCleanup() {
   try {
