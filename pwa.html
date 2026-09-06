@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#b45309">
+<meta name="theme-color" content="#6b3410">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
@@ -21,25 +21,28 @@
 })();
 </script>
 <style>
-/* ═══ v42: هوية السيراميك الأصلية (فاتح + داكن) ═══ */
+/* ═══ v48: هوية LE ROI DE LA CÉRAMIQUE — مستخرجة من اللوغو نفسه ═══
+   بني ملكي من حروف اللوغو + ذهب التاج + ورق عتيق — بدل البرتقالي العام */
 :root{
-  --bg:#fdf6f0; --card:#ffffff; --ink:#3f2a1d; --mut:#8a6f5c;
-  --brand:#b45309; --brand2:#d97706; --brandsoft:#fbe8d7;
-  --ok:#15803d; --bad:#b91c1c; --warn:#b45309;
-  --oksoft:rgba(21,128,61,.09); --okline:rgba(21,128,61,.28);
-  --badsoft:rgba(185,28,28,.07); --badline:rgba(185,28,28,.30);
-  --edsoft:rgba(146,64,14,.08); --edline:rgba(146,64,14,.30); --edink:#92400e;
-  --line:#f0e2d4; --chip:#fbe8d7; --radius:16px;
-  --shadow:0 1px 2px rgba(63,42,29,.06), 0 2px 12px rgba(63,42,29,.05);
+  --bg:#f5ecdc; --card:#fdfaf2; --ink:#3d2b1c; --mut:#8d7357;
+  --brand:#7a3a12; --brand2:#9a4d1a; --brandsoft:#f3e4d2;
+  --gold:#a97e2f; --goldsoft:rgba(169,126,47,.12); --goldline:rgba(169,126,47,.38);
+  --ok:#1f7a45; --bad:#a02c2c; --warn:#a97e2f;
+  --oksoft:rgba(31,122,69,.09); --okline:rgba(31,122,69,.28);
+  --badsoft:rgba(160,44,44,.07); --badline:rgba(160,44,44,.30);
+  --edsoft:rgba(122,58,18,.08); --edline:rgba(122,58,18,.30); --edink:#7a3a12;
+  --line:#e8d9bd; --chip:#f3e8d2; --radius:16px;
+  --shadow:0 1px 2px rgba(61,43,28,.06), 0 2px 12px rgba(61,43,28,.05);
 }
 html[data-theme="dark"]{
-  --bg:#1c1713; --card:#282019; --ink:#f1e9df; --mut:#b6a08f;
-  --brand:#e59036; --brand2:#f0a44c; --brandsoft:#3b2d1f;
-  --ok:#45b36b; --bad:#f16a5a; --warn:#f0b21f;
-  --oksoft:rgba(69,179,107,.13); --okline:rgba(69,179,107,.35);
-  --badsoft:rgba(241,106,90,.12); --badline:rgba(241,106,90,.38);
-  --edsoft:rgba(240,178,31,.11); --edline:rgba(240,178,31,.35); --edink:#f0b21f;
-  --line:#3c3128; --chip:#332a21;
+  --bg:#151110; --card:#211a14; --ink:#f3ead9; --mut:#b39c7e;
+  --brand:#d9a648; --brand2:#e7bc6a; --brandsoft:#332616;
+  --gold:#d9a648; --goldsoft:rgba(217,166,72,.13); --goldline:rgba(217,166,72,.40);
+  --ok:#4fbd7a; --bad:#ef6e5e; --warn:#d9a648;
+  --oksoft:rgba(79,189,122,.13); --okline:rgba(79,189,122,.35);
+  --badsoft:rgba(239,110,94,.12); --badline:rgba(239,110,94,.38);
+  --edsoft:rgba(217,166,72,.11); --edline:rgba(217,166,72,.35); --edink:#d9a648;
+  --line:#3a2f22; --chip:#2b221a;
   --shadow:0 1px 2px rgba(0,0,0,.4);
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
@@ -48,12 +51,19 @@ body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);col
   min-height:100vh; font-size:15px}
 button{font-family:inherit}
 input,select,textarea{font-family:inherit;font-size:16px}
-/* ─── شاشة الدخول ─── */
+/* ─── شاشة الدخول — ورق LE ROI ─── */
 #login{display:flex;flex-direction:column;align-items:center;justify-content:center;
-  min-height:100vh;padding:24px;gap:14px}
-#login .logo{width:88px;height:88px;border-radius:22px;object-fit:contain;background:#fff;
-  box-shadow:0 6px 24px rgba(180,83,9,.18)}
+  min-height:100vh;padding:24px;gap:14px;
+  background:radial-gradient(1200px 600px at 50% -10%, var(--goldsoft), transparent 60%), var(--bg)}
+#login .logo{width:92px;height:92px;border-radius:22px;object-fit:cover;
+  border:1px solid var(--goldline);background:var(--card);
+  box-shadow:0 6px 24px rgba(122,58,18,.18)}
 #login h1{font-size:22px;margin:6px 0 2px}
+/* v48: توقيع العلامة اللاتيني بخط ملكي متباعد — من اللوغو حرفياً */
+.wm{font-family:Georgia,"Times New Roman",serif;letter-spacing:.22em;
+  font-size:11.5px;color:var(--gold);text-transform:uppercase;margin:0 0 10px;
+  display:flex;align-items:center;gap:10px;width:100%;max-width:380px;justify-content:center}
+.wm::before,.wm::after{content:"";height:1px;flex:1;background:var(--goldline)}
 #login p.sub{color:var(--mut);margin:0 0 10px;font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
   padding:18px;width:100%;max-width:380px;box-shadow:var(--shadow)}
@@ -82,11 +92,12 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .badge.b{background:var(--brandsoft);color:var(--brand)}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
-header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--brand),#92400e);
+header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,#5d2c0e,#7a3a12);
   color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid rgba(217,166,72,.55);   /* v48: خصلة ذهب ملكية */
   box-shadow:0 2px 10px rgba(0,0,0,.12)}
-html[data-theme="dark"] header{background:#241d16;border-bottom:1px solid var(--line)}
-header img{width:34px;height:34px;border-radius:9px;background:#fff;object-fit:contain}
+html[data-theme="dark"] header{background:#1b1410;border-bottom:1px solid var(--goldline)}
+header img{width:34px;height:34px;border-radius:9px;object-fit:cover;border:1px solid rgba(217,166,72,.5)}
 header .t{flex:1;min-width:0}
 header .t b{display:block;font-size:15px}
 header .t span{font-size:11.5px;opacity:.85;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -132,6 +143,14 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .badge.n{background:var(--brandsoft);color:var(--brand)}
 .badge.mut{background:var(--chip);color:var(--mut)}
 .row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+/* v48: بطاقة توريد مثل البوت — صورة الوصل ظاهرة على البطاقة + عنوان «طلب #n» */
+.ordcard{align-items:flex-start}
+.ordph{flex:none;width:92px;height:92px;border-radius:12px;object-fit:cover;cursor:pointer;
+  border:1px solid var(--line);background:var(--bg)}
+.ordph.none{display:flex;align-items:center;justify-content:center;text-align:center;
+  font-size:10.5px;line-height:1.5;color:var(--mut);padding:6px;border-style:dashed;cursor:default}
+.ordph.none[data-up]{cursor:pointer;color:var(--brand)}
+.ordcard .acts{width:100%;justify-content:flex-start}
 /* v45: زر الخيارات الواحد لبطاقة السلعة */
 .mbtn{flex:none;width:40px;height:40px;border:none;border-radius:11px;background:var(--brandsoft);
   color:var(--brand);font-size:22px;font-weight:800;cursor:pointer;line-height:1;padding:0}
@@ -243,6 +262,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
 <div id="login">
   <img class="logo" src="/icon.png" alt="">
   <h1>مخزون السيراميك</h1>
+  <div class="wm">LE ROI · DE LA CÉRAMIQUE</div>
   <p class="sub">دخول فريق المؤسسة</p>
   <div class="card" id="loginCard">
     <div id="loginErr"></div>
@@ -275,7 +295,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v47</span></p>
+      <span style="opacity:.65">الإصدار v48</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -373,7 +393,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v47</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v48</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -388,9 +408,15 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       </div>
       <div id="invList"><p class="empty">جارِ التحميل...</p></div>
     </section>
-    <!-- الحركة v41 -->
+    <!-- الحركة v41 — v48: نظام عام + 3 خانات مستقلة -->
     <section class="view" id="v-mov">
       <h2 class="vt">حركة المخزون</h2>
+      <div class="seg" id="movSeg">
+        <button id="msegAll" class="on">الكل</button>
+        <button id="msegAdd">➕ الإضافة</button>
+        <button id="msegOut">➖ الإخراج</button>
+        <button id="msegRec">⚖️ الجرد</button>
+      </div>
       <button class="prodchip" id="movProdChip" style="display:none">📦 <span id="movProdName"></span> ✕</button>
       <div class="fcard">
         <div class="chips" id="movPresets" style="margin-bottom:8px">
@@ -473,7 +499,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v47</p>
+      <p class="hint" id="setAbout">الإصدار v48</p>
     </section>
   </main>
   <nav class="tabs">
@@ -486,6 +512,17 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
   </nav>
 </div>
 
+<dialog id="dlgCsv">
+  <div class="dh">📎 نسخة CSV احتياطية</div>
+  <div style="padding:4px 2px">
+    <p id="dlgCsvMsg" style="margin:0 0 10px;font-size:13.5px;color:var(--mut)"></p>
+    <textarea id="dlgCsvText" readonly style="width:100%;height:180px;font-family:monospace;font-size:12px;
+      direction:ltr;text-align:left;background:var(--bg);color:var(--ink);border:1.5px solid var(--line);
+      border-radius:10px;padding:10px"></textarea>
+    <button class="btn" id="dlgCsvCopy">📋 نسخ الملف كاملاً</button>
+    <button class="btn gray" id="dlgCsvClose" style="margin-top:8px">إغلاق</button>
+  </div>
+</dialog>
 <dialog id="dlg">
   <div class="dh" id="dlgTitle">—</div>
   <div class="db">
@@ -667,9 +704,10 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
              reconcile: [] },
-  /* v41: حالة سجل الحركة — «أسبوع ماضٍ بدون جمعة» افتراضياً كما طلب المدير */
+  /* v41: حالة سجل الحركة — «أسبوع ماضٍ بدون جمعة» افتراضياً كما طلب المدير
+     v48: type = خانة النوع ("" = الكل / add / remove / reconcile) */
   mov: { preset: "week", from: "", to: "", nofriday: true, product: 0,
-         product_name: "", data: [], summary: null },
+         product_name: "", type: "", data: [], summary: null },
   invTab: "all", invData: [], serverVersion: "" };
 
 const esc = (s) => String(s == null ? "" : s)
@@ -1251,8 +1289,24 @@ $("#dlgGo").addEventListener("click", async () => {
   finally { unlock(); }
 });
 
-/* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ─── */
+/* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ───
+   v48: 4 خانات (الكل/إضافة/إخراج/جرد) — الخانة تفلتر القائمة فقط،
+   والملخص يبقى عن الفترة كاملة (النظام العام للحركة) */
 const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"], reconcile: ["n", "جرد"] };
+const MOV_SEG = { msegAll: "", msegAdd: "add", msegOut: "remove", msegRec: "reconcile" };
+function movSetType(t) {
+  if (S.mov.type === t) return;
+  S.mov.type = t;
+  Object.keys(MOV_SEG).forEach((id) => {
+    const b = $("#" + id);
+    if (b) b.classList.toggle("on", MOV_SEG[id] === t);
+  });
+  loadMovements();
+}
+Object.keys(MOV_SEG).forEach((id) => {
+  const b = $("#" + id);
+  if (b) b.addEventListener("click", () => movSetType(MOV_SEG[id]));
+});
 const DAY_AR = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 function isoLocal(d) {
   const p = (n) => String(n).padStart(2, "0");
@@ -1293,21 +1347,43 @@ $("#movProdChip").addEventListener("click", () => {
   $("#movProdChip").style.display = "none";
   loadMovements();
 });
-$("#movCsv").addEventListener("click", () => {
-  const rows = S.mov.data || [];
-  if (!rows.length) { toast("لا بيانات للتصدير ضمن الفلتر الحالي.", true); return; }
-  const head = ["التاريخ", "السلعة", "النوع", "الكمية", "المستخدم", "السبب"];
-  const cell = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
-  const lines = [head.map(cell).join(",")].concat(rows.map((m) =>
-    [m.date, m.product_name, (MOV_BADGE[m.type] || [, m.type])[1], m.quantity,
-     m.user_name || "", m.reason || ""].map(cell).join(",")));
-  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "movements_" + isoLocal(new Date()) + ".csv";
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+/* v48: تصدير CSV — الملف يُبنى في الخادم من القاعدة بكامل الفلتر (لا حدّ 300)
+   ويصل وثيقة تلجرام تلقائياً من البوت؛ وإن تعذّر الإرسال تظهر نسخة نصية للنسخ */
+$("#movCsv").addEventListener("click", async () => {
+  if (!opGuard("movcsv")) return;
+  const btn = $("#movCsv"), old = btn.textContent;
+  btn.textContent = "⏳ جارِ التجهيز..."; btn.disabled = true;
+  try {
+    const body = {};
+    if (S.mov.from) body.from = S.mov.from;
+    if (S.mov.to) body.to = S.mov.to;
+    if (S.mov.nofriday) body.nofriday = true;
+    if (S.mov.product) body.product = String(S.mov.product);
+    if (S.mov.type) body.type = S.mov.type;
+    const d = await api("/api/export/movements",
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body), timeout: 60000 });
+    if (d.sent) {
+      toast("📎 تم! وصل ملف CSV في بوت تلجرام (" + d.count + " عملية).");
+    } else if (d.csv) {
+      /* نسخة احتياطية: لا تلجرام مربوط أو فشل الإرسال — عرض النسخ */
+      $("#dlgCsvMsg").textContent = "تعذّر إرسال الملف عبر تلجرام — هذه نسخة نصية كاملة (" + d.count + " عملية). انسخها والصقها في ملف باسم " + (d.filename || "movements.csv");
+      $("#dlgCsvText").value = d.csv;
+      try { $("#dlgCsv").showModal(); } catch (e) {}
+    } else { toast("تم تجهيز التصدير.", false); }
+  } catch (e) { toast(e.message, true); }
+  finally { opRelease("movcsv"); btn.textContent = old; btn.disabled = false; }
 });
+$("#dlgCsvCopy").addEventListener("click", () => {
+  const t = $("#dlgCsvText");
+  const done = () => { toast("تم نسخ CSV — الصقه في ملف نصي واحفظه بامتداد .csv"); };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(t.value).then(done, () => { t.select(); document.execCommand("copy"); done(); });
+    else { t.select(); document.execCommand("copy"); done(); }
+  } catch (e) { t.select(); try { document.execCommand("copy"); done(); } catch (e2) {} }
+});
+$("#dlgCsvClose").addEventListener("click", () => { try { $("#dlgCsv").close(); } catch (e) {} });
 function movDayHeader(day) {
   try {
     const parts = String(day).split("-");
@@ -1325,6 +1401,7 @@ async function loadMovements() {
   if (S.mov.to) q.set("to", S.mov.to);
   if (S.mov.nofriday) q.set("nofriday", "1");
   if (S.mov.product) q.set("product", String(S.mov.product));
+  if (S.mov.type) q.set("type", S.mov.type);   /* v48: خانة النوع */
   const prodChip = $("#movProdChip");
   if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
   else prodChip.style.display = "none";
@@ -1344,7 +1421,10 @@ async function loadMovements() {
         + '<div><b>' + s.count + '</b><span>عملية</span></div>';
     } else { $("#movSum").style.display = "none"; }
     if (!S.mov.data.length) {
-      box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر.<br><span style="font-size:12px">جرّب «الكل» أو أزل استثناء الجمعة.</span></p>';
+      const tn = { add: "الإضافة", remove: "الإخراج", reconcile: "الجرد والتسوية" }[S.mov.type];
+      box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
+        + (tn ? ' — خانة «' + tn + '»' : '')
+        + '.<br><span style="font-size:12px">جرّب «الكل» أو وسّع الفترة أو أزل استثناء الجمعة.</span></p>';
       return;
     }
     let html = "", lastDay = "";
@@ -1627,31 +1707,42 @@ function renderOrders() {
     $("#oName").value = ""; $("#oQty").value = 1; $("#dlgOrd").showModal();
   });
   const ST = { pending: ["r", "⏳ قيد التوريد"], received: ["n", "🔧 جاري التجهيز"] };
+  /* v48: بطاقة مطابِقة للبوت تماماً — صورة الوصل ظاهرة + «🚚 طلب #n | 👤 | 📦»
+     وزرا البوت نفسه: ✅ جاهز (إنجاز + إشعار) و⏳ غير جاهز (إشعار فقط بلا تغيير حالة) */
   box.innerHTML = d.orders.length ? d.orders.map((o) => {
     const st = ST[o.status] || ["mut", o.status];
     let acts = "";
-    if (d.admin && o.status === "pending")
-      acts += '<button class="btn mini gray" data-oact="receive" data-oid="' + o.id + '">🔧 استلمت</button>';
-    if (d.admin)
+    if (d.admin) {
       acts += '<button class="btn mini green" data-oact="complete" data-oid="' + o.id + '">✅ جاهز</button>';
-    if (o.has_photo)
-      acts += '<button class="btn mini gold" data-orct="view" data-oid="' + o.id + '">🖼️ الوصل</button>';
+      acts += '<button class="btn mini gray" data-oact="notready" data-oid="' + o.id + '">⏳ غير جاهز</button>';
+    }
     if (d.admin || o.mine)
-      acts += '<button class="btn mini gray" data-orct="up" data-oid="' + o.id + '">📸 ' + (o.has_photo ? "استبدال" : "تصوير") + '</button>';
-    return '<div class="row"><div class="info"><b>' + esc(o.product_name) + '</b>'
-      + '<span>' + esc(o.user_name || "—") + " • " + fmtDate(o.created_at) + '</span></div>'
-      + '<span class="badge ' + st[0] + '">' + st[1] + " " + o.quantity + '</span>'
+      acts += '<button class="btn mini gray" data-orct="up" data-oid="' + o.id + '">📸 ' + (o.has_photo ? "استبدال الوصل" : "تصوير الوصل") + '</button>';
+    const ph = o.has_photo
+      ? '<img class="ordph" loading="lazy" alt="وصل التوريد" src="/api/incoming/' + o.id + '/receipt" data-view="' + o.id + '">'
+      : '<div class="ordph none" ' + ((d.admin || o.mine) ? 'data-up="' + o.id + '" title="أضف صورة الوصل"' : "") + '>⚠️<br>بدون صورة وصل</div>';
+    return '<div class="row ordcard">' + ph
+      + '<div class="info"><b>🚚 طلب #' + o.id + '</b>'
+      + '<span>👤 ' + esc(o.user_name || "—") + " • 📦 " + esc(o.product_name) + " • 🔢 " + esc(o.quantity) + '</span>'
+      + '<span>⏰ ' + fmtDate(o.created_at) + '</span></div>'
+      + '<span class="badge ' + st[0] + '">' + st[1] + '</span>'
       + (acts ? '<div class="acts">' + acts + '</div>' : "")
       + '</div>';
-  }).join("") : '<p class="empty">لا توجد طلبات توريد مفتوحة.</p>';
+  }).join("")
+    + '<p class="hint" style="width:100%">📤 عدد الطلبات: ' + d.orders.length + '</p>'
+  : '<p class="empty">📭 لا توجد طلبات توريد حالياً.</p>';
   box.querySelectorAll("button[data-oact]").forEach((b) =>
     b.addEventListener("click", () => incomingAdvance(+b.dataset.oid, b.dataset.oact)));
   box.querySelectorAll("button[data-orct]").forEach((b) =>
-    b.addEventListener("click", () =>
-      (b.dataset.orct === "view") ? receiptView(+b.dataset.oid) : receiptUpload(+b.dataset.oid)));
+    b.addEventListener("click", () => receiptUpload(+b.dataset.oid)));
+  box.querySelectorAll("img[data-view]").forEach((im) =>
+    im.addEventListener("click", () => receiptView(+im.dataset.view)));
+  box.querySelectorAll(".ordph.none[data-up]").forEach((el) =>
+    el.addEventListener("click", () => receiptUpload(+el.dataset.up)));
 }
 async function incomingAdvance(id, action) {
-  if (!confirm(action === "receive" ? "تأكيد استلام الطلب من المورد؟" : "تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;
+  /* v48: تأكيد واحد فقط لـ «جاهز» (إجراء نهائي) — «غير جاهز» فوري مثل البوت تماماً */
+  if (action === "complete" && !confirm("تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;
   if (!opGuard("adv:" + id + ":" + action)) return;   /* v45: لا تكرار */
   try {
     const d = await api("/api/incoming/advance", {
@@ -2176,7 +2267,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v47" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v48" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2194,7 +2285,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v47";
+const APP_VER = "v48";
 S.updDismissed = "";
 function swCleanup() {
   try {

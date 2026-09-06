@@ -10435,8 +10435,35 @@ async def _on_app_post_init(application):
     """Start background tasks after the app is initialized (works for both webhook and polling)."""
     asyncio.create_task(_offline_retry_loop(application.bot))
     asyncio.create_task(_oil_monitor_loop(application.bot))
+    asyncio.create_task(_apply_brand_identity(application.bot))   # v48: هوية LE ROI الخارجية
     logging.info("[BOT] Offline retry task started via post_init")
     logging.info("[BOT] Oil monitor task started via post_init")
+
+
+# ═══ v48: الهوية الخارجية الموحّدة LE ROI — تُطبَّق تلقائياً عند كل إقلاع ═══
+#  الاسم والوصف عبر API تلجرام مباشرة؛ أما الصورة الرمزية فلا يدعمها API
+#  وتُحدَّث يدوياً من BotFather (الشعار جاهز داخل /icon.png في المتصفح).
+_BRAND_NAME = "Le Roi · مخزون السيراميك"
+_BRAND_SHORT = "👑 Le Roi de la Céramique — إدارة مخزون السيراميك والطلبات"
+_BRAND_DESC = (
+    "👑 Le Roi de la Céramique — نظام إدارة مخزون السيراميك باحترافية.\n\n"
+    "📦 جرد لحظي للكميات وتنبيهات الحد الأدنى\n"
+    "🚚 طلبات توريد بصور الوصل مع زر جاهز / غير جاهز\n"
+    "📊 سجل حركة كامل: إضافة / إخراج / جرد وتسوية\n"
+    "📄 تصدير تقارير CSV تلقائياً إلى هذا المحادثة\n\n"
+    "🔐 الوصول للموظفين المصرّح لهم فقط.")
+
+
+async def _apply_brand_identity(bot):
+    """v48: توحيد الهوية الخارجية (الاسم + الوصف) بهوية LE ROI.
+    آمن تماماً: أي فشل شبكة يُسجَّل ولا يوقف إقلاع البوت."""
+    try:
+        await bot.set_my_name(name=_BRAND_NAME)
+        await bot.set_my_description(description=_BRAND_DESC)
+        await bot.set_my_short_description(short_description=_BRAND_SHORT)
+        logging.info("[BRAND] LE ROI identity applied (name + descriptions)")
+    except Exception as brand_err:
+        logging.warning("[BRAND] identity update skipped: " + str(brand_err))
 
 
 def build_application():
@@ -10873,7 +10900,7 @@ import decimal as _pwa_decimal
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90            # v47: كانت 30 — كانت سبب الخروج التلقائي الشهري
 PWA_REMEMBER_DAYS = 180          # v47: تذكّر الجهاز — دخول بضغطة زر
-PWA_VERSION = "v47"
+PWA_VERSION = "v48"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11023,12 +11050,31 @@ def _pwa_read_html():
 
 
 def _pwa_icon_bytes():
+    """v48: أيقونة LE ROI بملء المربع — قصّ الهامش البيضاء وحواف الورقة الممزقة
+    حتى يملأ ورق اللوغو الأيقونة بالكامل: في القناع الدائري لمشغّل أندرويد
+    تظهر بلاطاً ورقية أنيقة بدل «صورة ملصوقة على أبيض». fallback: اللوغو الخام."""
     global _pwa_icon_cache
     if _pwa_icon_cache is None:
+        raw = b""
         try:
-            _pwa_icon_cache = base64.b64decode(_THEME_LOGO_B64)
+            raw = base64.b64decode(_THEME_LOGO_B64)
         except Exception:
             _pwa_icon_cache = b""
+            return _pwa_icon_cache
+        try:
+            from PIL import Image
+            im = Image.open(io.BytesIO(raw)).convert("RGB")
+            w, h = im.size
+            side = min(w, h)
+            # 7.5% من كل جهة: يسقط الهامش البيضاء ورأس الورقة الممزق — الورقة تملأ الحواف
+            cut = int(side * 0.075)
+            im = im.crop((cut, cut, w - cut, h - cut)).resize((1024, 1024), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=90)
+            _pwa_icon_cache = buf.getvalue()
+        except Exception as icon_err:
+            logging.warning("[PWA] icon full-bleed failed, raw fallback: " + str(icon_err))
+            _pwa_icon_cache = raw
     return _pwa_icon_cache
 
 
@@ -12992,11 +13038,18 @@ def _pwa_api_incoming_create(user, product_name, quantity):
 
 
 def _pwa_api_incoming_advance(user, order_id, action):
-    """إدارة طلب توريد (مدراء فقط): receive = استُلم من المورد، complete = جاهز."""
+    """إدارة طلب توريد (مدراء فقط) — v48 مطابِقة للبوت تماماً:
+    receive = استُلم من المورد، complete = زر «✅ جاهز» (إنجاز + إشعار)،
+    notready = زر «⏳ غير جاهز» — إشعار مطمئن فقط بلا أي تغيير حالة."""
     if not _pwa_perm_map(user["role"])["admin"]:
         return False, None, "إدارة طلبات التوريد للمدراء فقط."
-    if action not in ("receive", "complete"):
+    if action not in ("receive", "complete", "notready"):
         return False, None, "إجراء غير معروف."
+    if action == "notready":
+        row = _pwa_incoming_order_row(order_id)
+        if not row:
+            return False, None, "الطلب غير موجود."
+        return True, row, None
     if action == "receive":
         row = receive_incoming_order(order_id)
         if not row:
@@ -13020,12 +13073,35 @@ def _pwa_incoming_requester_tid(requester_id):
         release_connection(conn)
 
 
+def _pwa_incoming_order_row(order_id):
+    """v48: جلب صف طلب توريد كاملاً — لإشعار «غير جاهز» دون تغيير حالة الطلب
+    (نفس سلوك زر البوت ⏳ غير جاهز: رسالة مطمئنة فقط)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, product_name, quantity, status, requester_id "
+                "FROM incoming_orders WHERE id = %s", (order_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
 def _pwa_api_movements(user, limit, date_from=None, date_to=None,
-                       product_id=None, exclude_friday=False, q=None):
+                       product_id=None, exclude_friday=False, q=None, mtype=None):
     """📋 v41: سجل الحركة بفلاتر كاملة — من تاريخ/إلى تاريخ + سلعة محددة
-    + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة."""
+    + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة.
+    v48: خانة النوع mtype (add/remove/reconcile) — يفلتر القائمة فقط،
+    أما الملخص فيبقى عن الفترة كاملة (النظام العام للحركة)."""
     if not _pwa_perm_map(user["role"])["movements"]:
         return None
+    if mtype not in (None, "", "add", "remove", "reconcile"):
+        return {"ok": False, "error": "خانة الحركة غير صالحة — المسموح: add/remove/reconcile."}
     limit = max(1, min(int(limit or 300), 500))
     where = ["1=1"]
     params = []
@@ -13052,6 +13128,9 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
         where.append("p.name ILIKE %s")
         params.append("%" + str(q).strip()[:80] + "%")
     wsql = " AND ".join(where)
+    # v48: فلتر الخانة على القائمة فقط — الملخص يبقى عن الفترة كاملة
+    wrows = wsql + (" AND t.type = %s" if mtype else "")
+    rparams = (params + [mtype]) if mtype else params
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -13063,8 +13142,8 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE " + wsql + " "
-                "ORDER BY t.date DESC LIMIT %s", (params + [limit]))
+                "WHERE " + wrows + " "
+                "ORDER BY t.date DESC LIMIT %s", tuple(rparams + [limit]))
             rows = cur.fetchall()
             cur.execute(
                 "SELECT COUNT(*) AS cnt, "
@@ -13435,8 +13514,8 @@ async def pwa_manifest_handler(request):
         "dir": "rtl", "lang": "ar",
         "start_url": "/", "scope": "/",
         "display": "standalone",
-        "background_color": "#fdf6f0",     # v42: هوية السيراميك
-        "theme_color": "#b45309",
+        "background_color": "#f2e7d5",     # v48: ورق LE ROI العتيق (كان #fdf6f0 برتقالي فاتح)
+        "theme_color": "#6b3410",          # v48: البني الملكي من حروف اللوغو (كان #b45309 برتقالي عام)
         "icons": [{"src": "/icon.png", "sizes": "512x512",
                    "type": "image/jpeg", "purpose": "any"},
                   {"src": "/icon.png", "sizes": "512x512",
@@ -14726,19 +14805,27 @@ async def pwa_incoming_advance_handler(request):
     await _pwa_run(_audit_log, "incoming_advance", user,
                    details="طلب #" + str(oid) + " ← " + action,
                    ip=request.remote or "؟")
-    if action == "complete" and TG_APP is not None and row:
+    if action in ("complete", "notready") and TG_APP is not None and row:
         tid = await _pwa_run(_pwa_incoming_requester_tid, row.get("requester_id"))
         if tid:
-            note = ("✅ طلب التوريد الذي طلبته أصبح جاهزاً\n\n"
-                    "📦 " + str(row.get("product_name", ""))[:200] + "\n"
-                    "🔢 الكمية: " + str(row.get("quantity", "?")))
+            # v48: نصا إشعار البوت نفسه حرفياً (جاهز / غير جاهز)
+            if action == "complete":
+                note = ("✅ طلبك جاهز في المخزن الآن!\n\n"
+                        "📦 السلعة: " + str(row.get("product_name", ""))[:200] + "\n"
+                        "📋 رقم الطلب: #" + str(oid) + "\n\n"
+                        "🏃 تقدر تيجان تأخذه!")
+            else:
+                note = ("⏳ طلبك ليس جاهزاً بعد.\n\n"
+                        "📋 رقم الطلب: #" + str(oid) + "\n"
+                        "سيتم إشعارك فور الجاهزية.")
             try:
                 asyncio.create_task(TG_APP.bot.send_message(chat_id=tid, text=note))
             except Exception:
                 pass
     return _pwa_jr({"ok": True,
                     "message": "تم الاستلام — الطلب قيد التجهيز." if action == "receive"
-                    else "تم تعليم الطلب جاهزاً ✅"})
+                    else ("تم تعليم الطلب جاهزاً ✅" if action == "complete"
+                          else "أُبلغ الطالب أن الطلب ما زال قيد التجهيز ⏳")})
 
 
 async def pwa_movements_handler(request):
@@ -14751,7 +14838,103 @@ async def pwa_movements_handler(request):
         date_to=request.query.get("to"),
         product_id=request.query.get("product"),
         exclude_friday=(request.query.get("nofriday") in ("1", "true", "yes")),
-        q=request.query.get("q"))
+        q=request.query.get("q"),
+        mtype=request.query.get("type"))          # v48: خانة النوع
+    if data is None:
+        return _pwa_err(403, "ليست لديك صلاحية الحركة.")
+    if isinstance(data, dict) and data.get("ok") is False:
+        return _pwa_err(400, data.get("error", "فلاتر غير صالحة."))
+    return _pwa_jr(data)
+
+
+# ═══ v48: تصدير CSV — الملف يصل من بوت تلجرام تلقائياً ═══
+#  كان الزر يصدّر الصفحة المعروضة فقط (≤300) عبر Blob الذي لا يعمل في
+#  WebView أندرويد — الآن الخادم يبني CSV من القاعدة بكامل الفلتر
+#  (حتى 20000 سطر) ويرسله وثيقة تلجرام فورية، مع نسخة نصية احتياطية.
+
+_PWA_EXPORT_MAX_ROWS = 20000
+
+
+def _pwa_movements_csv(rows):
+    """بناء CSV عربي (BOM + فاصلة) من صفوف الحركة — نفس أعمدة الشاشة."""
+    import csv as _csv
+    buf = io.StringIO()
+    buf.write("\ufeff")
+    w = _csv.writer(buf, lineterminator="\r\n")
+    w.writerow(["التاريخ", "الوقت", "اليوم", "النوع", "السلعة", "الكمية", "المستخدم", "السبب"])
+    day_names = {0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء", 3: "الخميس",
+                 4: "الجمعة", 5: "السبت", 6: "الأحد"}
+    type_ar = {"add": "إضافة", "remove": "إخراج", "reconcile": "جرد"}
+    for m in rows:
+        d = m.get("date")
+        try:
+            dstr = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d or "")[:10]
+            tstr = d.strftime("%H:%M") if hasattr(d, "strftime") else str(d or "")[11:16]
+            dow = day_names.get(d.weekday(), "") if hasattr(d, "weekday") else ""
+        except Exception:
+            dstr, tstr, dow = str(d or ""), "", ""
+        w.writerow([dstr, tstr, dow, type_ar.get(m.get("type"), m.get("type") or ""),
+                    m.get("product_name") or "", m.get("quantity", 0),
+                    m.get("user_name") or "", m.get("reason") or ""])
+    return buf.getvalue()
+
+
+def _pwa_api_export_movements(user, date_from=None, date_to=None,
+                              product_id=None, exclude_friday=False, mtype=None):
+    """v48: CSV كامل بفلاتر الحركة (بلا حدّ 300) — يُرسل وثيقة تلجرام.
+    يعيد dict موحّد: sent=True عند نجاح الإرسال، وإلا csv نصي احتياطي."""
+    res = _pwa_api_movements(user, _PWA_EXPORT_MAX_ROWS, date_from=date_from,
+                             date_to=date_to, product_id=product_id,
+                             exclude_friday=exclude_friday, mtype=mtype)
+    if res is None:
+        return None
+    if res.get("ok") is False:
+        return res
+    rows = res.get("movements") or []
+    if not rows:
+        return {"ok": False, "error": "لا بيانات للتصدير ضمن الفلتر الحالي."}
+    csv_text = _pwa_movements_csv(rows)
+    fname = "movements_" + datetime.datetime.now().strftime("%Y-%m-%d_%H%M") + ".csv"
+    per = {"add": "الإضافة", "remove": "الإخراج", "reconcile": "الجرد والتسوية"}.get(mtype)
+    cap = ("📄 تصدير الحركة — " + str(len(rows)) + " عملية"
+           + (" — خانة " + per if per else "")
+           + ((" — من " + str(date_from)) if date_from else "")
+           + ((" — إلى " + str(date_to)) if date_to else ""))
+    if TG_APP is None or not user.get("telegram_id"):
+        return {"ok": True, "sent": False, "count": len(rows), "filename": fname, "csv": csv_text}
+    try:
+        from telegram import InputFile
+
+        async def _send():
+            doc = InputFile(io.BytesIO(csv_text.encode("utf-8")), filename=fname)
+            await TG_APP.bot.send_document(chat_id=user["telegram_id"],
+                                           document=doc, caption=cap)
+        # v48: جدولة آمنة من خيط executor (بديل ensure_future الذي يفشل خارج اللوب)
+        _pwa_schedule(_send())
+    except Exception as send_err:
+        logging.error("[PWA] export send failed: " + str(send_err))
+        return {"ok": True, "sent": False, "count": len(rows), "filename": fname, "csv": csv_text}
+    return {"ok": True, "sent": True, "count": len(rows), "filename": fname}
+
+
+async def pwa_export_movements_handler(request):
+    """POST /api/export/movements {from,to,product,nofriday,type} — v48"""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    data = await _pwa_run(
+        _pwa_api_export_movements, user,
+        date_from=body.get("from") or None,
+        date_to=body.get("to") or None,
+        product_id=body.get("product") or None,
+        exclude_friday=bool(body.get("nofriday")),
+        mtype=body.get("type") or None)
     if data is None:
         return _pwa_err(403, "ليست لديك صلاحية الحركة.")
     if isinstance(data, dict) and data.get("ok") is False:
@@ -15164,6 +15347,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/products", pwa_products_handler)
     app.router.add_post("/api/qty", pwa_qty_handler)
     app.router.add_get("/api/movements", pwa_movements_handler)
+    app.router.add_post("/api/export/movements", pwa_export_movements_handler)  # v48: تصدير CSV
     app.router.add_get("/api/low", pwa_low_handler)
     # (v30) مركز الإشعارات
     app.router.add_get("/api/notifications", pwa_notifications_handler)
