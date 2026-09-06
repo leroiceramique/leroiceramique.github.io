@@ -10871,8 +10871,9 @@ import hmac as _pwa_hmac
 import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
-PWA_SESSION_DAYS = 30
-PWA_VERSION = "v46"
+PWA_SESSION_DAYS = 90            # v47: كانت 30 — كانت سبب الخروج التلقائي الشهري
+PWA_REMEMBER_DAYS = 180          # v47: تذكّر الجهاز — دخول بضغطة زر
+PWA_VERSION = "v47"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -10899,6 +10900,14 @@ CREATE TABLE IF NOT EXISTS pwa_sessions (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_sessions_user ON pwa_sessions(user_id);
+-- v47: تذكّر الجهاز — رمز طويل الأجل يسمح بالدخول بضغطة زر بعد انتهاء الجلسة/الخروج
+CREATE TABLE IF NOT EXISTS pwa_remember (
+    token_hash CHAR(64) PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_remember_user ON pwa_remember(user_id);
 CREATE TABLE IF NOT EXISTS audit_log (
     id        SERIAL PRIMARY KEY,
     ts        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -11306,6 +11315,8 @@ def pwa_set_password(user_id, username, password):
                 (user_id, username, _pwa_hash_password(password)),
             )
             cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (user_id,))
+            # v47: كلمة مرور جديدة = جهاز قديم يتذكر شيئاً بلا فائدة
+            cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (user_id,))
         conn.commit()
         return username
     except Exception:
@@ -11381,6 +11392,115 @@ def _pwa_kill_sessions(user_id):
         conn.rollback()
     finally:
         release_connection(conn)
+
+
+# ═══ v47: تذكّر الجهاز — حسابك يظهر على شاشة الدخول ودخول بضغطة زر ═══
+
+def _pwa_create_remember(user_id):
+    """إصدار رمز تذكّر طويل الأجل (يُخزّن محلياً في جهاز المستخدم فقط،
+    وفي القاعدة بصيغة SHA-256 — لا يُخزّن الرمز نفسه إطلاقاً)."""
+    token = _pwa_secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO pwa_remember (token_hash, user_id, expires_at) "
+                "VALUES (%s, %s, NOW() + (%s * INTERVAL '1 day'))",
+                (token_hash, user_id, PWA_REMEMBER_DAYS),
+            )
+            cur.execute("DELETE FROM pwa_remember WHERE expires_at < NOW()")
+            # حدّ أعلى 5 أجهزة موثوقة لكل مستخدم
+            cur.execute(
+                "DELETE FROM pwa_remember WHERE user_id = %s AND token_hash NOT IN ("
+                "SELECT token_hash FROM pwa_remember WHERE user_id = %s "
+                "ORDER BY created_at DESC LIMIT 5)", (user_id, user_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return token
+
+
+def _pwa_del_remember_hash(token_hash):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pwa_remember WHERE token_hash = %s", (token_hash,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        release_connection(conn)
+
+
+def _pwa_kill_remember(user_id):
+    """إبطال كل أجهزة التذكّر لمستخدم (طرد/كلمة مرور جديدة فقط —
+    تسجيل الخروج العادي لا يمسّه كي يبقى «الدخول بضغطة" شغالاً)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (user_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_remember_login(token):
+    """v47: تبديل رمز التذكّر بجلسة جديدة + رمز جديد (دوران كامل).
+    يعيد (session_token, user, remember_token) أو None عند أي فشل."""
+    token = str(token or "").strip()
+    if not token or len(token) > 128:
+        return None
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT r.user_id FROM pwa_remember r "
+                "WHERE r.token_hash = %s AND r.expires_at > NOW()", (token_hash,))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+    if not row:
+        return None
+    uid = row[0]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, telegram_id, username AS tg_username, first_name, "
+                "role, active FROM users WHERE id = %s", (uid,))
+            u = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+    if not u:
+        _pwa_del_remember_hash(token_hash)
+        return None
+    if not u["active"] or u["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
+        _pwa_del_remember_hash(token_hash)
+        if not u["active"]:
+            _pwa_kill_remember(uid)   # مطرود: إزالة كل أجهزته
+        return None
+    _pwa_del_remember_hash(token_hash)   # دوران: الرمز القديم يموت فور استخدامه
+    rem = _pwa_create_remember(uid)
+    s_token = _pwa_create_session(uid)
+    user = {"id": uid, "telegram_id": u["telegram_id"],
+            "name": u["first_name"] or u["tg_username"] or "المستخدم",
+            "role": u["role"], "role_label": ROLE_LABELS.get(u["role"], u["role"])}
+    return (s_token, user, rem)
 
 
 def _pwa_session_user(request):
@@ -11865,6 +11985,7 @@ def _pwa_api_reset_generate(user, reset_id):
     # أمان: إبطال جلسات صاحب الحساب (إن كان مسجلاً من جهاز آخر)
     try:
         _pwa_kill_sessions(uid)
+        _pwa_kill_remember(uid)   # v47
     except Exception:
         pass
     return True, uname, temp
@@ -13051,6 +13172,7 @@ def _pwa_api_toggle(user, target_tid, active):
                 r2 = cur.fetchone()
                 if r2:
                     cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (r2[0],))
+                    cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (r2[0],))   # v47: طرد = إزالة التذكّر
             conn.commit()
         except Exception:
             conn.rollback()
@@ -13369,7 +13491,12 @@ async def pwa_login_handler(request):
     token, user = result
     await _pwa_run(_pwa_login_clear, key)
     await _pwa_run(_audit_log, "login", user, ip=ip)
-    resp = _pwa_jr({"ok": True, "user": user})
+    # v47: رمز تذكّر الجهاز — يتيح «الدخول بضغطة زر" بعد أي خروج/انتهاء جلسة
+    try:
+        remember = await _pwa_run(_pwa_create_remember, user["id"])
+    except Exception:
+        remember = ""
+    resp = _pwa_jr({"ok": True, "user": user, "remember": remember})
     secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
     resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
                     httponly=True, samesite="Lax", secure=secure_cookie, path="/")
@@ -13383,6 +13510,41 @@ async def pwa_logout_handler(request):
     resp = _pwa_jr({"ok": True})
     resp.del_cookie(PWA_COOKIE, path="/")
     return resp
+
+
+# ═══ v47: تذكّر الجهاز — الدخول بضغطة زر بعد انتهاء الجلسة أو الخروج ═══
+
+async def pwa_remember_login_handler(request):
+    """POST /api/remember/login {token} — يبدّل رمز التذكّر بجلسة كاملة
+    (كوكي جديدة + رمز تذكّر جديد بدوران). لا يحتاج اسم ولا رقم سر."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    res = await _pwa_run(_pwa_api_remember_login, str(body.get("token", "")))
+    if not res:
+        return _pwa_err(401, "انتهت صلاحية التذكّر — سجّل الدخول مرة واحدة وسنتذكّرك مجدداً.")
+    token, user, rem = res
+    await _pwa_run(_audit_log, "remember_login", user, ip=request.remote or "؟")
+    resp = _pwa_jr({"ok": True, "user": user, "remember": rem})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
+async def pwa_remember_revoke_handler(request):
+    """POST /api/remember/revoke {token} — إزالة جهاز موثوق (idempotent)."""
+    token = ""
+    try:
+        body = await request.json()
+        token = str(body.get("token", "")).strip()
+    except Exception:
+        pass
+    if token and len(token) <= 128:
+        th = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        await _pwa_run(_pwa_del_remember_hash, th)
+    return _pwa_jr({"ok": True})
 
 
 # ═══════════ v39: التسجيل بلا بريد — اسم دخول + رقم سر + موافقة الإدارة ═══════════
@@ -14974,6 +15136,9 @@ def register_pwa_routes(app):
     app.router.add_get("/manifest.webmanifest", pwa_manifest_handler)
     app.router.add_get("/icon.png", pwa_icon_handler)
     app.router.add_post("/api/login", pwa_login_handler)
+    # ── v47: تذكّر الجهاز — حسابك على شاشة الدخول ودخول بضغطة زر ──
+    app.router.add_post("/api/remember/login", pwa_remember_login_handler)
+    app.router.add_post("/api/remember/revoke", pwa_remember_revoke_handler)
     # ── v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ──
     app.router.add_post("/api/register", pwa_register_handler)
     app.router.add_post("/api/forgot", pwa_forgot_handler)               # v39: طلب استعادة الرقم السري

@@ -246,6 +246,17 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
   <p class="sub">دخول فريق المؤسسة</p>
   <div class="card" id="loginCard">
     <div id="loginErr"></div>
+    <div id="rememberCard" style="display:none;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;background:var(--brandsoft);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px">
+        <span id="rmInit" style="width:38px;height:38px;border-radius:50%;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;flex-shrink:0">؟</span>
+        <div style="flex:1;min-width:0">
+          <b id="rmName" style="display:block;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">حسابي</b>
+          <span style="font-size:11.5px;color:var(--mut)">جهازك يتذكّر هذا الحساب</span>
+        </div>
+      </div>
+      <button class="btn" id="btnRemember">🔓 دخول بضغطة واحدة</button>
+      <p style="margin:10px 0 0;text-align:center"><a href="#" id="lnkOtherAcc" style="font-size:12.5px;color:var(--brand);text-decoration:none">الدخول بحساب آخر</a></p>
+    </div>
     <div id="passPane">
       <div class="fld"><label>اسم الدخول أو البريد الإلكتروني</label>
         <input id="fUser" autocomplete="username" autocapitalize="none" placeholder="مثال: ahmed"></div>
@@ -264,7 +275,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v46</span></p>
+      <span style="opacity:.65">الإصدار v47</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -362,7 +373,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v46</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v47</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -462,7 +473,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v46</p>
+      <p class="hint" id="setAbout">الإصدار v47</p>
     </section>
   </main>
   <nav class="tabs">
@@ -758,6 +769,7 @@ function showLogin(setupMode) {
   $("#app").style.display = "none"; $("#login").style.display = "flex";
   $("#loginCard").style.display = setupMode ? "none" : "";
   $("#setupCard").style.display = setupMode ? "" : "none";
+  renderRememberCard();   /* v47: حسابك الموثوق يظهر حتى بعد الخروج أو انتهاء الجلسة */
   $("#regCard").style.display = "none"; $("#regWaitCard").style.display = "none";
   $("#forgotCard").style.display = "none";
   $("#lnkRegisterWrap").style.display = (!setupMode && S.selfRegister) ? "" : "none";
@@ -1552,11 +1564,12 @@ $("#dlgPassGo").addEventListener("click", async () => {
       toast(d.message || "تم تغيير كلمة المرور ✅");
       try {
         if (S.user && S.user.web_username) {
-          await api("/api/login", {
+          const lr = await api("/api/login", {
             noKick: true,
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username: S.user.web_username, password: np })
           });
+          if (lr.remember) remSave(lr.remember, S.user.name);   /* v47: رمز تذكّر جديد بعد تغيير الكلمة */
           const me = await api("/api/me");
           showApp(me);
           toast("🔑 تم التغيير وبقيت داخل التطبيق ✅");
@@ -2064,6 +2077,40 @@ $("#btnNotif").addEventListener("click", () => {
 $("#dlgNotifClose").addEventListener("click", () => $("#dlgNotif").close());
 
 /* ─── دخول/خروج ─── */
+/* ─── v47: تذكّر الجهاز — حسابك يظهر على شاشة الدخول ودخول بضغطة زر ─── */
+function remGet() { try { return JSON.parse(localStorage.getItem("ceram_remember") || "null"); } catch (e) { return null; } }
+function remSave(t, n) { try { localStorage.setItem("ceram_remember", JSON.stringify({ t: t, n: n })); } catch (e) {} }
+function remClear() { try { localStorage.removeItem("ceram_remember"); } catch (e) {} }
+function renderRememberCard() {
+  const r = remGet();
+  if (!r || !r.t) {
+    $("#rememberCard").style.display = "none"; $("#passPane").style.display = ""; return;
+  }
+  $("#rmName").textContent = r.n || "حسابي";
+  $("#rmInit").textContent = (r.n || "؟").trim().charAt(0) || "؟";
+  $("#rememberCard").style.display = ""; $("#passPane").style.display = "none";
+}
+async function doRememberLogin() {
+  const r = remGet(); if (!r || !r.t) return;
+  const btn = $("#btnRemember");
+  const unlock = lockBtn(btn, "جارِ الدخول...");
+  try {
+    const d = await api("/api/remember/login", { noKick: true, method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: r.t }) });
+    remSave(d.remember || r.t, (d.user && d.user.name) || r.n);   /* دوران الرمز */
+    const me = await api("/api/me");
+    showApp(me);
+  } catch (e) {
+    /* الرمز انتهى أو أُبطل (طرد/كلمة مرور جديدة) — نمسحه ونعيد النموذج العادي */
+    remClear();
+    $("#rememberCard").style.display = "none"; $("#passPane").style.display = "";
+    const err = $("#loginErr");
+    err.textContent = e.message; err.style.display = "block";
+  } finally { if (unlock) unlock(); }
+}
+$("#btnRemember").addEventListener("click", doRememberLogin);
+$("#lnkOtherAcc").addEventListener("click", (e) => { e.preventDefault();
+  $("#rememberCard").style.display = "none"; $("#passPane").style.display = ""; $("#fUser").focus(); });
 async function doLogin() {
   const err = $("#loginErr"); err.style.display = "none";
   $("#btnLogin").disabled = true; $("#btnLogin").textContent = "جارِ الدخول...";
@@ -2072,6 +2119,7 @@ async function doLogin() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
     });
+    if (r.remember) remSave(r.remember, (r.user && r.user.name) || $("#fUser").value);   /* v47 */
     const me = await api("/api/me");
     showApp(me);
   } catch (e) {
@@ -2128,7 +2176,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v46" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v47" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2146,7 +2194,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v46";
+const APP_VER = "v47";
 S.updDismissed = "";
 function swCleanup() {
   try {
