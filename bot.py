@@ -11098,7 +11098,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v58"
+PWA_VERSION = "v59"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -16115,7 +16115,10 @@ _MICLOG_LAST = {}   # v56: تقييد تحويل تقارير الميكروفو
 
 async def pwa_miclog_handler(request):
     """v56: تقرير تشخيصي صامت عند فشل بدء الميكروفون داخل التطبيق.
-    v57: حقل src (mic/cam) لتقارير الكاميرا أيضاً + att عدد محاولات سلم إعادة المحاولة."""
+    v57: حقل src (mic/cam) لتقارير الكاميرا أيضاً + att عدد محاولات سلم إعادة المحاولة.
+    v59: تشخيص عميق — perm حالة الإذن (Permissions API) + devs عدد الميكروفونات المكتشفة
+    (enumerateDevices) + fails عداد الفشل الدائم + labels أسماء الأجهزة. هذه البيانات
+    تحسم السبب الحقيقي بدل التخمين، وحقل name=DIAG يعني فحصاً يدوياً من لوحة v59."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
@@ -16130,6 +16133,10 @@ async def pwa_miclog_handler(request):
     ua = str(body.get("ua", "") or "")[:180]
     att = str(body.get("att", "") or "")[:24]
     src = "cam" if str(body.get("src", "") or "")[:12] == "cam" else "mic"
+    perm = str(body.get("perm", "") or "")[:16]
+    devs = str(body.get("devs", "") or "")[:12]
+    fails = str(body.get("fails", "") or "")[:12]
+    labels = str(body.get("labels", "") or "")[:80]
     who = ""
     if isinstance(user, dict):
         who = str(user.get("name") or "") or ("#" + str(user.get("id") or "؟"))
@@ -16140,12 +16147,24 @@ async def pwa_miclog_handler(request):
     key = src + ":" + name
     if TG_APP is not None and (now - _MICLOG_LAST.get(key, 0)) > 60:
         _MICLOG_LAST[key] = now
-        head = ("📷 تقرير كاميرا — فشل الفتح" if src == "cam"
-                else "🎤 تقرير ميكروفون — فشل بدء التسجيل")
+        if src == "cam":
+            head = "📷 تقرير كاميرا — فشل الفتح"
+        elif name == "DIAG":
+            head = "🔬 فحص ميكروفون — تقرير تشخيصي من لوحة v59"
+        else:
+            head = "🎤 تقرير ميكروفون — فشل بدء التسجيل"
         att_line = ("🔁 المحاولات: " + att + "\n") if att else ""
+        # v59: بيانات تحسم السبب — إذن محجوب؟ لا جهاز صوت؟ أم جهاز موجود والنظام يرفض فتحه؟
+        perm_map = {"granted": "ممنوح", "denied": "محجوب", "prompt": "لم يُطلب بعد",
+                    "nq": "غير متاح للاستعلام"}
+        perm_txt = perm_map.get(perm, perm if perm else "—")
+        dg_lines = ("🔐 الإذن: " + perm_txt + "\n"
+                    "🎙️ ميكروفونات مكتشفة: " + (devs if devs else "—")
+                    + ((" (" + labels + ")") if labels else "") + "\n"
+                    "📊 مرات فشل مسجلة على الجهاز: " + (fails if fails else "0") + "\n")
         text = (head + "\n"
                 "❌ الخطأ: " + (name or "غير معروف") + "\n"
-                "📝 التفصيل: " + (msg or "—") + "\n" + att_line +
+                "📝 التفصيل: " + (msg or "—") + "\n" + att_line + dg_lines +
                 "👤 المستخدم: " + who + "\n"
                 "🌐 الإصدار: " + (ver or "؟") + " — الصيغة: " + (mime or "افتراضية") + "\n"
                 "📱 الجهاز: " + (ua or "—"))

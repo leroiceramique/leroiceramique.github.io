@@ -355,6 +355,32 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 #camShot{width:70px;height:70px;border-radius:50%;border:5px solid #fff;background:#fff;
   box-shadow:0 2px 14px rgba(0,0,0,.6);cursor:pointer;padding:0}
 #camShot:disabled{opacity:.45}
+/* v59 — مركز تشخيص الميكروفون: يفتح تلقائياً عند فشل نهائي أو يدوياً من المرفقات.
+   الحقيقة: NotReadableError قفل من نظام أندرويد نفسه — لا كود يجبر الجهاز، لكن التطبيق
+   يستطيع أن يريك الحالة الدقيقة ويرشدك خطوة بخطوة ويختبر فوراً بعد كل خطوة. */
+#micFix{position:fixed;inset:0;z-index:9995;background:rgba(30,18,8,.66);display:none;
+  align-items:center;justify-content:center;padding:16px;touch-action:manipulation}
+#micFix.on{display:flex}
+#micFixCard{background:var(--card);border-radius:16px;max-width:430px;width:100%;
+  max-height:86vh;overflow:auto;box-shadow:0 10px 44px rgba(0,0,0,.4)}
+#micFixHead{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;
+  border-bottom:1.5px solid var(--line)}
+#micFixHead b{font-size:16px;color:var(--ink)}
+#micFixX{border:none;background:none;font-size:18px;cursor:pointer;color:var(--mut);
+  width:36px;height:36px;border-radius:50%}
+#micFixBody{padding:12px 16px 18px}
+#micFix .mrow{display:flex;justify-content:space-between;gap:10px;padding:7px 0;
+  border-bottom:1px dashed var(--line);font-size:13.5px;color:var(--mut)}
+#micFix .mrow b{max-width:58%;text-align:end;overflow-wrap:anywhere;color:var(--ink)}
+#micFixRes{margin:12px 0 0;padding:10px 12px;border-radius:10px;font-size:13.5px;font-weight:800;
+  display:none;background:var(--bg);color:var(--ink);line-height:1.7}
+#micFixRes.ok{display:block;background:var(--oksoft);color:var(--ok);border:1.5px solid var(--okline)}
+#micFixRes.bad{display:block;background:var(--badsoft);color:var(--bad);border:1.5px solid var(--badline)}
+#micFix .btn{width:100%}
+#micSteps{margin-top:14px;font-size:13px;line-height:1.8;color:var(--ink)}
+#micSteps b{color:var(--brand)}
+#micSteps ol{margin:8px 0 0;padding-inline-start:20px}
+#micSteps li{margin-bottom:7px}
 /* v58 — بطاقة فيديو كسولة: بلا تحميل تلقائي، النقر يحمّل ويشغل داخل الفقاعة */
 .vcard{display:flex;align-items:center;gap:10px;background:#111;border-radius:11px;
   padding:12px 14px;margin:2px 0;cursor:pointer;min-width:200px;color:#fff}
@@ -429,7 +455,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v58</span></p>
+      <span style="opacity:.65">الإصدار v59</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -527,7 +553,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v58</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v59</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -664,7 +690,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v58</p>
+      <p class="hint" id="setAbout">الإصدار v59</p>
     </section>
   </main>
   <nav class="tabs">
@@ -697,6 +723,31 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
     <button id="camX" style="visibility:hidden" title="إغلاق">✕</button>
   </div>
   <div id="camBar"><button id="camShot" disabled title="تصوير وإرسال"></button></div>
+</div>
+<!-- v59 — مركز تشخيص الميكروفون: الحقيقة أولاً ثم الإصلاح خطوة بخطوة -->
+<div id="micFix">
+  <div id="micFixCard">
+    <div id="micFixHead"><b>🎤 فحص الميكروفون وإصلاحه</b><button id="micFixX" title="إغلاق">✕</button></div>
+    <div id="micFixBody">
+      <div class="mrow"><span>آخر خطأ مسجل</span><b id="micDgErr">—</b></div>
+      <div class="mrow"><span>حالة الإذن</span><b id="micDgPerm">—</b></div>
+      <div class="mrow"><span>ميكروفونات مكتشفة</span><b id="micDgDevs">—</b></div>
+      <div class="mrow"><span>مرات الفشل على هذا الهاتف</span><b id="micDgFails">—</b></div>
+      <div id="micFixRes"></div>
+      <button class="btn" id="micFixTest">🔍 فحص الميكروفون الآن</button>
+      <button class="btn gray" id="micFixRep" style="margin-top:8px">📡 إرسال تقرير للفني</button>
+      <div id="micSteps">
+        <b>خطوات الإصلاح — نفّذها بالترتيب، وبعد كل خطوة اضغط «فحص» حتى يظهر ✅:</b>
+        <ol>
+          <li>أعد تشغيل الهاتف كلياً — هذه الخطوة وحدها تحل معظم الحالات: تحرر الميكروفون من أي تطبيق عالق في النظام.</li>
+          <li>اسحب شريط الإشعارات العلوي وتأكد أن زر «الوصول إلى الميكروفون» في إعدادات الخصوصية مفعّل.</li>
+          <li>إعدادات الهاتف ← التطبيقات ← التطبيق الذي تفتح به المتجر ← الأذونات ← الميكروفون ← «السماح».</li>
+          <li>أغلق كل التطبيقات المفتوحة — خاصة مكالمات واتساب وتلغرام ومسجل الصوت وأي تطبيق يستعمل المايك.</li>
+          <li>إن بقي الفحص ❌ بعد كل ذلك: افتح رابط المتجر في متصفح Chrome مباشرة بدلاً من فتحه داخل تطبيق آخر، وسجّل الصوت من هناك.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
 </div>
 <dialog id="dlgCsv">
   <div class="dh">📎 نسخة CSV احتياطية</div>
@@ -2490,7 +2541,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v58" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v59" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2508,7 +2559,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v58";
+const APP_VER = "v59";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -3025,12 +3076,14 @@ function chatAttachMenu() {
       + '<button class="btn gray" id="attVid" style="margin-top:8px">🎬 فيديو</button>'
       + '<button class="btn gray" id="attAud" style="margin-top:8px">🎤 ملف صوتي</button>'
       + '<button class="btn gray" id="attFile" style="margin-top:8px">📄 ملف آخر</button>'
+      + '<button class="btn gray" id="attMic" style="margin-top:8px">🎤 فحص الميكروفون</button>'
       + '<button class="btn gray" id="attX" style="margin-top:10px">إلغاء</button>';
     document.body.appendChild(dlg);
     dlg.querySelector("#attImg").addEventListener("click", () => { dlg.close(); $("#chatImgIn").click(); });
     dlg.querySelector("#attVid").addEventListener("click", () => { dlg.close(); $("#chatVidIn").click(); });
     dlg.querySelector("#attAud").addEventListener("click", () => { dlg.close(); $("#chatAudIn").click(); });
     dlg.querySelector("#attCam").addEventListener("click", () => { dlg.close(); openLiveCam(); });
+    dlg.querySelector("#attMic").addEventListener("click", () => { dlg.close(); micFixOpen(); });   /* v59 */
     dlg.querySelector("#attFile").addEventListener("click", () => { dlg.close(); $("#chatFileIn").click(); });
     dlg.querySelector("#attX").addEventListener("click", () => dlg.close());
   }
@@ -3101,19 +3154,122 @@ function chatRecStopTracks(stream) {
   try { if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
 }
 function chatMicReport(name, msg, att, src) {
-  /* v56: تقرير صامت للخادم عند فشل الميكروفون — يصل للمدير في تلغرام فوراً
-     لمعرفة السبب الحقيقي من الجهاز (ممنوع/مشغول/غير مدعوم) بلا أي تدخل من المستخدم.
-     v57: أصبح عاماً للكاميرا أيضاً (src="cam") + عدد المحاولات att. */
+  /* v56: تقرير صامت للخادم عند فشل الميكروفون — يصل للمدير في تلغرام فوراً.
+     v57: أصبح عاماً للكاميرا أيضاً (src="cam") + عدد المحاولات att.
+     v59: بصراحة كاملة — يرفق الآن التشخيص العميق من الجهاز: حالة الإذن عبر Permissions API
+     + عدد الميكروفونات المكتشفة عبر enumerateDevices + عداد الفشل الدائم. بيانات تشرح السبب
+     الحقيقي بدل التخمين: إذن محجوب؟ لا جهاز صوت؟ أم جهاز موجود لكن النظام يرفض فتحه؟ */
   try {
     const k = String(name || "?");
     if (!S.chat.micRep) S.chat.micRep = ",";
     const kk = (src || "mic") + ":" + k;
     if (S.chat.micRep.indexOf("," + kk + ",") >= 0) return;   /* مرة واحدة لكل نوع خطأ */
     S.chat.micRep += kk + ",";
+    S.chat.micLastErr = k + " — " + String(msg || "").slice(0, 90);
+    const base = { name: k, msg: String(msg || "").slice(0, 200), ver: APP_VER,
+      att: String(att || "").slice(0, 24), src: src || "mic",
+      mime: chatRecMime(), ua: String(navigator.userAgent || "").slice(0, 180) };
+    (async () => {
+      try {
+        const d = await micDiag();
+        base.perm = d.perm; base.devs = String(d.devs);
+        base.labels = String(d.labels || "").slice(0, 80); base.fails = String(micFailsGet());
+      } catch (e9) {}
+      api("/api/miclog", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(base) }).catch(() => {});
+    })();
+  } catch (e0) {}
+}
+/* v59 — تشخيص عميق: حالة إذن الميكروفون + الأجهزة الصوتية المكتشفة فعلياً.
+   هذا الفرق يحسم التشخيص: إذن ممنوح + جهاز موجود + فشل فتح = النظام يرفض (قفل/مشغول)
+   بينما أجهزة = 0 تعني مشكلة أعمق، والإذن محجوب يعني مسار الأذونات. */
+async function micDiag() {
+  const d = { perm: "nq", devs: -1, labels: "" };
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      const st = await navigator.permissions.query({ name: "microphone" });
+      d.perm = st.state;
+    }
+  } catch (e0) { d.perm = "nq"; }
+  try {
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    const ms = ds.filter((x) => x.kind === "audioinput");
+    d.devs = ms.length;
+    d.labels = ms.slice(0, 2).map((x) => (x.label || "بدون-اسم").slice(0, 22)).join(" | ");
+  } catch (e1) {}
+  return d;
+}
+/* v59 — عداد الفشل الدائم: يبقى بعد الإغلاق والتحديث (localStorage) ليعرف الفني هل
+   المشكلة مستمرة على الجهاز أم عابرة، وتُصفَّر تلقائياً عند أول تسجيل ناجح. */
+function micFailsGet() {
+  try { return parseInt(localStorage.getItem("leroi_mic_fails") || "0", 10) || 0; }
+  catch (e0) { return 0; }
+}
+function micFailsBump() {
+  const n = micFailsGet() + 1;
+  try { localStorage.setItem("leroi_mic_fails", String(n)); } catch (e1) {}
+  return n;
+}
+function micFailsClear() {
+  try { if (micFailsGet()) localStorage.setItem("leroi_mic_fails", "0"); } catch (e0) {}
+}
+const MIC_PERM_TXT = { granted: "ممنوح ✅", denied: "محجوب ❌",
+  prompt: "لم يُطلب بعد", nq: "غير متاح للاستعلام" };
+/* v59 — لوحة الفحص: تفتح تلقائياً عند أي فشل نهائي، أو يدوياً من 📎 المرفقات */
+async function micFixOpen() {
+  const ov = $("#micFix"); if (!ov) return;
+  const d = await micDiag();
+  const ge = $("#micDgErr"), gp = $("#micDgPerm"), gd = $("#micDgDevs"), gf = $("#micDgFails");
+  if (ge) ge.textContent = S.chat.micLastErr || "—";
+  if (gp) gp.textContent = MIC_PERM_TXT[d.perm] || d.perm;
+  if (gd) gd.textContent = d.devs < 0 ? "غير معروف" : (d.devs + (d.labels ? " — " + d.labels : ""));
+  if (gf) gf.textContent = String(micFailsGet());
+  const rs = $("#micFixRes");
+  if (rs) { rs.className = ""; rs.style.display = "none"; rs.textContent = ""; }
+  ov.classList.add("on");
+}
+function micFixClose() { const ov = $("#micFix"); if (ov) ov.classList.remove("on"); }
+async function micFixTest() {
+  const rs = $("#micFixRes"); if (!rs) return;
+  rs.className = ""; rs.style.display = "block"; rs.textContent = "⏳ جارِ الفحص...";
+  try {
+    const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const live = !!(st && st.getAudioTracks().some((t) => t.readyState === "live"));
+    chatRecStopTracks(st);
+    if (live) {
+      micFailsClear();
+      rs.className = "ok";
+      rs.textContent = "✅ الميكروفون يعمل الآن — أغلق هذه اللوحة واضغط مطولاً على 🎤 وسجّل.";
+    } else {
+      rs.className = "bad";
+      rs.textContent = "❌ فُتح المسار لكن بلا مسار صوتي حي — أعد المحاولة.";
+    }
+  } catch (e0) {
+    const en = (e0 && e0.name) || "UnknownError";
+    const em = String((e0 && e0.message) || "").slice(0, 90);
+    micFailsBump();
+    S.chat.micLastErr = en + " — " + em;
+    rs.className = "bad";
+    if (en === "NotReadableError")
+      rs.textContent = "❌ ما زال محجوزاً من النظام — الخطوة 1 (إعادة تشغيل الهاتف) هي الحل الأقوى هنا.";
+    else if (en === "NotAllowedError" || en === "SecurityError")
+      rs.textContent = "❌ الإذن مرفوض — طبّق الخطوة 3 (الأذونات) ثم افحص مجدداً.";
+    else if (en === "NotFoundError")
+      rs.textContent = "❌ لا يوجد ميكروفون مكتشف على الجهاز.";
+    else
+      rs.textContent = "❌ فشل الفحص: " + en + " — أعد المحاولة.";
+    chatMicReport(en, em, "فحص-يدوي");
+  }
+}
+async function micFixReport() {
+  try {
+    const d = await micDiag();
     api("/api/miclog", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: k, msg: String(msg || "").slice(0, 200), ver: APP_VER,
-        att: String(att || "").slice(0, 24), src: src || "mic",
+      body: JSON.stringify({ name: "DIAG", msg: String(S.chat.micLastErr || "فحص يدوي من اللوحة").slice(0, 200),
+        ver: APP_VER, att: "فحص-يدوي", src: "mic", perm: d.perm, devs: String(d.devs),
+        labels: String(d.labels || "").slice(0, 80), fails: String(micFailsGet()),
         mime: chatRecMime(), ua: String(navigator.userAgent || "").slice(0, 180) }) }).catch(() => {});
+    toast("تم إرسال التقرير للفني ✅");
   } catch (e0) {}
 }
 /* v57: سلم قيود الميكروفون — 3 محاولات تهرع «NotReadableError: Could not start audio source»:
@@ -3149,6 +3305,7 @@ async function chatRecBegin(att) {
       return;
     }
     S.chat.recState = "idle"; S.chat.recCancel = false;
+    micFailsBump();   /* v59: عداد دائم — يبقى بعد الإغلاق ليعرف الفني إن كانت المشكلة مستمرة */
     chatMicReport(en, e && e.message, "محاولات: " + (att + 1));
     if (en === "NotAllowedError" || en === "SecurityError")
       toast("تعذر فتح الميكروفون — أغلق التطبيق كلياً ثم افتحه وأعد المحاولة.", true);
@@ -3158,9 +3315,13 @@ async function chatRecBegin(att) {
       toast("الميكروفون مشغول من تطبيق آخر — أغلق المكالمات والتطبيقات ثم أعد المحاولة، وإن تكرر أعد تشغيل الهاتف.", true, 5600);
     else
       toast("تعذر بدء الميكروفون — أعد المحاولة.", true);
+    /* v59: فشل نهائي بعد استنفاد السلم = فتح مركز التشخيص تلقائياً — الحالة الدقيقة
+       + الفحص الحي + الخطوات، بدل ترك المستخدم أمام توست بلا مخرج. */
+    setTimeout(() => { micFixOpen(); }, 650);
     return;
   }
   S.chat.recAtt = 0;
+  micFailsClear();   /* v59: نجاح = تصفير عداد الفشل الدائم */
   if (S.chat.recState !== "hold") {   /* أفلت قبل منح الإذن — لا تسجيل شبح */
     chatRecStopTracks(stream);
     toast("تم السماح بالميكروفون — اضغط مطولاً وتكلم ثم أفلت.");
@@ -3519,6 +3680,11 @@ $("#chatViewX").addEventListener("click", () => { try { $("#chatView").close(); 
     e.target.value = "";
   });
 });
+/* v59 — ربط مركز تشخيص الميكروفون: إغلاق، فحص حي، تقرير، نقر خارج البطاقة يغلق */
+$("#micFixX").addEventListener("click", micFixClose);
+$("#micFixTest").addEventListener("click", micFixTest);
+$("#micFixRep").addEventListener("click", micFixReport);
+$("#micFix").addEventListener("click", (e0) => { if (e0.target === $("#micFix")) micFixClose(); });
 </script>
 </body>
 </html>
