@@ -189,7 +189,7 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .seg button.on{background:var(--brand);color:#fff}
 #toast{position:fixed;bottom:calc(84px + env(safe-area-inset-bottom));left:50%;
   transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:11px 18px;border-radius:12px;
-  font-size:13.5px;display:none;z-index:20;max-width:88vw;text-align:center;
+  font-size:13.5px;display:none;z-index:10000;max-width:88vw;text-align:center;
   box-shadow:0 8px 24px rgba(0,0,0,.3)}
 #toast.err{background:var(--bad);color:#fff}
 .chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
@@ -338,6 +338,23 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 #chatView::backdrop{background:rgba(0,0,0,.92)}
 #chatViewX{position:fixed;top:12px;inset-inline-start:12px;background:rgba(255,255,255,.15);
   color:#fff;border:none;border-radius:10px;padding:9px 14px;font-size:15px;font-weight:800;cursor:pointer}
+/* الكاميرا الحية v57 — عرض فوري ملء الشاشة مثل واتساب */
+#camOv{position:fixed;inset:0;z-index:9998;background:#000;display:none;flex-direction:column;
+  overflow:hidden;touch-action:manipulation}
+#camOv.on{display:flex}
+#camVid{flex:1;width:100%;height:100%;object-fit:cover;background:#000}
+#camTop{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:14px;z-index:2}
+#camTop button{width:46px;height:46px;border-radius:50%;border:none;background:rgba(0,0,0,.45);
+  color:#fff;font-size:20px;cursor:pointer}
+#camMsg{position:absolute;top:50%;left:0;right:0;transform:translateY(-50%);text-align:center;
+  color:#fff;font-weight:800;font-size:15px;text-shadow:0 1px 6px rgba(0,0,0,.8);z-index:1;padding:0 24px}
+#camBar{position:absolute;bottom:0;left:0;right:0;display:flex;align-items:center;
+  justify-content:center;padding:26px 0 34px;z-index:2;
+  background:linear-gradient(transparent,rgba(0,0,0,.55))}
+#camShot{width:70px;height:70px;border-radius:50%;border:5px solid #fff;background:#fff;
+  box-shadow:0 2px 14px rgba(0,0,0,.6);cursor:pointer;padding:0}
+#camShot:disabled{opacity:.45}
 /* حوار اختيار جهة الاتصال */
 .crow{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid var(--line);
   cursor:pointer;border-radius:10px}
@@ -388,7 +405,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v56</span></p>
+      <span style="opacity:.65">الإصدار v57</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -486,7 +503,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v56</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v57</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -554,6 +571,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <div class="cbar">
           <button class="cbtn" id="chatAttach" title="إرفاق">📎</button>
           <button class="cbtn" id="chatGal" title="معرض الصور مباشرة">🖼️</button>
+          <button class="cbtn" id="chatCamLive" title="كاميرا حية — صورة فورية">📷</button>
           <input id="chatTxt" placeholder="اكتب رسالة..." maxlength="4000" autocomplete="off">
           <button class="cbtn" id="chatMic" title="اضغط مطولاً وسجّل">🎤</button>
           <button class="cbtn go" id="chatSend" title="إرسال">➤</button>
@@ -621,7 +639,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v56</p>
+      <p class="hint" id="setAbout">الإصدار v57</p>
     </section>
   </main>
   <nav class="tabs">
@@ -649,6 +667,16 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 <input type="file" id="chatFileIn" style="display:none">
 <input type="file" id="chatVidIn" accept="video/*" style="display:none">
 <input type="file" id="chatCamIn" accept="image/*" capture="environment" style="display:none">
+<!-- الكاميرا الحية v57: ضغطة واحدة = عرض فوري ملء الشاشة، زر تصوير يرسل مباشرة -->
+<div id="camOv">
+  <video id="camVid" autoplay playsinline muted></video>
+  <div id="camMsg">جارِ فتح الكاميرا...</div>
+  <div id="camTop">
+    <button id="camFlip" style="visibility:hidden" title="تبديل الكاميرا">🔄</button>
+    <button id="camX" style="visibility:hidden" title="إغلاق">✕</button>
+  </div>
+  <div id="camBar"><button id="camShot" disabled title="تصوير وإرسال"></button></div>
+</div>
 <dialog id="dlgCsv">
   <div class="dh">📎 نسخة CSV احتياطية</div>
   <div style="padding:4px 2px">
@@ -849,16 +877,17 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v50: حالة الرسائل — الشات الداخلي */
   chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
           sending: false, total: 0, urls: {}, rec: null, recT0: 0, recTimer: null,
-          recState: "idle", recCancel: false, recStream: null } };
+          recState: "idle", recCancel: false, recStream: null,
+          cam: { stream: null, facing: "environment", busy: false } } };
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");   /* v45: اقتباس مفرد — أسماء فرنسية مثل l'Or */
 
-function toast(msg, isErr) {
+function toast(msg, isErr, dur) {
   const t = $("#toast"); t.textContent = msg; t.className = isErr ? "err" : "";
   t.style.display = "block"; clearTimeout(t._h);
-  t._h = setTimeout(() => { t.style.display = "none"; }, 3200);
+  t._h = setTimeout(() => { t.style.display = "none"; }, dur || 3200);
 }
 
 /* ─── طبقة API الموحدة v45: مهلة زمنية + رسائل عربية + JSON صالح + قطع الطلبات المعلقة ─── */
@@ -2437,7 +2466,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v56" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v57" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2455,7 +2484,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v56";
+const APP_VER = "v57";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2819,7 +2848,7 @@ function chatAttachMenu() {
     dlg.querySelector("#attImg").addEventListener("click", () => { dlg.close(); $("#chatImgIn").click(); });
     dlg.querySelector("#attVid").addEventListener("click", () => { dlg.close(); $("#chatVidIn").click(); });
     dlg.querySelector("#attAud").addEventListener("click", () => { dlg.close(); $("#chatAudIn").click(); });
-    dlg.querySelector("#attCam").addEventListener("click", () => { dlg.close(); $("#chatCamIn").click(); });
+    dlg.querySelector("#attCam").addEventListener("click", () => { dlg.close(); openLiveCam(); });
     dlg.querySelector("#attFile").addEventListener("click", () => { dlg.close(); $("#chatFileIn").click(); });
     dlg.querySelector("#attX").addEventListener("click", () => dlg.close());
   }
@@ -2889,52 +2918,67 @@ function chatRecBar(cancel) {
 function chatRecStopTracks(stream) {
   try { if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
 }
-function chatMicReport(name, msg) {
+function chatMicReport(name, msg, att, src) {
   /* v56: تقرير صامت للخادم عند فشل الميكروفون — يصل للمدير في تلغرام فوراً
-     لمعرفة السبب الحقيقي من الجهاز (ممنوع/مشغول/غير مدعوم) بلا أي تدخل من المستخدم. */
+     لمعرفة السبب الحقيقي من الجهاز (ممنوع/مشغول/غير مدعوم) بلا أي تدخل من المستخدم.
+     v57: أصبح عاماً للكاميرا أيضاً (src="cam") + عدد المحاولات att. */
   try {
     const k = String(name || "?");
     if (!S.chat.micRep) S.chat.micRep = ",";
-    if (S.chat.micRep.indexOf("," + k + ",") >= 0) return;   /* مرة واحدة لكل نوع خطأ */
-    S.chat.micRep += k + ",";
+    const kk = (src || "mic") + ":" + k;
+    if (S.chat.micRep.indexOf("," + kk + ",") >= 0) return;   /* مرة واحدة لكل نوع خطأ */
+    S.chat.micRep += kk + ",";
     api("/api/miclog", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: k, msg: String(msg || "").slice(0, 200), ver: APP_VER,
+        att: String(att || "").slice(0, 24), src: src || "mic",
         mime: chatRecMime(), ua: String(navigator.userAgent || "").slice(0, 180) }) }).catch(() => {});
   } catch (e0) {}
+}
+/* v57: سلم قيود الميكروفون — 3 محاولات تهرع «NotReadableError: Could not start audio source»:
+   0) audio:true الافتراضية.
+   1) مسار مايك خام بلا معالجة صوتية — بعض الأجهزة (Realme/OPPO…) يفشل معالج الصوت فيفتح الجهاز.
+   2) العودة للافتراضية بعد مهلة أطول — المايك غالباً يتحرر بعد إغلاق التطبيق الآخر. */
+function chatRecConstraints(att) {
+  if (att === 1) return { audio: { channelCount: { ideal: 1 }, echoCancellation: { ideal: false },
+    noiseSuppression: { ideal: false }, autoGainControl: { ideal: false } } };
+  return { audio: true };
 }
 async function chatRecStart() {
   if (S.chat.recState === "hold" || S.chat.recState === "rec" ||
       S.chat.recState === "cancel" || S.chat.recState === "sending") return;  /* حالة واحدة فقط */
   if (!chatMicOK()) { toast("الميكروفون غير مدعوم في هذا المتصفح.", true); return; }
-  S.chat.recState = "hold"; S.chat.recCancel = false;
-  await chatRecBegin();
+  S.chat.recState = "hold"; S.chat.recCancel = false; S.chat.recAtt = 0;
+  await chatRecBegin(0);
 }
-/* v56: البدء الفعلي منفصل عن الحارس — يمكّن إعادة محاولة واحدة للأخطاء العابرة */
-async function chatRecBegin() {
+/* v56: البدء الفعلي منفصل عن الحارس — v57: سلم إعادة محاولة كامل بشرط بقاء الإصبع مضغوطاً */
+async function chatRecBegin(att) {
+  att = att || 0;
   let stream = null;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia(chatRecConstraints(att));
   } catch (e) {
     const en = (e && e.name) || "UnknownError";
-    console.log("recording:error " + en + " " + String((e && e.message) || "").slice(0, 120));
-    if ((en === "AbortError" || en === "NotReadableError") && !S.chat.recRetry && S.chat.recState === "hold") {
-      S.chat.recRetry = true;   /* خطأ عابر — محاولة واحدة إضافية ما دام الإصبع مضغوطاً */
-      setTimeout(() => { if (S.chat.recState === "hold") chatRecBegin(); }, 400);
+    console.log("recording:error " + en + " att=" + att + " " + String((e && e.message) || "").slice(0, 120));
+    if ((en === "AbortError" || en === "NotReadableError") && att < 2 && S.chat.recState === "hold") {
+      /* خطأ عابر أو مايك مشغول — المحاولة التالية من السلم ما دام الإصبع مضغوطاً */
+      const nxt = att + 1;
+      S.chat.recAtt = nxt;
+      setTimeout(() => { if (S.chat.recState === "hold") chatRecBegin(nxt); }, nxt === 1 ? 450 : 900);
       return;
     }
     S.chat.recState = "idle"; S.chat.recCancel = false;
-    chatMicReport(en, e && e.message);
+    chatMicReport(en, e && e.message, "محاولات: " + (att + 1));
     if (en === "NotAllowedError" || en === "SecurityError")
       toast("تعذر فتح الميكروفون — أغلق التطبيق كلياً ثم افتحه وأعد المحاولة.", true);
     else if (en === "NotFoundError" || en === "OverconstrainedError")
       toast("لم يُعثر على ميكروفون في هذا الجهاز.", true);
     else if (en === "NotReadableError")
-      toast("الميكروفون مشغول من تطبيق آخر — أغلق التطبيقات ثم أعد المحاولة.", true);
+      toast("الميكروفون مشغول من تطبيق آخر — أغلق المكالمات والتطبيقات ثم أعد المحاولة، وإن تكرر أعد تشغيل الهاتف.", true, 5600);
     else
       toast("تعذر بدء الميكروفون — أعد المحاولة.", true);
     return;
   }
-  S.chat.recRetry = false;
+  S.chat.recAtt = 0;
   if (S.chat.recState !== "hold") {   /* أفلت قبل منح الإذن — لا تسجيل شبح */
     chatRecStopTracks(stream);
     toast("تم السماح بالميكروفون — اضغط مطولاً وتكلم ثم أفلت.");
@@ -3023,10 +3067,115 @@ function chatRecAbort() {
 }
 function chatRecCleanup() {
   S.chat.rec = null;
-  S.chat.recStream = null; S.chat.recCancel = false; S.chat.recState = "idle"; S.chat.recRetry = false;
+  S.chat.recStream = null; S.chat.recCancel = false; S.chat.recState = "idle"; S.chat.recAtt = 0;
   if (S.chat.recTimer) { clearInterval(S.chat.recTimer); S.chat.recTimer = null; }
   const r = $("#chatRec"); if (r) r.style.display = "none";
   setMicUI("idle");
+}
+
+/* ─── الكاميرا الحية v57: ضغطة واحدة = عرض حي ملء الشاشة، زر التصوير يرسل فوراً ───
+   مثل واتساب: بلا قوائم ولا ملفات. عند أي فشل: بديل موثوق = كاميرا النظام مباشرة. */
+function camShowMsg(t) {
+  const m = $("#camMsg"); if (m) m.textContent = t || "";
+}
+function camButtons(on) {
+  const sh = $("#camShot"), f = $("#camFlip"), x = $("#camX");
+  if (sh) sh.disabled = !on;
+  if (f) f.style.visibility = on ? "visible" : "hidden";
+  if (x) x.style.visibility = on ? "visible" : "hidden";
+}
+function camStopTracks() {
+  try { if (S.chat.cam.stream) S.chat.cam.stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
+  S.chat.cam.stream = null;
+  try { const v = $("#camVid"); if (v) v.srcObject = null; } catch (e2) {}
+}
+function closeLiveCam() {
+  camStopTracks();
+  S.chat.cam.busy = false;
+  const ov = $("#camOv"); if (ov) ov.classList.remove("on");
+  console.log("camera:close");
+}
+function camConstraints() {
+  return { video: { facingMode: { ideal: S.chat.cam.facing },
+            width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
+}
+async function camOpenStream() {
+  const stream = await navigator.mediaDevices.getUserMedia(camConstraints());
+  S.chat.cam.stream = stream;
+  const v = $("#camVid");
+  v.srcObject = stream;
+  try { await v.play(); } catch (e0) {}
+  camShowMsg("");
+  camButtons(true);
+}
+async function openLiveCam() {
+  if (!S.chat.peer) { toast("افتح محادثة أولاً.", true); return; }
+  if (S.chat.cam.busy || S.chat.cam.stream) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const i = $("#chatCamIn"); if (i) { i.value = ""; try { i.click(); } catch (e0) {} }   /* كاميرا النظام */
+    return;
+  }
+  S.chat.cam.busy = true;
+  const ov = $("#camOv"); if (ov) ov.classList.add("on");
+  camButtons(false);
+  camShowMsg("جارِ فتح الكاميرا...");
+  try {
+    await camOpenStream();
+    console.log("camera:open " + S.chat.cam.facing);
+  } catch (e) {
+    const en = (e && e.name) || "UnknownError";
+    console.log("camera:error " + en);
+    closeLiveCam();
+    chatMicReport(en, e && e.message, "", "cam");
+    if (en === "NotAllowedError" || en === "SecurityError")
+      toast("اسمح باستخدام الكاميرا ثم أعد المحاولة.", true);
+    else if (en === "NotReadableError")
+      toast("الكاميرا مشغولة من تطبيق آخر — أغلق التطبيقات ثم أعد المحاولة.", true, 5600);
+    else if (en === "NotFoundError" || en === "OverconstrainedError")
+      toast("لم يُعثر على كاميرا في هذا الجهاز.", true);
+    else
+      toast("تعذر فتح الكاميرا — أعد المحاولة.", true);
+    const i = $("#chatCamIn"); if (i) { i.value = ""; try { i.click(); } catch (e0) {} }   /* بديل موثوق */
+  } finally {
+    S.chat.cam.busy = false;
+  }
+}
+async function camFlip() {
+  if (!S.chat.cam.stream) return;
+  S.chat.cam.facing = (S.chat.cam.facing === "environment") ? "user" : "environment";
+  camStopTracks();
+  camButtons(false);
+  camShowMsg("جارِ التبديل...");
+  try {
+    await camOpenStream();
+    console.log("camera:flip " + S.chat.cam.facing);
+  } catch (e) {
+    console.log("camera:error flip");
+    closeLiveCam();
+    toast("تعذر تبديل الكاميرا — أعد المحاولة.", true);
+  }
+}
+function camShot() {
+  const v = $("#camVid");
+  if (!S.chat.cam.stream || !v || !v.videoWidth) { toast("الكاميرا لم تجهز بعد — انتظر ثانية.", true); return; }
+  try {
+    const mx = 1600;
+    let w = v.videoWidth, h = v.videoHeight;
+    const k = Math.min(1, mx / Math.max(w, h));
+    w = Math.round(w * k); h = Math.round(h * k);
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    c.getContext("2d").drawImage(v, 0, 0, w, h);
+    const d64 = c.toDataURL("image/jpeg", 0.8);
+    console.log("camera:shot " + w + "x" + h);
+    try { if (navigator.vibrate) navigator.vibrate(30); } catch (e0) {}
+    closeLiveCam();   /* تحرير الكاميرا فوراً ثم الإرسال */
+    chatSend({ kind: "image", mime: "image/jpeg", name: "صورة-كاميرا.jpg", data: d64 });
+  } catch (e) {
+    console.log("camera:error shot");
+    closeLiveCam();
+    toast("تعذر التقاط الصورة — أعد المحاولة.", true);
+  }
 }
 
 /* ─── حذف المحادثة بالكامل (v53) ─── */
@@ -3135,6 +3284,15 @@ $("#chatGal").addEventListener("click", () => { const i = $("#chatImgIn"); if (i
       chatRecHoldEnd(false);
   });
 })();
+/* ─── v57: ربط الكاميرا الحية — ضغطة على 📷 تفتح العرض الفوري مباشرة ─── */
+$("#chatCamLive").addEventListener("click", () => openLiveCam());
+$("#camShot").addEventListener("click", camShot);
+$("#camX").addEventListener("click", closeLiveCam);
+$("#camFlip").addEventListener("click", camFlip);
+$("#camOv").addEventListener("contextmenu", (e) => e.preventDefault());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && S.chat.cam.stream) closeLiveCam();   /* تحرير الكاميرا عند مغادرة التطبيق */
+});
 $("#chatBack").addEventListener("click", () => { chatReset(false); chatEnter(); });
 $("#chatDel").addEventListener("click", chatDeleteConv);
 $("#btnNewChat").addEventListener("click", openContactsDlg);

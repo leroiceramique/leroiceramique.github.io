@@ -11093,7 +11093,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v56"
+PWA_VERSION = "v57"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -16049,8 +16049,7 @@ _MICLOG_LAST = {}   # v56: تقييد تحويل تقارير الميكروفو
 
 async def pwa_miclog_handler(request):
     """v56: تقرير تشخيصي صامت عند فشل بدء الميكروفون داخل التطبيق.
-    الهدف: معرفة السبب الحقيقي من جهاز المستخدم (NotAllowed/NotReadable/...) —
-    يُحوَّل فوراً برسالة تلغرام للمدراء بلا أي حوار أو تدخل إضافي في التطبيق."""
+    v57: حقل src (mic/cam) لتقارير الكاميرا أيضاً + att عدد محاولات سلم إعادة المحاولة."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
@@ -16063,18 +16062,24 @@ async def pwa_miclog_handler(request):
     ver = str(body.get("ver", "") or "")[:12]
     mime = str(body.get("mime", "") or "")[:60]
     ua = str(body.get("ua", "") or "")[:180]
+    att = str(body.get("att", "") or "")[:24]
+    src = "cam" if str(body.get("src", "") or "")[:12] == "cam" else "mic"
     who = ""
     if isinstance(user, dict):
         who = str(user.get("name") or "") or ("#" + str(user.get("id") or "؟"))
     if not who:
         who = "؟"
-    logging.info("[MICLOG] " + name + " | " + msg + " | " + who + " | " + ua)
+    logging.info("[MICLOG] " + src + " " + name + " | " + msg + " | " + who + " | " + ua)
     now = time.time()
-    if TG_APP is not None and (now - _MICLOG_LAST.get(name, 0)) > 60:
-        _MICLOG_LAST[name] = now
-        text = ("🎤 تقرير ميكروفون — فشل بدء التسجيل\n"
+    key = src + ":" + name
+    if TG_APP is not None and (now - _MICLOG_LAST.get(key, 0)) > 60:
+        _MICLOG_LAST[key] = now
+        head = ("📷 تقرير كاميرا — فشل الفتح" if src == "cam"
+                else "🎤 تقرير ميكروفون — فشل بدء التسجيل")
+        att_line = ("🔁 المحاولات: " + att + "\n") if att else ""
+        text = (head + "\n"
                 "❌ الخطأ: " + (name or "غير معروف") + "\n"
-                "📝 التفصيل: " + (msg or "—") + "\n"
+                "📝 التفصيل: " + (msg or "—") + "\n" + att_line +
                 "👤 المستخدم: " + who + "\n"
                 "🌐 الإصدار: " + (ver or "؟") + " — الصيغة: " + (mime or "افتراضية") + "\n"
                 "📱 الجهاز: " + (ua or "—"))
