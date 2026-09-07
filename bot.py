@@ -11098,7 +11098,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v60"
+PWA_VERSION = "v61"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11230,6 +11230,12 @@ DO $$ BEGIN
     ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_kind_check
         CHECK (kind IN ('text', 'image', 'file', 'audio', 'video'));
 EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- ═══ v61: الرد على رسالة محددة — الاقتباس داخل الفقاعة مثل واتساب ═══
+DO $$ BEGIN
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_to INTEGER
+        REFERENCES chat_messages(id) ON DELETE SET NULL;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_chat_reply ON chat_messages (reply_to);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -15460,12 +15466,18 @@ _CHAT_MEDIA_MAX = 25 * 1024 * 1024        # 25 ميغابايت بعد فك ال
 _CHAT_TEXT_MAX = 4000
 _CHAT_RATE = {}                            # user_id -> [window_start, count]
 _CHAT_PING = {}                            # recipient telegram_id -> last ts
+_CHAT_TYPING = {}                          # v61: (sender_id, recip_id) -> ts «يكتب الآن»
 _MOV_CSV_LABELS = {"add": "إضافة", "remove": "خصم", "reconcile": "جرد"}
 
 
 def _chat_msg_dict(r, me_id):
-    """توحيد شكل رسالة الشات للواجهة (RealDictRow → dict نظيف)."""
+    """توحيد شكل رسالة الشات للواجهة (RealDictRow → dict نظيف).
+    v61: reply_to رقم الرسالة المُردَّد عليها + rtext/rname مقتطف الاقتباس (حلها الخادم)."""
     created = r.get("created_at")
+    try:
+        rid = int(r.get("reply_to") or 0)
+    except (TypeError, ValueError):
+        rid = 0
     return {
         "id": int(r["id"]),
         "mine": r["sender_id"] == me_id,
@@ -15477,8 +15489,68 @@ def _chat_msg_dict(r, me_id):
         "media_size": int(r.get("media_size") or 0),
         "sender_name": r.get("sender_name") or "",
         "read": bool(r.get("read_at")),
+        "reply_to": rid,
+        "rtext": str(r.get("rtext") or ""),
+        "rname": str(r.get("rname") or ""),
         "created_at": created.isoformat() if created else "",
     }
+
+
+def _chat_reply_preview_row(t, me_id):
+    """v61: من صف الرسالة المُردَّد عليها → (مقتطف للعرض، اسم المرسل)."""
+    kind = t.get("kind") or "text"
+    if kind == "text":
+        prev = (t.get("body") or "").strip()[:90]
+        if not prev:
+            prev = "رسالة"
+    elif kind == "image":
+        prev = "🖼️ صورة"
+    elif kind == "audio":
+        prev = "🎤 رسالة صوتية"
+    elif kind == "video":
+        prev = "🎬 فيديو"
+    else:
+        prev = "📎 " + ((t.get("media_name") or "ملف")[:60])
+    nm = str(t.get("rname") or "")
+    if t.get("sender_id") == me_id:
+        nm = (nm + " — أنت").strip(" —")
+    return prev, nm
+
+
+def _chat_resolve_replies(rows, me_id):
+    """v61: يشرح الاقتباسات — يجمع reply_to من الصفوف ويجلب نصوصها وأسماء مرسليها
+    بجلب واحد بدل استعلام لكل رسالة. يعدّل الصفوف في مكانها (rtext/rname)."""
+    ids = set()
+    for r in rows:
+        try:
+            v = int(r.get("reply_to") or 0)
+        except (TypeError, ValueError):
+            v = 0
+        if v:
+            ids.add(v)
+    if not ids:
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
+                "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS rname "
+                "FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                "WHERE m.id = ANY(%s)", (sorted(ids),))
+            src = {x["id"]: x for x in cur.fetchall()}
+        conn.commit()
+    finally:
+        release_connection(conn)
+    for r in rows:
+        try:
+            v = int(r.get("reply_to") or 0)
+        except (TypeError, ValueError):
+            v = 0
+        t = src.get(v)
+        if not t:
+            continue
+        r["rtext"], r["rname"] = _chat_reply_preview_row(t, me_id)
 
 
 def _pwa_api_chat_contacts(user):
@@ -15554,10 +15626,12 @@ def _pwa_api_chat_list(user):
                 "created_at, read_at FROM chat_messages WHERE id = ANY(%s)", (last_ids,))
             msgs = {r["id"]: r for r in cur.fetchall()}
             cur.execute(
-                "SELECT u.id, u.role, u.active, u.username, u.telegram_id, "
+                "SELECT u.id, u.role, u.active, u.username, u.telegram_id, u.last_seen, "
                 "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
-                "'#' || u.id::text) AS name "
-                "FROM users u WHERE u.id = ANY(%s)", (partners,))
+                "'#' || u.id::text) AS name, "
+                "(a.user_id IS NOT NULL) AS has_web "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE u.id = ANY(%s)", (partners,))
             users = {r["id"]: r for r in cur.fetchall()}
             # v51: أسماء زملاء العمل النشطين كافة — لاكتشاف المتشابهة ووسمها بمعرّف
             cur.execute(
@@ -15587,7 +15661,9 @@ def _pwa_api_chat_list(user):
         chats.append({
             "user": {"id": u["id"], "name": u["name"], "role": u["role"],
                      "role_label": ROLE_LABELS.get(u["role"], u["role"]),
-                     "active": bool(u["active"]), "tag": tag},
+                     "active": bool(u["active"]), "tag": tag,
+                     "has_web": bool(u.get("has_web")),
+                     "last_seen": u["last_seen"].isoformat() if u.get("last_seen") else ""},
             "unread": int(r["unread"]),
             "last": _chat_msg_dict(m, me),
         })
@@ -15597,23 +15673,29 @@ def _pwa_api_chat_list(user):
 def _pwa_api_chat_messages(user, other, after, before=0):
     """💬 رسائل محادثة مع شريك محدد. after=0 → آخر 100 (تصاعدياً)، after>0 → الجديد فقط.
     v58: before>0 → 100 رسالة أقدم من before (ترقيم للخلف — التاريخ الكامل متاح).
-    يعيد (messages, read_upto, has_more, error) — فتح المحادثة يعتبر قراءة."""
+    يعيد (messages, read_upto, has_more, error) — فتح المحادثة يعتبر قراءة.
+    v61: يشرح الاقتباسات (rtext/rname) ويعيد حالة الشريك في العنصر الخامس:
+    {peer_typing, peer_seen, peer_has_web} — «يكتب الآن» + «متصل الآن» في رأس المحادثة."""
     me = user["id"]
     try:
         other = int(other)
         after = max(0, int(after or 0))
         before = max(0, int(before or 0))
     except (TypeError, ValueError):
-        return None, 0, False, "طلب غير صالح."
+        return None, 0, False, "طلب غير صالح.", None
     if other == me:
-        return None, 0, False, "لا يمكنك محادثة نفسك."
+        return None, 0, False, "لا يمكنك محادثة نفسك.", None
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, active FROM users WHERE id = %s", (other,))
+            cur.execute(
+                "SELECT u.id, u.active, u.last_seen, "
+                "(a.user_id IS NOT NULL) AS has_web "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id WHERE u.id = %s",
+                (other,))
             peer = cur.fetchone()
             if not peer or not peer["active"]:
-                return None, 0, False, "المستخدم غير متاح للمحادثة."
+                return None, 0, False, "المستخدم غير متاح للمحادثة.", None
             if after:
                 cur.execute(
                     "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, m.media_mime, "
@@ -15675,13 +15757,25 @@ def _pwa_api_chat_messages(user, other, after, before=0):
         for r in rows:
             if r["sender_id"] == other and not r["read_at"]:
                 r["read_at"] = now
-        return [_chat_msg_dict(r, me) for r in rows], read_upto, has_more, None
+        _chat_resolve_replies(rows, me)
+        # v61: حالة الشريك — يكتب الآن؟ متصل الآن؟ تطبيق أم تلغرام فقط؟
+        now_t = time.time()
+        tp = _CHAT_TYPING.get((other, me), 0)
+        if len(_CHAT_TYPING) > 400:
+            for k in [k2 for k2, v2 in _CHAT_TYPING.items() if now_t - v2 > 60]:
+                _CHAT_TYPING.pop(k2, None)
+        extra = {"peer_typing": bool(now_t - tp < 6),
+                 "peer_seen": peer["last_seen"].isoformat() if peer.get("last_seen") else "",
+                 "peer_has_web": bool(peer.get("has_web"))}
+        return [_chat_msg_dict(r, me) for r in rows], read_upto, has_more, None, extra
     finally:
         release_connection(conn)
 
 
-def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
-    """💬 إرسال رسالة (نص/صورة/ملف/صوت). يعيد (msg_dict, peer_telegram_id, error)."""
+def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64, reply_to=0):
+    """💬 إرسال رسالة (نص/صورة/ملف/صوت). يعيد (msg_dict, peer_telegram_id, peer_has_web, error).
+    v61: reply_to — الرد على رسالة محددة داخل نفس المحادثة (اقتباس داخل الفقاعة)،
+    و peer_has_web ليعرض التطبيق ✓✓ فوراً لمستلمي تلغرام (الوصول = نجاح الإرسال)."""
     me = user["id"]
     try:
         to = int(to)
@@ -15737,32 +15831,56 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
         msize = len(media)
     conn = get_connection()
     try:
-        with conn.cursor() as cur:
+        # v61: RealDictCursor — صف الرد يمر على _chat_reply_preview_row التي تقرأ حقولاً بالاسم
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT role, active, telegram_id FROM users WHERE id = %s", (to,))
+                "SELECT role, active, telegram_id, "
+                "(SELECT COUNT(*) FROM pwa_auth a WHERE a.user_id = users.id) AS has_web "
+                "FROM users WHERE id = %s", (to,))
             peer = cur.fetchone()
             # v58: العملاء النشطون محادثون الآن (طلبات المدير) — المستبعد الوحيد «قيد المراجعة»
-            if not peer or not peer[1] or peer[0] == ROLE_PENDING:
-                return None, None, "المستخدم غير متاح للمحادثة."
+            if not peer or not peer["active"] or peer["role"] == ROLE_PENDING:
+                return None, None, False, "المستخدم غير متاح للمحادثة."
+            # v61: التحقق من الرد — يجب أن تكون الرسالة المرجعية داخل هذه المحادثة
+            try:
+                r_id = int(reply_to or 0)
+            except (TypeError, ValueError):
+                r_id = 0
+            rrow = None
+            if r_id:
+                cur.execute(
+                    "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS rname "
+                    "FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE m.id = %s AND ((m.sender_id = %s AND m.recip_id = %s) "
+                    "OR (m.sender_id = %s AND m.recip_id = %s))",
+                    (r_id, me, to, to, me))
+                rrow = cur.fetchone()
+                if not rrow:
+                    r_id = 0
             cur.execute(
                 "INSERT INTO chat_messages (sender_id, recip_id, kind, body, media, "
-                "media_name, media_mime, media_size) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+                "media_name, media_mime, media_size, reply_to) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
                 (me, to, kind, body, psycopg2.Binary(media) if media else None,
-                 mname, mmime, msize))
+                 mname, mmime, msize, r_id or None))
             row = cur.fetchone()
         conn.commit()
     except Exception as e:
         conn.rollback()
         logging.error("[PWA] chat send failed: " + str(e))
-        return None, None, "فشل الإرسال — أعد المحاولة."
+        return None, None, False, "فشل الإرسال — أعد المحاولة."
     finally:
         release_connection(conn)
-    msg = {"id": int(row[0]), "mine": True, "kind": kind, "body": body,
+    rtext, rname = "", ""
+    if rrow:
+        rtext, rname = _chat_reply_preview_row(rrow, me)
+    msg = {"id": int(row["id"]), "mine": True, "kind": kind, "body": body,
            "media": kind != "text", "media_name": mname, "media_mime": mmime,
            "media_size": msize, "sender_name": user.get("name") or "",
-           "read": False, "created_at": row[1].isoformat() if row[1] else ""}
-    return msg, (peer[2] if peer[1] else None), None
+           "read": False, "reply_to": r_id, "rtext": rtext, "rname": rname,
+           "created_at": row["created_at"].isoformat() if row["created_at"] else ""}
+    return msg, (peer["telegram_id"] if peer["active"] else None), bool(peer["has_web"]), None
 
 
 def _pwa_api_chat_read(user, other):
@@ -15783,6 +15901,71 @@ def _pwa_api_chat_read(user, other):
             total = int(cur.fetchone()[0])
         conn.commit()
         return {"ok": True, "total": min(total, 99)}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_chat_typing(user, other):
+    """v61: إشارة «يكتب الآن» — يخزن لحظة آخر ضغطة لمستخدم على شريك معين.
+    القراءة تحدث في _pwa_api_chat_messages (أقل من 6 ثوانٍ = يكتب الآن).
+    بين مستخدمي التطبيق فقط — تلغرام لا يرسل مؤشر الكتابة للبوتات أصلاً."""
+    me = user["id"]
+    try:
+        other = int(other)
+    except (TypeError, ValueError):
+        return {"ok": False}
+    if other == me:
+        return {"ok": False}
+    now = time.time()
+    if len(_CHAT_TYPING) > 400:
+        for k in [k2 for k2, v2 in _CHAT_TYPING.items() if now - v2 > 60]:
+            _CHAT_TYPING.pop(k2, None)
+    _CHAT_TYPING[(me, other)] = now
+    return {"ok": True}
+
+
+def _pwa_api_chat_search(user, other, q):
+    """v61: بحث داخل محادثة واحدة — نص الرسائل وأسماء الملفات.
+    يعيد (messages تصاعدياً، العدد الكلي، خطأ). حد 60 نتيجة لعرض سريع."""
+    me = user["id"]
+    try:
+        other = int(other)
+    except (TypeError, ValueError):
+        return [], 0, "طلب غير صالح."
+    if other == me:
+        return [], 0, "لا يمكنك محادثة نفسك."
+    q = str(q or "").strip()[:80]
+    if not q:
+        return [], 0, None
+    pat = "%" + q.replace("%", "\\%").replace("_", "\\_") + "%"
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, active FROM users WHERE id = %s", (other,))
+            peer = cur.fetchone()
+            if not peer or not peer["active"]:
+                return [], 0, "المستخدم غير متاح للمحادثة."
+            cur.execute(
+                "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, m.media_mime, "
+                "m.media_size, m.created_at, m.read_at, m.reply_to, "
+                "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS sender_name "
+                "FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                "WHERE ((m.sender_id = %s AND m.recip_id = %s) "
+                "OR (m.sender_id = %s AND m.recip_id = %s)) "
+                "AND (m.body ILIKE %s OR m.media_name ILIKE %s) "
+                "ORDER BY m.id DESC LIMIT 60",
+                (me, other, other, me, pat, pat))
+            rows = list(cur.fetchall())
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM chat_messages "
+                "WHERE ((sender_id = %s AND recip_id = %s) OR (sender_id = %s AND recip_id = %s)) "
+                "AND (body ILIKE %s OR media_name ILIKE %s)",
+                (me, other, other, me, pat, pat))
+            total = int(cur.fetchone()["c"])
+        conn.commit()
+        rows.reverse()
+        _chat_resolve_replies(rows, me)
+        return [_chat_msg_dict(r, me) for r in rows], total, None
     finally:
         release_connection(conn)
 
@@ -16022,14 +16205,20 @@ async def pwa_chat_msg_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    msgs, read_upto, has_more, err2 = await _pwa_run(_pwa_api_chat_messages, user,
-                                           request.query.get("user"),
-                                           request.query.get("after", 0),
-                                           request.query.get("before", 0))
+    msgs, read_upto, has_more, err2, extra = await _pwa_run(
+        _pwa_api_chat_messages, user,
+        request.query.get("user"),
+        request.query.get("after", 0),
+        request.query.get("before", 0))
     if err2:
         return _pwa_err(400, err2)
-    return _pwa_jr({"ok": True, "messages": msgs, "read_upto": read_upto,
-                    "has_more": has_more})
+    d = {"ok": True, "messages": msgs, "read_upto": read_upto,
+         "has_more": has_more}
+    if extra:
+        d["peer_typing"] = bool(extra.get("peer_typing"))
+        d["peer_seen"] = str(extra.get("peer_seen") or "")
+        d["peer_has_web"] = bool(extra.get("peer_has_web"))
+    return _pwa_jr(d)
 
 
 async def pwa_chat_send_handler(request):
@@ -16040,9 +16229,10 @@ async def pwa_chat_send_handler(request):
         body = await request.json()
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
-    msg, peer_tid, err2 = await _pwa_run(
+    msg, peer_tid, peer_has_web, err2 = await _pwa_run(
         _pwa_api_chat_send, user, body.get("to"), body.get("kind"),
-        body.get("text"), body.get("name"), body.get("mime"), body.get("data"))
+        body.get("text"), body.get("name"), body.get("mime"), body.get("data"),
+        body.get("reply"))
     if err2:
         return _pwa_err(400, err2)
     # إشعار تلغرام للمستلم — مرة كل 30 ثانية كحد أقصى (لا إغراق في المحادثة الحية)
@@ -16070,7 +16260,7 @@ async def pwa_chat_send_handler(request):
     await _pwa_run(_audit_log, "chat_send", user,
                    details="إلى #" + str(body.get("to")) + " نوع: " + msg["kind"],
                    ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "message": msg})
+    return _pwa_jr({"ok": True, "message": msg, "peer_has_web": bool(peer_has_web)})
 
 
 async def _chat_ping_deliver(tid, text):
@@ -16090,6 +16280,32 @@ async def pwa_chat_read_handler(request):
         return _pwa_err(400, "طلب غير صالح.")
     data = await _pwa_run(_pwa_api_chat_read, user, body.get("user"))
     return _pwa_jr(data)
+
+
+async def pwa_chat_typing_handler(request):
+    """v61: إشارة «يكتب الآن» — نبضة من حقل الكتابة يقرأها الطرف الآخر في الاستقصاء."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    data = await _pwa_run(_pwa_api_chat_typing, user, body.get("user"))
+    return _pwa_jr(data)
+
+
+async def pwa_chat_search_handler(request):
+    """v61: بحث داخل المحادثة — نص الرسائل وأسماء الملفات، حتى 60 نتيجة."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    msgs, total, err2 = await _pwa_run(
+        _pwa_api_chat_search, user,
+        request.query.get("user"), request.query.get("q", ""))
+    if err2:
+        return _pwa_err(400, err2)
+    return _pwa_jr({"ok": True, "messages": msgs, "total": total})
 
 
 async def pwa_chat_delete_handler(request):
@@ -16118,7 +16334,9 @@ async def pwa_miclog_handler(request):
     v57: حقل src (mic/cam) لتقارير الكاميرا أيضاً + att عدد محاولات سلم إعادة المحاولة.
     v59: تشخيص عميق — perm حالة الإذن (Permissions API) + devs عدد الميكروفونات المكتشفة
     (enumerateDevices) + fails عداد الفشل الدائم + labels أسماء الأجهزة. هذه البيانات
-    تحسم السبب الحقيقي بدل التخمين، وحقل name=DIAG يعني فحصاً يدوياً من لوحة v59."""
+    تحسم السبب الحقيقي بدل التخمين، وحقل name=DIAG يعني فحصاً يدوياً من لوحة v59.
+    v61: حقل env — بيئة التشغيل (webview نافذة مدمجة / chrome مستقل) لحسم نقاش
+    «المشكلة في التطبيق أم الهاتف» من أول تقرير."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
@@ -16137,6 +16355,9 @@ async def pwa_miclog_handler(request):
     devs = str(body.get("devs", "") or "")[:12]
     fails = str(body.get("fails", "") or "")[:12]
     labels = str(body.get("labels", "") or "")[:80]
+    env = str(body.get("env", "") or "")[:12]
+    env_map = {"webview": "WebView مدمج ⚠️", "chrome": "Chrome مستقل ✅"}
+    env_txt = env_map.get(env, env if env else "—")
     who = ""
     if isinstance(user, dict):
         who = str(user.get("name") or "") or ("#" + str(user.get("id") or "؟"))
@@ -16159,6 +16380,7 @@ async def pwa_miclog_handler(request):
                     "nq": "غير متاح للاستعلام"}
         perm_txt = perm_map.get(perm, perm if perm else "—")
         dg_lines = ("🔐 الإذن: " + perm_txt + "\n"
+                    "🖥️ بيئة التشغيل: " + env_txt + "\n"
                     "🎙️ ميكروفونات مكتشفة: " + (devs if devs else "—")
                     + ((" (" + labels + ")") if labels else "") + "\n"
                     "📊 مرات فشل مسجلة على الجهاز: " + (fails if fails else "0") + "\n")
@@ -16346,9 +16568,12 @@ def register_pwa_routes(app):
     app.router.add_post("/api/chat/delete", pwa_chat_delete_handler)
     app.router.add_get("/api/chat/unread", pwa_chat_unread_handler)
     app.router.add_get("/api/chat/media", pwa_chat_media_handler)
+    # ── v61: واجهة المراسلة الاحترافية — يكتب الآن + بحث داخل المحادثة ──
+    app.router.add_post("/api/chat/typing", pwa_chat_typing_handler)
+    app.router.add_get("/api/chat/search", pwa_chat_search_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (36 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (38 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
