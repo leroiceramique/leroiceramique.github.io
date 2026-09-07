@@ -496,7 +496,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v63</span></p>
+      <span style="opacity:.65">الإصدار v64</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -594,7 +594,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v63</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v64</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -739,7 +739,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v63</p>
+      <p class="hint" id="setAbout">الإصدار v64</p>
     </section>
   </main>
   <nav class="tabs">
@@ -1863,6 +1863,10 @@ async function loadUsers() {
             : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
         }
       }
+      /* v64: حذف حساب التطبيق فقط (من لديه دخول ويب) — دون المساس بحسابه في البوت */
+      if (!self && !u.protected && u.web && u.telegram_id) {
+        acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
+      }
       acts += self
         ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
         : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
@@ -1876,11 +1880,12 @@ async function loadUsers() {
         + '</div>';
     }).join("");
     box.innerHTML = html;
-    box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset]").forEach((b) => b.addEventListener("click", () => {
+    box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {
       if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
       else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
       else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);
       else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);
+      else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);
       else if (b.dataset.self) openPass(null, b.dataset.n, true);
       else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
       else openPass(+b.dataset.tg, b.dataset.n, false);
@@ -1913,6 +1918,22 @@ async function userToggle(tid, active) {
     toast(d.message); loadUsers();
   } catch (e) { toast(e.message, true); }
   finally { opRelease("tg:" + tid); }
+}
+/* ── v64: حذف حساب التطبيق فقط — حساب البوت يبقى كما هو ── */
+async function delWeb(tid, name) {
+  if (!confirm("🗑️ حذف حساب «" + name + "» من التطبيق؟\n\n"
+    + "سيُلغى دخوله إلى التطبيق نهائياً: اسم الدخول والرقم السري والجلسات و«تذكّرني».\n"
+    + "✅ حسابه في البوت يبقى كما هو تماماً — فئته وإيقافه وكل شيء لا يتغير.\n"
+    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.")) return;
+  if (!opGuard("dw:" + tid)) return;   /* v45 */
+  try {
+    const d = await api("/api/users/delweb", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ telegram_id: tid })
+    });
+    toast("🗑️ " + d.message); loadUsers();
+  } catch (e) { toast(e.message, true); }
+  finally { opRelease("dw:" + tid); }
 }
 const ROLE_OPTS = [
   ["admin", "👑 مدير النظام"],
@@ -2619,7 +2640,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v63" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v64" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2637,7 +2658,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v63";
+const APP_VER = "v64";
 S.updDismissed = "";
 function swCleanup() {
   try {

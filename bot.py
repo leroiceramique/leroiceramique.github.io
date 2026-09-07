@@ -11099,7 +11099,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v63"
+PWA_VERSION = "v64"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -15138,6 +15138,71 @@ async def pwa_users_toggle_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
+def _pwa_api_delweb(user, target_tid):
+    """v64: حذف حساب موظف من التطبيق فقط — دون المساس بحسابه في البوت.
+    يُلغي: اسم الدخول والرقم السري (pwa_auth) + الجلسات + رموز التذكّر
+    + بريد Google المرتبط (يمنع إعادة إنشاء الحساب تلقائياً عبر جوجل).
+    يُبقي صف users كاملاً: الفئة والإيقاف وكل بيانات تلغرام كما هي."""
+    if not _pwa_perm_map(user["role"])["users"]:
+        return None
+    if target_tid == user["telegram_id"]:
+        return False, "لا يمكنك حذف حسابك من التطبيق — استخدم حساب مدير آخر."
+    if _protected_account(target_tid):
+        return False, "🔒 هذا الحساب محمي (المالك/متغيرات البيئة) — لا يمكن حذف حسابه."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE telegram_id = %s", (target_tid,))
+            row = cur.fetchone()
+            if not row:
+                return False, "المستخدم غير موجود."
+            uid = row[0]
+            cur.execute("DELETE FROM pwa_auth WHERE user_id = %s", (uid,))
+            n_auth = cur.rowcount
+            cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (uid,))
+            cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (uid,))
+            cur.execute("UPDATE users SET email = NULL WHERE id = %s AND email IS NOT NULL", (uid,))
+        conn.commit()
+        if not n_auth:
+            return False, "لا يوجد حساب تطبيق لهذا المستخدم أصلاً — لا شيء يحذف."
+        return True, "تم حذف حسابه من التطبيق — حسابه في البوت لم يُمس."
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+async def pwa_users_delweb_handler(request):
+    """v64: حذف حساب التطبيق لموظف (للمدير فقط) — البوت يبقى كما هو."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        tid = int(body.get("telegram_id"))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_api_delweb, user, tid)
+    if ok is None:
+        return _pwa_err(403, "للمدراء فقط.")
+    if not ok:
+        return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "user_delweb", user,
+                   details="حذف حساب التطبيق للمستخدم #" + str(tid) + " (البوت كما هو)",
+                   ip=request.remote or "؟")
+    if TG_APP is not None:
+        try:
+            await TG_APP.bot.send_message(
+                chat_id=tid,
+                text="🗑️ ألغت إدارة المؤسسة حسابك في تطبيق المخزون.\n"
+                     "✅ حسابك في البوت لم يُمس ويعمل كالمعتاد.",
+            )
+        except Exception as e:
+            logging.error("[PWA] delweb notify failed: " + str(e))
+    return _pwa_jr({"ok": True, "message": msg})
+
+
 async def pwa_users_webpass_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
@@ -16543,6 +16608,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/oil", pwa_oil_handler)
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
+    app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
     app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
     app.router.add_post("/api/products/create", pwa_products_create_handler)
     app.router.add_post("/api/products/edit", pwa_products_edit_handler)        # v41: تعديل سلعة
