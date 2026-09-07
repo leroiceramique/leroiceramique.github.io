@@ -7251,7 +7251,8 @@ async def callback_role_set_handler(update, context):
             await context.bot.send_message(
                 chat_id=tid,
                 text="🎯 حدّث المدير فئتك إلى: " + ROLE_LABELS[role]
-                + "\n🔄 اضغط 🏠 القائمة الرئيسية أو /start لظهور لوحتك الجديدة.",
+                + "\n🔄 اضغط 🏠 القائمة الرئيسية أو /start لظهور لوحتك الجديدة."
+                + "\n📱 في التطبيق: تُحدَّث صلاحياتك تلقائياً لحظة عودتك إليه.",
             )
         except Exception:
             pass
@@ -11098,7 +11099,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v62"
+PWA_VERSION = "v63"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -14717,7 +14718,8 @@ async def pwa_users_role_handler(request):
             await TG_APP.bot.send_message(
                 chat_id=target_tid,
                 text="🎯 حدّثت إدارة المؤسسة فئتك في نظام المخزون:\n"
-                     "<b>" + ROLE_LABELS.get(role, role) + "</b>",
+                     "<b>" + ROLE_LABELS.get(role, role) + "</b>\n"
+                     "📱 افتح التطبيق وستُطبَّق صلاحياتك الجديدة تلقائياً.",
                 parse_mode=ParseMode.HTML)
         except Exception as e:
             logging.error("[PWA] role notify failed: " + str(e))

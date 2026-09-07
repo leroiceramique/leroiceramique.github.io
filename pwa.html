@@ -496,7 +496,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v62</span></p>
+      <span style="opacity:.65">الإصدار v63</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -594,7 +594,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v62</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v63</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -739,7 +739,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v62</p>
+      <p class="hint" id="setAbout">الإصدار v63</p>
     </section>
   </main>
   <nav class="tabs">
@@ -1271,20 +1271,65 @@ function renderHeader() {
   if (!S.user) return;
   $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
 }
-function showApp(me) {
-  S.user = me.user; S.perms = me.perms || {};
-  if (S.user.role === "pending") { showGoogleWait(); return; }
-  $("#login").style.display = "none"; $("#app").style.display = "flex";
+/* v63: تطبيق بوابات الصلاحيات على الواجهة — يُستدعى عند الدخول وعند أي تحديث للصلاحيات */
+function applyPerms() {
   renderHeader();
   $("#btnAddProd").style.display = S.perms.admin ? "" : "none";
   $("#segArch").style.display = S.perms.admin ? "" : "none";
   $("#tabMov").style.display = S.perms.movements ? "" : "none";
   $("#tabOil").style.display = S.perms.oil ? "" : "none";
   $("#tabUsers").style.display = S.perms.users ? "" : "none";
+}
+function showApp(me) {
+  S.user = me.user; S.perms = me.perms || {};
+  if (S.user.role === "pending") { showGoogleWait(); return; }
+  $("#login").style.display = "none"; $("#app").style.display = "flex";
+  applyPerms();
   switchView("v-home");
   startNotifPolling();
   askWebNotifPerm();
 }
+/* ─── v63: انعكاس الصلاحيات فوراً ───
+   كانت الصلاحيات تُقرأ مرة واحدة عند تحميل الصفحة فقط؛ لو رقّى المدير
+   مستخدماً وكان تطبيقه مفتوحاً في الذاكرة ظل يرى فئته القديمة إلى أن
+   يُغلق التطبيق كلياً. الآن: مزامنة عند كل عودة للتطبيق + دورياً كل
+   دقيقتين — وأي تغيير في الفئة يُطبَّق حياً مع تنبيه واضح. */
+S.permsSync = { t: 0, busy: false };
+function refreshPerms(force) {
+  if (!S.user || S.permsSync.busy) return;
+  const now = Date.now();
+  if (!force && now - S.permsSync.t < 60000) return;   /* خنقة: فحص واحد كل دقيقة كحد أقصى */
+  S.permsSync.busy = true;
+  api("/api/me", { noCache: true }).then((me) => {
+    S.permsSync.t = Date.now();
+    if (!me || !me.user) return;
+    const prevRole = S.user.role;
+    const prevPerms = JSON.stringify(S.perms || {});
+    const nextPerms = JSON.stringify(me.perms || {});
+    if (me.user.role === prevRole && nextPerms === prevPerms) return;   /* لا تغيير */
+    if (me.user.role === "pending" || me.user.role === "customer") {
+      /* سُحب الوصول — إعادة تسجيل الدخول برسالة واضحة */
+      S.user = me.user; S.perms = me.perms || {};
+      stopNotifPolling();
+      toast("تم تحديث صلاحياتك — لا يوجد وصول لفئتك الجديدة. سجّل الدخول من جديد.", true);
+      setTimeout(() => { try { showLogin(false); } catch (e) {} }, 1200);
+      return;
+    }
+    S.user = me.user; S.perms = me.perms || {};
+    applyPerms();
+    if (me.user.role !== prevRole) {
+      toast("✅ حُدّثت صلاحياتك — فئتك الآن: " + (S.user.role_label || S.user.role));
+    } else {
+      toast("✅ حُدّثت صلاحياتك من الإدارة.");
+    }
+    /* إعادة رسم الشاشة الحالية بالصلاحيات الجديدة */
+    const cur = document.querySelector(".view.on");
+    if (cur && cur.id && cur.id !== "v-chat") { try { switchView(cur.id); } catch (e) {} }
+  }).catch(() => {}).finally(() => { S.permsSync.busy = false; });
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && S.user) { try { refreshPerms(true); } catch (e) {} }
+});
 
 /* ─── التنقل ─── */
 function switchView(id) {
@@ -1900,7 +1945,7 @@ $("#dlgRoleGo").addEventListener("click", async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ telegram_id: S.roleDlg.tid, role: S.roleDlg.role })
     });
-    toast(d.message); $("#dlgRole").close(); loadUsers();
+    toast(d.message + " — ستظهر الصلاحيات في تطبيقه تلقائياً خلال لحظات."); $("#dlgRole").close(); loadUsers();
   } catch (e) { toast(e.message, true); }
   finally { unlock(); }
 });
@@ -2389,6 +2434,7 @@ function renderNotifList() {
 }
 async function pollNotifs() {
   if (!S.user || S.notif.busy) return;   /* v45: لا تداخل بين فحصين */
+  try { refreshPerms(false); } catch (e) {}   /* v63: مزامنة الصلاحيات دورياً (خنقة داخلية دقيقة) */
   S.notif.busy = true;
   try {
     const d = await api("/api/notifications?after=" + S.notif.lastId + "&limit=30");
@@ -2573,7 +2619,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v62" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v63" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2591,7 +2637,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v62";
+const APP_VER = "v63";
 S.updDismissed = "";
 function swCleanup() {
   try {
