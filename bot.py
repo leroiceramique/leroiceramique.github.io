@@ -10435,35 +10435,8 @@ async def _on_app_post_init(application):
     """Start background tasks after the app is initialized (works for both webhook and polling)."""
     asyncio.create_task(_offline_retry_loop(application.bot))
     asyncio.create_task(_oil_monitor_loop(application.bot))
-    asyncio.create_task(_apply_brand_identity(application.bot))   # v48: هوية LE ROI الخارجية
     logging.info("[BOT] Offline retry task started via post_init")
     logging.info("[BOT] Oil monitor task started via post_init")
-
-
-# ═══ v48: الهوية الخارجية الموحّدة LE ROI — تُطبَّق تلقائياً عند كل إقلاع ═══
-#  الاسم والوصف عبر API تلجرام مباشرة؛ أما الصورة الرمزية فلا يدعمها API
-#  وتُحدَّث يدوياً من BotFather (الشعار جاهز داخل /icon.png في المتصفح).
-_BRAND_NAME = "Le Roi · مخزون السيراميك"
-_BRAND_SHORT = "👑 Le Roi de la Céramique — إدارة مخزون السيراميك والطلبات"
-_BRAND_DESC = (
-    "👑 Le Roi de la Céramique — نظام إدارة مخزون السيراميك باحترافية.\n\n"
-    "📦 جرد لحظي للكميات وتنبيهات الحد الأدنى\n"
-    "🚚 طلبات توريد بصور الوصل مع زر جاهز / غير جاهز\n"
-    "📊 سجل حركة كامل: إضافة / إخراج / جرد وتسوية\n"
-    "📄 تصدير تقارير CSV تلقائياً إلى هذا المحادثة\n\n"
-    "🔐 الوصول للموظفين المصرّح لهم فقط.")
-
-
-async def _apply_brand_identity(bot):
-    """v48: توحيد الهوية الخارجية (الاسم + الوصف) بهوية LE ROI.
-    آمن تماماً: أي فشل شبكة يُسجَّل ولا يوقف إقلاع البوت."""
-    try:
-        await bot.set_my_name(name=_BRAND_NAME)
-        await bot.set_my_description(description=_BRAND_DESC)
-        await bot.set_my_short_description(short_description=_BRAND_SHORT)
-        logging.info("[BRAND] LE ROI identity applied (name + descriptions)")
-    except Exception as brand_err:
-        logging.warning("[BRAND] identity update skipped: " + str(brand_err))
 
 
 def build_application():
@@ -10898,9 +10871,8 @@ import hmac as _pwa_hmac
 import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
-PWA_SESSION_DAYS = 90            # v47: كانت 30 — كانت سبب الخروج التلقائي الشهري
-PWA_REMEMBER_DAYS = 180          # v47: تذكّر الجهاز — دخول بضغطة زر
-PWA_VERSION = "v49"
+PWA_SESSION_DAYS = 30
+PWA_VERSION = "v50"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -10927,14 +10899,6 @@ CREATE TABLE IF NOT EXISTS pwa_sessions (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_sessions_user ON pwa_sessions(user_id);
--- v47: تذكّر الجهاز — رمز طويل الأجل يسمح بالدخول بضغطة زر بعد انتهاء الجلسة/الخروج
-CREATE TABLE IF NOT EXISTS pwa_remember (
-    token_hash CHAR(64) PRIMARY KEY,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_pwa_remember_user ON pwa_remember(user_id);
 CREATE TABLE IF NOT EXISTS audit_log (
     id        SERIAL PRIMARY KEY,
     ts        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -11006,6 +10970,30 @@ EXCEPTION WHEN OTHERS THEN NULL; END $$;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_transactions_product_date
     ON transactions (product_id, date DESC);
+-- ═══ v50: الرسائل — محادثات فردية بين فريق العمل (نص/صورة/ملف/صوت) ═══
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         SERIAL PRIMARY KEY,
+    sender_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    recip_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind       VARCHAR(10) NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'image', 'file', 'audio')),
+    body       TEXT DEFAULT '',
+    media      BYTEA,
+    media_name VARCHAR(255),
+    media_mime VARCHAR(120),
+    media_size INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_chat_pair ON chat_messages (sender_id, recip_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_unread ON chat_messages (recip_id) WHERE read_at IS NULL;
+-- ═══ v48: رمز «تذكّرني» — دخول بضغطة واحدة من نفس الجهاز ═══
+CREATE TABLE IF NOT EXISTS pwa_remember (
+    token_hash CHAR(64) PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_remember_user ON pwa_remember (user_id);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -11050,31 +11038,12 @@ def _pwa_read_html():
 
 
 def _pwa_icon_bytes():
-    """v48: أيقونة LE ROI بملء المربع — قصّ الهامش البيضاء وحواف الورقة الممزقة
-    حتى يملأ ورق اللوغو الأيقونة بالكامل: في القناع الدائري لمشغّل أندرويد
-    تظهر بلاطاً ورقية أنيقة بدل «صورة ملصوقة على أبيض». fallback: اللوغو الخام."""
     global _pwa_icon_cache
     if _pwa_icon_cache is None:
-        raw = b""
         try:
-            raw = base64.b64decode(_THEME_LOGO_B64)
+            _pwa_icon_cache = base64.b64decode(_THEME_LOGO_B64)
         except Exception:
             _pwa_icon_cache = b""
-            return _pwa_icon_cache
-        try:
-            from PIL import Image
-            im = Image.open(io.BytesIO(raw)).convert("RGB")
-            w, h = im.size
-            side = min(w, h)
-            # 7.5% من كل جهة: يسقط الهامش البيضاء ورأس الورقة الممزق — الورقة تملأ الحواف
-            cut = int(side * 0.075)
-            im = im.crop((cut, cut, w - cut, h - cut)).resize((1024, 1024), Image.LANCZOS)
-            buf = io.BytesIO()
-            im.save(buf, "JPEG", quality=90)
-            _pwa_icon_cache = buf.getvalue()
-        except Exception as icon_err:
-            logging.warning("[PWA] icon full-bleed failed, raw fallback: " + str(icon_err))
-            _pwa_icon_cache = raw
     return _pwa_icon_cache
 
 
@@ -11361,8 +11330,6 @@ def pwa_set_password(user_id, username, password):
                 (user_id, username, _pwa_hash_password(password)),
             )
             cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (user_id,))
-            # v47: كلمة مرور جديدة = جهاز قديم يتذكر شيئاً بلا فائدة
-            cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (user_id,))
         conn.commit()
         return username
     except Exception:
@@ -11438,115 +11405,6 @@ def _pwa_kill_sessions(user_id):
         conn.rollback()
     finally:
         release_connection(conn)
-
-
-# ═══ v47: تذكّر الجهاز — حسابك يظهر على شاشة الدخول ودخول بضغطة زر ═══
-
-def _pwa_create_remember(user_id):
-    """إصدار رمز تذكّر طويل الأجل (يُخزّن محلياً في جهاز المستخدم فقط،
-    وفي القاعدة بصيغة SHA-256 — لا يُخزّن الرمز نفسه إطلاقاً)."""
-    token = _pwa_secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO pwa_remember (token_hash, user_id, expires_at) "
-                "VALUES (%s, %s, NOW() + (%s * INTERVAL '1 day'))",
-                (token_hash, user_id, PWA_REMEMBER_DAYS),
-            )
-            cur.execute("DELETE FROM pwa_remember WHERE expires_at < NOW()")
-            # حدّ أعلى 5 أجهزة موثوقة لكل مستخدم
-            cur.execute(
-                "DELETE FROM pwa_remember WHERE user_id = %s AND token_hash NOT IN ("
-                "SELECT token_hash FROM pwa_remember WHERE user_id = %s "
-                "ORDER BY created_at DESC LIMIT 5)", (user_id, user_id))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-    return token
-
-
-def _pwa_del_remember_hash(token_hash):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM pwa_remember WHERE token_hash = %s", (token_hash,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        release_connection(conn)
-
-
-def _pwa_kill_remember(user_id):
-    """إبطال كل أجهزة التذكّر لمستخدم (طرد/كلمة مرور جديدة فقط —
-    تسجيل الخروج العادي لا يمسّه كي يبقى «الدخول بضغطة" شغالاً)."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (user_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        release_connection(conn)
-
-
-def _pwa_api_remember_login(token):
-    """v47: تبديل رمز التذكّر بجلسة جديدة + رمز جديد (دوران كامل).
-    يعيد (session_token, user, remember_token) أو None عند أي فشل."""
-    token = str(token or "").strip()
-    if not token or len(token) > 128:
-        return None
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT r.user_id FROM pwa_remember r "
-                "WHERE r.token_hash = %s AND r.expires_at > NOW()", (token_hash,))
-            row = cur.fetchone()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        return None
-    finally:
-        release_connection(conn)
-    if not row:
-        return None
-    uid = row[0]
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, telegram_id, username AS tg_username, first_name, "
-                "role, active FROM users WHERE id = %s", (uid,))
-            u = cur.fetchone()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        return None
-    finally:
-        release_connection(conn)
-    if not u:
-        _pwa_del_remember_hash(token_hash)
-        return None
-    if not u["active"] or u["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
-        _pwa_del_remember_hash(token_hash)
-        if not u["active"]:
-            _pwa_kill_remember(uid)   # مطرود: إزالة كل أجهزته
-        return None
-    _pwa_del_remember_hash(token_hash)   # دوران: الرمز القديم يموت فور استخدامه
-    rem = _pwa_create_remember(uid)
-    s_token = _pwa_create_session(uid)
-    user = {"id": uid, "telegram_id": u["telegram_id"],
-            "name": u["first_name"] or u["tg_username"] or "المستخدم",
-            "role": u["role"], "role_label": ROLE_LABELS.get(u["role"], u["role"])}
-    return (s_token, user, rem)
 
 
 def _pwa_session_user(request):
@@ -12031,7 +11889,6 @@ def _pwa_api_reset_generate(user, reset_id):
     # أمان: إبطال جلسات صاحب الحساب (إن كان مسجلاً من جهاز آخر)
     try:
         _pwa_kill_sessions(uid)
-        _pwa_kill_remember(uid)   # v47
     except Exception:
         pass
     return True, uname, temp
@@ -13038,18 +12895,11 @@ def _pwa_api_incoming_create(user, product_name, quantity):
 
 
 def _pwa_api_incoming_advance(user, order_id, action):
-    """إدارة طلب توريد (مدراء فقط) — v48 مطابِقة للبوت تماماً:
-    receive = استُلم من المورد، complete = زر «✅ جاهز» (إنجاز + إشعار)،
-    notready = زر «⏳ غير جاهز» — إشعار مطمئن فقط بلا أي تغيير حالة."""
+    """إدارة طلب توريد (مدراء فقط): receive = استُلم من المورد، complete = جاهز."""
     if not _pwa_perm_map(user["role"])["admin"]:
         return False, None, "إدارة طلبات التوريد للمدراء فقط."
-    if action not in ("receive", "complete", "notready"):
+    if action not in ("receive", "complete"):
         return False, None, "إجراء غير معروف."
-    if action == "notready":
-        row = _pwa_incoming_order_row(order_id)
-        if not row:
-            return False, None, "الطلب غير موجود."
-        return True, row, None
     if action == "receive":
         row = receive_incoming_order(order_id)
         if not row:
@@ -13073,35 +12923,12 @@ def _pwa_incoming_requester_tid(requester_id):
         release_connection(conn)
 
 
-def _pwa_incoming_order_row(order_id):
-    """v48: جلب صف طلب توريد كاملاً — لإشعار «غير جاهز» دون تغيير حالة الطلب
-    (نفس سلوك زر البوت ⏳ غير جاهز: رسالة مطمئنة فقط)."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, product_name, quantity, status, requester_id "
-                "FROM incoming_orders WHERE id = %s", (order_id,))
-            row = cur.fetchone()
-        conn.commit()
-        return dict(row) if row else None
-    except Exception:
-        conn.rollback()
-        return None
-    finally:
-        release_connection(conn)
-
-
 def _pwa_api_movements(user, limit, date_from=None, date_to=None,
-                       product_id=None, exclude_friday=False, q=None, mtype=None):
+                       product_id=None, exclude_friday=False, q=None):
     """📋 v41: سجل الحركة بفلاتر كاملة — من تاريخ/إلى تاريخ + سلعة محددة
-    + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة.
-    v48: خانة النوع mtype (add/remove/reconcile) — يفلتر القائمة فقط،
-    أما الملخص فيبقى عن الفترة كاملة (النظام العام للحركة)."""
+    + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة."""
     if not _pwa_perm_map(user["role"])["movements"]:
         return None
-    if mtype not in (None, "", "add", "remove", "reconcile"):
-        return {"ok": False, "error": "خانة الحركة غير صالحة — المسموح: add/remove/reconcile."}
     limit = max(1, min(int(limit or 300), 500))
     where = ["1=1"]
     params = []
@@ -13128,9 +12955,6 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
         where.append("p.name ILIKE %s")
         params.append("%" + str(q).strip()[:80] + "%")
     wsql = " AND ".join(where)
-    # v48: فلتر الخانة على القائمة فقط — الملخص يبقى عن الفترة كاملة
-    wrows = wsql + (" AND t.type = %s" if mtype else "")
-    rparams = (params + [mtype]) if mtype else params
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -13142,8 +12966,8 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE " + wrows + " "
-                "ORDER BY t.date DESC LIMIT %s", tuple(rparams + [limit]))
+                "WHERE " + wsql + " "
+                "ORDER BY t.date DESC LIMIT %s", (params + [limit]))
             rows = cur.fetchall()
             cur.execute(
                 "SELECT COUNT(*) AS cnt, "
@@ -13251,7 +13075,6 @@ def _pwa_api_toggle(user, target_tid, active):
                 r2 = cur.fetchone()
                 if r2:
                     cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (r2[0],))
-                    cur.execute("DELETE FROM pwa_remember WHERE user_id = %s", (r2[0],))   # v47: طرد = إزالة التذكّر
             conn.commit()
         except Exception:
             conn.rollback()
@@ -13514,8 +13337,8 @@ async def pwa_manifest_handler(request):
         "dir": "rtl", "lang": "ar",
         "start_url": "/", "scope": "/",
         "display": "standalone",
-        "background_color": "#f2e7d5",     # v48: ورق LE ROI العتيق (كان #fdf6f0 برتقالي فاتح)
-        "theme_color": "#6b3410",          # v48: البني الملكي من حروف اللوغو (كان #b45309 برتقالي عام)
+        "background_color": "#fdf6f0",     # v42: هوية السيراميك
+        "theme_color": "#b45309",
         "icons": [{"src": "/icon.png", "sizes": "512x512",
                    "type": "image/jpeg", "purpose": "any"},
                   {"src": "/icon.png", "sizes": "512x512",
@@ -13570,7 +13393,8 @@ async def pwa_login_handler(request):
     token, user = result
     await _pwa_run(_pwa_login_clear, key)
     await _pwa_run(_audit_log, "login", user, ip=ip)
-    # v47: رمز تذكّر الجهاز — يتيح «الدخول بضغطة زر" بعد أي خروج/انتهاء جلسة
+    # v48: رمز «تذكّرني» — يولد مع كل دخول ناجح لدخول بضغطة لاحقاً
+    remember = ""
     try:
         remember = await _pwa_run(_pwa_create_remember, user["id"])
     except Exception:
@@ -13589,41 +13413,6 @@ async def pwa_logout_handler(request):
     resp = _pwa_jr({"ok": True})
     resp.del_cookie(PWA_COOKIE, path="/")
     return resp
-
-
-# ═══ v47: تذكّر الجهاز — الدخول بضغطة زر بعد انتهاء الجلسة أو الخروج ═══
-
-async def pwa_remember_login_handler(request):
-    """POST /api/remember/login {token} — يبدّل رمز التذكّر بجلسة كاملة
-    (كوكي جديدة + رمز تذكّر جديد بدوران). لا يحتاج اسم ولا رقم سر."""
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    res = await _pwa_run(_pwa_api_remember_login, str(body.get("token", "")))
-    if not res:
-        return _pwa_err(401, "انتهت صلاحية التذكّر — سجّل الدخول مرة واحدة وسنتذكّرك مجدداً.")
-    token, user, rem = res
-    await _pwa_run(_audit_log, "remember_login", user, ip=request.remote or "؟")
-    resp = _pwa_jr({"ok": True, "user": user, "remember": rem})
-    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
-    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
-                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
-    return resp
-
-
-async def pwa_remember_revoke_handler(request):
-    """POST /api/remember/revoke {token} — إزالة جهاز موثوق (idempotent)."""
-    token = ""
-    try:
-        body = await request.json()
-        token = str(body.get("token", "")).strip()
-    except Exception:
-        pass
-    if token and len(token) <= 128:
-        th = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        await _pwa_run(_pwa_del_remember_hash, th)
-    return _pwa_jr({"ok": True})
 
 
 # ═══════════ v39: التسجيل بلا بريد — اسم دخول + رقم سر + موافقة الإدارة ═══════════
@@ -14746,59 +14535,6 @@ async def pwa_receipt_get_handler(request):
                         headers={"Cache-Control": "no-store"})
 
 
-_receipt_thumb_cache: dict = {}
-_receipt_thumb_lock = threading.Lock()
-
-
-def _receipt_thumb_bytes(data: bytes) -> bytes:
-    """v49: مصغّر صورة الوصل (أقصى بعد 320px، JPEG جودة 78) —
-    البطاقات تعرض المصغّر الخفيف (~10-30KB) بدل الصورة الكاملة (قد تبلغ ميغابايتات)،
-    والصورة الكاملة تبقى متاحة في نافذة العرض كما هي."""
-    from PIL import Image
-    import io as _io
-    im = Image.open(_io.BytesIO(data))
-    if im.mode not in ("RGB", "L"):
-        im = im.convert("RGB")
-    im.thumbnail((320, 320))
-    out = _io.BytesIO()
-    im.save(out, "JPEG", quality=78, optimize=True)
-    return out.getvalue()
-
-
-async def pwa_receipt_thumb_handler(request):
-    """⚡🖼️ (v49) مصغّر وصل التوريد لبطاقة الطلب — ETag + كاش متصفح 5 دقائق.
-    الاستبدال يولّد بصمة جديدة فوراً (المفتاح md5 للبايتات)، و304 يوفر التحميل الكامل."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        oid = int(request.match_info["oid"])
-    except (KeyError, TypeError, ValueError):
-        return _pwa_err(400, "طلب غير صالح.")
-    data, mime, err2 = await _pwa_run(_pwa_api_receipt_get, user, oid)
-    if err2:
-        return _pwa_err(404, err2)
-    etag = hashlib.md5(data).hexdigest()
-    inm = request.headers.get("If-None-Match", "")
-    if inm and etag in inm:
-        return web.Response(status=304, headers={"ETag": etag,
-                                                 "Cache-Control": "private, max-age=300"})
-    key = (oid, etag)
-    thumb = _receipt_thumb_cache.get(key)
-    if thumb is None:
-        try:
-            thumb = data if len(data) <= 45 * 1024 else await _pwa_run(_receipt_thumb_bytes, data)
-        except Exception:
-            thumb = data
-        with _receipt_thumb_lock:
-            if len(_receipt_thumb_cache) > 300:
-                _receipt_thumb_cache.clear()
-            _receipt_thumb_cache[key] = thumb
-    ctype = mime if (mime and str(mime).startswith("image/")) else "image/jpeg"
-    return web.Response(body=thumb, content_type=ctype,
-                        headers={"Cache-Control": "private, max-age=300", "ETag": etag})
-
-
 async def pwa_product_detail_handler(request):
     """📋 (v31) تفاصيل السلعة + سجل حركاتها."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
@@ -14858,27 +14594,19 @@ async def pwa_incoming_advance_handler(request):
     await _pwa_run(_audit_log, "incoming_advance", user,
                    details="طلب #" + str(oid) + " ← " + action,
                    ip=request.remote or "؟")
-    if action in ("complete", "notready") and TG_APP is not None and row:
+    if action == "complete" and TG_APP is not None and row:
         tid = await _pwa_run(_pwa_incoming_requester_tid, row.get("requester_id"))
         if tid:
-            # v48: نصا إشعار البوت نفسه حرفياً (جاهز / غير جاهز)
-            if action == "complete":
-                note = ("✅ طلبك جاهز في المخزن الآن!\n\n"
-                        "📦 السلعة: " + str(row.get("product_name", ""))[:200] + "\n"
-                        "📋 رقم الطلب: #" + str(oid) + "\n\n"
-                        "🏃 تقدر تيجان تأخذه!")
-            else:
-                note = ("⏳ طلبك ليس جاهزاً بعد.\n\n"
-                        "📋 رقم الطلب: #" + str(oid) + "\n"
-                        "سيتم إشعارك فور الجاهزية.")
+            note = ("✅ طلب التوريد الذي طلبته أصبح جاهزاً\n\n"
+                    "📦 " + str(row.get("product_name", ""))[:200] + "\n"
+                    "🔢 الكمية: " + str(row.get("quantity", "?")))
             try:
                 asyncio.create_task(TG_APP.bot.send_message(chat_id=tid, text=note))
             except Exception:
                 pass
     return _pwa_jr({"ok": True,
                     "message": "تم الاستلام — الطلب قيد التجهيز." if action == "receive"
-                    else ("تم تعليم الطلب جاهزاً ✅" if action == "complete"
-                          else "أُبلغ الطالب أن الطلب ما زال قيد التجهيز ⏳")})
+                    else "تم تعليم الطلب جاهزاً ✅"})
 
 
 async def pwa_movements_handler(request):
@@ -14891,103 +14619,7 @@ async def pwa_movements_handler(request):
         date_to=request.query.get("to"),
         product_id=request.query.get("product"),
         exclude_friday=(request.query.get("nofriday") in ("1", "true", "yes")),
-        q=request.query.get("q"),
-        mtype=request.query.get("type"))          # v48: خانة النوع
-    if data is None:
-        return _pwa_err(403, "ليست لديك صلاحية الحركة.")
-    if isinstance(data, dict) and data.get("ok") is False:
-        return _pwa_err(400, data.get("error", "فلاتر غير صالحة."))
-    return _pwa_jr(data)
-
-
-# ═══ v48: تصدير CSV — الملف يصل من بوت تلجرام تلقائياً ═══
-#  كان الزر يصدّر الصفحة المعروضة فقط (≤300) عبر Blob الذي لا يعمل في
-#  WebView أندرويد — الآن الخادم يبني CSV من القاعدة بكامل الفلتر
-#  (حتى 20000 سطر) ويرسله وثيقة تلجرام فورية، مع نسخة نصية احتياطية.
-
-_PWA_EXPORT_MAX_ROWS = 20000
-
-
-def _pwa_movements_csv(rows):
-    """بناء CSV عربي (BOM + فاصلة) من صفوف الحركة — نفس أعمدة الشاشة."""
-    import csv as _csv
-    buf = io.StringIO()
-    buf.write("\ufeff")
-    w = _csv.writer(buf, lineterminator="\r\n")
-    w.writerow(["التاريخ", "الوقت", "اليوم", "النوع", "السلعة", "الكمية", "المستخدم", "السبب"])
-    day_names = {0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء", 3: "الخميس",
-                 4: "الجمعة", 5: "السبت", 6: "الأحد"}
-    type_ar = {"add": "إضافة", "remove": "إخراج", "reconcile": "جرد"}
-    for m in rows:
-        d = m.get("date")
-        try:
-            dstr = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d or "")[:10]
-            tstr = d.strftime("%H:%M") if hasattr(d, "strftime") else str(d or "")[11:16]
-            dow = day_names.get(d.weekday(), "") if hasattr(d, "weekday") else ""
-        except Exception:
-            dstr, tstr, dow = str(d or ""), "", ""
-        w.writerow([dstr, tstr, dow, type_ar.get(m.get("type"), m.get("type") or ""),
-                    m.get("product_name") or "", m.get("quantity", 0),
-                    m.get("user_name") or "", m.get("reason") or ""])
-    return buf.getvalue()
-
-
-def _pwa_api_export_movements(user, date_from=None, date_to=None,
-                              product_id=None, exclude_friday=False, mtype=None):
-    """v48: CSV كامل بفلاتر الحركة (بلا حدّ 300) — يُرسل وثيقة تلجرام.
-    يعيد dict موحّد: sent=True عند نجاح الإرسال، وإلا csv نصي احتياطي."""
-    res = _pwa_api_movements(user, _PWA_EXPORT_MAX_ROWS, date_from=date_from,
-                             date_to=date_to, product_id=product_id,
-                             exclude_friday=exclude_friday, mtype=mtype)
-    if res is None:
-        return None
-    if res.get("ok") is False:
-        return res
-    rows = res.get("movements") or []
-    if not rows:
-        return {"ok": False, "error": "لا بيانات للتصدير ضمن الفلتر الحالي."}
-    csv_text = _pwa_movements_csv(rows)
-    fname = "movements_" + datetime.datetime.now().strftime("%Y-%m-%d_%H%M") + ".csv"
-    per = {"add": "الإضافة", "remove": "الإخراج", "reconcile": "الجرد والتسوية"}.get(mtype)
-    cap = ("📄 تصدير الحركة — " + str(len(rows)) + " عملية"
-           + (" — خانة " + per if per else "")
-           + ((" — من " + str(date_from)) if date_from else "")
-           + ((" — إلى " + str(date_to)) if date_to else ""))
-    if TG_APP is None or not user.get("telegram_id"):
-        return {"ok": True, "sent": False, "count": len(rows), "filename": fname, "csv": csv_text}
-    try:
-        from telegram import InputFile
-
-        async def _send():
-            doc = InputFile(io.BytesIO(csv_text.encode("utf-8")), filename=fname)
-            await TG_APP.bot.send_document(chat_id=user["telegram_id"],
-                                           document=doc, caption=cap)
-        # v48: جدولة آمنة من خيط executor (بديل ensure_future الذي يفشل خارج اللوب)
-        _pwa_schedule(_send())
-    except Exception as send_err:
-        logging.error("[PWA] export send failed: " + str(send_err))
-        return {"ok": True, "sent": False, "count": len(rows), "filename": fname, "csv": csv_text}
-    return {"ok": True, "sent": True, "count": len(rows), "filename": fname}
-
-
-async def pwa_export_movements_handler(request):
-    """POST /api/export/movements {from,to,product,nofriday,type} — v48"""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    data = await _pwa_run(
-        _pwa_api_export_movements, user,
-        date_from=body.get("from") or None,
-        date_to=body.get("to") or None,
-        product_id=body.get("product") or None,
-        exclude_friday=bool(body.get("nofriday")),
-        mtype=body.get("type") or None)
+        q=request.query.get("q"))
     if data is None:
         return _pwa_err(403, "ليست لديك صلاحية الحركة.")
     if isinstance(data, dict) and data.get("ok") is False:
@@ -15086,6 +14718,13 @@ def _pwa_api_notifications(user, after, limit):
             read_upto = int(rr["last_read_id"]) if rr else 0
             cur.execute("SELECT COUNT(*) AS c FROM notifications WHERE id > %s", (read_upto,))
             unread = min(int(cur.fetchone()["c"]), 99)
+            # v50: إجمالي رسائل الشات غير المقروءة — يُرسل مع دورية الإشعارات (لا حلقة جديدة)
+            try:
+                cur.execute("SELECT COUNT(*) AS c FROM chat_messages "
+                            "WHERE recip_id = %s AND read_at IS NULL", (user["id"],))
+                chat_unread = min(int(cur.fetchone()["c"]), 99)
+            except Exception:
+                chat_unread = 0
             cur.execute(
                 "SELECT id, kind, title, body, actor, source, created_at "
                 "FROM notifications WHERE id > %s ORDER BY id DESC LIMIT %s",
@@ -15102,10 +14741,11 @@ def _pwa_api_notifications(user, after, limit):
                 else:
                     d["ts"] = ""
                 items.append(d)
-        return {"ok": True, "items": items, "unread": unread, "last_id": last_id}
+        return {"ok": True, "items": items, "unread": unread, "last_id": last_id,
+                "chat_unread": chat_unread}
     except Exception as e:
         logging.error("[PWA] notifications failed: " + str(e))
-        return {"ok": True, "items": [], "unread": 0, "last_id": 0}
+        return {"ok": True, "items": [], "unread": 0, "last_id": 0, "chat_unread": 0}
     finally:
         release_connection(conn)
 
@@ -15351,39 +14991,641 @@ self.addEventListener("fetch", (e) => {
 
 @web.middleware
 async def _pwa_sec_middleware(request, handler):
-    """ترويسات أمنية على كل ردود الخادم (صفحة + API) + v49: ضغط gzip شفاف.
-    على شبكة الهاتف يقلّل الحجم 3-5 مرات (الصفحة 129KB → ~30KB والقوائم أوفر) —
-    لا يمسّ الردود المتدفقة ولا ما ضُغط سلفاً ولا الردود الصغيرة المرموقة."""
+    """ترويسات أمنية على كل ردود الخادم (صفحة + API)."""
     resp = await handler(request)
     h = resp.headers
     h.setdefault("X-Content-Type-Options", "nosniff")
     h.setdefault("X-Frame-Options", "DENY")
     h.setdefault("Referrer-Policy", "no-referrer")
-    try:
-        if ("gzip" in request.headers.get("Accept-Encoding", "")
-                and "Content-Encoding" not in h
-                and isinstance(resp, web.Response)
-                and resp.body is not None
-                and (resp.content_type or "").split(";")[0].strip() in _GZIP_TYPES):
-            body = resp.body
-            if isinstance(body, str):
-                body = body.encode("utf-8")
-            if isinstance(body, (bytes, bytearray)) and len(body) >= 500:
-                import gzip as _gzip
-                resp.body = _gzip.compress(bytes(body), 5)
-                h["Content-Encoding"] = "gzip"
-                h.setdefault("Vary", "Accept-Encoding")
-                h.pop("Content-Length", None)
-    except Exception:
-        pass
     return resp
 
 
-_GZIP_TYPES = frozenset({
-    "text/html", "application/json", "text/css", "text/javascript",
-    "application/javascript", "application/manifest+json",
-    "text/plain", "text/csv",
-})
+# ═══════════ v50: الرسائل — محادثات فردية بين فريق العمل ═══════════
+# شات شبيه بواتساب داخل التطبيق: محادثة فردية مع أي موظف/مدير، أكثر من محادثة
+# في نفس الوقت، نص + صور + ملفات + رسائل صوتية. الوسائط في القاعدة (BYTEA).
+
+_CHAT_MEDIA_MAX = 10 * 1024 * 1024        # 10 ميغابايت بعد فك الترميز
+_CHAT_TEXT_MAX = 4000
+_CHAT_RATE = {}                            # user_id -> [window_start, count]
+_CHAT_PING = {}                            # recipient telegram_id -> last ts
+_MOV_CSV_LABELS = {"add": "إضافة", "remove": "خصم", "reconcile": "جرد"}
+
+
+def _chat_msg_dict(r, me_id):
+    """توحيد شكل رسالة الشات للواجهة (RealDictRow → dict نظيف)."""
+    created = r.get("created_at")
+    return {
+        "id": int(r["id"]),
+        "mine": r["sender_id"] == me_id,
+        "kind": r["kind"],
+        "body": r.get("body") or "",
+        "media": r["kind"] != "text",
+        "media_name": r.get("media_name") or "",
+        "media_mime": r.get("media_mime") or "",
+        "media_size": int(r.get("media_size") or 0),
+        "sender_name": r.get("sender_name") or "",
+        "read": bool(r.get("read_at")),
+        "created_at": created.isoformat() if created else "",
+    }
+
+
+def _pwa_api_chat_contacts(user):
+    """💬 جهات الاتصال: كل زملاء العمل النشطين (المديرون والموظفون) بلا العميل/المعلّق."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.role, "
+                "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                "'#' || u.id::text) AS name "
+                "FROM users u "
+                "WHERE u.active = TRUE AND u.id <> %s "
+                "AND (u.role IS NULL OR u.role NOT IN (%s, %s)) "
+                "ORDER BY name", (user["id"], ROLE_CUSTOMER, ROLE_PENDING))
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    contacts = [{"id": r["id"], "name": r["name"], "role": r["role"],
+                 "role_label": ROLE_LABELS.get(r["role"], r["role"])} for r in rows]
+    return {"ok": True, "me": {"id": user["id"], "name": user.get("name") or ""},
+            "contacts": contacts}
+
+
+def _pwa_api_chat_list(user):
+    """💬 قائمة المحادثات: آخر رسالة مع كل شريك + عدد غير المقروء منه."""
+    me = user["id"]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT partner, MAX(id) AS last_id, "
+                "COUNT(*) FILTER (WHERE recip_id = %s AND read_at IS NULL) AS unread "
+                "FROM (SELECT CASE WHEN sender_id = %s THEN recip_id ELSE sender_id END AS partner, "
+                "sender_id, recip_id, id, read_at FROM chat_messages "
+                "WHERE sender_id = %s OR recip_id = %s) t "
+                "GROUP BY partner ORDER BY last_id DESC LIMIT 80", (me, me, me, me))
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not rows:
+        return {"ok": True, "chats": []}
+    partners = [r["partner"] for r in rows]
+    last_ids = [int(r["last_id"]) for r in rows]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, sender_id, kind, body, media_name, media_mime, media_size, "
+                "created_at, read_at FROM chat_messages WHERE id = ANY(%s)", (last_ids,))
+            msgs = {r["id"]: r for r in cur.fetchall()}
+            cur.execute(
+                "SELECT u.id, u.role, u.active, "
+                "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                "'#' || u.id::text) AS name "
+                "FROM users u WHERE u.id = ANY(%s)", (partners,))
+            users = {r["id"]: r for r in cur.fetchall()}
+        conn.commit()
+    finally:
+        release_connection(conn)
+    chats = []
+    for r in rows:
+        u = users.get(r["partner"])
+        m = msgs.get(int(r["last_id"]))
+        if not u or not m:
+            continue
+        chats.append({
+            "user": {"id": u["id"], "name": u["name"], "role": u["role"],
+                     "role_label": ROLE_LABELS.get(u["role"], u["role"]),
+                     "active": bool(u["active"])},
+            "unread": int(r["unread"]),
+            "last": _chat_msg_dict(m, me),
+        })
+    return {"ok": True, "chats": chats}
+
+
+def _pwa_api_chat_messages(user, other, after):
+    """💬 رسائل محادثة مع شريك محدد. after=0 → آخر 100 (تصاعدياً)، after>0 → الجديد فقط.
+    فتح المحادثة يعتبر قراءة: رسائل الشريك توسم مقروءة تلقائياً."""
+    me = user["id"]
+    try:
+        other = int(other)
+        after = max(0, int(after or 0))
+    except (TypeError, ValueError):
+        return None, "طلب غير صالح."
+    if other == me:
+        return None, "لا يمكنك محادثة نفسك."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, active FROM users WHERE id = %s", (other,))
+            peer = cur.fetchone()
+            if not peer or not peer["active"]:
+                return None, "المستخدم غير متاح للمحادثة."
+            if after:
+                cur.execute(
+                    "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, m.media_mime, "
+                    "m.media_size, m.created_at, m.read_at, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS sender_name "
+                    "FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE ((m.sender_id = %s AND m.recip_id = %s) "
+                    "OR (m.sender_id = %s AND m.recip_id = %s)) AND m.id > %s "
+                    "ORDER BY m.id ASC LIMIT 200", (me, other, other, me, after))
+                rows = list(cur.fetchall())
+            else:
+                cur.execute(
+                    "SELECT * FROM (SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
+                    "m.media_mime, m.media_size, m.created_at, m.read_at, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS sender_name "
+                    "FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE (m.sender_id = %s AND m.recip_id = %s) "
+                    "OR (m.sender_id = %s AND m.recip_id = %s) "
+                    "ORDER BY m.id DESC LIMIT 100) t ORDER BY t.id ASC",
+                    (me, other, other, me))
+                rows = list(cur.fetchall())
+            # فتح المحادثة = قراءة رسائل الشريك
+            cur.execute("UPDATE chat_messages SET read_at = NOW() "
+                        "WHERE sender_id = %s AND recip_id = %s AND read_at IS NULL",
+                        (other, me))
+            # v50: أقصى رسالة من رسائلي قرأها الشريك (لعلامتي ✓✓ في الواجهة)
+            cur.execute("SELECT COALESCE(MAX(id), 0) AS mx FROM chat_messages "
+                        "WHERE sender_id = %s AND recip_id = %s AND read_at IS NOT NULL",
+                        (me, other))
+            read_upto = int(cur.fetchone()["mx"])
+        conn.commit()
+        now = datetime.datetime.now()
+        for r in rows:
+            if r["sender_id"] == other and not r["read_at"]:
+                r["read_at"] = now
+        return [_chat_msg_dict(r, me) for r in rows], read_upto, None
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
+    """💬 إرسال رسالة (نص/صورة/ملف/صوت). يعيد (msg_dict, peer_telegram_id, error)."""
+    me = user["id"]
+    try:
+        to = int(to)
+    except (TypeError, ValueError):
+        return None, None, "طلب غير صالح."
+    if to == me:
+        return None, None, "لا يمكنك محادثة نفسك."
+    # حارس إغراق بسيط: 25 رسالة كحد أقصى في الدقيقة لكل مستخدم
+    now = time.time()
+    win = _CHAT_RATE.get(me)
+    if not win or now - win[0] > 60:
+        _CHAT_RATE[me] = [now, 1]
+    else:
+        win[1] += 1
+        if win[1] > 25:
+            return None, None, "أرسلت رسائل كثيرة — انتظر قليلاً ثم أعد المحاولة."
+    kind = str(kind or "text").strip().lower()
+    if kind not in ("text", "image", "file", "audio"):
+        kind = "text"
+    body, media, mname, mmime, msize = "", None, "", "", 0
+    if kind == "text":
+        body = str(text or "").strip()
+        if not body:
+            return None, None, "اكتب نص الرسالة أولاً."
+        body = body[:_CHAT_TEXT_MAX]
+    else:
+        raw = str(data_b64 or "")
+        if "," in raw and raw.strip().startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        try:
+            media = base64.b64decode(raw, validate=False)
+        except Exception:
+            return None, None, "المرفق غير صالح."
+        if not media:
+            return None, None, "المرفق فارغ."
+        if len(media) > _CHAT_MEDIA_MAX:
+            return None, None, "الملف كبير جداً — الحد 10 ميغابايت."
+        mname = str(name or "ملف").strip().replace("\r", " ").replace("\n", " ")[:200]
+        mmime = str(mime or "application/octet-stream").split(";")[0].strip().lower()[:100]
+        if kind == "image" and not mmime.startswith("image/"):
+            mmime = "image/jpeg"
+        if kind == "audio" and not (mmime.startswith("audio/") or mmime.startswith("video/webm")):
+            mmime = "audio/webm"
+        msize = len(media)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT role, active, telegram_id FROM users WHERE id = %s", (to,))
+            peer = cur.fetchone()
+            if not peer or not peer[1] or peer[0] in (ROLE_CUSTOMER, ROLE_PENDING):
+                return None, None, "المستخدم غير متاح للمحادثة."
+            cur.execute(
+                "INSERT INTO chat_messages (sender_id, recip_id, kind, body, media, "
+                "media_name, media_mime, media_size) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+                (me, to, kind, body, psycopg2.Binary(media) if media else None,
+                 mname, mmime, msize))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] chat send failed: " + str(e))
+        return None, None, "فشل الإرسال — أعد المحاولة."
+    finally:
+        release_connection(conn)
+    msg = {"id": int(row[0]), "mine": True, "kind": kind, "body": body,
+           "media": kind != "text", "media_name": mname, "media_mime": mmime,
+           "media_size": msize, "sender_name": user.get("name") or "",
+           "read": False, "created_at": row[1].isoformat() if row[1] else ""}
+    return msg, (peer[2] if peer[1] else None), None
+
+
+def _pwa_api_chat_read(user, other):
+    """💬 تعليم رسائل شريك معين كمقروءة. يعيد الإجمالي الجديد غير المقروء."""
+    me = user["id"]
+    try:
+        other = int(other)
+    except (TypeError, ValueError):
+        return {"ok": True, "total": 0}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE chat_messages SET read_at = NOW() "
+                        "WHERE sender_id = %s AND recip_id = %s AND read_at IS NULL",
+                        (other, me))
+            cur.execute("SELECT COUNT(*) FROM chat_messages "
+                        "WHERE recip_id = %s AND read_at IS NULL", (me,))
+            total = int(cur.fetchone()[0])
+        conn.commit()
+        return {"ok": True, "total": min(total, 99)}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_chat_unread_total(user):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM chat_messages "
+                        "WHERE recip_id = %s AND read_at IS NULL", (user["id"],))
+            n = int(cur.fetchone()[0])
+        conn.commit()
+        return {"ok": True, "total": min(n, 99)}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_chat_media(user, msg_id):
+    """💬 مرفق رسالة — للمُرسل والمستقبل فقط. يعيد (bytes, mime, name, err)."""
+    try:
+        msg_id = int(msg_id)
+    except (TypeError, ValueError):
+        return None, None, None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT sender_id, recip_id, media, media_mime, media_name "
+                        "FROM chat_messages WHERE id = %s", (msg_id,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row or not row[2]:
+        return None, None, None, "المرفق غير موجود."
+    if user["id"] not in (row[0], row[1]):
+        return None, None, None, "لا تملك صلاحية عرض هذا المرفق."
+    return bytes(row[2]), (row[3] or "application/octet-stream"), (row[4] or "file"), None
+
+
+# ─── v48: دخول بضغطة واحدة (رمز التذكّر) ───
+
+def _pwa_create_remember(user_id):
+    """رمز «تذكّرني» طويل الأمد (180 يوماً) — يُخزّن مجزّراً ويُدار لكل مستخدم (5 كحد أقصى)."""
+    token = _pwa_secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO pwa_remember (token_hash, user_id, expires_at) "
+                        "VALUES (%s, %s, NOW() + INTERVAL '180 days')",
+                        (token_hash, user_id))
+            cur.execute("DELETE FROM pwa_remember WHERE expires_at < NOW()")
+            cur.execute("DELETE FROM pwa_remember WHERE user_id = %s AND token_hash NOT IN "
+                        "(SELECT token_hash FROM pwa_remember WHERE user_id = %s "
+                        "ORDER BY created_at DESC LIMIT 5)", (user_id, user_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return token
+
+
+def _pwa_api_remember_login(token):
+    """دخول بضغطة من جهاز تم التذكّر فيه — الرمز يدور مع كل استخدام."""
+    token = str(token or "").strip()
+    if not token or len(token) > 128:
+        return None, None, None, "رمز التذكّر غير صالح — سجّل الدخول بكلمتك السرية."
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = get_connection()
+    row = None
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                "u.display_name, u.role, u.active, a.username AS web_username "
+                "FROM pwa_remember r JOIN users u ON u.id = r.user_id "
+                "LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE r.token_hash = %s AND r.expires_at > NOW()", (token_hash,))
+            row = cur.fetchone()
+            if not row:
+                return None, None, None, "انتهت صلاحية التذكّر — سجّل الدخول بكلمتك السرية."
+            if not row["active"]:
+                return None, None, None, KICK_NOTICE
+            if row["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
+                return None, None, None, "لا يوجد وصول ويب لفئتك حالياً — راجع الإدارة."
+            cur.execute("DELETE FROM pwa_remember WHERE token_hash = %s", (token_hash,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] remember login failed: " + str(e))
+        return None, None, None, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+    uid = row["id"]
+    new_remember = _pwa_create_remember(uid)
+    sess = _pwa_create_session(uid)
+    user = {"id": uid, "telegram_id": row["telegram_id"],
+            "name": (row.get("display_name") or row.get("first_name")
+                     or row.get("tg_username") or row.get("web_username") or str(uid)),
+            "role": row["role"],
+            "role_label": ROLE_LABELS.get(row["role"], row["role"])}
+    return sess, new_remember, user, None
+
+
+# ─── v48: تصدير CSV كامل لحركة المخزون (بلا حدّ 300) ───
+
+def _pwa_api_export_movements(user, date_from, date_to, exclude_friday,
+                              product_id, mov_type):
+    """نفس فلاتر سجل الحركة لكن بلا حدّ — يعيد CSV جاهزاً + عدد العمليات."""
+    if not _pwa_perm_map(user["role"])["movements"]:
+        return None, "ليست لديك صلاحية سجل الحركة."
+    where = ["1=1"]
+    params = []
+    if date_from:
+        if not _PWA_DATE_RE.match(str(date_from)):
+            return None, "تاريخ «من» غير صالح — الصيغة YYYY-MM-DD"
+        where.append("t.date >= %s::date")
+        params.append(str(date_from))
+    if date_to:
+        if not _PWA_DATE_RE.match(str(date_to)):
+            return None, "تاريخ «إلى» غير صالح — الصيغة YYYY-MM-DD"
+        where.append("t.date < (%s::date + INTERVAL '1 day')")
+        params.append(str(date_to))
+    if product_id:
+        try:
+            where.append("t.product_id = %s")
+            params.append(int(product_id))
+        except (TypeError, ValueError):
+            return None, "معرّف السلعة غير صالح."
+    if exclude_friday:
+        where.append("EXTRACT(ISODOW FROM t.date) <> 5")
+    if mov_type:
+        if str(mov_type) not in _MOV_CSV_LABELS:
+            return None, "نوع الحركة غير صالح."
+        where.append("t.type = %s")
+        params.append(str(mov_type))
+    wsql = " AND ".join(where)
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT t.id, t.type, t.quantity, t.date, t.reason, "
+                "p.name AS product_name, "
+                "COALESCE(u.display_name, u.first_name, u.username, "
+                "'#' || u.telegram_id::text) AS user_name "
+                "FROM transactions t "
+                "JOIN products p ON p.id = t.product_id "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "WHERE " + wsql + " ORDER BY t.date DESC LIMIT 100000",
+                tuple(params))
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+
+    def cell(v):
+        s = str(v if v is not None else "")
+        return '"' + s.replace('"', '""') + '"'
+
+    lines = ["التاريخ,النوع,السلعة,الكمية,السبب,المستخدم"]
+    for r in rows:
+        lines.append(",".join([
+            cell(str(r["date"])[:16]),
+            cell(_MOV_CSV_LABELS.get(r["type"], r["type"])),
+            cell(r["product_name"]), cell(r["quantity"]),
+            cell(r["reason"]), cell(r["user_name"])]))
+    csv_text = "\ufeff" + "\n".join(lines)   # BOM ليفتح صح في Excel
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    return {"count": len(rows), "csv": csv_text,
+            "filename": "movements_" + stamp + ".csv",
+            "telegram_id": user.get("telegram_id")}, None
+
+
+def _pwa_api_receipt_thumb(user, order_id):
+    """مصغّرة صورة الوصل (v48) — نفس صلاحيات عرض الوصل، تصغير إلى 260px."""
+    data, mime, err = _pwa_api_receipt_get(user, order_id)
+    if err:
+        return None, err
+    if not data:
+        return None, "لا توجد صورة وصل لهذا الطلب بعد."
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img.thumbnail((260, 260))
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=72)
+        return out.getvalue(), None
+    except Exception:
+        return data, None   # تعذر التصغير → الأصل كما هو
+
+
+# ─── معالجات الشات (async) ───
+
+async def pwa_chat_contacts_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_chat_contacts, user)
+    return _pwa_jr(data)
+
+
+async def pwa_chat_list_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_chat_list, user)
+    return _pwa_jr(data)
+
+
+async def pwa_chat_msg_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    msgs, read_upto, err2 = await _pwa_run(_pwa_api_chat_messages, user,
+                                           request.query.get("user"),
+                                           request.query.get("after", 0))
+    if err2:
+        return _pwa_err(400, err2)
+    return _pwa_jr({"ok": True, "messages": msgs, "read_upto": read_upto})
+
+
+async def pwa_chat_send_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    msg, peer_tid, err2 = await _pwa_run(
+        _pwa_api_chat_send, user, body.get("to"), body.get("kind"),
+        body.get("text"), body.get("name"), body.get("mime"), body.get("data"))
+    if err2:
+        return _pwa_err(400, err2)
+    # إشعار تلغرام للمستلم — مرة كل 30 ثانية كحد أقصى (لا إغراق في المحادثة الحية)
+    if TG_APP is not None and peer_tid:
+        try:
+            key = int(peer_tid)
+            now = time.time()
+            if now - _CHAT_PING.get(key, 0) >= 30:
+                _CHAT_PING[key] = now
+                if msg["kind"] == "text":
+                    content = msg["body"][:300]
+                elif msg["kind"] == "image":
+                    content = "🖼️ صورة مرفقة"
+                elif msg["kind"] == "audio":
+                    content = "🎤 رسالة صوتية"
+                else:
+                    content = "📎 ملف: " + (msg["media_name"] or "")
+                note = ("💬 رسالة جديدة في تطبيق المخزون\n"
+                        "من: " + str(user.get("name") or "?") + "\n\n" + content)
+                asyncio.create_task(_chat_ping_deliver(int(peer_tid), note))
+        except Exception:
+            pass
+    await _pwa_run(_audit_log, "chat_send", user,
+                   details="إلى #" + str(body.get("to")) + " نوع: " + msg["kind"],
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def _chat_ping_deliver(tid, text):
+    try:
+        await TG_APP.bot.send_message(chat_id=tid, text=text)
+    except Exception:
+        pass
+
+
+async def pwa_chat_read_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    data = await _pwa_run(_pwa_api_chat_read, user, body.get("user"))
+    return _pwa_jr(data)
+
+
+async def pwa_chat_unread_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_chat_unread_total, user)
+    return _pwa_jr(data)
+
+
+async def pwa_chat_media_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data, mime, name, err2 = await _pwa_run(
+        _pwa_api_chat_media, user, request.query.get("id"))
+    if err2:
+        return _pwa_err(404, err2)
+    safe_name = str(name or "file").replace('"', "")[:120]
+    return web.Response(body=data, content_type=(mime or "application/octet-stream"),
+                        headers={"Cache-Control": "private, max-age=604800",
+                                 "Content-Disposition":
+                                     "inline; filename=\"" + safe_name + "\""})
+
+
+async def pwa_remember_login_handler(request):
+    """v48: دخول بضغطة واحدة برمز التذكّر المحفوظ في الجهاز."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    sess, remember, user, err = await _pwa_run(_pwa_api_remember_login,
+                                               body.get("token"))
+    if err:
+        return _pwa_err(401, err)
+    await _pwa_run(_audit_log, "remember_login", user, ip=request.remote or "؟")
+    resp = _pwa_jr({"ok": True, "remember": remember, "user": user})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, sess, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
+async def pwa_export_movements_handler(request):
+    """v48: تصدير CSV كامل للحركة — الملف يُرسل عبر تلجرام، وإن تعذر أُعيد نصياً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    res, err2 = await _pwa_run(
+        _pwa_api_export_movements, user, body.get("from"), body.get("to"),
+        bool(body.get("nofriday")), body.get("product"), body.get("type"))
+    if err2:
+        return _pwa_err(400, err2)
+    await _pwa_run(_audit_log, "export_movements", user,
+                   details="عمليات: " + str(res["count"]), ip=request.remote or "؟")
+    out = {"ok": True, "sent": False, "count": res["count"],
+           "filename": res["filename"]}
+    sent = False
+    if TG_APP is not None and res.get("telegram_id"):
+        try:
+            await TG_APP.bot.send_document(
+                chat_id=res["telegram_id"],
+                document=io.BytesIO(res["csv"].encode("utf-8")),
+                filename=res["filename"])
+            sent = True
+        except Exception as e:
+            logging.warning("[PWA] export TG send failed: " + str(e))
+    out["sent"] = sent
+    if not sent:
+        out["csv"] = res["csv"]   # نسخة احتياطية نصية داخل التطبيق
+    return _pwa_jr(out)
+
+
+async def pwa_receipt_thumb_handler(request):
+    """v48: مصغّرة صورة وصل التوريد (تُعرض في بطاقة الطلب)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        oid = int(request.match_info["oid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data, err2 = await _pwa_run(_pwa_api_receipt_thumb, user, oid)
+    if err2 or not data:
+        return _pwa_err(404, err2 or "لا توجد صورة وصل لهذا الطلب بعد.")
+    return web.Response(body=data, content_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
 
 
 def register_pwa_routes(app):
@@ -15398,9 +15640,6 @@ def register_pwa_routes(app):
     app.router.add_get("/manifest.webmanifest", pwa_manifest_handler)
     app.router.add_get("/icon.png", pwa_icon_handler)
     app.router.add_post("/api/login", pwa_login_handler)
-    # ── v47: تذكّر الجهاز — حسابك على شاشة الدخول ودخول بضغطة زر ──
-    app.router.add_post("/api/remember/login", pwa_remember_login_handler)
-    app.router.add_post("/api/remember/revoke", pwa_remember_revoke_handler)
     # ── v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ──
     app.router.add_post("/api/register", pwa_register_handler)
     app.router.add_post("/api/forgot", pwa_forgot_handler)               # v39: طلب استعادة الرقم السري
@@ -15426,7 +15665,6 @@ def register_pwa_routes(app):
     app.router.add_get("/api/products", pwa_products_handler)
     app.router.add_post("/api/qty", pwa_qty_handler)
     app.router.add_get("/api/movements", pwa_movements_handler)
-    app.router.add_post("/api/export/movements", pwa_export_movements_handler)  # v48: تصدير CSV
     app.router.add_get("/api/low", pwa_low_handler)
     # (v30) مركز الإشعارات
     app.router.add_get("/api/notifications", pwa_notifications_handler)
@@ -15445,11 +15683,22 @@ def register_pwa_routes(app):
     # (v31) الوصل + تفاصيل السلعة — المسارات الديناميكية بعد الثابتة
     app.router.add_post("/api/incoming/receipt", pwa_receipt_upload_handler)
     app.router.add_get("/api/incoming/{oid}/receipt", pwa_receipt_get_handler)
-    app.router.add_get("/api/incoming/{oid}/thumb", pwa_receipt_thumb_handler)   # v49: مصغّر سريع
     app.router.add_get("/api/product/{pid}", pwa_product_detail_handler)
     app.router.add_post("/api/incoming/create", pwa_incoming_create_handler)
     app.router.add_post("/api/incoming/advance", pwa_incoming_advance_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (25 مساراً)")
+    # ── v48: رمز التذكّر + تصدير CSV + مصغّرة الوصل ──
+    app.router.add_post("/api/remember/login", pwa_remember_login_handler)
+    app.router.add_post("/api/export/movements", pwa_export_movements_handler)
+    app.router.add_get("/api/incoming/{oid}/thumb", pwa_receipt_thumb_handler)
+    # ── v50: الرسائل — محادثات فردية بين فريق العمل ──
+    app.router.add_get("/api/chat/contacts", pwa_chat_contacts_handler)
+    app.router.add_get("/api/chat/list", pwa_chat_list_handler)
+    app.router.add_get("/api/chat/msg", pwa_chat_msg_handler)
+    app.router.add_post("/api/chat/send", pwa_chat_send_handler)
+    app.router.add_post("/api/chat/read", pwa_chat_read_handler)
+    app.router.add_get("/api/chat/unread", pwa_chat_unread_handler)
+    app.router.add_get("/api/chat/media", pwa_chat_media_handler)
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (35 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -15514,7 +15763,8 @@ if __name__ == "__main__":
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
-        webhook_app = web.Application(middlewares=[_pwa_sec_middleware])
+        webhook_app = web.Application(middlewares=[_pwa_sec_middleware],
+                                      client_max_size=64 * 1024 * 1024)
         webhook_app.router.add_get("/health", _health_handler)
         register_pwa_routes(webhook_app)
         # ── Security: Telegram sends X-Telegram-Bot-Api-Secret-Token on every update;
@@ -15528,7 +15778,8 @@ if __name__ == "__main__":
             secret_token=secret_token,
             drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
-        health_app = web.Application(middlewares=[_pwa_sec_middleware])
+        health_app = web.Application(middlewares=[_pwa_sec_middleware],
+                                     client_max_size=64 * 1024 * 1024)
         health_app.router.add_get("/health", _health_handler)
         register_pwa_routes(health_app)
         async def on_startup(aio_app):

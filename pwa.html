@@ -258,6 +258,88 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
 .gbtn{background:var(--card) !important;color:var(--ink) !important;border:1.5px solid var(--line) !important;
   display:flex;align-items:center;justify-content:center;gap:9px;font-weight:800}
 .gbtn:active{filter:brightness(.96) !important}
+/* ═══ v50: الرسائل — شات شبيه بواتساب داخل التطبيق ═══ */
+.cnavb{position:absolute;top:1px;inset-inline-end:8px;background:var(--bad);color:#fff;
+  font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:9px;
+  display:flex;align-items:center;justify-content:center;padding:0 4px;pointer-events:none}
+nav.tabs button{position:relative}
+/* قائمة المحادثات */
+.chatrow{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+.chatrow:active{transform:scale(.99);background:var(--brandsoft)}
+.cav{width:44px;height:44px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:17px;color:#fff;background:linear-gradient(135deg,#9a4d1a,#7a3a12);
+  border:1px solid var(--goldline)}
+html[data-theme="dark"] .cav{background:#33261a;color:var(--gold)}
+.chatrow .cinfo{flex:1;min-width:0}
+.chatrow .cinfo b{display:block;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chatrow .cinfo span{display:block;font-size:12.5px;color:var(--mut);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.chatrow .cside{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.chatrow .ctime{font-size:11px;color:var(--mut)}
+.cunread{background:var(--ok);color:#fff;font-size:11px;font-weight:800;min-width:19px;height:19px;
+  border-radius:10px;display:flex;align-items:center;justify-content:center;padding:0 5px}
+/* المحادثة */
+#v-chat.on{display:flex;flex-direction:column}
+#chatThread{display:none;flex-direction:column;
+  height:calc(100vh - 178px);height:calc(100dvh - 178px);min-height:320px}
+#chatThread.on{display:flex}
+.thead{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:8px 10px;margin-bottom:8px}
+.thead button{background:var(--chip);border:none;color:var(--ink);border-radius:10px;
+  padding:8px 12px;font-size:16px;font-weight:800;cursor:pointer}
+.thead .cav{width:38px;height:38px;font-size:15px}
+.thead .tinfo{flex:1;min-width:0}
+.thead .tinfo b{display:block;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thead .tinfo span{font-size:11.5px;color:var(--mut)}
+#chatMsgs{flex:1;overflow-y:auto;padding:4px 2px 10px;display:flex;flex-direction:column;gap:6px;
+  -webkit-overflow-scrolling:touch}
+.bub{max-width:82%;padding:8px 12px;border-radius:16px;font-size:14px;line-height:1.6;
+  word-break:break-word;white-space:pre-wrap;box-shadow:var(--shadow);align-self:flex-start;
+  background:var(--card);border:1px solid var(--line);border-start-start-radius:5px}
+.bub.me{align-self:flex-end;background:var(--brand);color:#fff;border-color:var(--brand);
+  border-start-end-radius:5px}
+html[data-theme="dark"] .bub.me{background:#4a2c15}
+.bub .bmeta{font-size:10px;opacity:.75;display:flex;gap:4px;justify-content:flex-end;
+  align-items:center;margin-top:3px;white-space:pre-wrap}
+.bub .bimg{display:block;max-width:100%;max-height:240px;border-radius:11px;margin:2px 0;
+  cursor:pointer;object-fit:cover;background:var(--chip)}
+.bub .bfile{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.12);
+  border-radius:10px;padding:7px 10px;margin:2px 0;cursor:pointer;font-size:13px;font-weight:700}
+.bub .bfile span{direction:ltr;unicode-bidi:embed;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;max-width:170px}
+.bub.me .bfile{background:rgba(255,255,255,.16)}
+.bub audio{width:min(230px,100%);margin:2px 0;height:36px}
+.bub .bsender{font-size:11px;font-weight:800;color:var(--gold);display:block;margin-bottom:2px}
+.cbar{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:7px;margin-top:8px}
+.cbar input{flex:1;min-width:0;border:none;background:transparent;color:var(--ink);
+  font-size:15px;padding:8px 6px;outline:none}
+.cbtn{flex:none;width:40px;height:40px;border-radius:50%;border:none;background:var(--chip);
+  color:var(--ink);font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.cbtn.go{background:var(--brand);color:#fff}
+.cbtn:active{transform:scale(.93)}
+/* التسجيل الصوتي */
+.crec{display:flex;align-items:center;gap:8px;background:var(--badsoft);border:1px solid var(--badline);
+  color:var(--bad);border-radius:12px;padding:7px 12px;margin-top:8px;font-size:13px;font-weight:800}
+.crec .dot{width:10px;height:10px;border-radius:50%;background:var(--bad);animation:pulse 1s infinite}
+.crec b{font-variant-numeric:tabular-nums;direction:ltr}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+/* عارض الصور */
+#chatView{border:none;padding:0;background:rgba(0,0,0,.92);max-width:100vw;max-height:100vh;width:100%;height:100%}
+#chatView img{max-width:100vw;max-height:calc(100vh - 60px);object-fit:contain;margin:auto;display:block}
+#chatView::backdrop{background:rgba(0,0,0,.92)}
+#chatViewX{position:fixed;top:12px;inset-inline-start:12px;background:rgba(255,255,255,.15);
+  color:#fff;border:none;border-radius:10px;padding:9px 14px;font-size:15px;font-weight:800;cursor:pointer}
+/* حوار اختيار جهة الاتصال */
+.crow{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid var(--line);
+  cursor:pointer;border-radius:10px}
+.crow:last-child{border-bottom:none}
+.crow:active{background:var(--brandsoft)}
+.crow .cav{width:38px;height:38px;font-size:15px}
+.crow .cinfo{flex:1;min-width:0}
+.crow .cinfo b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crow .cinfo span{font-size:11.5px;color:var(--mut)}
 </style>
 </head>
 <body>
@@ -299,7 +381,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v49</span></p>
+      <span style="opacity:.65">الإصدار v50</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -397,7 +479,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v49</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v50</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -441,6 +523,33 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
       </div>
       <div class="sumcard" id="movSum" style="display:none"></div>
       <div id="movList"><p class="empty">جارِ التحميل...</p></div>
+    </section>
+    <!-- الرسائل v50 — شات بين فريق العمل -->
+    <section class="view" id="v-chat">
+      <div id="chatHome">
+        <div class="invhead"><h2 class="vt">الرسائل</h2>
+          <button class="btn mini gold" id="btnNewChat">＋ محادثة جديدة</button>
+        </div>
+        <div id="chatList"><p class="empty">جارِ التحميل...</p></div>
+      </div>
+      <div id="chatThread">
+        <div class="thead">
+          <button id="chatBack">→</button>
+          <div class="cav" id="chatPeerAv">؟</div>
+          <div class="tinfo"><b id="chatPeerName">—</b><span id="chatPeerRole"></span></div>
+        </div>
+        <div id="chatMsgs"></div>
+        <div class="crec" id="chatRec" style="display:none"><span class="dot"></span>
+          جارٍ التسجيل <b id="chatRecT">0:00</b>
+          <button class="btn mini red" id="chatRecCancel" style="margin-inline-start:auto">إلغاء</button>
+        </div>
+        <div class="cbar">
+          <button class="cbtn" id="chatAttach" title="إرفاق">📎</button>
+          <input id="chatTxt" placeholder="اكتب رسالة..." maxlength="4000" autocomplete="off">
+          <button class="cbtn" id="chatMic" title="تسجيل صوتي">🎤</button>
+          <button class="cbtn go" id="chatSend" title="إرسال">➤</button>
+        </div>
+      </div>
     </section>
     <!-- الزيت -->
     <section class="view" id="v-oil">
@@ -503,7 +612,7 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v49</p>
+      <p class="hint" id="setAbout">الإصدار v50</p>
     </section>
   </main>
   <nav class="tabs">
@@ -511,11 +620,24 @@ html[data-theme="dark"] #nBadge{border-color:#241d16}
     <button data-v="v-inv"><span class="ic">📦</span>المخزون</button>
     <button data-v="v-mov" id="tabMov"><span class="ic">📋</span>الحركة</button>
     <button data-v="v-ord" id="tabOrders"><span class="ic">🚚</span>الطلبات</button>
+    <button data-v="v-chat" id="tabChat"><span class="ic">💬</span>الرسائل<span class="cnavb" id="chatBadge" style="display:none">0</span></button>
     <button data-v="v-oil" id="tabOil"><span class="ic">🔧</span>الزيت</button>
     <button data-v="v-users" id="tabUsers"><span class="ic">👥</span>المستخدمون</button>
   </nav>
 </div>
 
+<dialog id="dlgChatC">
+  <div class="dh">💬 محادثة جديدة</div>
+  <div id="chatCList" style="min-height:120px;max-height:55vh;overflow-y:auto"><p class="empty">جارِ التحميل...</p></div>
+  <button class="btn gray" id="dlgChatCX" style="margin-top:10px">إغلاق</button>
+</dialog>
+<dialog id="chatView">
+  <button id="chatViewX">✕ إغلاق</button>
+  <img id="chatViewImg" alt="">
+</dialog>
+<input type="file" id="chatImgIn" accept="image/*" style="display:none">
+<input type="file" id="chatAudIn" accept="audio/*" style="display:none">
+<input type="file" id="chatFileIn" style="display:none">
 <dialog id="dlgCsv">
   <div class="dh">📎 نسخة CSV احتياطية</div>
   <div style="padding:4px 2px">
@@ -712,7 +834,10 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
      v48: type = خانة النوع ("" = الكل / add / remove / reconcile) */
   mov: { preset: "week", from: "", to: "", nofriday: true, product: 0,
          product_name: "", type: "", data: [], summary: null },
-  invTab: "all", invData: [], serverVersion: "" };
+  invTab: "all", invData: [], serverVersion: "",
+  /* v50: حالة الرسائل — الشات الداخلي */
+  chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
+          sending: false, total: 0, urls: {}, rec: null, recT0: 0, recTimer: null } };
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -827,6 +952,7 @@ function showLogin(setupMode) {
   S.pendingData = []; S.incData = { orders: [], admin: false };
   S.apprDlg = null; S.roleDlg = null; S.passDlg = null; S.dlg = null;
   seqInvalidateAll();
+  chatReset(true);   /* v50: تصفير حالة الرسائل */
   try { $("#qSearch").value = ""; } catch (e0) {}
   document.querySelectorAll("dialog[open]").forEach((d) => { try { d.close(); } catch (e1) {} });
   stopNotifPolling();
@@ -1026,6 +1152,8 @@ function switchView(id) {
   if (id === "v-users") loadUsers();
   if (id === "v-home") loadHome();
   if (id === "v-set") renderProfile();
+  /* v50: الرسائل — تشغيل/إيقاف دورية التحديث حسب الشاشة */
+  if (id === "v-chat") chatEnter(); else chatLeave();
 }
 document.querySelectorAll("nav.tabs button").forEach((b) =>
   b.addEventListener("click", () => switchView(b.dataset.v)));
@@ -2118,6 +2246,10 @@ async function pollNotifs() {
     const d = await api("/api/notifications?after=" + S.notif.lastId + "&limit=30");
     S.notif.lastId = d.last_id || S.notif.lastId;
     S.notif.unread = d.unread || 0;
+    /* v50: شارة رسائل الشات تأتي مع نفس دورية الإشعارات — بلا حلقة إضافية */
+    if (typeof d.chat_unread === "number" && !S.chat.peer) {
+      S.chat.total = d.chat_unread; renderChatBadge();
+    }
     if (d.items && d.items.length) {
       S.notif.items = d.items.concat(S.notif.items).slice(0, 50);
       if (S.notif.ready) {
@@ -2293,7 +2425,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v49" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v50" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2311,7 +2443,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v49";
+const APP_VER = "v50";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2378,6 +2510,431 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) checkAppUpdate();  /* فحص لحظة العودة للتطبيق */
 });
 setTimeout(checkAppUpdate, 8000);     /* فحص أول بعد الإقلاع بقليل */
+
+/* ═══════════ v50: الرسائل — شات شبيه بواتساب بين فريق العمل ═══════════
+   محادثة فردية مع أي موظف/مدير + فتح محادثة أخرى في أي وقت.
+   نص + صور (تُضغط في الهاتف) + ملفات + رسائل صوتية (إن توفر الميكروفون).
+   تحديث حي كل 3 ثوانٍ داخل المحادثة و8 ثوانٍ في القائمة — بلا إعادة رسم كاملة. */
+const _CHAT_POLL_MSG = 3000, _CHAT_POLL_LIST = 8000, _CHAT_FILE_MAX = 10 * 1024 * 1024;
+
+function chatAva(n) { const c = String(n || "؟").trim().charAt(0); return c ? c.toUpperCase() : "؟"; }
+function fmtSize(b) {
+  b = Number(b) || 0;
+  if (b >= 1048576) return (b / 1048576).toFixed(1) + " م.ب";
+  if (b >= 1024) return Math.round(b / 1024) + " ك.ب";
+  return b + " ب";
+}
+function fmtChatTime(s) {
+  const v = String(s || "").replace("T", " ");
+  if (v.length < 16) return v;
+  const t = new Date();
+  const td = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+  if (v.slice(0, 10) === td) return v.slice(11, 16);        /* اليوم: الساعة فقط */
+  return v.slice(5, 16);                                    /* 09-07 11:42 */
+}
+function chatPreview(m) {
+  if (!m) return "";
+  const who = m.mine ? "أنت: " : "";
+  if (m.kind === "image") return who + "🖼️ صورة";
+  if (m.kind === "audio") return who + "🎤 رسالة صوتية";
+  if (m.kind === "file") return who + "📎 " + (m.media_name || "ملف");
+  return who + (m.body || "");
+}
+function renderChatBadge() {
+  const b = $("#chatBadge");
+  if (!b) return;
+  const n = S.chat.total || 0;
+  b.textContent = n > 99 ? "99+" : String(n);
+  b.style.display = n > 0 ? "flex" : "none";
+}
+function chatStopTimers() {
+  if (S.chat.timer) { clearTimeout(S.chat.timer); S.chat.timer = null; }
+  if (S.chat.ltimer) { clearTimeout(S.chat.ltimer); S.chat.ltimer = null; }
+}
+function chatReset(full) {
+  chatStopTimers();
+  S.chat.peer = null; S.chat.lastId = 0; S.chat.readUpto = 0;
+  S.chat.busy = false; S.chat.sending = false;
+  Object.keys(S.chat.urls).forEach((k) => { try { URL.revokeObjectURL(S.chat.urls[k]); } catch (e) {} });
+  S.chat.urls = {};
+  if (S.chat.rec) chatRecAbort();
+  const th = $("#chatThread"); if (th) th.classList.remove("on");
+  const hm = $("#chatHome"); if (hm) hm.style.display = "";
+  if (full) { S.chat.total = 0; renderChatBadge(); }
+}
+function chatEnter() {
+  const hm = $("#chatHome"); if (hm) hm.style.display = "";
+  const th = $("#chatThread"); if (th) th.classList.remove("on");
+  loadChatList(true);
+  chatListLoop();
+}
+function chatLeave() { chatStopTimers(); }   /* رخيصة وآمنة في كل تنقّل */
+
+/* ─── قائمة المحادثات ─── */
+async function loadChatList(showLoading) {
+  if (!S.user) return;
+  const box = $("#chatList");
+  if (showLoading && box) box.innerHTML = '<p class="empty">جارِ التحميل...</p>';
+  try {
+    const d = await api("/api/chat/list", { noCache: true });
+    if (!S.user) return;
+    S.chat.total = (d.chats || []).reduce((a, c) => a + (c.unread || 0), 0);
+    renderChatBadge();
+    if (!box) return;
+    if (!(d.chats || []).length) {
+      box.innerHTML = '<p class="empty">لا محادثات بعد — اضغط «＋ محادثة جديدة» 👆</p>';
+      return;
+    }
+    box.innerHTML = d.chats.map((c) =>
+      '<div class="chatrow" data-cu="' + c.user.id + '">'
+      + '<div class="cav">' + esc(chatAva(c.user.name)) + '</div>'
+      + '<div class="cinfo"><b>' + esc(c.user.name) + '</b>'
+      + '<span>' + esc(chatPreview(c.last)) + '</span></div>'
+      + '<div class="cside"><span class="ctime">' + esc(fmtChatTime(c.last.created_at)) + '</span>'
+      + (c.unread ? '<span class="cunread">' + (c.unread > 99 ? "99+" : c.unread) + '</span>' : "")
+      + '</div></div>').join("");
+    box.querySelectorAll(".chatrow").forEach((r) =>
+      r.addEventListener("click", () => {
+        const id = Number(r.dataset.cu);
+        const c = (d.chats || []).find((x) => x.user.id === id);
+        openChat(id, c ? c.user.name : "#" + id, c ? c.user.role_label : "");
+      }));
+  } catch (e) {
+    if (showLoading && box) box.innerHTML = '<p class="empty">تعذر التحميل — أعد المحاولة.</p>';
+  }
+}
+function chatListLoop() {
+  if (S.chat.ltimer) clearTimeout(S.chat.ltimer);
+  S.chat.ltimer = setTimeout(async () => {
+    S.chat.ltimer = null;
+    const on = $("#v-chat") && $("#v-chat").classList.contains("on");
+    if (on && S.user && !$("#chatThread").classList.contains("on") && !document.hidden) {
+      await loadChatList(false);
+    }
+    if ($("#v-chat") && $("#v-chat").classList.contains("on")) chatListLoop();
+  }, _CHAT_POLL_LIST);
+}
+
+/* ─── المحادثة ─── */
+async function openChat(uid, name, roleLabel) {
+  if (!uid || !S.user) return;
+  chatStopTimers();
+  S.chat.peer = { id: uid, name: name || ("#" + uid), role: roleLabel || "" };
+  S.chat.lastId = 0; S.chat.readUpto = 0; S.chat.busy = false;
+  $("#chatHome").style.display = "none";
+  $("#chatThread").classList.add("on");
+  $("#chatPeerName").textContent = S.chat.peer.name;
+  $("#chatPeerRole").textContent = S.chat.peer.role;
+  $("#chatPeerAv").textContent = chatAva(S.chat.peer.name);
+  $("#chatMsgs").innerHTML = '<p class="empty">جارِ التحميل...</p>';
+  $("#chatTxt").value = "";
+  try {
+    const d = await api("/api/chat/msg?user=" + uid + "&after=0", { noCache: true, timeout: 30000 });
+    if (!S.chat.peer || S.chat.peer.id !== uid) return;
+    $("#chatMsgs").innerHTML = "";
+    S.chat.lastId = 0;
+    (d.messages || []).forEach((m) => { appendMsg(m); if (m.id > S.chat.lastId) S.chat.lastId = m.id; });
+    S.chat.readUpto = d.read_upto || 0;
+    updateTicks();
+    scrollChat(true);
+    api("/api/chat/unread", { noCache: true })
+      .then((x) => { S.chat.total = x.total || 0; renderChatBadge(); }).catch(() => {});
+    chatPollLoop();
+  } catch (e) {
+    $("#chatMsgs").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
+  }
+}
+function scrollChat(force) {
+  const box = $("#chatMsgs");
+  if (!box) return;
+  const near = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
+  if (near || force) box.scrollTop = box.scrollHeight;
+}
+function appendMsg(m) {
+  const box = $("#chatMsgs");
+  if (!box || !m) return;
+  const el = document.createElement("div");
+  el.className = "bub" + (m.mine ? " me" : "");
+  el.dataset.mid = m.id;
+  let inner = "";
+  if (m.kind === "image") {
+    inner += '<img class="bimg" alt="">';
+    if (m.body) inner += esc(m.body);
+  } else if (m.kind === "audio") {
+    inner += '<audio controls preload="none"></audio>';
+    if (m.body) inner += esc(m.body);
+  } else if (m.kind === "file") {
+    inner += '<div class="bfile">📎 <span>' + esc(m.media_name || "ملف") + '</span>'
+      + '<small style="opacity:.8;flex:none">' + esc(fmtSize(m.media_size)) + '</small></div>';
+    if (m.body) inner += esc(m.body);
+  } else {
+    inner += esc(m.body);
+  }
+  const ticks = m.mine ? (m.read ? " ✓✓" : " ✓") : "";
+  inner += '<span class="bmeta">' + esc(fmtChatTime(m.created_at)) + ticks + '</span>';
+  el.innerHTML = inner;
+  box.appendChild(el);
+  if (m.kind === "image") {
+    const im = el.querySelector("img.bimg");
+    chatMediaURL(m.id).then((u) => { im.src = u; }).catch(() => { im.style.display = "none"; });
+    im.addEventListener("click", () => chatShowImage(m.id));
+  } else if (m.kind === "audio") {
+    const au = el.querySelector("audio");
+    chatMediaURL(m.id).then((u) => { au.src = u; }).catch(() => {});
+  } else if (m.kind === "file") {
+    el.querySelector(".bfile").addEventListener("click", () => chatDownload(m.id, m.media_name));
+  }
+}
+function updateTicks() {
+  const up = S.chat.readUpto || 0;
+  if (!up) return;
+  $("#chatMsgs").querySelectorAll(".bub.me").forEach((el) => {
+    const id = Number(el.dataset.mid);
+    if (!id || id > up) return;
+    const meta = el.querySelector(".bmeta");
+    if (meta && meta.textContent.indexOf("✓✓") < 0)
+      meta.textContent = meta.textContent.replace("✓", "✓✓");
+  });
+}
+function chatPollLoop() {
+  if (S.chat.timer) clearTimeout(S.chat.timer);
+  S.chat.timer = setTimeout(async () => {
+    S.chat.timer = null;
+    if (!S.chat.peer || !S.user) return;
+    const on = $("#v-chat") && $("#v-chat").classList.contains("on");
+    if (!on) return;
+    if (S.chat.busy || document.hidden) { chatPollLoop(); return; }
+    S.chat.busy = true;
+    try {
+      const d = await api("/api/chat/msg?user=" + S.chat.peer.id + "&after=" + S.chat.lastId,
+                          { noCache: true, timeout: 20000 });
+      if (S.chat.peer && d.messages && d.messages.length) {
+        d.messages.forEach((m) => { if (m.id > S.chat.lastId) { S.chat.lastId = m.id; appendMsg(m); } });
+        scrollChat(false);
+      }
+      if (S.chat.peer && typeof d.read_upto === "number" && d.read_upto > S.chat.readUpto) {
+        S.chat.readUpto = d.read_upto; updateTicks();
+      }
+    } catch (e) { /* انقطاع مؤقت — الدورة القادمة تعيد المحاولة */ }
+    finally {
+      S.chat.busy = false;
+      if (S.chat.peer && S.user) chatPollLoop();
+    }
+  }, _CHAT_POLL_MSG);
+}
+
+/* ─── الوسائط ─── */
+async function chatBlob(path) {
+  const res = await fetch(path, { credentials: "same-origin" });
+  if (!res.ok) {
+    let m = "تعذر تحميل المرفق";
+    try { m = (await res.json()).error || m; } catch (e) {}
+    throw new Error(m);
+  }
+  return await res.blob();
+}
+async function chatMediaURL(id) {
+  if (S.chat.urls[id]) return S.chat.urls[id];
+  const b = await chatBlob("/api/chat/media?id=" + id);
+  const u = URL.createObjectURL(b);
+  S.chat.urls[id] = u;
+  return u;
+}
+function chatShowImage(id) {
+  chatMediaURL(id).then((u) => {
+    $("#chatViewImg").src = u;
+    try { $("#chatView").showModal(); } catch (e) {}
+  }).catch((e) => toast(e.message, true));
+}
+async function chatDownload(id, name) {
+  try {
+    const u = await chatMediaURL(id);
+    const a = document.createElement("a");
+    a.href = u; a.download = name || "file";
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ─── الإرسال ─── */
+async function chatSendText() {
+  const inp = $("#chatTxt");
+  const t = inp.value.trim();
+  if (!t) return;
+  inp.value = "";
+  await chatSend({ kind: "text", text: t });
+  inp.focus();
+}
+async function chatSend(payload) {
+  if (!S.chat.peer) { toast("افتح محادثة أولاً.", true); return; }
+  if (S.chat.sending) return;
+  S.chat.sending = true;
+  const btn = $("#chatSend");
+  btn.textContent = "⏳";
+  try {
+    const d = await api("/api/chat/send", {
+      method: "POST", headers: { "Content-Type": "application/json" }, timeout: 60000,
+      body: JSON.stringify(Object.assign({ to: S.chat.peer.id }, payload)) });
+    const m = d.message;
+    if (m && m.id > S.chat.lastId) { S.chat.lastId = m.id; appendMsg(m); scrollChat(true); }
+  } catch (e) { toast(e.message, true); }
+  finally { S.chat.sending = false; btn.textContent = "➤"; }
+}
+
+/* ─── المرفقات ─── */
+function chatAttachMenu() {
+  let dlg = $("#dlgChatAtt");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "dlgChatAtt";
+    dlg.innerHTML = '<div class="dh">📎 إرفاق</div>'
+      + '<button class="btn" id="attImg">🖼️ صورة</button>'
+      + '<button class="btn gray" id="attAud" style="margin-top:8px">🎤 ملف صوتي</button>'
+      + '<button class="btn gray" id="attFile" style="margin-top:8px">📄 ملف آخر</button>'
+      + '<button class="btn gray" id="attX" style="margin-top:10px">إلغاء</button>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#attImg").addEventListener("click", () => { dlg.close(); $("#chatImgIn").click(); });
+    dlg.querySelector("#attAud").addEventListener("click", () => { dlg.close(); $("#chatAudIn").click(); });
+    dlg.querySelector("#attFile").addEventListener("click", () => { dlg.close(); $("#chatFileIn").click(); });
+    dlg.querySelector("#attX").addEventListener("click", () => dlg.close());
+  }
+  try { dlg.showModal(); } catch (e) {}
+}
+function chatRaw64(file, done) {
+  const r = new FileReader();
+  r.onload = () => done(String(r.result), file.type || "application/octet-stream", file.name || "ملف");
+  r.onerror = () => toast("تعذر قراءة الملف.", true);
+  r.readAsDataURL(file);
+}
+function chatReadFile(file, kind) {
+  if (!file) return;
+  if (file.size > _CHAT_FILE_MAX) { toast("الملف كبير جداً — الحد 10 ميغابايت.", true); return; }
+  const done = (b64, mime, name) => chatSend({ kind: kind, name: name, mime: mime, data: b64 });
+  if (kind === "image") {
+    /* ضغط الصورة في الهاتف قبل الرفع — أسرع وأخف على الشبكة */
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        const mx = 1280;
+        let w = img.width || mx, h = img.height || mx;
+        if (w > mx || h > mx) { const k = Math.min(mx / w, mx / h); w = Math.round(w * k); h = Math.round(h * k); }
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        const d64 = c.toDataURL("image/jpeg", 0.72);
+        URL.revokeObjectURL(url);
+        done(d64, "image/jpeg", (file.name || "صورة").replace(/\.[^.]*$/, "") + ".jpg");
+      } catch (e) { URL.revokeObjectURL(url); chatRaw64(file, done); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); chatRaw64(file, done); };
+    img.src = url;
+  } else chatRaw64(file, done);
+}
+
+/* ─── التسجيل الصوتي ─── */
+async function chatMicToggle() {
+  if (S.chat.rec) { chatRecStop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    toast("🎤 التسجيل غير مدعوم هنا — سجّل من مسجّل الهاتف وأرفقه عبر 📎 › ملف صوتي.", true);
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const rec = new MediaRecorder(stream);
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      const mime = rec.mimeType || "audio/webm";
+      const blob = new Blob(chunks, { type: mime });
+      try { stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
+      chatRecCleanup();
+      if (blob.size < 800) { toast("التسجيل قصير جداً.", true); return; }
+      const r = new FileReader();
+      r.onload = () => chatSend({ kind: "audio", mime: mime,
+        name: "رسالة-صوتية." + (mime.indexOf("mp4") >= 0 ? "m4a" : "webm"),
+        data: String(r.result) });
+      r.onerror = () => toast("تعذر تجهيز التسجيل.", true);
+      r.readAsDataURL(blob);
+    };
+    rec.onerror = () => { toast("فشل التسجيل — أعد المحاولة.", true); chatRecCleanup(); };
+    rec.start();
+    S.chat.rec = rec;
+    S.chat.recT0 = Date.now();
+    $("#chatRec").style.display = "flex";
+    $("#chatMic").textContent = "⏹";
+    S.chat.recTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - S.chat.recT0) / 1000);
+      $("#chatRecT").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    }, 500);
+  } catch (e) {
+    toast("🎤 الميكروفون غير متاح داخل التطبيق — سجّل من مسجّل الهاتف وأرفقه عبر 📎 › ملف صوتي.", true);
+  }
+}
+function chatRecStop() {
+  if (S.chat.rec) { try { S.chat.rec.stop(); } catch (e) { chatRecCleanup(); } }
+}
+function chatRecAbort() {
+  try {
+    if (S.chat.rec && S.chat.rec.state !== "inactive") {
+      S.chat.rec.onstop = null; S.chat.rec.stop();
+    }
+  } catch (e) {}
+  try {
+    if (S.chat.rec && S.chat.rec.stream)
+      S.chat.rec.stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} });
+  } catch (e1) {}
+  chatRecCleanup();
+}
+function chatRecCleanup() {
+  S.chat.rec = null;
+  if (S.chat.recTimer) { clearInterval(S.chat.recTimer); S.chat.recTimer = null; }
+  const r = $("#chatRec"); if (r) r.style.display = "none";
+  const m = $("#chatMic"); if (m) m.textContent = "🎤";
+}
+
+/* ─── محادثة جديدة ─── */
+async function openContactsDlg() {
+  try { $("#dlgChatC").showModal(); } catch (e) {}
+  const box = $("#chatCList");
+  box.innerHTML = '<p class="empty">جارِ التحميل...</p>';
+  try {
+    const d = await api("/api/chat/contacts");
+    const list = d.contacts || [];
+    if (!list.length) {
+      box.innerHTML = '<p class="empty">لا يوجد زملاء متاحون للمحادثة بعد.</p>';
+      return;
+    }
+    box.innerHTML = list.map((c) =>
+      '<div class="crow" data-cid="' + c.id + '"><div class="cav">' + esc(chatAva(c.name)) + '</div>'
+      + '<div class="cinfo"><b>' + esc(c.name) + '</b><span>' + esc(c.role_label || "") + '</span></div></div>').join("");
+    box.querySelectorAll(".crow").forEach((r) => r.addEventListener("click", () => {
+      try { $("#dlgChatC").close(); } catch (e0) {}
+      const id = Number(r.dataset.cid);
+      const c = list.find((x) => x.id === id);
+      openChat(id, c ? c.name : "", c ? c.role_label : "");
+    }));
+  } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+
+/* ─── ربط الأحداث (مرة واحدة) ─── */
+$("#chatSend").addEventListener("click", chatSendText);
+$("#chatTxt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); chatSendText(); }
+});
+$("#chatAttach").addEventListener("click", chatAttachMenu);
+$("#chatMic").addEventListener("click", chatMicToggle);
+$("#chatRecCancel").addEventListener("click", chatRecAbort);
+$("#chatBack").addEventListener("click", () => { chatReset(false); chatEnter(); });
+$("#btnNewChat").addEventListener("click", openContactsDlg);
+$("#dlgChatCX").addEventListener("click", () => { try { $("#dlgChatC").close(); } catch (e) {} });
+$("#chatViewX").addEventListener("click", () => { try { $("#chatView").close(); } catch (e) {} });
+[$("#chatImgIn"), $("#chatAudIn"), $("#chatFileIn")].forEach((inp, i) => {
+  inp.addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    chatReadFile(f, i === 0 ? "image" : (i === 1 ? "audio" : "file"));
+    e.target.value = "";
+  });
+});
 </script>
 </body>
 </html>
