@@ -321,7 +321,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
   color:var(--ink);font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .cbtn.go{background:var(--brand);color:#fff}
 .cbtn:active{transform:scale(.93)}
-/* v54: زر المايك بالضغط المطول مثل واتساب */
+/* v55: زر المايك بالضغط المطول الفوري مثل واتساب */
 #chatMic{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #chatMic.rec{background:#dc2626;color:#fff;box-shadow:0 0 0 7px rgba(220,38,38,.15)}
 /* التسجيل الصوتي */
@@ -329,6 +329,8 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
   color:var(--bad);border-radius:12px;padding:7px 12px;margin-top:8px;font-size:13px;font-weight:800}
 .crec .dot{width:10px;height:10px;border-radius:50%;background:var(--bad);animation:pulse 1s infinite}
 .crec b{font-variant-numeric:tabular-nums;direction:ltr}
+.crec.cancel{background:var(--bad);color:#fff}
+.crec.cancel .dot{background:#fff}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 /* عارض الصور */
 #chatView{border:none;padding:0;background:rgba(0,0,0,.92);max-width:100vw;max-height:100vh;width:100%;height:100%}
@@ -386,7 +388,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v54</span></p>
+      <span style="opacity:.65">الإصدار v55</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -484,7 +486,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v54</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v55</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -546,8 +548,8 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         </div>
         <div id="chatMsgs"></div>
         <div class="crec" id="chatRec" style="display:none"><span class="dot"></span>
-          جارٍ التسجيل <b id="chatRecT">0:00</b> — أفلت للإرسال • اسحب بعيداً للإلغاء
-          <button class="btn mini red" id="chatRecCancel" style="margin-inline-start:auto">إلغاء</button>
+          <span id="chatRecRec">جارٍ التسجيل <b id="chatRecT">0:00</b> — أفلت للإرسال • اسحب لليسار للإلغاء</span>
+          <span id="chatRecCnl" style="display:none">❌ إلغاء — أفلت للتخلي عن التسجيل</span>
         </div>
         <div class="cbar">
           <button class="cbtn" id="chatAttach" title="إرفاق">📎</button>
@@ -618,9 +620,8 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
-      <button class="btn gold" id="btnMicGuide" style="margin-bottom:10px">🎤 تفعيل التسجيل مثل واتساب</button>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v54</p>
+      <p class="hint" id="setAbout">الإصدار v55</p>
     </section>
   </main>
   <nav class="tabs">
@@ -648,7 +649,6 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 <input type="file" id="chatFileIn" style="display:none">
 <input type="file" id="chatVidIn" accept="video/*" style="display:none">
 <input type="file" id="chatCamIn" accept="image/*" capture="environment" style="display:none">
-<input type="file" id="chatAudCap" accept="audio/*" capture="microphone" style="display:none">
 <dialog id="dlgCsv">
   <div class="dh">📎 نسخة CSV احتياطية</div>
   <div style="padding:4px 2px">
@@ -849,7 +849,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v50: حالة الرسائل — الشات الداخلي */
   chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
           sending: false, total: 0, urls: {}, rec: null, recT0: 0, recTimer: null,
-          hold: false, recCancel: false, recStream: null } };
+          recState: "idle", recCancel: false, recStream: null } };
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -2437,7 +2437,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v54" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v55" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2455,7 +2455,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v54";
+const APP_VER = "v55";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2857,11 +2857,20 @@ function chatReadFile(file, kind) {
   } else chatRaw64(file, done);
 }
 
-/* ─── التسجيل الصوتي v54: ضغط مطول مثل واتساب ───
-   ضغط على 🎤 = بدء التسجيل فوراً، أفلت = إرسال، اسحب بعيداً = إلغاء.
-   إن رفضت القشرة الميكروفون → دليل تفعيل كروم بدل فتح الملفات صامتة. */
+/* ─── التسجيل الصوتي v55: ضغط مطول فوري مثل واتساب/تلغرام ───
+   pointerdown = تسجيل فوري بلا أي نافذة، أفلت = إرسال مباشر، اسحب لليسار = إلغاء.
+   رفض الإذن = رسالة صغيرة فقط. بلا كروم، بلا مسجّل النظام، بلا مدخلات ملفات. */
 function chatMicOK() {
   return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+function chatRecMime() {
+  const list = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
+  if (window.MediaRecorder && MediaRecorder.isTypeSupported) {
+    for (let i = 0; i < list.length; i++) {
+      try { if (MediaRecorder.isTypeSupported(list[i])) return list[i]; } catch (e) {}
+    }
+  }
+  return "";
 }
 function setMicUI(mode) {
   const m = $("#chatMic"); if (!m) return;
@@ -2869,130 +2878,120 @@ function setMicUI(mode) {
   else if (mode === "cancel") { m.textContent = "🚫"; m.classList.add("rec"); }
   else { m.textContent = "🎤"; m.classList.remove("rec"); }
 }
+function chatRecBar(cancel) {
+  const r = $("#chatRec"); if (!r) return;
+  r.style.display = "flex";
+  const a = $("#chatRecRec"), b = $("#chatRecCnl");
+  if (a) a.style.display = cancel ? "none" : "";
+  if (b) b.style.display = cancel ? "" : "none";
+  r.classList.toggle("cancel", !!cancel);
+}
+function chatRecStopTracks(stream) {
+  try { if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
+}
 async function chatRecStart() {
-  if (S.chat.rec) return;
-  if (!chatMicOK()) { chatMicGuide(); return; }
-  S.chat.hold = true; S.chat.recCancel = false;
+  if (S.chat.recState === "hold" || S.chat.recState === "rec" ||
+      S.chat.recState === "cancel" || S.chat.recState === "sending") return;  /* حالة واحدة فقط */
+  if (!chatMicOK()) { toast("الميكروفون غير مدعوم في هذا المتصفح.", true); return; }
+  S.chat.recState = "hold"; S.chat.recCancel = false;
   let stream = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    S.chat.hold = false; S.chat.recCancel = false;
-    chatMicGuide();   /* v54: الميكروفون مرفوض (قشرة WebView) → دليل التفعيل */
+    console.log("recording:error permission-denied");
+    S.chat.recState = "idle"; S.chat.recCancel = false;
+    toast("يرجى السماح باستخدام الميكروفون", true);   /* رسالة صغيرة فقط — بلا نوافذ */
     return;
   }
-  if (!S.chat.hold) {  /* أفلت قبل منح الإذن */
-    try { stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
-    toast("✅ تم السماح بالميكروفون — اضغط مطولاً وتكلم ثم أفلت للإرسال.");
+  if (S.chat.recState !== "hold") {   /* أفلت قبل منح الإذن — لا تسجيل شبح */
+    chatRecStopTracks(stream);
+    toast("تم السماح بالميكروفون — اضغط مطولاً وتكلم ثم أفلت.");
     return;
   }
-  const rec = new MediaRecorder(stream);
+  const mime = chatRecMime();
+  let rec = null;
+  try { rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  catch (e2) {
+    try { rec = new MediaRecorder(stream); } catch (e3) { rec = null; }
+  }
+  if (!rec) {
+    console.log("recording:error init");
+    chatRecStopTracks(stream);
+    S.chat.recState = "idle";
+    toast("فشل بدء التسجيل على هذا الجهاز.", true);
+    return;
+  }
   const chunks = [];
   rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   rec.onstop = () => {
-    const mime = rec.mimeType || "audio/webm";
-    const blob = new Blob(chunks, { type: mime });
-    try { if (S.chat.recStream) S.chat.recStream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
-    chatRecCleanup();
-    if (blob.size < 800) { toast("التسجيل قصير جداً.", true); return; }
+    const wasCancel = S.chat.recCancel;
+    const held = Date.now() - (S.chat.recT0 || Date.now());
+    const bm = rec.mimeType || mime || "audio/webm";
+    const blob = new Blob(chunks, { type: bm });
+    chatRecStopTracks(S.chat.recStream);   /* تحرير المايك دائماً */
+    S.chat.recStream = null;
+    console.log(wasCancel ? "recording:cancel" : "recording:stop " + Math.round(held / 1000) + "s " + blob.size + "B");
+    if (wasCancel) { chatRecCleanup(); return; }             /* إلغاء: حذف بلا إرسال */
+    if (held < 700 || blob.size < 1200) {                    /* حد أدنى: لا فارغ ولا خطفات */
+      chatRecCleanup();
+      toast("اضغط مطولاً وتكلم ثم أفلت للإرسال.");
+      return;
+    }
+    S.chat.recState = "sending";
+    console.log("recording:send " + bm);
     const r = new FileReader();
-    r.onload = () => chatSend({ kind: "audio", mime: mime,
-      name: "رسالة-صوتية." + (mime.indexOf("mp4") >= 0 ? "m4a" : "webm"),
-      data: String(r.result) });
-    r.onerror = () => toast("تعذر تجهيز التسجيل.", true);
+    r.onload = () => {
+      chatSend({ kind: "audio", mime: bm,
+        name: "رسالة-صوتية." + (bm.indexOf("mp4") >= 0 ? "m4a" : "webm"),
+        data: String(r.result) });
+      chatRecCleanup();
+    };
+    r.onerror = () => { chatRecCleanup(); toast("تعذر تجهيز التسجيل.", true); };
     r.readAsDataURL(blob);
   };
-  rec.onerror = () => { toast("فشل التسجيل — أعد المحاولة.", true); chatRecCleanup(); };
-  try { rec.start(); } catch (e2) {
-    try { stream.getTracks().forEach((t) => { try { t.stop(); } catch (e3) {} }); } catch (e4) {}
-    chatRecCleanup(); return;
+  rec.onerror = () => {
+    console.log("recording:error recorder");
+    toast("فشل التسجيل — أعد المحاولة.", true);
+    try { if (rec.state !== "inactive") { rec.onstop = null; rec.stop(); } } catch (e9) {}
+    chatRecStopTracks(S.chat.recStream); S.chat.recStream = null; S.chat.rec = null;
+    chatRecCleanup();
+  };
+  try { rec.start(); } catch (e6) {
+    console.log("recording:error start");
+    chatRecStopTracks(stream);
+    S.chat.recState = "idle"; S.chat.recCancel = false;
+    toast("فشل بدء التسجيل — أعد المحاولة.", true);
+    return;
   }
   S.chat.rec = rec; S.chat.recStream = stream; S.chat.recT0 = Date.now();
+  S.chat.recState = "rec"; S.chat.recCancel = false;
+  console.log("recording:start " + (mime || "default"));
   setMicUI("rec");
-  $("#chatRec").style.display = "flex";
+  chatRecBar(false);
   S.chat.recTimer = setInterval(() => {
     const s = Math.floor((Date.now() - S.chat.recT0) / 1000);
-    $("#chatRecT").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    const t = $("#chatRecT");
+    if (t) t.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
   }, 500);
 }
 function chatRecHoldEnd(send) {
-  S.chat.hold = false;
-  if (!S.chat.rec) { S.chat.recCancel = false; return; }
-  if (!send || S.chat.recCancel) { chatRecAbort(); return; }
-  const held = Date.now() - (S.chat.recT0 || Date.now());
-  if (held < 700) { chatRecAbort(); toast("اضغط مطولاً وتكلم ثم أفلت للإرسال."); return; }
-  chatRecStop();
-}
-function chatMicGuide() {
-  let dlg = $("#dlgMicGuide");
-  if (!dlg) {
-    dlg = document.createElement("dialog");
-    dlg.id = "dlgMicGuide";
-    dlg.innerHTML = '<div class="dh">🎤 التسجيل مثل واتساب</div>'
-      + '<div style="padding:2px 2px 8px;font-size:14.5px;line-height:1.9;text-align:right">'
-      + '<p style="margin:6px 0;font-weight:700">زر 🎤 يعمل هكذا: اضغط ضغطة مطولة وتكلم، وأفلت فيُرسل — واسحب بعيداً لتلغي.</p>'
-      + '<p style="margin:6px 0;color:#b45309">لماذا لا يعمل الآن؟ أيقونة التطبيق الحالية (القشرة) لا تمرر الميكروفون — وكروم يمرره. التفعيل مرة واحدة فقط وبلا تحميل أي شيء:</p>'
-      + '<p style="margin:4px 0"><b>1)</b> اضغط «فتح في كروم الآن» بالأسفل (أو افتح كروم واكتب: <b dir="ltr">produit-wi5o.onrender.com</b>)</p>'
-      + '<p style="margin:4px 0"><b>2)</b> سجّل دخولك، ثم قائمة كروم ⋮ ← «إضافة إلى الشاشة الرئيسية» ← «إضافة»</p>'
-      + '<p style="margin:4px 0"><b>3)</b> افتح التطبيق من الأيقونة الجديدة واضغط 🎤 ضغطة مطولة — عند سؤال الإذن اختر «السماح»</p>'
-      + '<p style="margin:6px 0;font-weight:700">✅ ومعه تعمل الكاميرا والمعرض مباشرة مثل واتساب تماماً.</p>'
-      + '</div>'
-      + '<button class="btn gold" id="micGoChrome">🚀 فتح في كروم الآن</button>'
-      + '<button class="btn gray" id="micCopyUrl" style="margin-top:8px">📋 نسخ العنوان</button>'
-      + '<button class="btn gray" id="micRecApp" style="margin-top:8px">🎙️ بديل: تسجيل بمسجّل الهاتف</button>'
-      + '<button class="btn gray" id="micX" style="margin-top:8px">إغلاق</button>';
-    document.body.appendChild(dlg);
-    dlg.querySelector("#micGoChrome").addEventListener("click", () => { try { dlg.close(); } catch (e) {} chatGoChrome(); });
-    dlg.querySelector("#micCopyUrl").addEventListener("click", () => chatCopyHome());
-    dlg.querySelector("#micRecApp").addEventListener("click", () => { try { dlg.close(); } catch (e) {} chatMicFallback(); });
-    dlg.querySelector("#micX").addEventListener("click", () => { try { dlg.close(); } catch (e) {} });
-  }
-  try { dlg.showModal(); } catch (e) {}
-}
-function chatGoChrome() {
-  /* v54: القشرة تمرر المخططات الأجنبية إلى ACTION_VIEW — كروم يستجيب لـ googlechrome:// */
-  try { location.href = "googlechrome://produit-wi5o.onrender.com"; } catch (e) {}
-  setTimeout(() => { toast("إن لم يُفتح كروم تلقائياً: افتح كروم واكتب العنوان يدوياً."); }, 1500);
-}
-function chatCopyHome() {
-  const t = "https://produit-wi5o.onrender.com";
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText)
-      navigator.clipboard.writeText(t).then(() => toast("📋 نُسخ العنوان"), () => chatCopyHome2(t));
-    else chatCopyHome2(t);
-  } catch (e) { chatCopyHome2(t); }
-}
-function chatCopyHome2(t) {
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = t; document.body.appendChild(ta); ta.select();
-    document.execCommand("copy"); document.body.removeChild(ta); toast("📋 نُسخ العنوان");
-  } catch (e) { toast("انسخ يدوياً: produit-wi5o.onrender.com"); }
-}
-function chatMicFallback() {
-  /* v54: بديل أخير من الدليل فقط — مسجّل الهاتف عبر اختيار ملف */
-  toast("🎙️ إن ظهر خيار «مسجل الصوت» اختره وسجّل ثم اضغط «تم» فيُرسل تلقائياً.");
-  const inp = $("#chatAudCap");
-  if (inp) { inp.value = ""; try { inp.click(); } catch (e) {} }
-}
-function chatRecStop() {
-  if (S.chat.rec) { try { S.chat.rec.stop(); } catch (e) { chatRecCleanup(); } }
+  if (S.chat.recState === "hold") { S.chat.recState = "idle"; return; }   /* أفلت قبل الإذن */
+  if (S.chat.recState !== "rec" && S.chat.recState !== "cancel") return;  /* بلا إرسال مزدوج */
+  S.chat.recCancel = !send || S.chat.recState === "cancel";
+  S.chat.recState = "stop";          /* قفل الحالة حتى onstop — يمنع التكرار */
+  if (S.chat.rec && S.chat.rec.state !== "inactive") {
+    try { S.chat.rec.stop(); } catch (e) { chatRecCleanup(); }
+  } else chatRecCleanup();
 }
 function chatRecAbort() {
-  try {
-    if (S.chat.rec && S.chat.rec.state !== "inactive") {
-      S.chat.rec.onstop = null; S.chat.rec.stop();
-    }
-  } catch (e) {}
-  try {
-    if (S.chat.recStream)
-      S.chat.recStream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} });
-  } catch (e1) {}
-  chatRecCleanup();
+  S.chat.recCancel = true;
+  if (S.chat.rec && S.chat.rec.state !== "inactive") {
+    try { S.chat.rec.stop(); } catch (e) { chatRecCleanup(); }
+  } else chatRecCleanup();
 }
 function chatRecCleanup() {
   S.chat.rec = null;
-  S.chat.recStream = null; S.chat.recCancel = false; S.chat.hold = false;
+  S.chat.recStream = null; S.chat.recCancel = false; S.chat.recState = "idle";
   if (S.chat.recTimer) { clearInterval(S.chat.recTimer); S.chat.recTimer = null; }
   const r = $("#chatRec"); if (r) r.style.display = "none";
   setMicUI("idle");
@@ -3063,26 +3062,46 @@ $("#chatTxt").addEventListener("keydown", (e) => {
 });
 $("#chatAttach").addEventListener("click", chatAttachMenu);
 $("#chatGal").addEventListener("click", () => { const i = $("#chatImgIn"); if (i) { i.value = ""; try { i.click(); } catch (e) {} } });
-$("#chatRecCancel").addEventListener("click", chatRecAbort);
-$("#btnMicGuide").addEventListener("click", chatMicGuide);
 (function () {
-  /* v54: الضغط المطول على المايك — pointer events موحدة للمس والفأرة */
+  /* v55: ضغط مطول فوري — Pointer Events فقط (بلا تعارض touch) + شبكات أمان كاملة */
   const mic = $("#chatMic");
   if (!mic) return;
   mic.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     e.preventDefault();
     try { mic.setPointerCapture(e.pointerId); } catch (e0) {}
     chatRecStart();
   });
   mic.addEventListener("pointermove", (e) => {
-    if (!S.chat.hold || !S.chat.rec) return;
+    if (S.chat.recState !== "rec" && S.chat.recState !== "cancel") return;
     const r = mic.getBoundingClientRect();
-    const out = (e.clientX < r.left - 44 || e.clientX > r.right + 44 || e.clientY < r.top - 56 || e.clientY > r.bottom + 44);
-    if (out !== S.chat.recCancel) { S.chat.recCancel = out; setMicUI(out ? "cancel" : "rec"); }
+    const out = (e.clientX < r.left - 64);   /* سحب لليسار = منطقة الإلغاء */
+    if (out !== S.chat.recCancel) {
+      S.chat.recCancel = out;
+      S.chat.recState = out ? "cancel" : "rec";
+      setMicUI(out ? "cancel" : "rec");
+      chatRecBar(out);
+      console.log("recording:move " + (out ? "cancel-zone" : "rec-zone"));
+    }
   });
   mic.addEventListener("pointerup", (e) => { e.preventDefault(); chatRecHoldEnd(true); });
   mic.addEventListener("pointercancel", () => chatRecHoldEnd(false));
+  mic.addEventListener("lostpointercapture", () => {
+    if (S.chat.recState === "rec" || S.chat.recState === "cancel") chatRecHoldEnd(true);
+  });
   mic.addEventListener("contextmenu", (e) => e.preventDefault());
+  mic.addEventListener("click", (e) => e.preventDefault());   /* منع click بعد الأفلت */
+  window.addEventListener("pointerup", (e) => {
+    if ((S.chat.recState === "rec" || S.chat.recState === "cancel") && !mic.contains(e.target))
+      chatRecHoldEnd(true);
+  });
+  window.addEventListener("blur", () => {
+    if (S.chat.recState === "rec" || S.chat.recState === "cancel") chatRecHoldEnd(false);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && (S.chat.recState === "rec" || S.chat.recState === "cancel"))
+      chatRecHoldEnd(false);
+  });
 })();
 $("#chatBack").addEventListener("click", () => { chatReset(false); chatEnter(); });
 $("#chatDel").addEventListener("click", chatDeleteConv);
@@ -3090,7 +3109,7 @@ $("#btnNewChat").addEventListener("click", openContactsDlg);
 $("#dlgChatCX").addEventListener("click", () => { try { $("#dlgChatC").close(); } catch (e) {} });
 $("#chatViewX").addEventListener("click", () => { try { $("#chatView").close(); } catch (e) {} });
  [["#chatImgIn", "image"], ["#chatAudIn", "audio"], ["#chatFileIn", "file"],
-  ["#chatVidIn", "video"], ["#chatCamIn", "image"], ["#chatAudCap", "audio"]].forEach(([sel, kind]) => {
+  ["#chatVidIn", "video"], ["#chatCamIn", "image"]].forEach(([sel, kind]) => {
   const inp = $(sel);
   inp.addEventListener("change", (e) => {
     const f = e.target.files && e.target.files[0];
