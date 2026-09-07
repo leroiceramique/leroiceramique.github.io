@@ -1889,6 +1889,11 @@ def init_db():
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(255);
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                -- Migration: v58 عمود آخر ظهور — لحالة «متصل الآن» في الرسائل
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: update incoming_orders status to include 'received'
                 DO $$ BEGIN
                     ALTER TABLE incoming_orders DROP CONSTRAINT IF EXISTS incoming_orders_status_check;
@@ -11093,7 +11098,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v57"
+PWA_VERSION = "v58"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11819,7 +11824,8 @@ def _pwa_kill_sessions(user_id):
 
 
 def _pwa_session_user(request):
-    """يقرأ الكوكي ويرجع dict المستخدم الكامل أو None (فحص في executor)."""
+    """يقرأ الكوكي ويرجع dict المستخدم الكامل أو None (فحص في executor).
+    v58: يحدّث last_seen (بخانقة 45 ثانية) لحالة «متصل الآن» في الرسائل."""
     token = request.cookies.get(PWA_COOKIE, "")
     if not token or len(token) > 128:
         return None
@@ -11829,12 +11835,27 @@ def _pwa_session_user(request):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
-                "u.role, u.active, u.display_name, u.avatar, a.username AS web_username "
+                "u.role, u.active, u.display_name, u.avatar, a.username AS web_username, "
+                "u.last_seen "
                 "FROM pwa_sessions s JOIN users u ON u.id = s.user_id "
                 "LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "WHERE s.token_hash = %s AND s.expires_at > NOW()",
                 (token_hash,))
             row = cur.fetchone()
+            if row:
+                # v58: نبض الحضور — كتابة واحدة كحد أقصى كل 45 ثانية لكل مستخدم
+                try:
+                    ls = row.get("last_seen")
+                    _now = datetime.datetime.now(datetime.timezone.utc)
+                    if ls and ls.tzinfo is None:
+                        ls = ls.replace(tzinfo=datetime.timezone.utc)
+                    if not ls or (_now - ls).total_seconds() > 45:
+                        cur.execute("UPDATE users SET last_seen = NOW() WHERE id = %s",
+                                    (row["id"],))
+                        row["last_seen"] = _now
+                except Exception:
+                    conn.rollback()   # v58: أي خلل في النبض لا يُسقط الجلسة
+                    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         conn.commit()
         if not row:
             return None
@@ -15461,20 +15482,21 @@ def _chat_msg_dict(r, me_id):
 
 
 def _pwa_api_chat_contacts(user):
-    """💬 جهات الاتصال: كل زملاء العمل النشطين (المديرون والموظفون) بلا العميل/المعلّق.
-    v51: تمييز الأسماء المتشابهة — إذا وُجد حسابان لنفس الاسم أُلصق بكلٍّ منهما
-    معرّفه (@username وإلا #telegram_id) حتى لا يبدوا مكررين بلا معنى."""
+    """💬 جهات الاتصال v58: كل المستخدمين النشطين (المديرون والموظفون والعملاء) بلا المعلّق.
+    يعيد لكل جهة: المصدر (تطبيق به حساب ويب / تلغرام فقط) + @username + آخر ظهور
+    + وسم تمييز للأسماء المتشابهة (@username وإلا #telegram_id)."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT u.id, u.role, u.username, u.telegram_id, "
+                "SELECT u.id, u.role, u.username, u.telegram_id, u.last_seen, "
                 "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
-                "'#' || u.id::text) AS name "
-                "FROM users u "
+                "'#' || u.id::text) AS name, "
+                "(a.user_id IS NOT NULL) AS has_web "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "WHERE u.active = TRUE AND u.id <> %s "
-                "AND (u.role IS NULL OR u.role NOT IN (%s, %s)) "
-                "ORDER BY name", (user["id"], ROLE_CUSTOMER, ROLE_PENDING))
+                "AND (u.role IS NULL OR u.role <> %s) "
+                "ORDER BY name", (user["id"], ROLE_PENDING))
             rows = cur.fetchall()
         conn.commit()
     finally:
@@ -15486,13 +15508,19 @@ def _pwa_api_chat_contacts(user):
     contacts = []
     for r in rows:
         key = (r["name"] or "").strip().lower()
+        dup = name_counts.get(key, 0) > 1
         tag = ""
-        if name_counts.get(key, 0) > 1:
-            tag = ("@" + r["username"]) if r.get("username") \
-                else ("#" + str(r.get("telegram_id") or r["id"]))
+        if r.get("username"):
+            tag = "@" + r["username"]            # v58: @اسم تلغرام يظهر دائماً إن وجد
+        elif dup and r.get("telegram_id"):
+            tag = "#" + str(r["telegram_id"])
+        elif dup:
+            tag = "#" + str(r["id"])
         contacts.append({"id": r["id"], "name": r["name"], "role": r["role"],
                          "role_label": ROLE_LABELS.get(r["role"], r["role"]),
-                         "tag": tag})
+                         "tag": tag,
+                         "has_web": bool(r["has_web"]),
+                         "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else ""})
     return {"ok": True, "me": {"id": user["id"], "name": user.get("name") or ""},
             "contacts": contacts}
 
@@ -15566,24 +15594,26 @@ def _pwa_api_chat_list(user):
     return {"ok": True, "chats": chats}
 
 
-def _pwa_api_chat_messages(user, other, after):
+def _pwa_api_chat_messages(user, other, after, before=0):
     """💬 رسائل محادثة مع شريك محدد. after=0 → آخر 100 (تصاعدياً)، after>0 → الجديد فقط.
-    فتح المحادثة يعتبر قراءة: رسائل الشريك توسم مقروءة تلقائياً."""
+    v58: before>0 → 100 رسالة أقدم من before (ترقيم للخلف — التاريخ الكامل متاح).
+    يعيد (messages, read_upto, has_more, error) — فتح المحادثة يعتبر قراءة."""
     me = user["id"]
     try:
         other = int(other)
         after = max(0, int(after or 0))
+        before = max(0, int(before or 0))
     except (TypeError, ValueError):
-        return None, "طلب غير صالح."
+        return None, 0, False, "طلب غير صالح."
     if other == me:
-        return None, "لا يمكنك محادثة نفسك."
+        return None, 0, False, "لا يمكنك محادثة نفسك."
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT id, active FROM users WHERE id = %s", (other,))
             peer = cur.fetchone()
             if not peer or not peer["active"]:
-                return None, "المستخدم غير متاح للمحادثة."
+                return None, 0, False, "المستخدم غير متاح للمحادثة."
             if after:
                 cur.execute(
                     "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, m.media_mime, "
@@ -15594,6 +15624,23 @@ def _pwa_api_chat_messages(user, other, after):
                     "OR (m.sender_id = %s AND m.recip_id = %s)) AND m.id > %s "
                     "ORDER BY m.id ASC LIMIT 200", (me, other, other, me, after))
                 rows = list(cur.fetchall())
+            elif before:
+                # v58: صفحة أقدم — آخر 100 رسالة قبل before تصاعدياً + هل توجد أقدم؟
+                cur.execute(
+                    "SELECT * FROM (SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
+                    "m.media_mime, m.media_size, m.created_at, m.read_at, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS sender_name "
+                    "FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE ((m.sender_id = %s AND m.recip_id = %s) "
+                    "OR (m.sender_id = %s AND m.recip_id = %s)) AND m.id < %s "
+                    "ORDER BY m.id DESC LIMIT 100) t ORDER BY t.id ASC",
+                    (me, other, other, me, before))
+                rows = list(cur.fetchall())
+                cur.execute(
+                    "SELECT 1 FROM chat_messages WHERE ((sender_id = %s AND recip_id = %s) "
+                    "OR (sender_id = %s AND recip_id = %s)) AND id < %s LIMIT 1",
+                    (me, other, other, me, rows[0]["id"] if rows else before))
+                has_more = cur.fetchone() is not None
             else:
                 cur.execute(
                     "SELECT * FROM (SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
@@ -15605,21 +15652,30 @@ def _pwa_api_chat_messages(user, other, after):
                     "ORDER BY m.id DESC LIMIT 100) t ORDER BY t.id ASC",
                     (me, other, other, me))
                 rows = list(cur.fetchall())
-            # فتح المحادثة = قراءة رسائل الشريك
-            cur.execute("UPDATE chat_messages SET read_at = NOW() "
-                        "WHERE sender_id = %s AND recip_id = %s AND read_at IS NULL",
-                        (other, me))
-            # v50: أقصى رسالة من رسائلي قرأها الشريك (لعلامتي ✓✓ في الواجهة)
-            cur.execute("SELECT COALESCE(MAX(id), 0) AS mx FROM chat_messages "
-                        "WHERE sender_id = %s AND recip_id = %s AND read_at IS NOT NULL",
-                        (me, other))
-            read_upto = int(cur.fetchone()["mx"])
+                # v58: هل توجد رسائل أقدم من أول صفحة؟ (لزر «الرسائل الأقدم»)
+                cur.execute(
+                    "SELECT 1 FROM chat_messages WHERE ((sender_id = %s AND recip_id = %s) "
+                    "OR (sender_id = %s AND recip_id = %s)) AND id < %s LIMIT 1",
+                    (me, other, other, me, rows[0]["id"] if rows else 0))
+                has_more = cur.fetchone() is not None
+            # فتح المحادثة = قراءة رسائل الشريك (لا يحدث في جلب الصفحات الأقدم)
+            if not before:
+                cur.execute("UPDATE chat_messages SET read_at = NOW() "
+                            "WHERE sender_id = %s AND recip_id = %s AND read_at IS NULL",
+                            (other, me))
+                # v50: أقصى رسالة من رسائلي قرأها الشريك (لعلامتي ✓✓ في الواجهة)
+                cur.execute("SELECT COALESCE(MAX(id), 0) AS mx FROM chat_messages "
+                            "WHERE sender_id = %s AND recip_id = %s AND read_at IS NOT NULL",
+                            (me, other))
+                read_upto = int(cur.fetchone()["mx"])
+            else:
+                read_upto = 0
         conn.commit()
         now = datetime.datetime.now()
         for r in rows:
             if r["sender_id"] == other and not r["read_at"]:
                 r["read_at"] = now
-        return [_chat_msg_dict(r, me) for r in rows], read_upto, None
+        return [_chat_msg_dict(r, me) for r in rows], read_upto, has_more, None
     finally:
         release_connection(conn)
 
@@ -15635,6 +15691,13 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
         return None, None, "لا يمكنك محادثة نفسك."
     # حارس إغراق بسيط: 25 رسالة كحد أقصى في الدقيقة لكل مستخدم
     now = time.time()
+    # v58: تنظيف دوري للقواميس كي لا تنمو بلا حدود
+    if len(_CHAT_RATE) > 400:
+        for k in [k2 for k2, v2 in _CHAT_RATE.items() if now - v2[0] > 600]:
+            _CHAT_RATE.pop(k, None)
+    if len(_CHAT_PING) > 400:
+        for k2 in [k3 for k3, v3 in _CHAT_PING.items() if now - v3 > 600]:
+            _CHAT_PING.pop(k2, None)
     win = _CHAT_RATE.get(me)
     if not win or now - win[0] > 60:
         _CHAT_RATE[me] = [now, 1]
@@ -15678,7 +15741,8 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
             cur.execute(
                 "SELECT role, active, telegram_id FROM users WHERE id = %s", (to,))
             peer = cur.fetchone()
-            if not peer or not peer[1] or peer[0] in (ROLE_CUSTOMER, ROLE_PENDING):
+            # v58: العملاء النشطون محادثون الآن (طلبات المدير) — المستبعد الوحيد «قيد المراجعة»
+            if not peer or not peer[1] or peer[0] == ROLE_PENDING:
                 return None, None, "المستخدم غير متاح للمحادثة."
             cur.execute(
                 "INSERT INTO chat_messages (sender_id, recip_id, kind, body, media, "
@@ -15958,12 +16022,14 @@ async def pwa_chat_msg_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    msgs, read_upto, err2 = await _pwa_run(_pwa_api_chat_messages, user,
+    msgs, read_upto, has_more, err2 = await _pwa_run(_pwa_api_chat_messages, user,
                                            request.query.get("user"),
-                                           request.query.get("after", 0))
+                                           request.query.get("after", 0),
+                                           request.query.get("before", 0))
     if err2:
         return _pwa_err(400, err2)
-    return _pwa_jr({"ok": True, "messages": msgs, "read_upto": read_upto})
+    return _pwa_jr({"ok": True, "messages": msgs, "read_upto": read_upto,
+                    "has_more": has_more})
 
 
 async def pwa_chat_send_handler(request):

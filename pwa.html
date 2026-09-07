@@ -355,6 +355,30 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 #camShot{width:70px;height:70px;border-radius:50%;border:5px solid #fff;background:#fff;
   box-shadow:0 2px 14px rgba(0,0,0,.6);cursor:pointer;padding:0}
 #camShot:disabled{opacity:.45}
+/* v58 — بطاقة فيديو كسولة: بلا تحميل تلقائي، النقر يحمّل ويشغل داخل الفقاعة */
+.vcard{display:flex;align-items:center;gap:10px;background:#111;border-radius:11px;
+  padding:12px 14px;margin:2px 0;cursor:pointer;min-width:200px;color:#fff}
+.vcard .vplay{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.18);
+  display:flex;align-items:center;justify-content:center;font-size:19px;flex:none;
+  border:2px solid rgba(255,255,255,.5)}
+.vcard .vinfo{min-width:0;display:flex;flex-direction:column;gap:2px;text-align:start}
+.vcard .vinfo b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px}
+.vcard .vinfo small{font-size:11px;opacity:.75}
+.vcard.loading{pointer-events:none;opacity:.75}
+.vcard.loading .vplay{animation:pulse 1s infinite}
+.bub.me .vcard{background:rgba(0,0,0,.28)}
+/* v58 — فقاعات مؤقتة (إرسال تفاؤلي) */
+.bub.temp{opacity:.72}
+.bub.temp .bmeta::after{content:" ⏳"}
+.bub.failed{border:1.5px solid var(--bad);opacity:1}
+/* v58 — زر الرسائل الأقدم + حالة الاتصال + البحث */
+#chatOlder{margin:0 auto 8px;background:var(--chip);border:1px solid var(--line);color:var(--ink);
+  border-radius:99px;padding:6px 16px;font-size:12.5px;font-weight:800;cursor:pointer;display:none}
+#chatOlder.show{display:block}
+.conline{color:#16a34a;font-weight:800}
+.csrc{font-size:10.5px;background:var(--chip);border:1px solid var(--line);border-radius:99px;
+  padding:2px 8px;color:var(--mut);flex:none}
+#chatCSrch{width:100%;margin-bottom:8px}
 /* حوار اختيار جهة الاتصال */
 .crow{display:flex;align-items:center;gap:10px;padding:9px 6px;border-bottom:1px solid var(--line);
   cursor:pointer;border-radius:10px}
@@ -405,7 +429,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v57</span></p>
+      <span style="opacity:.65">الإصدار v58</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -503,7 +527,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v57</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v58</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -563,6 +587,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
           <div class="tinfo"><b id="chatPeerName">—</b><span id="chatPeerRole"></span></div>
           <button class="cbtn" id="chatDel" title="حذف المحادثة بالكامل">🗑️</button>
         </div>
+        <button id="chatOlder">⬆️ الرسائل الأقدم</button>
         <div id="chatMsgs"></div>
         <div class="crec" id="chatRec" style="display:none"><span class="dot"></span>
           <span id="chatRecRec">جارٍ التسجيل <b id="chatRecT">0:00</b> — أفلت للإرسال • اسحب لليسار للإلغاء</span>
@@ -639,7 +664,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v57</p>
+      <p class="hint" id="setAbout">الإصدار v58</p>
     </section>
   </main>
   <nav class="tabs">
@@ -653,11 +678,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
   </nav>
 </div>
 
-<dialog id="dlgChatC">
-  <div class="dh">💬 محادثة جديدة</div>
-  <div id="chatCList" style="min-height:120px;max-height:55vh;overflow-y:auto"><p class="empty">جارِ التحميل...</p></div>
-  <button class="btn gray" id="dlgChatCX" style="margin-top:10px">إغلاق</button>
-</dialog>
+<!-- v58: حوار محادثة جديدة يُبنى من JS (بحث + مصدر + حالة اتصال) -->
 <dialog id="chatView">
   <button id="chatViewX">✕ إغلاق</button>
   <img id="chatViewImg" alt="">
@@ -878,6 +899,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
           sending: false, total: 0, urls: {}, rec: null, recT0: 0, recTimer: null,
           recState: "idle", recCancel: false, recStream: null,
+          firstId: 0, hasMore: false, loadingOlder: false,
           cam: { stream: null, facing: "environment", busy: false } } };
 
 const esc = (s) => String(s == null ? "" : s)
@@ -2246,6 +2268,8 @@ $("#thDark").addEventListener("click", () => applyTheme("dark", true));
 $("#btnMyPass").addEventListener("click", () => openPass(null, S.user ? S.user.name : "", true));
 async function doLogout() {
   try { await api("/api/logout", { method: "POST" }); } catch (e) {}
+  chatCacheClear();   /* v58: مسح كاش الرسائل عند الخروج */
+  chatReset(true);
   showLogin();
 }
 $("#btnLogout2").addEventListener("click", doLogout);
@@ -2466,7 +2490,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v57" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v58" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2484,7 +2508,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v57";
+const APP_VER = "v58";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2555,8 +2579,37 @@ setTimeout(checkAppUpdate, 8000);     /* فحص أول بعد الإقلاع ب�
 /* ═══════════ v50: الرسائل — شات شبيه بواتساب بين فريق العمل ═══════════
    محادثة فردية مع أي موظف/مدير + فتح محادثة أخرى في أي وقت.
    نص + صور (تُضغط في الهاتف) + ملفات + رسائل صوتية (إن توفر الميكروفون).
-   تحديث حي كل 3 ثوانٍ داخل المحادثة و8 ثوانٍ في القائمة — بلا إعادة رسم كاملة. */
-const _CHAT_POLL_MSG = 3000, _CHAT_POLL_LIST = 8000, _CHAT_FILE_MAX = 25 * 1024 * 1024;
+   تحديث حي كل ثانيتين داخل المحادثة و8 ثوانٍ في القائمة — v58 — بلا إعادة رسم كاملة. */
+const _CHAT_POLL_MSG = 2000, _CHAT_POLL_LIST = 8000, _CHAT_FILE_MAX = 25 * 1024 * 1024;
+/* v58: كاش محلي للرسائل — المحادثة تفتح فوراً من الذاكرة حتى بعد تحديث أو خروج/دخول،
+   ثم يحدّثها الخادم بصمت. تُمسح عند تسجيل الخروج. */
+const _CHAT_CACHE_KEY = "leroi_chat_cache_v1";
+function chatCacheAll() {
+  try { return JSON.parse(localStorage.getItem(_CHAT_CACHE_KEY) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function chatCacheKey(uid) { return (S.user ? S.user.id : "x") + ":" + uid; }
+function chatCacheSave(uid, msgs, readUpto, firstId, hasMore) {
+  try {
+    const all = chatCacheAll();
+    all[chatCacheKey(uid)] = { t: Date.now(), msgs: msgs.slice(-100),
+      readUpto: readUpto || 0, firstId: firstId || 0, hasMore: !!hasMore };
+    /* لا أكوام: احتفظ بآخر 30 محادثة فقط */
+    const keys = Object.keys(all);
+    if (keys.length > 30) {
+      keys.sort((a, b) => (all[a].t || 0) - (all[b].t || 0));
+      keys.slice(0, keys.length - 30).forEach((k) => delete all[k]);
+    }
+    localStorage.setItem(_CHAT_CACHE_KEY, JSON.stringify(all));
+  } catch (e) {}
+}
+function chatCacheGet(uid) {
+  const c = chatCacheAll()[chatCacheKey(uid)];
+  return (c && Array.isArray(c.msgs) && c.msgs.length) ? c : null;
+}
+function chatCacheClear() {
+  try { localStorage.removeItem(_CHAT_CACHE_KEY); } catch (e) {}
+}
 
 function chatAva(n) { const c = String(n || "؟").trim().charAt(0); return c ? c.toUpperCase() : "؟"; }
 function fmtSize(b) {
@@ -2597,6 +2650,8 @@ function chatReset(full) {
   chatStopTimers();
   S.chat.peer = null; S.chat.lastId = 0; S.chat.readUpto = 0;
   S.chat.busy = false; S.chat.sending = false;
+  S.chat.firstId = 0; S.chat.hasMore = false; S.chat.loadingOlder = false;
+  const ob = $("#chatOlder"); if (ob) ob.classList.remove("show");
   Object.keys(S.chat.urls).forEach((k) => { try { URL.revokeObjectURL(S.chat.urls[k]); } catch (e) {} });
   S.chat.urls = {};
   if (S.chat.rec) chatRecAbort();
@@ -2666,27 +2721,81 @@ async function openChat(uid, name, roleLabel) {
   chatStopTimers();
   S.chat.peer = { id: uid, name: name || ("#" + uid), role: roleLabel || "" };
   S.chat.lastId = 0; S.chat.readUpto = 0; S.chat.busy = false;
+  S.chat.firstId = 0; S.chat.hasMore = false; S.chat.loadingOlder = false;
   $("#chatHome").style.display = "none";
   $("#chatThread").classList.add("on");
   $("#chatPeerName").textContent = S.chat.peer.name;
   $("#chatPeerRole").textContent = S.chat.peer.role;
   $("#chatPeerAv").textContent = chatAva(S.chat.peer.name);
-  $("#chatMsgs").innerHTML = '<p class="empty">جارِ التحميل...</p>';
   $("#chatTxt").value = "";
+  const box = $("#chatMsgs");
+  /* v58: عرض فوري من الكاش المحلي — الرسائل تبقى بعد التحديث/الخروج ثم يحدّثها الخادم */
+  const cached = chatCacheGet(uid);
+  if (cached) {
+    box.innerHTML = "";
+    cached.msgs.forEach((m) => appendMsg(m));
+    S.chat.lastId = cached.msgs.reduce((a, m) => Math.max(a, m.id || 0), 0);
+    S.chat.firstId = cached.firstId || (cached.msgs[0] ? cached.msgs[0].id : 0);
+    S.chat.readUpto = cached.readUpto || 0;
+    S.chat.hasMore = !!cached.hasMore;
+    updateTicks(); scrollChat(true); chatOlderUI();
+  } else {
+    box.innerHTML = '<p class="empty">جارِ التحميل...</p>';
+  }
   try {
     const d = await api("/api/chat/msg?user=" + uid + "&after=0", { noCache: true, timeout: 30000 });
     if (!S.chat.peer || S.chat.peer.id !== uid) return;
     $("#chatMsgs").innerHTML = "";
     S.chat.lastId = 0;
-    (d.messages || []).forEach((m) => { appendMsg(m); if (m.id > S.chat.lastId) S.chat.lastId = m.id; });
+    const ms = d.messages || [];
+    ms.forEach((m) => { appendMsg(m); if (m.id > S.chat.lastId) S.chat.lastId = m.id; });
+    S.chat.firstId = ms.length ? ms[0].id : 0;
     S.chat.readUpto = d.read_upto || 0;
+    S.chat.hasMore = !!d.has_more;
     updateTicks();
-    scrollChat(true);
+    scrollChat(true); chatOlderUI();
+    chatCacheSave(uid, ms, S.chat.readUpto, S.chat.firstId, S.chat.hasMore);
     api("/api/chat/unread", { noCache: true })
       .then((x) => { S.chat.total = x.total || 0; renderChatBadge(); }).catch(() => {});
     chatPollLoop();
   } catch (e) {
-    $("#chatMsgs").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
+    if (!cached) $("#chatMsgs").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
+  }
+}
+function chatOlderUI() {
+  const b = $("#chatOlder");
+  if (b) b.classList.toggle("show", !!(S.chat.hasMore && S.chat.firstId));
+}
+async function chatLoadOlder() {
+  if (!S.chat.peer || S.chat.loadingOlder || !S.chat.hasMore || !S.chat.firstId) return;
+  const uid = S.chat.peer.id, before = S.chat.firstId;
+  S.chat.loadingOlder = true;
+  const b = $("#chatOlder");
+  if (b) b.textContent = "جارٍ التحميل...";
+  const box = $("#chatMsgs");
+  const oldH = box.scrollHeight;
+  try {
+    const d = await api("/api/chat/msg?user=" + uid + "&before=" + before,
+                        { noCache: true, timeout: 30000 });
+    if (!S.chat.peer || S.chat.peer.id !== uid) return;
+    const ms = d.messages || [];
+    if (ms.length) {
+      const frag = document.createDocumentFragment();
+      ms.forEach((m) => frag.appendChild(buildMsgEl(m)));
+      box.insertBefore(frag, box.firstChild);
+      S.chat.firstId = ms[0].id;
+      box.scrollTop += box.scrollHeight - oldH;   /* ثبات المشهد عند الإسباق */
+    }
+    S.chat.hasMore = !!d.has_more;
+    chatOlderUI();
+    const cached = chatCacheGet(uid);
+    if (cached) chatCacheSave(uid, ms.concat(cached.msgs), S.chat.readUpto,
+                              S.chat.firstId, S.chat.hasMore);
+  } catch (e) {
+    toast("تعذر تحميل الرسائل الأقدم.", true);
+  } finally {
+    S.chat.loadingOlder = false;
+    if (b) b.textContent = "⬆️ الرسائل الأقدم";
   }
 }
 function scrollChat(force) {
@@ -2695,9 +2804,29 @@ function scrollChat(force) {
   const near = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
   if (near || force) box.scrollTop = box.scrollHeight;
 }
-function appendMsg(m) {
-  const box = $("#chatMsgs");
-  if (!box || !m) return;
+/* v58: بناء فقاعة رسالة كاملة بأسلاكها — buildMsgEl يعيد العنصر، وappendMsg يلحقه فقط */
+function chatVideoCard(el, id, m) {
+  const card = el.querySelector(".vcard");
+  card.addEventListener("click", async () => {
+    if (card.classList.contains("loading")) return;
+    card.classList.add("loading");
+    card.querySelector(".vinfo").innerHTML = "<small>جارٍ التحميل...</small>";
+    try {
+      const u = await chatMediaURL(id);
+      const vd = document.createElement("video");
+      vd.className = "bvid"; vd.controls = true; vd.playsInline = true;
+      vd.preload = "metadata"; vd.src = u;
+      card.replaceWith(vd);
+      try { await vd.play(); } catch (e0) {}
+    } catch (e) {
+      card.classList.remove("loading");
+      card.querySelector(".vinfo").innerHTML =
+        "<b>" + esc((m && m.media_name) || "فيديو") + "</b><small>اضغط للمحاولة مجدداً</small>";
+      toast(e.message, true);
+    }
+  });
+}
+function buildMsgEl(m) {
   const el = document.createElement("div");
   el.className = "bub" + (m.mine ? " me" : "");
   el.dataset.mid = m.id;
@@ -2709,7 +2838,10 @@ function appendMsg(m) {
     inner += '<audio controls preload="none"></audio>';
     if (m.body) inner += esc(m.body);
   } else if (m.kind === "video") {
-    inner += '<video class="bvid" controls preload="metadata"></video>';
+    /* v58: بطاقة فيديو كسولة — بلا تنزيل تلقائي، النقر يفتح مشغلاً داخل الفقاعة */
+    inner += '<div class="vcard"><span class="vplay">▶</span>'
+      + '<span class="vinfo"><b>' + esc(m.media_name || "فيديو") + '</b>'
+      + '<small>' + esc(fmtSize(m.media_size)) + ' — اضغط للتشغيل</small></span></div>';
     if (m.body) inner += esc(m.body);
   } else if (m.kind === "file") {
     inner += '<div class="bfile">📎 <span>' + esc(m.media_name || "ملف") + '</span>'
@@ -2721,7 +2853,6 @@ function appendMsg(m) {
   const ticks = m.mine ? (m.read ? " ✓✓" : " ✓") : "";
   inner += '<span class="bmeta">' + esc(fmtChatTime(m.created_at)) + ticks + '</span>';
   el.innerHTML = inner;
-  box.appendChild(el);
   if (m.kind === "image") {
     const im = el.querySelector("img.bimg");
     chatMediaURL(m.id).then((u) => { im.src = u; }).catch(() => { im.style.display = "none"; });
@@ -2730,11 +2861,50 @@ function appendMsg(m) {
     const au = el.querySelector("audio");
     chatMediaURL(m.id).then((u) => { au.src = u; }).catch(() => {});
   } else if (m.kind === "video") {
-    const vd = el.querySelector("video.bvid");
-    chatMediaURL(m.id).then((u) => { vd.src = u; }).catch(() => {});
+    chatVideoCard(el, m.id, m);
   } else if (m.kind === "file") {
     el.querySelector(".bfile").addEventListener("click", () => chatDownload(m.id, m.media_name));
   }
+  return el;
+}
+function appendMsg(m) {
+  const box = $("#chatMsgs");
+  if (!box || !m) return null;
+  const el = buildMsgEl(m);
+  box.appendChild(el);
+  return el;
+}
+/* v58: فقاعة مؤقتة تفاؤلية — تظهر فور الضغط على إرسال ثم تُستبدل بالحقيقية */
+function chatTempBubble(p) {
+  const box = $("#chatMsgs");
+  if (!box) return null;
+  const el = document.createElement("div");
+  el.className = "bub me temp";
+  let inner = "";
+  if (p.kind === "text") inner = esc(p.text || "");
+  else if (p.kind === "image" && p.data)
+    inner = '<img class="bimg" alt="" src="' + p.data + '">';
+  else if (p.kind === "video")
+    inner = '<div class="vcard"><span class="vplay">▶</span><span class="vinfo">'
+      + '<b>' + esc(p.name || "فيديو") + '</b><small>جارٍ الإرسال...</small></span></div>';
+  else if (p.kind === "audio")
+    inner = '<div class="vcard"><span class="vplay">🎤</span><span class="vinfo">'
+      + '<b>رسالة صوتية</b><small>جارٍ الإرسال...</small></span></div>';
+  else
+    inner = '<div class="bfile">📎 <span>' + esc(p.name || "ملف") + '</span>'
+      + '<small style="opacity:.8;flex:none">جارٍ الإرسال...</small></div>';
+  el.innerHTML = inner + '<span class="bmeta">الآن</span>';
+  box.appendChild(el);
+  scrollChat(true);
+  return el;
+}
+function chatTempFail(el) {
+  if (!el) return;
+  el.classList.remove("temp");
+  el.classList.add("failed");
+  const meta = el.querySelector(".bmeta");
+  if (meta) meta.textContent = "✖ فشل الإرسال";
+  setTimeout(() => { try { el.remove(); } catch (e) {} }, 4000);
 }
 function updateTicks() {
   const up = S.chat.readUpto || 0;
@@ -2821,13 +2991,25 @@ async function chatSend(payload) {
   S.chat.sending = true;
   const btn = $("#chatSend");
   btn.textContent = "⏳";
+  /* v58: إرسال تفاؤلي — الفقاعة تظهر فوراً وتُستبدل بالحقيقية عند وصول الرد */
+  const temp = chatTempBubble(payload);
+  const uid = S.chat.peer.id;
   try {
     const d = await api("/api/chat/send", {
       method: "POST", headers: { "Content-Type": "application/json" }, timeout: 60000,
-      body: JSON.stringify(Object.assign({ to: S.chat.peer.id }, payload)) });
+      body: JSON.stringify(Object.assign({ to: uid }, payload)) });
     const m = d.message;
+    if (temp) { try { temp.remove(); } catch (e0) {} }
     if (m && m.id > S.chat.lastId) { S.chat.lastId = m.id; appendMsg(m); scrollChat(true); }
-  } catch (e) { toast(e.message, true); }
+    if (m) {   /* v58: حفظ في الكاش المحلي فوراً */
+      const cached = chatCacheGet(uid);
+      chatCacheSave(uid, (cached ? cached.msgs : []).concat([m]),
+                    S.chat.readUpto, S.chat.firstId, S.chat.hasMore);
+    }
+  } catch (e) {
+    chatTempFail(temp);
+    toast(e.message, true);
+  }
   finally { S.chat.sending = false; btn.textContent = "➤"; }
 }
 
@@ -3210,25 +3392,55 @@ function chatDeleteConv() {
   try { dlg.showModal(); } catch (e) {}
 }
 
-/* ─── محادثة جديدة ─── */
+/* ─── محادثة جديدة v58: بحث + مصدر الحساب (تطبيق/تلغرام) + حالة الاتصال ─── */
+function chatSeenLabel(c) {
+  if (c.last_seen && (Date.now() - new Date(c.last_seen).getTime()) < 65000)
+    return '<span class="conline">● متصل الآن</span>';
+  if (c.last_seen) return "آخر ظهور " + esc(fmtChatTime(c.last_seen));
+  return "";
+}
 async function openContactsDlg() {
-  try { $("#dlgChatC").showModal(); } catch (e) {}
+  let dlg = $("#dlgChatC");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "dlgChatC";
+    dlg.innerHTML = '<div class="dh">💬 محادثة جديدة</div>'
+      + '<input id="chatCSrch" placeholder="🔍 ابحث بالاسم أو @اسم-تلغرام...">'
+      + '<div id="chatCList" style="min-height:120px;max-height:55vh;overflow-y:auto">'
+      + '<p class="empty">جارِ التحميل...</p></div>'
+      + '<button class="btn gray" id="dlgChatCX" style="margin-top:10px">إغلاق</button>';
+    document.body.appendChild(dlg);
+    $("#dlgChatCX").addEventListener("click", () => { try { dlg.close(); } catch (e) {} });
+    $("#chatCSrch").addEventListener("input", () => {
+      const q = $("#chatCSrch").value.trim().toLowerCase();
+      $("#chatCList").querySelectorAll(".crow").forEach((r) => {
+        r.style.display = !q || (r.dataset.srch || "").indexOf(q) >= 0 ? "" : "none";
+      });
+    });
+  }
   const box = $("#chatCList");
+  try { dlg.showModal(); } catch (e) {}
   box.innerHTML = '<p class="empty">جارِ التحميل...</p>';
+  $("#chatCSrch").value = "";
   try {
     const d = await api("/api/chat/contacts");
     const list = d.contacts || [];
     if (!list.length) {
-      box.innerHTML = '<p class="empty">لا يوجد زملاء متاحون للمحادثة بعد.</p>';
+      box.innerHTML = '<p class="empty">لا يوجد مستخدمون متاحون للمحادثة بعد.</p>';
       return;
     }
     box.innerHTML = list.map((c) => {
       const nm = c.name + (c.tag ? " · " + c.tag : "");
-      return '<div class="crow" data-cid="' + c.id + '"><div class="cav">' + esc(chatAva(c.name)) + '</div>'
-      + '<div class="cinfo"><b>' + esc(nm) + '</b><span>' + esc(c.role_label || "") + '</span></div></div>';
+      const src = c.has_web ? "📱 تطبيق" : "✈️ تلغرام";
+      const srch = (c.name + " " + (c.tag || "") + " " + c.role_label + " " + src).toLowerCase();
+      return '<div class="crow" data-cid="' + c.id + '" data-srch="' + esc(srch) + '">'
+      + '<div class="cav">' + esc(chatAva(c.name)) + '</div>'
+      + '<div class="cinfo"><b>' + esc(nm) + '</b>'
+      + '<span>' + esc(c.role_label || "") + (c.role_label ? " · " : "") + chatSeenLabel(c) + '</span></div>'
+      + '<span class="csrc">' + src + '</span></div>';
     }).join("");
     box.querySelectorAll(".crow").forEach((r) => r.addEventListener("click", () => {
-      try { $("#dlgChatC").close(); } catch (e0) {}
+      try { dlg.close(); } catch (e0) {}
       const id = Number(r.dataset.cid);
       const c = list.find((x) => x.id === id);
       openChat(id, c ? c.name : "", c ? c.role_label : "");
@@ -3296,7 +3508,7 @@ document.addEventListener("visibilitychange", () => {
 $("#chatBack").addEventListener("click", () => { chatReset(false); chatEnter(); });
 $("#chatDel").addEventListener("click", chatDeleteConv);
 $("#btnNewChat").addEventListener("click", openContactsDlg);
-$("#dlgChatCX").addEventListener("click", () => { try { $("#dlgChatC").close(); } catch (e) {} });
+$("#chatOlder").addEventListener("click", chatLoadOlder);   /* v58: ترقيم للخلف */
 $("#chatViewX").addEventListener("click", () => { try { $("#chatView").close(); } catch (e) {} });
  [["#chatImgIn", "image"], ["#chatAudIn", "audio"], ["#chatFileIn", "file"],
   ["#chatVidIn", "video"], ["#chatCamIn", "image"]].forEach(([sel, kind]) => {
