@@ -304,6 +304,8 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
   align-items:center;margin-top:3px;white-space:pre-wrap}
 .bub .bimg{display:block;max-width:100%;max-height:240px;border-radius:11px;margin:2px 0;
   cursor:pointer;object-fit:cover;background:var(--chip)}
+.bub .bvid{display:block;max-width:100%;max-height:240px;border-radius:11px;margin:2px 0;
+  background:#000;cursor:pointer}
 .bub .bfile{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.12);
   border-radius:10px;padding:7px 10px;margin:2px 0;cursor:pointer;font-size:13px;font-weight:700}
 .bub .bfile span{direction:ltr;unicode-bidi:embed;overflow:hidden;text-overflow:ellipsis;
@@ -381,7 +383,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v52</span></p>
+      <span style="opacity:.65">الإصدار v53</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -479,7 +481,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v52</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v53</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -537,6 +539,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
           <button id="chatBack">→</button>
           <div class="cav" id="chatPeerAv">؟</div>
           <div class="tinfo"><b id="chatPeerName">—</b><span id="chatPeerRole"></span></div>
+          <button class="cbtn" id="chatDel" title="حذف المحادثة بالكامل">🗑️</button>
         </div>
         <div id="chatMsgs"></div>
         <div class="crec" id="chatRec" style="display:none"><span class="dot"></span>
@@ -612,7 +615,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v52</p>
+      <p class="hint" id="setAbout">الإصدار v53</p>
     </section>
   </main>
   <nav class="tabs">
@@ -638,6 +641,9 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 <input type="file" id="chatImgIn" accept="image/*" style="display:none">
 <input type="file" id="chatAudIn" accept="audio/*" style="display:none">
 <input type="file" id="chatFileIn" style="display:none">
+<input type="file" id="chatVidIn" accept="video/*" style="display:none">
+<input type="file" id="chatCamIn" accept="image/*" capture="environment" style="display:none">
+<input type="file" id="chatAudCap" accept="audio/*" capture="microphone" style="display:none">
 <dialog id="dlgCsv">
   <div class="dh">📎 نسخة CSV احتياطية</div>
   <div style="padding:4px 2px">
@@ -2425,7 +2431,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v52" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v53" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2443,7 +2449,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v52";
+const APP_VER = "v53";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2515,7 +2521,7 @@ setTimeout(checkAppUpdate, 8000);     /* فحص أول بعد الإقلاع ب�
    محادثة فردية مع أي موظف/مدير + فتح محادثة أخرى في أي وقت.
    نص + صور (تُضغط في الهاتف) + ملفات + رسائل صوتية (إن توفر الميكروفون).
    تحديث حي كل 3 ثوانٍ داخل المحادثة و8 ثوانٍ في القائمة — بلا إعادة رسم كاملة. */
-const _CHAT_POLL_MSG = 3000, _CHAT_POLL_LIST = 8000, _CHAT_FILE_MAX = 10 * 1024 * 1024;
+const _CHAT_POLL_MSG = 3000, _CHAT_POLL_LIST = 8000, _CHAT_FILE_MAX = 25 * 1024 * 1024;
 
 function chatAva(n) { const c = String(n || "؟").trim().charAt(0); return c ? c.toUpperCase() : "؟"; }
 function fmtSize(b) {
@@ -2537,6 +2543,7 @@ function chatPreview(m) {
   const who = m.mine ? "أنت: " : "";
   if (m.kind === "image") return who + "🖼️ صورة";
   if (m.kind === "audio") return who + "🎤 رسالة صوتية";
+  if (m.kind === "video") return who + "🎬 فيديو";
   if (m.kind === "file") return who + "📎 " + (m.media_name || "ملف");
   return who + (m.body || "");
 }
@@ -2666,6 +2673,9 @@ function appendMsg(m) {
   } else if (m.kind === "audio") {
     inner += '<audio controls preload="none"></audio>';
     if (m.body) inner += esc(m.body);
+  } else if (m.kind === "video") {
+    inner += '<video class="bvid" controls preload="metadata"></video>';
+    if (m.body) inner += esc(m.body);
   } else if (m.kind === "file") {
     inner += '<div class="bfile">📎 <span>' + esc(m.media_name || "ملف") + '</span>'
       + '<small style="opacity:.8;flex:none">' + esc(fmtSize(m.media_size)) + '</small></div>';
@@ -2684,6 +2694,9 @@ function appendMsg(m) {
   } else if (m.kind === "audio") {
     const au = el.querySelector("audio");
     chatMediaURL(m.id).then((u) => { au.src = u; }).catch(() => {});
+  } else if (m.kind === "video") {
+    const vd = el.querySelector("video.bvid");
+    chatMediaURL(m.id).then((u) => { vd.src = u; }).catch(() => {});
   } else if (m.kind === "file") {
     el.querySelector(".bfile").addEventListener("click", () => chatDownload(m.id, m.media_name));
   }
@@ -2791,12 +2804,16 @@ function chatAttachMenu() {
     dlg.id = "dlgChatAtt";
     dlg.innerHTML = '<div class="dh">📎 إرفاق</div>'
       + '<button class="btn" id="attImg">🖼️ صورة</button>'
+      + '<button class="btn gray" id="attVid" style="margin-top:8px">🎬 فيديو</button>'
       + '<button class="btn gray" id="attAud" style="margin-top:8px">🎤 ملف صوتي</button>'
+      + '<button class="btn gray" id="attCam" style="margin-top:8px">📸 كاميرا مباشرة</button>'
       + '<button class="btn gray" id="attFile" style="margin-top:8px">📄 ملف آخر</button>'
       + '<button class="btn gray" id="attX" style="margin-top:10px">إلغاء</button>';
     document.body.appendChild(dlg);
     dlg.querySelector("#attImg").addEventListener("click", () => { dlg.close(); $("#chatImgIn").click(); });
+    dlg.querySelector("#attVid").addEventListener("click", () => { dlg.close(); $("#chatVidIn").click(); });
     dlg.querySelector("#attAud").addEventListener("click", () => { dlg.close(); $("#chatAudIn").click(); });
+    dlg.querySelector("#attCam").addEventListener("click", () => { dlg.close(); $("#chatCamIn").click(); });
     dlg.querySelector("#attFile").addEventListener("click", () => { dlg.close(); $("#chatFileIn").click(); });
     dlg.querySelector("#attX").addEventListener("click", () => dlg.close());
   }
@@ -2810,7 +2827,7 @@ function chatRaw64(file, done) {
 }
 function chatReadFile(file, kind) {
   if (!file) return;
-  if (file.size > _CHAT_FILE_MAX) { toast("الملف كبير جداً — الحد 10 ميغابايت.", true); return; }
+  if (file.size > _CHAT_FILE_MAX) { toast("الملف كبير جداً — الحد 25 ميغابايت.", true); return; }
   const done = (b64, mime, name) => chatSend({ kind: kind, name: name, mime: mime, data: b64 });
   if (kind === "image") {
     /* ضغط الصورة في الهاتف قبل الرفع — أسرع وأخف على الشبكة */
@@ -2837,8 +2854,8 @@ function chatReadFile(file, kind) {
 /* ─── التسجيل الصوتي ─── */
 async function chatMicToggle() {
   if (S.chat.rec) { chatRecStop(); return; }
-  if (!navigator.mediaDevices || !window.MediaRecorder) {
-    toast("🎤 التسجيل غير مدعوم هنا — سجّل من مسجّل الهاتف وأرفقه عبر 📎 › ملف صوتي.", true);
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    chatMicFallback();
     return;
   }
   try {
@@ -2870,8 +2887,18 @@ async function chatMicToggle() {
       $("#chatRecT").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
     }, 500);
   } catch (e) {
-    toast("🎤 الميكروفون غير متاح داخل التطبيق — سجّل من مسجّل الهاتف وأرفقه عبر 📎 › ملف صوتي.", true);
+    /* v53: الميكروفون المباشر مرفوض (إذن WebView) → مسجّل الهاتف فوراً */
+    chatMicFallback();
   }
+}
+function chatMicFallback() {
+  /* v53: حين يمنع WebView الميكروفون المباشر — نفتح مسجّل الهاتف عبر اختيار ملف
+     capture=microphone فلا يحتاج التطبيق إذناً من نفسه، مع إرشاد تشغيل الإذن
+     لمن يريد التسجيل المباشر والكاميرا داخل المحادثة */
+  toast("🎤 فتحتُ مسجّل صوت الهاتف: سجّل واضغط «تم» فيُرسل تلقائياً.\n"
+    + "ولتشغيل الميكروفون والكاميرا مباشرة: إعدادات الهاتف ← التطبيقات ← تطبيق/متصفح LE ROI ← الأذونات ← اسمح بالميكروفون والكاميرا.", true);
+  const inp = $("#chatAudCap");
+  if (inp) { inp.value = ""; try { inp.click(); } catch (e) {} }
 }
 function chatRecStop() {
   if (S.chat.rec) { try { S.chat.rec.stop(); } catch (e) { chatRecCleanup(); } }
@@ -2893,6 +2920,38 @@ function chatRecCleanup() {
   if (S.chat.recTimer) { clearInterval(S.chat.recTimer); S.chat.recTimer = null; }
   const r = $("#chatRec"); if (r) r.style.display = "none";
   const m = $("#chatMic"); if (m) m.textContent = "🎤";
+}
+
+/* ─── حذف المحادثة بالكامل (v53) ─── */
+function chatDeleteConv() {
+  const p = S.chat.peer;
+  if (!p) return;
+  let dlg = $("#dlgChatDel");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "dlgChatDel";
+    dlg.innerHTML = '<div class="dh">🗑️ حذف المحادثة</div>'
+      + '<p id="chatDelTxt" style="margin:10px 0;font-weight:700"></p>'
+      + '<button class="btn red" id="chatDelGo">🗑️ نعم، احذف الكل</button>'
+      + '<button class="btn gray" id="chatDelX" style="margin-top:8px">إلغاء</button>';
+    document.body.appendChild(dlg);
+    dlg.querySelector("#chatDelX").addEventListener("click", () => { try { dlg.close(); } catch (e) {} });
+    dlg.querySelector("#chatDelGo").addEventListener("click", async () => {
+      const peer = S.chat.peer;
+      try { dlg.close(); } catch (e0) {}
+      if (!peer) return;
+      try {
+        const d = await api("/api/chat/delete", {
+          method: "POST", headers: { "Content-Type": "application/json" }, timeout: 30000,
+          body: JSON.stringify({ user: peer.id }) });
+        toast("🗑️ حُذفت المحادثة بالكامل" + (d.deleted ? " (" + d.deleted + " رسالة)" : ""));
+        chatReset(false); chatEnter();
+      } catch (e1) { toast(e1.message, true); }
+    });
+  }
+  dlg.querySelector("#chatDelTxt").textContent =
+    "حذف المحادثة مع «" + p.name + "» بالكامل؟ سيُحذف كل الرسائل عند الطرفين ولا يمكن التراجع.";
+  try { dlg.showModal(); } catch (e) {}
 }
 
 /* ─── محادثة جديدة ─── */
@@ -2930,13 +2989,16 @@ $("#chatAttach").addEventListener("click", chatAttachMenu);
 $("#chatMic").addEventListener("click", chatMicToggle);
 $("#chatRecCancel").addEventListener("click", chatRecAbort);
 $("#chatBack").addEventListener("click", () => { chatReset(false); chatEnter(); });
+$("#chatDel").addEventListener("click", chatDeleteConv);
 $("#btnNewChat").addEventListener("click", openContactsDlg);
 $("#dlgChatCX").addEventListener("click", () => { try { $("#dlgChatC").close(); } catch (e) {} });
 $("#chatViewX").addEventListener("click", () => { try { $("#chatView").close(); } catch (e) {} });
-[$("#chatImgIn"), $("#chatAudIn"), $("#chatFileIn")].forEach((inp, i) => {
+ [["#chatImgIn", "image"], ["#chatAudIn", "audio"], ["#chatFileIn", "file"],
+  ["#chatVidIn", "video"], ["#chatCamIn", "image"], ["#chatAudCap", "audio"]].forEach(([sel, kind]) => {
+  const inp = $(sel);
   inp.addEventListener("change", (e) => {
     const f = e.target.files && e.target.files[0];
-    chatReadFile(f, i === 0 ? "image" : (i === 1 ? "audio" : "file"));
+    chatReadFile(f, kind);
     e.target.value = "";
   });
 });

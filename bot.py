@@ -6042,21 +6042,41 @@ def _protected_account(telegram_id):
 
 KICK_NOTICE = "⛔ تم إيقاف حسابك من قبل الإدارة.\nللاستفسار تواصل مع إدارة البوت."
 
+MERGE_NOTICE = ("🔗 تم دمج هذا الحساب في حساب آخر في تطبيق المخزون.\n"
+                "هذا الحساب لم يعد مستخدماً — استخدم حسابك الأساسي.")
+
+
+def _user_merged_into(telegram_id):
+    """v53: يعيد معرّف الحساب الناجي إن كان هذا الحساب مدموجاً فيه، وإلا None."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT merged_into FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    finally:
+        release_connection(conn)
+
 
 async def kicked_gate(update, context):
     """🚫 بوابة الطرد (v23): أول معالج على كل تحديث (group=-2) —
     المستخدم المطرود (active=FALSE) لا يرى إلا رسالة الإيقاف
-    وتُوقف بقية المعالجات كلياً. المدراء والملاك مستثنون دائماً."""
+    وتُوقف بقية المعالجات كلياً. المدراء والملاك مستثنون دائماً.
+    v53: الحساب المدموج في حساب آخر يرى رسالة الدمج بدل رسالة الطرد."""
     user = update.effective_user if update else None
     if user is None or user.id in ADMIN_IDS or user.id in OWNER_IDS:
         return
     if await asyncio.to_thread(user_is_active, user.id):
         return
+    merged = await asyncio.to_thread(_user_merged_into, user.id)
     try:
         if update.callback_query is not None:
-            await update.callback_query.answer("⛔ تم إيقاف حسابك من قبل الإدارة.", show_alert=True)
+            await update.callback_query.answer(
+                "🔗 تم دمج هذا الحساب في حساب آخر — استخدم حسابك الأساسي." if merged
+                else "⛔ تم إيقاف حسابك من قبل الإدارة.", show_alert=True)
         elif update.effective_message is not None:
-            await update.effective_message.reply_text(KICK_NOTICE)
+            await update.effective_message.reply_text(MERGE_NOTICE if merged else KICK_NOTICE)
     except Exception:
         pass
     raise ApplicationHandlerStop
@@ -6215,6 +6235,186 @@ async def callback_users_cancel_handler(update, context):
     except Exception as e:
         logging.error("[USERS] Cancel->render failed: " + str(e))
         await _safe_edit(query, "تم الإلغاء.")
+
+
+def _merge_candidate_label(u):
+    """سطر تعريف مختصر لحساب في بطاقات الدمج (v53)."""
+    name = _merge_display_name(u)
+    tid = u.get("telegram_id")
+    extras = []
+    if u.get("username"):
+        extras.append("@" + str(u["username"]))
+    extras.append("🆔 " + (str(tid) if tid else "#" + str(u["id"])))
+    if u.get("role"):
+        extras.append(ROLE_LABELS.get(u["role"], u["role"]))
+    if not u.get("active"):
+        extras.append("🚫 مطرود")
+    return name, " | ".join(extras)
+
+
+async def callback_merge_list_handler(update, context):
+    """v53: زر «🧬 دمج الحساب المكرر» — يعرض بقية الحسابات بنفس الاسم (أو المشابه
+    بادئةً) ليختار المدير الحساب الذي سيُدمج في الحساب الناجي (الذي فتحت لوحته).
+    يحل أي تكرار لم يلحقه الدمج التلقائي (حسابان فعليان في تلجرام بنفس الاسم)."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    tid_str = query.data.replace("askmerge_", "", 1)
+    if not tid_str.isdigit():
+        return
+    keep = get_user(int(tid_str))
+    if not keep:
+        await _safe_edit(query, "⚠️ المستخدم غير موجود في قاعدة البيانات.")
+        return
+    if keep.get("role") == "admin" or _protected_account(keep.get("telegram_id")):
+        await query.answer("🛡️ لا يمكن الدمج من/إلى حساب محمي أو إداري.", show_alert=True)
+        return
+    await query.answer()
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, telegram_id, username, first_name, display_name, role, active "
+                        "FROM users ORDER BY created_at")
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+    finally:
+        release_connection(conn)
+    keep_key = _norm_name_key(_merge_display_name(keep))
+    cands = []
+    for r in rows:
+        if int(r["id"]) == int(keep["id"]):
+            continue
+        if r.get("role") == "admin" or _protected_account(r.get("telegram_id")):
+            continue
+        k = _norm_name_key(_merge_display_name(r))
+        if not k or not keep_key:
+            continue
+        same = (k == keep_key)
+        pref = (min(len(k), len(keep_key)) >= 3
+                and (k.startswith(keep_key) or keep_key.startswith(k)))
+        if same or pref:
+            cands.append((0 if same else 1, r))
+    cands.sort(key=lambda x: (x[0], x[1]["id"]))
+    if not cands:
+        await query.answer("✅ لا يوجد حساب آخر بنفس الاسم — لا شيء للدمج.", show_alert=True)
+        return
+    keep_name, _ = _merge_candidate_label(keep)
+    lines = [
+        "🧬 <b>دمج الحسابات المكررة</b>",
+        "",
+        "الحساب الناجي (يبقى كما هو): <b>" + _esc_h(keep_name) + "</b>",
+        "اختر الحساب الذي سيُدمج فيه — تُنقل كل سجلاته (المحادثات، الطلبات، الفواتير، "
+        "حركات المخزون، دخول التطبيق) ثم يُوقَف نهائياً:",
+    ]
+    buttons = []
+    for _, r in cands[:10]:
+        tid2 = r.get("telegram_id")
+        nm = _merge_display_name(r)
+        short = nm[:14] + " · 🆔" + (str(tid2) if tid2 else "#" + str(r["id"]))
+        if not r.get("active"):
+            short += " (مطرود)"
+        buttons.append([InlineKeyboardButton(
+            "دمج: " + short,
+            callback_data="mergesel_" + tid_str + "_" + str(r["id"]))])
+    buttons.append([InlineKeyboardButton("❌ إلغاء", callback_data="users_cancel")])
+    await _safe_edit(query, "\n".join(lines), parse_mode=ParseMode.HTML,
+                     reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def callback_merge_confirm_handler(update, context):
+    """v53: بطاقة تأكيد صريحة قبل تنفيذ الدمج."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        return
+    parts = query.data.split("_")
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return
+    keep_tid, src_id = int(parts[1]), int(parts[2])
+    keep = get_user(keep_tid)
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE id = %s", (src_id,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    src = dict(row) if row else None
+    if not keep or not src or int(keep["id"]) == int(src_id):
+        await _safe_edit(query, "⚠️ أحد الحسابين غير موجود أو غير صالح للدمج.")
+        return
+    if src.get("role") == "admin" or _protected_account(src.get("telegram_id")) \
+            or keep.get("role") == "admin" or _protected_account(keep.get("telegram_id")):
+        await query.answer("🛡️ الدمج مع حساب محمي/إداري غير مسموح.", show_alert=True)
+        return
+    await query.answer()
+    kn, kex = _merge_candidate_label(keep)
+    sn, sex = _merge_candidate_label(src)
+    text = ("🧬 <b>تأكيد دمج الحسابات</b>\n\n"
+            "✅ <b>يبقى</b>: " + _esc_h(kn) + "\n"
+            "<i>" + _esc_h(kex) + "</i>\n\n"
+            "🧩 <b>يُدمج ثم يُوقف</b>: " + _esc_h(sn) + "\n"
+            "<i>" + _esc_h(sex) + "</i>\n\n"
+            "سيُنقل إلى الحساب الباقي: المحادثات، طلبات التوريد، الفواتير، "
+            "حركات المخزون، طلبات الاستخراج، دخول التطبيق والجلسات.\n"
+            "⚠️ لا يمكن التراجع بعد التنفيذ.\n\n"
+            "هل أنت متأكد؟")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ نعم، ادمج الآن",
+                              callback_data="mergego_" + str(keep_tid) + "_" + str(src_id))],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="users_cancel")],
+    ])
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def callback_merge_go_handler(update, context):
+    """v53: تنفيذ الدمج بعد التأكيد — نقل السجلات ثم إيقاف الحساب المكرر."""
+    query = update.callback_query
+    caller_id = query.from_user.id
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+        logging.warning(
+            "[MERGE] Unauthorized merge attempt by " + str(caller_id)
+            + " data=" + str(query.data))
+        return
+    parts = query.data.split("_")
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return
+    keep_tid, src_id = int(parts[1]), int(parts[2])
+    keep = get_user(keep_tid)
+    if not keep or int(keep["id"]) == int(src_id):
+        await _safe_edit(query, "⚠️ الحسابات غير صالحة للدمج.")
+        return
+    await query.answer("… جارٍ الدمج")
+    try:
+        counts = await asyncio.to_thread(_merge_two_users, int(keep["id"]), int(src_id), False)
+    except Exception as e:
+        logging.error("[MERGE] failed keep=%s src=%s: %s", keep["id"], src_id, e)
+        await _safe_edit(query, "⚠️ فشل الدمج: " + _esc_h(str(e))[:200])
+        return
+    try:
+        await asyncio.to_thread(
+            _audit_log, "merge_users", {"id": None, "username": str(caller_id)},
+            details="دمج الحساب #" + str(src_id) + " في #"
+                    + str(keep["id"]) + " — رسائل منقولة: "
+                    + str(counts.get("messages", 0)))
+    except Exception:
+        pass
+    kn, _ = _merge_candidate_label(keep)
+    text = ("✅ <b>تم الدمج بنجاح</b>\n\n"
+            "الحساب الباقي: <b>" + _esc_h(kn) + "</b>\n"
+            "📨 رسائل منقولة: " + str(counts.get("messages", 0)) + "\n"
+            "📦 حركات مخزون: " + str(counts.get("movements", 0)) + "\n"
+            "🚚 طلبات توريد: " + str(counts.get("supply_orders", 0)) + "\n"
+            "🧾 فواتير: " + str(counts.get("invoices", 0)) + "\n\n"
+            "الحساب المكرر أُوقف ولن يظهر في «الرسائل» بعد الآن — "
+            "افتح التطبيق وأعد فتح قائمة الرسائل.")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 لوحة المستخدمين", callback_data="users_refresh")],
+    ])
+    await _safe_edit(query, text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 async def callback_promote_handler(update, context):
@@ -6786,6 +6986,13 @@ def _build_users_panel():
     ويختفي الزر فور الضغط (استبدال الرسالة بالبطاقة) فلا يتكرر النقر المزدوج."""
     pending, approved = _get_users_snapshot()
 
+    # v53: عدّ الأسماء المطبّعة لكشف المكرر — من له مكرر يظهر له زر «دمج»
+    name_dup = {}
+    for u in approved:
+        k = _norm_name_key(_merge_display_name(u))
+        if k:
+            name_dup[k] = name_dup.get(k, 0) + 1
+
     buttons = []
     msg_lines = ["⚙️ <b>إدارة المستخدمين</b>\n"]
 
@@ -6898,6 +7105,16 @@ def _build_users_panel():
                     callback_data="askrole_" + str(tid),
                 ),
                 InlineKeyboardButton("🚫 طرد", callback_data="askkick_" + str(tid)),
+            ])
+            action_rows += 1
+        # v53: زر الدمج — فقط لمن يشارك اسمه مع حساب آخر (المكرر مثل Mostafa)
+        if tid and name_dup.get(_norm_name_key(_merge_display_name(u)), 0) > 1 \
+                and action_rows < _MAX_PANEL_ROWS:
+            buttons.append([
+                InlineKeyboardButton(
+                    "🧬 دمج الحساب المكرر: " + label[:16],
+                    callback_data="askmerge_" + str(tid),
+                ),
             ])
             action_rows += 1
 
@@ -10489,6 +10706,10 @@ def build_application():
     # 🚫 تنفيذ الطرد/إعادة التنشيط (v23)
     app.add_handler(CallbackQueryHandler(callback_kick_handler, pattern="^kick_"))
     app.add_handler(CallbackQueryHandler(callback_kick_handler, pattern="^unban_"))
+    # v53: دمج الحسابات المكررة — قائمة المرشحين ثم تأكيد ثم تنفيذ
+    app.add_handler(CallbackQueryHandler(callback_merge_list_handler, pattern="^askmerge_"))
+    app.add_handler(CallbackQueryHandler(callback_merge_confirm_handler, pattern="^mergesel_"))
+    app.add_handler(CallbackQueryHandler(callback_merge_go_handler, pattern="^mergego_"))
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_channel_handler, pattern="^restore_from_channel$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
@@ -10872,7 +11093,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v52"
+PWA_VERSION = "v53"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -10968,6 +11189,10 @@ DO $$ BEGIN
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar TEXT;
 EXCEPTION WHEN OTHERS THEN NULL; END $$;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
+-- ═══ v53: وسم الحسابات المدموجة merged_into (الفيديو أسفل بعد إنشاء جدول الرسائل) ═══
+DO $$ BEGIN
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS merged_into INTEGER;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_transactions_product_date
     ON transactions (product_id, date DESC);
 -- ═══ v50: الرسائل — محادثات فردية بين فريق العمل (نص/صورة/ملف/صوت) ═══
@@ -10975,7 +11200,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     id         SERIAL PRIMARY KEY,
     sender_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     recip_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kind       VARCHAR(10) NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'image', 'file', 'audio')),
+    kind       VARCHAR(10) NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'image', 'file', 'audio', 'video')),
     body       TEXT DEFAULT '',
     media      BYTEA,
     media_name VARCHAR(255),
@@ -10994,6 +11219,12 @@ CREATE TABLE IF NOT EXISTS pwa_remember (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_remember_user ON pwa_remember (user_id);
+-- ═══ v53: فيديو الرسائل — توسيع قيمة kind لقواعد البيانات القديمة ═══
+DO $$ BEGIN
+    ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_kind_check;
+    ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_kind_check
+        CHECK (kind IN ('text', 'image', 'file', 'audio', 'video'));
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -11095,15 +11326,145 @@ def _pwa_init_tables():
         logging.error("[PWA][v52] startup merge skipped: %s", e)
 
 
+def _norm_name_key(value):
+    """v53: مفتاح اسم مُطبَّع للمقارنة — مسافة غير قياسية/تطويل/همزات/تاء مربوطة
+    تُوحَّد حتى لا يفوت الدمج التلقائي بسبب فرق إملائي بسيط."""
+    if not value or not str(value).strip():
+        return ""
+    s = str(value).replace("\u00a0", " ").replace("\u200f", "").replace("\u200e", "")
+    s = s.replace("ـ", "")
+    s = " ".join(s.strip().split()).lower()
+    for a, b in (("أ", "ا"), ("إ", "ا"), ("آ", "ا"), ("ة", "ه"), ("ى", "ي")):
+        s = s.replace(a, b)
+    return s
+
+
+def _merge_display_name(u):
+    """أفضل اسم معروض لصف مستخدم (للعرض والمقارنة)."""
+    for v in (u.get("display_name"), u.get("first_name"), u.get("username")):
+        if v and str(v).strip():
+            return str(v).strip()
+    return "#" + str(u.get("id") or "")
+
+
+def _esc_h(s):
+    """تهريب HTML للبطاقات (بوت تلغرام)."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _merge_two_users(dst_id, src_id, delete_src):
+    """v53: دمج حساب (المصدر) في حساب آخر (الناجي) — ينقل كل السجلات إليه.
+    يعيد قاموس عدّادات ما نُقل، ويرفع استثناء عند أي مانع.
+    • delete_src=True → حذف صف المصدر (حسابات التطبيق بلا تلجرام فقط، حارس SQL).
+    • delete_src=False → إيقاف المصدر ووسمه merged_into (حساب تلجرام حقيقي
+      لا يُحذف حتى لا يعيد /start إنشاءه مكرراً)."""
+    dst_id, src_id = int(dst_id), int(src_id)
+    if dst_id == src_id:
+        raise RuntimeError("لا يمكن دمج الحساب في نفسه")
+    conn = get_connection()
+    counts = {}
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, telegram_id, role, active FROM users WHERE id IN (%s, %s)",
+                        (dst_id, src_id))
+            found = {int(r["id"]): r for r in cur.fetchall()}
+        if dst_id not in found or src_id not in found:
+            raise RuntimeError("أحد الحسابين غير موجود")
+        for r in found.values():
+            if r["role"] == "admin" or _protected_account(r["telegram_id"]):
+                raise RuntimeError("لا يمكن دمج حساب إداري/محمي")
+        with conn.cursor() as cur:
+            # دخول التطبيق: إن للناجي رقم سرّاً أبقيناه وإلا انتقل رقم المدمج
+            cur.execute("SELECT 1 FROM pwa_auth WHERE user_id = %s", (dst_id,))
+            if cur.fetchone():
+                cur.execute("DELETE FROM pwa_auth WHERE user_id = %s", (src_id,))
+            else:
+                cur.execute("UPDATE pwa_auth SET user_id = %s WHERE user_id = %s", (dst_id, src_id))
+            # استكمال بيانات الهوية الناقصة في الناجي من المدموج —
+            # تُمسح من المصدر أولاً حتى لا يصطدم فهرس email/phone الفريد
+            cur.execute(
+                "SELECT email, phone, avatar, identity_verified, display_name "
+                "FROM users WHERE id = %s", (src_id,))
+            s_email, s_phone, s_avatar, s_verified, s_display = cur.fetchone()
+            cur.execute("UPDATE users SET email = NULL, phone = NULL WHERE id = %s", (src_id,))
+            cur.execute(
+                "UPDATE users SET "
+                "email = COALESCE(email, %s), "
+                "phone = COALESCE(phone, %s), "
+                "avatar = COALESCE(avatar, %s), "
+                "identity_verified = (identity_verified OR %s), "
+                "display_name = COALESCE(NULLIF(display_name, ''), %s) "
+                "WHERE id = %s",
+                (s_email, s_phone, s_avatar, bool(s_verified), s_display, dst_id))
+            for sql, prm in [
+                ("UPDATE pwa_sessions SET user_id = %s WHERE user_id = %s", (dst_id, src_id)),
+                ("UPDATE pwa_remember SET user_id = %s WHERE user_id = %s", (dst_id, src_id)),
+                ("UPDATE pwa_otp SET user_id = %s WHERE user_id = %s", (dst_id, src_id)),
+                ("UPDATE pwa_registrations SET user_id = %s WHERE user_id = %s", (dst_id, src_id)),
+                ("UPDATE notification_reads SET user_id = %s WHERE user_id = %s "
+                 "AND NOT EXISTS (SELECT 1 FROM notification_reads WHERE user_id = %s)",
+                 (dst_id, src_id, dst_id)),
+                ("DELETE FROM notification_reads WHERE user_id = %s", (src_id,)),
+            ]:
+                cur.execute(sql, prm)
+            # المحادثات: المرسل ثم المستقبل — عدّاد الرسائل المنقولة
+            cur.execute("UPDATE chat_messages SET sender_id = %s WHERE sender_id = %s",
+                        (dst_id, src_id))
+            n_msg = cur.rowcount
+            cur.execute("UPDATE chat_messages SET recip_id = %s WHERE recip_id = %s",
+                        (dst_id, src_id))
+            counts["messages"] = n_msg + cur.rowcount
+            # رسائل صارت من الناجي إلى نفسه (محادثة الحسابين معاً) تُحذف
+            cur.execute("DELETE FROM chat_messages WHERE sender_id = %s AND recip_id = %s",
+                        (dst_id, dst_id))
+            for sql, key, prm in [
+                ("UPDATE transactions SET user_id = %s WHERE user_id = %s",
+                 "movements", (dst_id, src_id)),
+                ("UPDATE extraction_requests SET requester_id = %s WHERE requester_id = %s",
+                 "extractions", (dst_id, src_id)),
+                ("UPDATE incoming_orders SET requester_id = %s WHERE requester_id = %s",
+                 "supply_orders", (dst_id, src_id)),
+                ("UPDATE pending_deliveries SET user_id = %s WHERE user_id = %s",
+                 None, (dst_id, src_id)),
+                ("UPDATE audit_log SET user_id = %s WHERE user_id = %s",
+                 None, (dst_id, src_id)),
+            ]:
+                cur.execute(sql, prm)
+                if key:
+                    counts[key] = cur.rowcount
+            cur.execute("UPDATE invoices SET worker_id = %s WHERE worker_id = %s", (dst_id, src_id))
+            n_inv = cur.rowcount
+            cur.execute("UPDATE invoices SET admin_id = %s WHERE admin_id = %s", (dst_id, src_id))
+            counts["invoices"] = n_inv + cur.rowcount
+            if delete_src:
+                # حارس صارم: صف حساب التطبيق فقط (بلا تلجرام) يُحذف
+                cur.execute("DELETE FROM users WHERE id = %s AND telegram_id IS NULL", (src_id,))
+                if cur.rowcount != 1:
+                    raise RuntimeError("الحساب المدموج حساب تلجرام — يُوقف ولا يُحذف")
+                counts["removed"] = True
+            else:
+                cur.execute("UPDATE users SET active = FALSE, merged_into = %s WHERE id = %s",
+                            (dst_id, src_id))
+                counts["removed"] = False
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def _pwa_merge_duplicate_users():
-    """v52: دمج حساب التطبيق (telegram_id IS NULL) في حساب تلجرام بنفس الاسم.
+    """v52/v53: دمج حساب التطبيق (telegram_id IS NULL) في حساب تلجرام بنفس الاسم.
     نفس الشخص كان يسجّل من التطبيق ومن تلجرام فيظهر مرتين في الرسائل
     (بلاغ المدير: «تداخل بين مستخدمي بوت تلغرام ومستخدمي التطبيق»).
     القواعد:
     • الناجي دائماً حساب تلجرام (مرساة الهوية الحقيقية) — «حتى ولو موجود في تلجرام».
     • من لا اسم له في تلجرام يبقى كما هو — «إلا إذا كان شخصاً جديداً كلياً».
-    • تطابق الاسم مع أكثر من حساب تلجرام → لا دمج (لا نخمّن نيابة عن المدير).
-    • لا دمج أبداً في حساب مدير (حماية من خداع الصلاحيات) ولا بين حسابين من تلجرام.
+    • تطابق الاسم مع أكثر من حساب تلجرام → لا دمج تلقائي — يعالجها المدير يدوياً
+      بزر «🧬 دمج المكرر» في لوحة المستخدمين (v53).
+    • لا دمج أبداً في حساب مدير ولا بين حسابين من تلجرام تلقائياً.
     ينتقل كل شيء إلى الناجي: دخول التطبيق/الجلسات/التذكير/رموز OTP/المحادثات/
     حركات المخزون/طلبات الاستخراج/طلبات التوريد/الفواتير/الإشعارات المقروءة."""
     conn = get_connection()
@@ -11113,79 +11474,28 @@ def _pwa_merge_duplicate_users():
             cur.execute("SELECT id, telegram_id, username, first_name, display_name, role, active FROM users")
             rows = cur.fetchall()
 
-        def _nm(r):
-            for v in (r.get("display_name"), r.get("first_name"), r.get("username")):
-                if v and str(v).strip():
-                    return " ".join(str(v).strip().split()).lower()
-            return ""
-
         tg = {}
         for r in rows:
             if r["telegram_id"] is not None and r["active"] and r["role"] != "admin":
-                n = _nm(r)
+                n = _norm_name_key(_merge_display_name(r))
                 if n:
                     tg.setdefault(n, []).append(int(r["id"]))
         pairs = []
         for a in rows:
             if a["telegram_id"] is not None or not a["active"]:
                 continue
-            n = _nm(a)
+            n = _norm_name_key(_merge_display_name(a))
             cands = tg.get(n) or []
             if n and len(cands) == 1:
                 pairs.append((int(a["id"]), cands[0], n))
         for src, dst, nm in pairs:
             try:
-                with conn.cursor() as cur:
-                    # دخول التطبيق: إن للناجي رقم سرّاً أبقيناه وإلا انتقل رقم المدمج
-                    cur.execute("SELECT 1 FROM pwa_auth WHERE user_id = %s", (dst,))
-                    if cur.fetchone():
-                        cur.execute("DELETE FROM pwa_auth WHERE user_id = %s", (src,))
-                    else:
-                        cur.execute("UPDATE pwa_auth SET user_id = %s WHERE user_id = %s", (dst, src))
-                    # استكمال بيانات الهوية الناقصة في الناجي من المدموج —
-                    # تُمسح من المصدر أولاً حتى لا يصطدم فهرس email/phone الفريد
-                    cur.execute(
-                        "SELECT email, phone, avatar, identity_verified, display_name "
-                        "FROM users WHERE id = %s", (src,))
-                    s_email, s_phone, s_avatar, s_verified, s_display = cur.fetchone()
-                    cur.execute("UPDATE users SET email = NULL, phone = NULL WHERE id = %s", (src,))
-                    cur.execute(
-                        "UPDATE users SET "
-                        "email = COALESCE(email, %s), "
-                        "phone = COALESCE(phone, %s), "
-                        "avatar = COALESCE(avatar, %s), "
-                        "identity_verified = (identity_verified OR %s), "
-                        "display_name = COALESCE(NULLIF(display_name, ''), %s) "
-                        "WHERE id = %s",
-                        (s_email, s_phone, s_avatar, bool(s_verified), s_display, dst))
-                    for sql, prm in [
-                        ("UPDATE pwa_sessions SET user_id = %s WHERE user_id = %s", (dst, src)),
-                        ("UPDATE pwa_remember SET user_id = %s WHERE user_id = %s", (dst, src)),
-                        ("UPDATE pwa_otp SET user_id = %s WHERE user_id = %s", (dst, src)),
-                        ("UPDATE pwa_registrations SET user_id = %s WHERE user_id = %s", (dst, src)),
-                        ("UPDATE notification_reads SET user_id = %s WHERE user_id = %s "
-                         "AND NOT EXISTS (SELECT 1 FROM notification_reads WHERE user_id = %s)",
-                         (dst, src, dst)),
-                        ("DELETE FROM notification_reads WHERE user_id = %s", (src,)),
-                        ("UPDATE chat_messages SET sender_id = %s WHERE sender_id = %s", (dst, src)),
-                        ("UPDATE chat_messages SET recip_id = %s WHERE recip_id = %s", (dst, src)),
-                        ("UPDATE transactions SET user_id = %s WHERE user_id = %s", (dst, src)),
-                        ("UPDATE extraction_requests SET requester_id = %s WHERE requester_id = %s", (dst, src)),
-                        ("UPDATE incoming_orders SET requester_id = %s WHERE requester_id = %s", (dst, src)),
-                        ("UPDATE invoices SET worker_id = %s WHERE worker_id = %s", (dst, src)),
-                        ("UPDATE invoices SET admin_id = %s WHERE admin_id = %s", (dst, src)),
-                        ("UPDATE pending_deliveries SET user_id = %s WHERE user_id = %s", (dst, src)),
-                        ("UPDATE audit_log SET user_id = %s WHERE user_id = %s", (dst, src)),
-                    ]:
-                        cur.execute(sql, prm)
-                    # حذف المدموج — بشرط الحارس: صف التطبيق فقط (بلا تلجرام)
-                    cur.execute("DELETE FROM users WHERE id = %s AND telegram_id IS NULL", (src,))
-                conn.commit()
+                _merge_two_users(dst, src, delete_src=True)
                 moved.append((src, dst, nm))
-                logging.info("[PWA][v52] merged app user %s into telegram user %s (name=%s)", src, dst, nm)
+                logging.info("[PWA][v53] merged app user %s into telegram user %s (name=%s)", src, dst, nm)
             except Exception as e:
                 conn.rollback()
-                logging.error("[PWA][v52] merge failed src=%s dst=%s: %s", src, dst, e)
+                logging.error("[PWA][v53] merge failed src=%s dst=%s: %s", src, dst, e)
         return moved
     finally:
         release_connection(conn)
@@ -15125,7 +15435,7 @@ async def _pwa_sec_middleware(request, handler):
 # شات شبيه بواتساب داخل التطبيق: محادثة فردية مع أي موظف/مدير، أكثر من محادثة
 # في نفس الوقت، نص + صور + ملفات + رسائل صوتية. الوسائط في القاعدة (BYTEA).
 
-_CHAT_MEDIA_MAX = 10 * 1024 * 1024        # 10 ميغابايت بعد فك الترميز
+_CHAT_MEDIA_MAX = 25 * 1024 * 1024        # 25 ميغابايت بعد فك الترميز (v53: دعم الفيديو)
 _CHAT_TEXT_MAX = 4000
 _CHAT_RATE = {}                            # user_id -> [window_start, count]
 _CHAT_PING = {}                            # recipient telegram_id -> last ts
@@ -15333,7 +15643,7 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
         if win[1] > 25:
             return None, None, "أرسلت رسائل كثيرة — انتظر قليلاً ثم أعد المحاولة."
     kind = str(kind or "text").strip().lower()
-    if kind not in ("text", "image", "file", "audio"):
+    if kind not in ("text", "image", "file", "audio", "video"):
         kind = "text"
     body, media, mname, mmime, msize = "", None, "", "", 0
     if kind == "text":
@@ -15352,13 +15662,15 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64):
         if not media:
             return None, None, "المرفق فارغ."
         if len(media) > _CHAT_MEDIA_MAX:
-            return None, None, "الملف كبير جداً — الحد 10 ميغابايت."
+            return None, None, "الملف كبير جداً — الحد 25 ميغابايت."
         mname = str(name or "ملف").strip().replace("\r", " ").replace("\n", " ")[:200]
         mmime = str(mime or "application/octet-stream").split(";")[0].strip().lower()[:100]
         if kind == "image" and not mmime.startswith("image/"):
             mmime = "image/jpeg"
         if kind == "audio" and not (mmime.startswith("audio/") or mmime.startswith("video/webm")):
             mmime = "audio/webm"
+        if kind == "video" and not mmime.startswith("video/"):
+            mmime = "video/mp4"
         msize = len(media)
     conn = get_connection()
     try:
@@ -15407,6 +15719,30 @@ def _pwa_api_chat_read(user, other):
             total = int(cur.fetchone()[0])
         conn.commit()
         return {"ok": True, "total": min(total, 99)}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_chat_delete_conversation(user, other):
+    """v53: حذف محادثة بالكامل (رسائل الاتجاهين) — للمشارك فيها فقط.
+    يعيد (عدد المحذوف، خطأ)."""
+    me = user["id"]
+    try:
+        other = int(other)
+    except (TypeError, ValueError):
+        return 0, "طلب غير صالح."
+    if other == me:
+        return 0, "لا يمكنك محادثة نفسك."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM chat_messages WHERE "
+                "(sender_id = %s AND recip_id = %s) OR (sender_id = %s AND recip_id = %s)",
+                (me, other, other, me))
+            n = cur.rowcount
+        conn.commit()
+        return n, None
     finally:
         release_connection(conn)
 
@@ -15656,6 +15992,8 @@ async def pwa_chat_send_handler(request):
                     content = "🖼️ صورة مرفقة"
                 elif msg["kind"] == "audio":
                     content = "🎤 رسالة صوتية"
+                elif msg["kind"] == "video":
+                    content = "🎬 فيديو مرفق"
                 else:
                     content = "📎 ملف: " + (msg["media_name"] or "")
                 note = ("💬 رسالة جديدة في تطبيق المخزون\n"
@@ -15686,6 +16024,24 @@ async def pwa_chat_read_handler(request):
         return _pwa_err(400, "طلب غير صالح.")
     data = await _pwa_run(_pwa_api_chat_read, user, body.get("user"))
     return _pwa_jr(data)
+
+
+async def pwa_chat_delete_handler(request):
+    """v53: حذف المحادثة بالكامل (الاتجاهين) — طلب المشارك نفسه."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    n, err2 = await _pwa_run(_pwa_api_chat_delete_conversation, user, body.get("user"))
+    if err2:
+        return _pwa_err(400, err2)
+    await _pwa_run(_audit_log, "chat_delete_conv", user,
+                   details="حذف محادثة كاملة مع #" + str(body.get("user")),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "deleted": int(n or 0)})
 
 
 async def pwa_chat_unread_handler(request):
@@ -15847,6 +16203,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/msg", pwa_chat_msg_handler)
     app.router.add_post("/api/chat/send", pwa_chat_send_handler)
     app.router.add_post("/api/chat/read", pwa_chat_read_handler)
+    app.router.add_post("/api/chat/delete", pwa_chat_delete_handler)
     app.router.add_get("/api/chat/unread", pwa_chat_unread_handler)
     app.router.add_get("/api/chat/media", pwa_chat_media_handler)
     logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (35 مساراً)")
