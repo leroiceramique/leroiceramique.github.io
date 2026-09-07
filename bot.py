@@ -11093,7 +11093,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v55"
+PWA_VERSION = "v56"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -16044,6 +16044,56 @@ async def pwa_chat_delete_handler(request):
     return _pwa_jr({"ok": True, "deleted": int(n or 0)})
 
 
+_MICLOG_LAST = {}   # v56: تقييد تحويل تقارير الميكروفون إلى تلغرام — رسالة كل 60 ثانية لكل نوع خطأ
+
+
+async def pwa_miclog_handler(request):
+    """v56: تقرير تشخيصي صامت عند فشل بدء الميكروفون داخل التطبيق.
+    الهدف: معرفة السبب الحقيقي من جهاز المستخدم (NotAllowed/NotReadable/...) —
+    يُحوَّل فوراً برسالة تلغرام للمدراء بلا أي حوار أو تدخل إضافي في التطبيق."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    name = str(body.get("name", "") or "")[:60]
+    msg = str(body.get("msg", "") or "")[:200]
+    ver = str(body.get("ver", "") or "")[:12]
+    mime = str(body.get("mime", "") or "")[:60]
+    ua = str(body.get("ua", "") or "")[:180]
+    who = ""
+    if isinstance(user, dict):
+        who = str(user.get("name") or "") or ("#" + str(user.get("id") or "؟"))
+    if not who:
+        who = "؟"
+    logging.info("[MICLOG] " + name + " | " + msg + " | " + who + " | " + ua)
+    now = time.time()
+    if TG_APP is not None and (now - _MICLOG_LAST.get(name, 0)) > 60:
+        _MICLOG_LAST[name] = now
+        text = ("🎤 تقرير ميكروفون — فشل بدء التسجيل\n"
+                "❌ الخطأ: " + (name or "غير معروف") + "\n"
+                "📝 التفصيل: " + (msg or "—") + "\n"
+                "👤 المستخدم: " + who + "\n"
+                "🌐 الإصدار: " + (ver or "؟") + " — الصيغة: " + (mime or "افتراضية") + "\n"
+                "📱 الجهاز: " + (ua or "—"))
+        seen = set()
+        for admin_id in list(ADMIN_IDS) + list(OWNER_IDS or []):
+            try:
+                aid = int(admin_id)
+            except (TypeError, ValueError):
+                continue
+            if aid in seen:
+                continue
+            seen.add(aid)
+            try:
+                await TG_APP.bot.send_message(chat_id=aid, text=text)
+            except Exception as e:
+                logging.error("[MICLOG] notify failed for " + str(aid) + ": " + str(e))
+    return _pwa_jr({"ok": True})
+
+
 async def pwa_chat_unread_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
@@ -16206,7 +16256,9 @@ def register_pwa_routes(app):
     app.router.add_post("/api/chat/delete", pwa_chat_delete_handler)
     app.router.add_get("/api/chat/unread", pwa_chat_unread_handler)
     app.router.add_get("/api/chat/media", pwa_chat_media_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (35 مساراً)")
+    # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
+    app.router.add_post("/api/miclog", pwa_miclog_handler)
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (36 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════

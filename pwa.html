@@ -388,7 +388,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v55</span></p>
+      <span style="opacity:.65">الإصدار v56</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -486,7 +486,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v55</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v56</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -621,7 +621,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v55</p>
+      <p class="hint" id="setAbout">الإصدار v56</p>
     </section>
   </main>
   <nav class="tabs">
@@ -2437,7 +2437,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v55" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v56" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2455,7 +2455,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v55";
+const APP_VER = "v56";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2889,20 +2889,52 @@ function chatRecBar(cancel) {
 function chatRecStopTracks(stream) {
   try { if (stream) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e0) {} }); } catch (e1) {}
 }
+function chatMicReport(name, msg) {
+  /* v56: تقرير صامت للخادم عند فشل الميكروفون — يصل للمدير في تلغرام فوراً
+     لمعرفة السبب الحقيقي من الجهاز (ممنوع/مشغول/غير مدعوم) بلا أي تدخل من المستخدم. */
+  try {
+    const k = String(name || "?");
+    if (!S.chat.micRep) S.chat.micRep = ",";
+    if (S.chat.micRep.indexOf("," + k + ",") >= 0) return;   /* مرة واحدة لكل نوع خطأ */
+    S.chat.micRep += k + ",";
+    api("/api/miclog", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: k, msg: String(msg || "").slice(0, 200), ver: APP_VER,
+        mime: chatRecMime(), ua: String(navigator.userAgent || "").slice(0, 180) }) }).catch(() => {});
+  } catch (e0) {}
+}
 async function chatRecStart() {
   if (S.chat.recState === "hold" || S.chat.recState === "rec" ||
       S.chat.recState === "cancel" || S.chat.recState === "sending") return;  /* حالة واحدة فقط */
   if (!chatMicOK()) { toast("الميكروفون غير مدعوم في هذا المتصفح.", true); return; }
   S.chat.recState = "hold"; S.chat.recCancel = false;
+  await chatRecBegin();
+}
+/* v56: البدء الفعلي منفصل عن الحارس — يمكّن إعادة محاولة واحدة للأخطاء العابرة */
+async function chatRecBegin() {
   let stream = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    console.log("recording:error permission-denied");
+    const en = (e && e.name) || "UnknownError";
+    console.log("recording:error " + en + " " + String((e && e.message) || "").slice(0, 120));
+    if ((en === "AbortError" || en === "NotReadableError") && !S.chat.recRetry && S.chat.recState === "hold") {
+      S.chat.recRetry = true;   /* خطأ عابر — محاولة واحدة إضافية ما دام الإصبع مضغوطاً */
+      setTimeout(() => { if (S.chat.recState === "hold") chatRecBegin(); }, 400);
+      return;
+    }
     S.chat.recState = "idle"; S.chat.recCancel = false;
-    toast("يرجى السماح باستخدام الميكروفون", true);   /* رسالة صغيرة فقط — بلا نوافذ */
+    chatMicReport(en, e && e.message);
+    if (en === "NotAllowedError" || en === "SecurityError")
+      toast("تعذر فتح الميكروفون — أغلق التطبيق كلياً ثم افتحه وأعد المحاولة.", true);
+    else if (en === "NotFoundError" || en === "OverconstrainedError")
+      toast("لم يُعثر على ميكروفون في هذا الجهاز.", true);
+    else if (en === "NotReadableError")
+      toast("الميكروفون مشغول من تطبيق آخر — أغلق التطبيقات ثم أعد المحاولة.", true);
+    else
+      toast("تعذر بدء الميكروفون — أعد المحاولة.", true);
     return;
   }
+  S.chat.recRetry = false;
   if (S.chat.recState !== "hold") {   /* أفلت قبل منح الإذن — لا تسجيل شبح */
     chatRecStopTracks(stream);
     toast("تم السماح بالميكروفون — اضغط مطولاً وتكلم ثم أفلت.");
@@ -2991,7 +3023,7 @@ function chatRecAbort() {
 }
 function chatRecCleanup() {
   S.chat.rec = null;
-  S.chat.recStream = null; S.chat.recCancel = false; S.chat.recState = "idle";
+  S.chat.recStream = null; S.chat.recCancel = false; S.chat.recState = "idle"; S.chat.recRetry = false;
   if (S.chat.recTimer) { clearInterval(S.chat.recTimer); S.chat.recTimer = null; }
   const r = $("#chatRec"); if (r) r.style.display = "none";
   setMicUI("idle");
