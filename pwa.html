@@ -381,7 +381,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v50</span></p>
+      <span style="opacity:.65">الإصدار v52</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -479,7 +479,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v50</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v52</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -612,7 +612,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v50</p>
+      <p class="hint" id="setAbout">الإصدار v52</p>
     </section>
   </main>
   <nav class="tabs">
@@ -2425,7 +2425,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v50" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v52" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2443,7 +2443,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v50";
+const APP_VER = "v52";
 S.updDismissed = "";
 function swCleanup() {
   try {
@@ -2585,19 +2585,22 @@ async function loadChatList(showLoading) {
       box.innerHTML = '<p class="empty">لا محادثات بعد — اضغط «＋ محادثة جديدة» 👆</p>';
       return;
     }
-    box.innerHTML = d.chats.map((c) =>
-      '<div class="chatrow" data-cu="' + c.user.id + '">'
+    box.innerHTML = d.chats.map((c) => {
+      const nm = c.user.name + (c.user.tag ? " · " + c.user.tag : "");
+      return '<div class="chatrow" data-cu="' + c.user.id + '">'
       + '<div class="cav">' + esc(chatAva(c.user.name)) + '</div>'
-      + '<div class="cinfo"><b>' + esc(c.user.name) + '</b>'
+      + '<div class="cinfo"><b>' + esc(nm) + '</b>'
       + '<span>' + esc(chatPreview(c.last)) + '</span></div>'
       + '<div class="cside"><span class="ctime">' + esc(fmtChatTime(c.last.created_at)) + '</span>'
       + (c.unread ? '<span class="cunread">' + (c.unread > 99 ? "99+" : c.unread) + '</span>' : "")
-      + '</div></div>').join("");
+      + '</div></div>';
+    }).join("");
     box.querySelectorAll(".chatrow").forEach((r) =>
       r.addEventListener("click", () => {
         const id = Number(r.dataset.cu);
         const c = (d.chats || []).find((x) => x.user.id === id);
-        openChat(id, c ? c.user.name : "#" + id, c ? c.user.role_label : "");
+        openChat(id, c ? (c.user.name + (c.user.tag ? " · " + c.user.tag : "")) : "#" + id,
+                 c ? c.user.role_label : "");
       }));
   } catch (e) {
     if (showLoading && box) box.innerHTML = '<p class="empty">تعذر التحميل — أعد المحاولة.</p>';
@@ -2904,9 +2907,11 @@ async function openContactsDlg() {
       box.innerHTML = '<p class="empty">لا يوجد زملاء متاحون للمحادثة بعد.</p>';
       return;
     }
-    box.innerHTML = list.map((c) =>
-      '<div class="crow" data-cid="' + c.id + '"><div class="cav">' + esc(chatAva(c.name)) + '</div>'
-      + '<div class="cinfo"><b>' + esc(c.name) + '</b><span>' + esc(c.role_label || "") + '</span></div></div>').join("");
+    box.innerHTML = list.map((c) => {
+      const nm = c.name + (c.tag ? " · " + c.tag : "");
+      return '<div class="crow" data-cid="' + c.id + '"><div class="cav">' + esc(chatAva(c.name)) + '</div>'
+      + '<div class="cinfo"><b>' + esc(nm) + '</b><span>' + esc(c.role_label || "") + '</span></div></div>';
+    }).join("");
     box.querySelectorAll(".crow").forEach((r) => r.addEventListener("click", () => {
       try { $("#dlgChatC").close(); } catch (e0) {}
       const id = Number(r.dataset.cid);

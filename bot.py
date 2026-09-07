@@ -10872,7 +10872,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v50"
+PWA_VERSION = "v52"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11086,6 +11086,107 @@ def _pwa_init_tables():
     except Exception:
         conn.rollback()
         raise
+    finally:
+        release_connection(conn)
+    # v52: دمج المكرر عند الإقلاع — نفس الشخص من التطبيق ومن تلجرام = حساب واحد
+    try:
+        _pwa_merge_duplicate_users()
+    except Exception as e:
+        logging.error("[PWA][v52] startup merge skipped: %s", e)
+
+
+def _pwa_merge_duplicate_users():
+    """v52: دمج حساب التطبيق (telegram_id IS NULL) في حساب تلجرام بنفس الاسم.
+    نفس الشخص كان يسجّل من التطبيق ومن تلجرام فيظهر مرتين في الرسائل
+    (بلاغ المدير: «تداخل بين مستخدمي بوت تلغرام ومستخدمي التطبيق»).
+    القواعد:
+    • الناجي دائماً حساب تلجرام (مرساة الهوية الحقيقية) — «حتى ولو موجود في تلجرام».
+    • من لا اسم له في تلجرام يبقى كما هو — «إلا إذا كان شخصاً جديداً كلياً».
+    • تطابق الاسم مع أكثر من حساب تلجرام → لا دمج (لا نخمّن نيابة عن المدير).
+    • لا دمج أبداً في حساب مدير (حماية من خداع الصلاحيات) ولا بين حسابين من تلجرام.
+    ينتقل كل شيء إلى الناجي: دخول التطبيق/الجلسات/التذكير/رموز OTP/المحادثات/
+    حركات المخزون/طلبات الاستخراج/طلبات التوريد/الفواتير/الإشعارات المقروءة."""
+    conn = get_connection()
+    moved = []
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id, telegram_id, username, first_name, display_name, role, active FROM users")
+            rows = cur.fetchall()
+
+        def _nm(r):
+            for v in (r.get("display_name"), r.get("first_name"), r.get("username")):
+                if v and str(v).strip():
+                    return " ".join(str(v).strip().split()).lower()
+            return ""
+
+        tg = {}
+        for r in rows:
+            if r["telegram_id"] is not None and r["active"] and r["role"] != "admin":
+                n = _nm(r)
+                if n:
+                    tg.setdefault(n, []).append(int(r["id"]))
+        pairs = []
+        for a in rows:
+            if a["telegram_id"] is not None or not a["active"]:
+                continue
+            n = _nm(a)
+            cands = tg.get(n) or []
+            if n and len(cands) == 1:
+                pairs.append((int(a["id"]), cands[0], n))
+        for src, dst, nm in pairs:
+            try:
+                with conn.cursor() as cur:
+                    # دخول التطبيق: إن للناجي رقم سرّاً أبقيناه وإلا انتقل رقم المدمج
+                    cur.execute("SELECT 1 FROM pwa_auth WHERE user_id = %s", (dst,))
+                    if cur.fetchone():
+                        cur.execute("DELETE FROM pwa_auth WHERE user_id = %s", (src,))
+                    else:
+                        cur.execute("UPDATE pwa_auth SET user_id = %s WHERE user_id = %s", (dst, src))
+                    # استكمال بيانات الهوية الناقصة في الناجي من المدموج —
+                    # تُمسح من المصدر أولاً حتى لا يصطدم فهرس email/phone الفريد
+                    cur.execute(
+                        "SELECT email, phone, avatar, identity_verified, display_name "
+                        "FROM users WHERE id = %s", (src,))
+                    s_email, s_phone, s_avatar, s_verified, s_display = cur.fetchone()
+                    cur.execute("UPDATE users SET email = NULL, phone = NULL WHERE id = %s", (src,))
+                    cur.execute(
+                        "UPDATE users SET "
+                        "email = COALESCE(email, %s), "
+                        "phone = COALESCE(phone, %s), "
+                        "avatar = COALESCE(avatar, %s), "
+                        "identity_verified = (identity_verified OR %s), "
+                        "display_name = COALESCE(NULLIF(display_name, ''), %s) "
+                        "WHERE id = %s",
+                        (s_email, s_phone, s_avatar, bool(s_verified), s_display, dst))
+                    for sql, prm in [
+                        ("UPDATE pwa_sessions SET user_id = %s WHERE user_id = %s", (dst, src)),
+                        ("UPDATE pwa_remember SET user_id = %s WHERE user_id = %s", (dst, src)),
+                        ("UPDATE pwa_otp SET user_id = %s WHERE user_id = %s", (dst, src)),
+                        ("UPDATE pwa_registrations SET user_id = %s WHERE user_id = %s", (dst, src)),
+                        ("UPDATE notification_reads SET user_id = %s WHERE user_id = %s "
+                         "AND NOT EXISTS (SELECT 1 FROM notification_reads WHERE user_id = %s)",
+                         (dst, src, dst)),
+                        ("DELETE FROM notification_reads WHERE user_id = %s", (src,)),
+                        ("UPDATE chat_messages SET sender_id = %s WHERE sender_id = %s", (dst, src)),
+                        ("UPDATE chat_messages SET recip_id = %s WHERE recip_id = %s", (dst, src)),
+                        ("UPDATE transactions SET user_id = %s WHERE user_id = %s", (dst, src)),
+                        ("UPDATE extraction_requests SET requester_id = %s WHERE requester_id = %s", (dst, src)),
+                        ("UPDATE incoming_orders SET requester_id = %s WHERE requester_id = %s", (dst, src)),
+                        ("UPDATE invoices SET worker_id = %s WHERE worker_id = %s", (dst, src)),
+                        ("UPDATE invoices SET admin_id = %s WHERE admin_id = %s", (dst, src)),
+                        ("UPDATE pending_deliveries SET user_id = %s WHERE user_id = %s", (dst, src)),
+                        ("UPDATE audit_log SET user_id = %s WHERE user_id = %s", (dst, src)),
+                    ]:
+                        cur.execute(sql, prm)
+                    # حذف المدموج — بشرط الحارس: صف التطبيق فقط (بلا تلجرام)
+                    cur.execute("DELETE FROM users WHERE id = %s AND telegram_id IS NULL", (src,))
+                conn.commit()
+                moved.append((src, dst, nm))
+                logging.info("[PWA][v52] merged app user %s into telegram user %s (name=%s)", src, dst, nm)
+            except Exception as e:
+                conn.rollback()
+                logging.error("[PWA][v52] merge failed src=%s dst=%s: %s", src, dst, e)
+        return moved
     finally:
         release_connection(conn)
 
@@ -14029,7 +14130,27 @@ def _pwa_api_registration_approve(reg_id, role):
             full_name, reg_email, reg_username, reg_role, reg_pass = \
                 reg[0], (reg[1] or "").strip().lower(), (reg[2] or "").strip(), reg[3], reg[4]
             final_role = role if role != ROLE_CUSTOMER else reg_role
-            if reg_email:
+            # v52: هل الاسم مطابق لحساب تلجرام موجود؟ اربط به بدل إنشاء صف مكرر
+            # (حساب واحد لكل شخص — لا دمج في حساب مدير حمايةً من خداع الصلاحيات)
+            name_key = " ".join((full_name or "").split()).lower()
+            uid = None
+            if name_key:
+                cur.execute(
+                    "SELECT id FROM users WHERE active = TRUE AND telegram_id IS NOT NULL "
+                    "AND role <> 'admin' "
+                    "AND LOWER(TRIM(COALESCE(NULLIF(display_name, ''), first_name, username, ''))) = %s "
+                    "ORDER BY id", (name_key,))
+                cands = cur.fetchall()
+                # v52: نربط فقط عند مرشح تلجرام واحد — التعدد يُترك للمدير يدوياً
+                if len(cands) == 1:
+                    uid = cands[0][0]
+            if uid is not None:
+                cur.execute(
+                    "UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
+                    "first_name = COALESCE(NULLIF(first_name, ''), %s), "
+                    "email = COALESCE(email, %s) WHERE id = %s",
+                    (final_role, full_name, (reg_email or None), uid))
+            elif reg_email:
                 cur.execute("UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
                             "first_name = COALESCE(NULLIF(first_name, ''), %s) "
                             "WHERE lower(email) = %s RETURNING id",
@@ -14046,7 +14167,7 @@ def _pwa_api_registration_approve(reg_id, role):
                     "INSERT INTO users (first_name, role, active, identity_verified) "
                     "VALUES (%s, %s, TRUE, TRUE) RETURNING id", (full_name, final_role))
                 uid = cur.fetchone()
-            uid = int(uid[0])
+            uid = int(uid[0] if isinstance(uid, (tuple, list)) else uid)
             # v39: اسم الدخول من اختيار العميل (احتياطاً: البريد أو u<id> للحسابات القديمة)
             if reg_pass:
                 auth_name = reg_username or reg_email or ("u" + str(uid))
@@ -15030,12 +15151,14 @@ def _chat_msg_dict(r, me_id):
 
 
 def _pwa_api_chat_contacts(user):
-    """💬 جهات الاتصال: كل زملاء العمل النشطين (المديرون والموظفون) بلا العميل/المعلّق."""
+    """💬 جهات الاتصال: كل زملاء العمل النشطين (المديرون والموظفون) بلا العميل/المعلّق.
+    v51: تمييز الأسماء المتشابهة — إذا وُجد حسابان لنفس الاسم أُلصق بكلٍّ منهما
+    معرّفه (@username وإلا #telegram_id) حتى لا يبدوا مكررين بلا معنى."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT u.id, u.role, "
+                "SELECT u.id, u.role, u.username, u.telegram_id, "
                 "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
                 "'#' || u.id::text) AS name "
                 "FROM users u "
@@ -15046,8 +15169,20 @@ def _pwa_api_chat_contacts(user):
         conn.commit()
     finally:
         release_connection(conn)
-    contacts = [{"id": r["id"], "name": r["name"], "role": r["role"],
-                 "role_label": ROLE_LABELS.get(r["role"], r["role"])} for r in rows]
+    name_counts = {}
+    for r in rows:
+        key = (r["name"] or "").strip().lower()
+        name_counts[key] = name_counts.get(key, 0) + 1
+    contacts = []
+    for r in rows:
+        key = (r["name"] or "").strip().lower()
+        tag = ""
+        if name_counts.get(key, 0) > 1:
+            tag = ("@" + r["username"]) if r.get("username") \
+                else ("#" + str(r.get("telegram_id") or r["id"]))
+        contacts.append({"id": r["id"], "name": r["name"], "role": r["role"],
+                         "role_label": ROLE_LABELS.get(r["role"], r["role"]),
+                         "tag": tag})
     return {"ok": True, "me": {"id": user["id"], "name": user.get("name") or ""},
             "contacts": contacts}
 
@@ -15081,11 +15216,22 @@ def _pwa_api_chat_list(user):
                 "created_at, read_at FROM chat_messages WHERE id = ANY(%s)", (last_ids,))
             msgs = {r["id"]: r for r in cur.fetchall()}
             cur.execute(
-                "SELECT u.id, u.role, u.active, "
+                "SELECT u.id, u.role, u.active, u.username, u.telegram_id, "
                 "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
                 "'#' || u.id::text) AS name "
                 "FROM users u WHERE u.id = ANY(%s)", (partners,))
             users = {r["id"]: r for r in cur.fetchall()}
+            # v51: أسماء زملاء العمل النشطين كافة — لاكتشاف المتشابهة ووسمها بمعرّف
+            cur.execute(
+                "SELECT COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                "'#' || u.id::text) AS name "
+                "FROM users u WHERE u.active = TRUE AND u.id <> %s "
+                "AND (u.role IS NULL OR u.role NOT IN (%s, %s))",
+                (me, ROLE_CUSTOMER, ROLE_PENDING))
+            name_counts = {}
+            for nrow in cur.fetchall():
+                nkey = (nrow["name"] or "").strip().lower()
+                name_counts[nkey] = name_counts.get(nkey, 0) + 1
         conn.commit()
     finally:
         release_connection(conn)
@@ -15095,10 +15241,15 @@ def _pwa_api_chat_list(user):
         m = msgs.get(int(r["last_id"]))
         if not u or not m:
             continue
+        nkey = (u["name"] or "").strip().lower()
+        tag = ""
+        if name_counts.get(nkey, 0) > 1:
+            tag = ("@" + u["username"]) if u.get("username") \
+                else ("#" + str(u.get("telegram_id") or u["id"]))
         chats.append({
             "user": {"id": u["id"], "name": u["name"], "role": u["role"],
                      "role_label": ROLE_LABELS.get(u["role"], u["role"]),
-                     "active": bool(u["active"])},
+                     "active": bool(u["active"]), "tag": tag},
             "unread": int(r["unread"]),
             "last": _chat_msg_dict(m, me),
         })
