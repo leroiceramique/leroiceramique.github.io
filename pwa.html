@@ -240,6 +240,27 @@ html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b
   padding:9px 6px;text-align:center;box-shadow:var(--shadow)}
 .sumcard b{display:block;font-size:16px}
 .sumcard span{font-size:10.5px;color:var(--mut)}
+/* v67: أزرار الحركة السريعة — واجهة نظيفة غير فوضوية */
+.qgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.qa{display:flex;flex-direction:column;align-items:center;gap:4px;padding:13px 6px;
+  border:none;border-radius:14px;font-size:18px;font-weight:800;color:#fff;cursor:pointer;
+  line-height:1;box-shadow:var(--shadow)}
+.qa span{font-size:12.5px;font-weight:700;opacity:.95}
+.qa:active{transform:scale(.96)}
+.qa-a{background:var(--ok)}
+.qa-o{background:var(--bad)}
+.qa-r{background:var(--brand)}
+.movhead{margin-bottom:10px}
+.ftxt{margin-inline-start:auto;font-size:11px;font-weight:600;color:var(--mut);
+  max-width:44vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flab{font-size:11px;font-weight:800;color:var(--mut);margin:0 0 6px}
+.picklist{max-height:46vh;overflow:auto;margin:6px 0 10px;display:flex;flex-direction:column;gap:6px}
+.prow{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  background:var(--chip);border:1px solid var(--line);border-radius:12px;padding:11px 12px;
+  cursor:pointer;text-align:start;font:inherit;color:var(--ink)}
+.prow b{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prow span{font-size:12px;color:var(--mut);white-space:nowrap;flex-shrink:0}
+.prow:active{background:var(--brandsoft)}
 /* v41: ترويسة اليوم في الحركة */
 .dayhead{position:sticky;top:56px;z-index:2;background:var(--chip);color:var(--mut);
   border-radius:10px;padding:5px 12px;margin:10px 0 8px;font-size:12px;font-weight:800;text-align:center}
@@ -516,7 +537,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v66</span></p>
+      <span style="opacity:.65">الإصدار v67</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -614,7 +635,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v66</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v67</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -629,31 +650,41 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       </div>
       <div id="invList"><p class="empty">جارِ التحميل...</p></div>
     </section>
-    <!-- الحركة v41 — v48: نظام عام + 3 خانات مستقلة -->
+    <!-- الحركة v41 — v48 — v67: أزرار تنفيذ حقيقية + لوحة فلاتر مطوية -->
     <section class="view" id="v-mov">
       <h2 class="vt">حركة المخزون</h2>
-      <div class="seg" id="movSeg">
-        <button id="msegAll" class="on">الكل</button>
-        <button id="msegAdd">➕ الإضافة</button>
-        <button id="msegOut">➖ الإخراج</button>
-        <button id="msegRec">⚖️ الجرد</button>
+      <div class="qgrid" id="movActs" style="display:none">
+        <button type="button" class="qa qa-a" id="movActAdd">➕<span>إضافة</span></button>
+        <button type="button" class="qa qa-o" id="movActOut">➖<span>إخراج</span></button>
+        <button type="button" class="qa qa-r" id="movActRec">⚖️<span>جرد</span></button>
       </div>
       <button class="prodchip" id="movProdChip" style="display:none">📦 <span id="movProdName"></span> ✕</button>
-      <div class="fcard">
-        <div class="chips" id="movPresets" style="margin-bottom:8px">
-          <button class="fchip on" data-p="week">🗓 أسبوع بلا جمعة</button>
-          <button class="fchip" data-p="today">اليوم</button>
-          <button class="fchip" data-p="yest">أمس</button>
-          <button class="fchip" data-p="m30">٣٠ يوماً</button>
-          <button class="fchip" data-p="all">الكل</button>
-        </div>
-        <div class="fdates">
-          <label>من تاريخ<input type="date" id="movFrom"></label>
-          <label>إلى تاريخ<input type="date" id="movTo"></label>
-        </div>
-        <div class="chips" style="margin:10px 0 0">
-          <button class="fchip on" id="movNoFri">🚫 بدون الجمعة</button>
-          <button class="fchip" id="movCsv">⬇️ تصدير CSV</button>
+      <button type="button" class="khead movhead" id="movFHead">⚙️ الفلاتر والعرض <span class="ftxt" id="movFTxt"></span> <span class="karr">▶</span></button>
+      <div id="movFBody" style="display:none">
+        <div class="fcard">
+          <div class="flab">نوع الحركة المعروض</div>
+          <div class="chips" id="movSeg" style="margin-bottom:10px">
+            <button class="fchip on" id="msegAll">الكل</button>
+            <button class="fchip" id="msegAdd">➕ إضافة</button>
+            <button class="fchip" id="msegOut">➖ إخراج</button>
+            <button class="fchip" id="msegRec">⚖️ جرد</button>
+          </div>
+          <div class="flab">الفترة</div>
+          <div class="chips" id="movPresets" style="margin-bottom:8px">
+            <button class="fchip on" data-p="week">🗓 أسبوع بلا جمعة</button>
+            <button class="fchip" data-p="today">اليوم</button>
+            <button class="fchip" data-p="yest">أمس</button>
+            <button class="fchip" data-p="m30">٣٠ يوماً</button>
+            <button class="fchip" data-p="all">الكل</button>
+          </div>
+          <div class="fdates">
+            <label>من تاريخ<input type="date" id="movFrom"></label>
+            <label>إلى تاريخ<input type="date" id="movTo"></label>
+          </div>
+          <div class="chips" style="margin:10px 0 0">
+            <button class="fchip on" id="movNoFri">🚫 بدون الجمعة</button>
+            <button class="fchip" id="movCsv">⬇️ تصدير CSV</button>
+          </div>
         </div>
       </div>
       <div class="sumcard" id="movSum" style="display:none"></div>
@@ -765,7 +796,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v66</p>
+      <p class="hint" id="setAbout">الإصدار v67</p>
     </section>
   </main>
   <nav class="tabs">
@@ -977,6 +1008,18 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
   </div>
 </dialog>
 
+<!-- v67: منتقي السلعة لأزرار الحركة السريعة -->
+<dialog id="dlgPick">
+  <div class="dh" id="dlgPickTitle">اختر السلعة</div>
+  <div class="db">
+    <div class="fld" style="margin-bottom:8px">
+      <input id="pickSearch" type="search" placeholder="🔍 ابحث باسم السلعة..." autocomplete="off">
+    </div>
+    <div id="pickList" class="picklist"></div>
+    <button class="btn gray" id="dlgPickClose">إغلاق</button>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
@@ -997,7 +1040,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v41: حالة سجل الحركة — «أسبوع ماضٍ بدون جمعة» افتراضياً كما طلب المدير
      v48: type = خانة النوع ("" = الكل / add / remove / reconcile) */
   mov: { preset: "week", from: "", to: "", nofriday: true, product: 0,
-         product_name: "", type: "", data: [], summary: null },
+         product_name: "", type: "", data: [], summary: null, open: false },
   invTab: "all", invData: [], serverVersion: "",
   /* v50: حالة الرسائل — الشات الداخلي */
   chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
@@ -1305,6 +1348,7 @@ function applyPerms() {
   $("#tabMov").style.display = S.perms.movements ? "" : "none";
   $("#tabOil").style.display = S.perms.oil ? "" : "none";
   $("#tabUsers").style.display = S.perms.users ? "" : "none";
+  movApplyPerms();   /* v67: أزرار الحركة السريعة حسب الصلاحيات */
 }
 function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
@@ -1655,6 +1699,7 @@ $("#dlgGo").addEventListener("click", async () => {
       body: JSON.stringify({ product_id: S.dlg.id, type: S.dlg.act, quantity: qty, reason: reason })
     });
     $("#dlg").close(); toast(d.message || "تمت العملية."); loadInventory();
+    if ($("#v-mov").classList.contains("on")) loadMovements();   /* v67: تحديث السجل فوراً */
     pollNotifs();
   } catch (e) { toast(e.message, true); }
   finally { unlock(); }
@@ -1672,12 +1717,85 @@ function movSetType(t) {
     const b = $("#" + id);
     if (b) b.classList.toggle("on", MOV_SEG[id] === t);
   });
+  movFTxtUpdate();   /* v67 */
   loadMovements();
 }
 Object.keys(MOV_SEG).forEach((id) => {
   const b = $("#" + id);
   if (b) b.addEventListener("click", () => movSetType(MOV_SEG[id]));
 });
+/* ─── v67: أزرار حركة حقيقية — كانت الخانات الثلاث فلترةً للسجل فقط فبدت «لا تعمل» ───
+   صارت أزرار تنفيذ: تفتح منتقي السلعة (بحث فوري + المتوفر) ثم حوار الكمية الموجود،
+   والفلترة (النوع/الفترة/التواريخ/بدون الجمعة/CSV) انتقلت كلها إلى لوحة ⚙️ مطوية. */
+S.pick = { act: "", data: [] };
+const PICK_TITLES = { add: "➕ إضافة كمية — اختر السلعة",
+                      remove: "➖ إخراج كمية — اختر السلعة",
+                      reconcile: "⚖️ جرد — اختر السلعة" };
+const PICK_PERM = { add: "add_qty", remove: "remove", reconcile: "admin" };
+function movApplyPerms() {
+  const acts = $("#movActs");
+  if (!acts) return;
+  const any = !!(S.perms.add_qty || S.perms.remove || S.perms.admin);
+  acts.style.display = any ? "" : "none";
+  $("#movActAdd").style.display = S.perms.add_qty ? "" : "none";
+  $("#movActOut").style.display = S.perms.remove ? "" : "none";
+  $("#movActRec").style.display = S.perms.admin ? "" : "none";
+}
+function movFTxtUpdate() {
+  const el = $("#movFTxt");
+  if (!el) return;
+  const tn = { "": "الكل", add: "الإضافة", remove: "الإخراج", reconcile: "الجرد" }[S.mov.type || ""] || "الكل";
+  const pn = { week: "أسبوع بلا جمعة", today: "اليوم", yest: "أمس",
+               m30: "٣٠ يوماً", all: "كل الفترات", custom: "فترة مخصّصة" }[S.mov.preset] || "";
+  el.textContent = tn + (pn ? " • " + pn : "");
+}
+function renderPick() {
+  const q = ($("#pickSearch").value || "").trim().toLowerCase();
+  const rows = (S.pick.data || []).filter((p) =>
+    !q || String(p.name || "").toLowerCase().indexOf(q) >= 0);
+  const box = $("#pickList");
+  if (!rows.length) { box.innerHTML = '<p class="empty">لا توجد سلع مطابقة لبحثك.</p>'; return; }
+  box.innerHTML = rows.map((p) => {
+    let sub = "";
+    if (p.qty != null) sub = "المتوفر: " + p.qty + (p.unit ? " " + p.unit : "") + (p.low ? " 🔴" : "");
+    else if (p.available === true) sub = "متوفرة";
+    else if (p.available === false) sub = "غير متوفرة";
+    return '<button type="button" class="prow" data-id="' + p.id + '" data-n="' + esc(p.name) + '">'
+      + '<b>' + esc(p.name) + '</b><span>' + esc(sub) + '</span></button>';
+  }).join("");
+  box.querySelectorAll("button.prow").forEach((b) =>
+    b.addEventListener("click", () => {
+      const act = S.pick.act;
+      try { $("#dlgPick").close(); } catch (e) {}
+      openQty(act, +b.dataset.id, b.dataset.n);
+    }));
+}
+async function openPicker(act) {
+  if (!S.perms[PICK_PERM[act]]) { toast("لا تملك صلاحية هذه العملية.", true); return; }
+  S.pick.act = act; S.pick.data = [];
+  $("#dlgPickTitle").textContent = PICK_TITLES[act] || "اختر السلعة";
+  $("#pickSearch").value = "";
+  $("#pickList").innerHTML = '<div class="skl"><i></i><i></i><i></i></div>';
+  try { $("#dlgPick").showModal(); } catch (e) {}
+  try {
+    const d = await api("/api/products");
+    S.pick.data = d.products || [];
+    renderPick();
+  } catch (e) { $("#pickList").innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
+}
+$("#movActAdd").addEventListener("click", () => openPicker("add"));
+$("#movActOut").addEventListener("click", () => openPicker("remove"));
+$("#movActRec").addEventListener("click", () => openPicker("reconcile"));
+$("#pickSearch").addEventListener("input", renderPick);
+$("#dlgPickClose").addEventListener("click", () => { try { $("#dlgPick").close(); } catch (e) {} });
+/* v67: لوحة الفلاتر مطوية افتراضياً — زر واحد بدل بطاقة فلاتر دائمة */
+$("#movFHead").addEventListener("click", () => {
+  S.mov.open = !S.mov.open;
+  $("#movFHead").classList.toggle("open", S.mov.open);
+  $("#movFBody").style.display = S.mov.open ? "" : "none";
+});
+movApplyPerms();
+movFTxtUpdate();
 const DAY_AR = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 function isoLocal(d) {
   const p = (n) => String(n).padStart(2, "0");
@@ -1694,6 +1812,7 @@ function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر د�
   else if (p === "m30") { const d = new Date(now); d.setDate(d.getDate() - 29); f = isoLocal(d); t = isoLocal(now); }
   S.mov.from = f; S.mov.to = t;
   $("#movFrom").value = f; $("#movTo").value = t;
+  movFTxtUpdate();   /* v67 */
   if (!silent) loadMovements();
 }
 document.querySelectorAll("#movPresets .fchip").forEach((b) =>
@@ -1701,11 +1820,13 @@ document.querySelectorAll("#movPresets .fchip").forEach((b) =>
 $("#movFrom").addEventListener("change", () => {
   S.mov.from = $("#movFrom").value; S.mov.preset = "custom";
   document.querySelectorAll("#movPresets .fchip").forEach((b) => b.classList.remove("on"));
+  movFTxtUpdate();   /* v67 */
   loadMovements();
 });
 $("#movTo").addEventListener("change", () => {
   S.mov.to = $("#movTo").value; S.mov.preset = "custom";
   document.querySelectorAll("#movPresets .fchip").forEach((b) => b.classList.remove("on"));
+  movFTxtUpdate();   /* v67 */
   loadMovements();
 });
 $("#movNoFri").addEventListener("click", () => {
@@ -1795,7 +1916,7 @@ async function loadMovements() {
       const tn = { add: "الإضافة", remove: "الإخراج", reconcile: "الجرد والتسوية" }[S.mov.type];
       box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
         + (tn ? ' — خانة «' + tn + '»' : '')
-        + '.<br><span style="font-size:12px">جرّب «الكل» أو وسّع الفترة أو أزل استثناء الجمعة.</span></p>';
+        + '.<br><span style="font-size:12px">افتح ⚙️ الفلاتر والعرض لتوسيع الفترة أو تغيير النوع أو إلغاء استثناء الجمعة.</span></p>';
       return;
     }
     let html = "", lastDay = "";
@@ -2743,7 +2864,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v66" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v67" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2761,7 +2882,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v66";
+const APP_VER = "v67";
 S.updDismissed = "";
 function swCleanup() {
   try {
