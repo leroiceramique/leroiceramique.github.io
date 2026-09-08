@@ -1852,6 +1852,13 @@ CREATE TABLE IF NOT EXISTS oil_log (
 CREATE INDEX IF NOT EXISTS idx_oil_readings_read_at ON oil_readings (read_at);
 CREATE INDEX IF NOT EXISTS idx_oil_log_changed_at ON oil_log (changed_at);
 
+-- v70: مراقبة الخدمات — نبض البوت، دقائق ساعات Render الشهرية، أعلام التنبيه
+CREATE TABLE IF NOT EXISTS service_monitor (
+    k  VARCHAR(80) PRIMARY KEY,
+    v  TEXT,
+    at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 """
 
 
@@ -3652,6 +3659,8 @@ BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
 BTN_OIL = "🔧 زيت الرافعة"
+BTN_SERVICES = "🩺 حالة الخدمات"  # v70: مراقبة الخدمات (Render/Neon/Upstash)
+BTN_WATCHDOG = "🔔 مراقبة التوقف"  # v71: صمام التوقف الخارجي (healthchecks.io) — تنبيه لحظة التوقف
 
 # ═══════════════════════════════════════════════════════════
 #  نظام الفئات (الأدوار) — ROLES SYSTEM
@@ -4320,7 +4329,7 @@ def get_admin_keyboard(user_id=None):
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
         [BTN_RESET_STOCK],
-        [BTN_OIL],
+        [BTN_OIL, BTN_SERVICES, BTN_WATCHDOG],
         [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -8166,7 +8175,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL, BTN_SERVICES, BTN_WATCHDOG]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -8208,6 +8217,33 @@ async def handle_admin_message(update, context):
     # ═══════════════════════════════════════════════════════════
     #  Handle admin buttons FIRST — before any state handler
     # ═══════════════════════════════════════════════════════════
+    # ── v71: مراقبة التوقف الفوري — لصق رابط healthchecks.io أو إلغاؤها (المالك فقط) ──
+    if is_owner(user.id):
+        if text.startswith("https://hc-ping.com/"):
+            _u = text.strip().split()[0]
+            if re.match(r"^https://hc-ping\.com/[A-Za-z0-9\-_]+$", _u):
+                context.user_data.clear()
+                _svc_hc_set_url(_u)
+                await update.message.reply_text(
+                    "✅ تم تفعيل مراقبة التوقف الفوري\n\n"
+                    "من الآن أي توقف للبوت سيصلك تنبيه فوري على تلغرام "
+                    "من بوت Healthchecks خلال ~10 دقائق من التوقف — "
+                    "حتى لو كان البوت ميتاً تماماً.\n"
+                    "🔍 للتأكد: البوت يرسل نبضة كل 5 دقائق وسيظهر الموقع «UP».\n"
+                    "للإلغاء أرسل: حذف مراقبة التوقف")
+            else:
+                await update.message.reply_text(
+                    "❌ الرابط غير صالح — يجب أن يبدأ بـ https://hc-ping.com/ وينتهي برمز.")
+            return
+        if text == "حذف مراقبة التوقف":
+            context.user_data.clear()
+            _svc_hc_set_url("")
+            await update.message.reply_text("🗑 أُلغيت مراقبة التوقف الفوري.")
+            return
+
+    # ═══════════════════════════════════════════════════════════
+    #  Handle admin buttons FIRST — before any state handler
+    # ═══════════════════════════════════════════════════════════
     if is_admin_btn:
         context.user_data.clear()
         if text == BTN_PERMS:
@@ -8222,6 +8258,31 @@ async def handle_admin_message(update, context):
             # 🔧 صيانة الرافعة — وصل هنا مدير فقط (بوابة الفئات أعلاه)
             card = await asyncio.to_thread(oil_status_card)
             await update.message.reply_text(card, reply_markup=oil_menu_keyboard())
+            return
+        if text == BTN_SERVICES:
+            # 🩺 حالة الخدمات (v70) — وصل هنا مدير فقط (بوابة الفئات أعلاه)
+            card = await asyncio.to_thread(_service_status_card)
+            await update.message.reply_text(card, reply_markup=get_role_keyboard(user.id))
+            return
+        if text == BTN_WATCHDOG:
+            # 🔔 مراقبة التوقف الفوري (v71) — وصل هنا مدير فقط
+            _hc = _svc_hc_url()
+            _wd_txt = (
+                "🔔 مراقبة التوقف الفوري\n\n"
+                "الحالة: " + ("✅ مفعّلة — أي توقف سيصلك تنبيه فوري على تلغرام" if _hc
+                              else "❌ غير مفعّلة") + "\n\n"
+                "لماذا؟ البوت المتوقف لا يستطيع مراسلة أحد — لذلك نستخدم "
+                "مراقباً خارجياً مجانياً (healthchecks.io) يراقب البوت من الخارج "
+                "ويرسل لك تنبيهاً على تلغرام خلال ~10 دقائق من أي توقف.\n\n"
+                "التفعيل (مرة واحدة — 5 دقائق):\n"
+                "1) افتح healthchecks.io وسجّل حساباً بالبريد الإلكتروني\n"
+                "2) أنشئ Check باسم LE ROI — واجعل Period = 5 دقائق و Grace = 5 دقائق (مهم جداً)\n"
+                "3) من Integrations أضف Telegram واضغط Start في بوتهم لربط حسابك\n"
+                "4) انسخ رابط PING (يبدأ بـ https://hc-ping.com/)\n"
+                "5) الصق الرابط هنا في المحادثة — خلاص ✅\n\n"
+                "للإلغاء أرسل: حذف مراقبة التوقف"
+            )
+            await update.message.reply_text(_wd_txt, reply_markup=get_role_keyboard(user.id))
             return
         if text == BTN_ADD:
             await ask_add_name(update, context)
@@ -9881,6 +9942,561 @@ async def _oil_monitor_loop(bot):
             logging.error("[OIL] monitor error: " + str(e))
         await asyncio.sleep(600)
 
+
+# ═══════════════════════════════════════════════════════════
+#  🩺 مراقبة الخدمات — SERVICE MONITOR (v70)
+#  يوسف لا يحتاج أن يفتح Render و Neon و Upstash بحثاً عن
+#  المشاكل — البوت يراقب نفسه ويرسل التنبيهات للمدراء مباشرة:
+#  1) توقف البوت: نبض داخلي كل 15 دقيقة في القاعدة — يُسجّل التوقف
+#     بصمت عند الإقلاع (المدة + السبب الأرجح) ويظهر في بطاقة الحالة فقط.
+#     والتنبيه الفوري «لحظة التوقف» عبر الصمام الخارجي — البند 5.
+#  2) ساعات Render المجانية (750/شهر): تراكم دقائق التشغيل
+#     الفعلية + تنبيه عند 80% و95% قبل التوقف الإجباري.
+#  3) قاعدة البيانات Neon: فحص اتصال كل دورة + الحجم مقابل
+#     حد 512MB (تنبيه عند 90%) + إن انتقل للقاعدة الاحتياطية.
+#  4) Upstash: تُفحص تلقائياً فقط عند إضافة UPSTASH_REDIS_REST_URL
+#     و UPSTASH_REDIS_REST_TOKEN لمتغيرات البيئة (البوت لا يستخدمها
+#     حالياً — الفحص جاهز للمستقبل، والبطاقة توضح ذلك بصدق).
+#  5) v71 صمام التوقف الخارجي (healthchecks.io): البوت المتوقف لا
+#     يستطيع مراسلة أحد — لذلك يرسل نبضة كل 5 دقائق لموقع
+#     healthchecks.io، وعند انقطاع النبضات يصلك تنبيه تلغرام فوري
+#     خلال ~10 دقائق من التوقف (تفعيل بلصق الرابط من زر 🔔 مراقبة
+#     التوقف — المالك فقط).
+#  كل التنبيهات للمدراء فقط (حسابات البيئة + فئة admin/manager).
+# ═══════════════════════════════════════════════════════════
+import calendar as _svc_calendar
+
+SVC_TZ = datetime.timezone(datetime.timedelta(hours=1))   # توقيت الجزائر (UTC+1)
+SVC_RENDER_FREE_HOURS = float(os.getenv("SVC_RENDER_HOURS", "750"))
+SVC_NEON_FREE_MB = 512.0
+SVC_LOOP_SEC = int(os.getenv("SVC_LOOP_SEC", "900"))      # دورة الفحص: 15 دقيقة
+SVC_DOWN_MIN = int(os.getenv("SVC_DOWN_MIN", "45"))       # فجوة تُعدّ توقفاً حقيقياً
+SVC_DB_FAIL_ALERT_AFTER = 2                               # فشلان متتاليان قبل تنبيه Neon
+_svc_db_fails = 0                # عدّاد فشل Neon المتتالي (ذاكرة العملية)
+_svc_primary_alerted = False     # هل أُرسل تنبيه الانتقال للقاعدة الاحتياطية
+_svc_upstash_ok = None           # None = لم يُفحص بعد
+_svc_upstash_detail = ""
+_svc_upstash_configured = bool(
+    os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
+    and os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+)
+_svc_boot_at = datetime.datetime.now(SVC_TZ)  # يُحدَّث عند كل إقلاع
+
+
+def _svc_now():
+    """الوقت الحالي بتوقيت الجزائر (UTC+1 ثابت)."""
+    return datetime.datetime.now(SVC_TZ)
+
+
+def _svc_fmt_dur(minutes):
+    """مدة بالعربية بشكل مختصر واضح لغير التقنيين."""
+    minutes = max(0, int(round(minutes or 0)))
+    h, m = minutes // 60, minutes % 60
+    if h and m:
+        return str(h) + " ساعة و" + str(m) + " دقيقة"
+    if h:
+        return str(h) + " ساعة"
+    return str(m) + " دقيقة"
+
+
+def _svc_ensure_table():
+    """إنشاء جدول المراقبة إن لزم (CREATE IF NOT EXISTS رخيص — يُستدعى كل دورة
+    ليعمل حتى مع قواعد بيانات احتياطية جديدة بعد الانتقال التلقائي)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS service_monitor ("
+                " k VARCHAR(80) PRIMARY KEY,"
+                " v TEXT,"
+                " at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+            )
+        conn.commit()
+    finally:
+        release_connection(conn)
+
+
+def _svc_get(key):
+    """قراءة مفتاح مراقبة — ترجع (v, at) أو None."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT v, at FROM service_monitor WHERE k = %s", (key,))
+            row = cur.fetchone()
+        conn.commit()
+        return row if row else None
+    finally:
+        release_connection(conn)
+
+
+def _svc_set(key, v=None):
+    """كتابة/تحديث مفتاح مراقبة (upsert)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO service_monitor (k, v, at) VALUES (%s, %s, NOW()) "
+                "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, at = NOW()",
+                (key, v),
+            )
+        conn.commit()
+    finally:
+        release_connection(conn)
+
+
+def _svc_clear(key):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM service_monitor WHERE k = %s", (key,))
+        conn.commit()
+    finally:
+        release_connection(conn)
+
+
+def _svc_flag(key):
+    row = _svc_get(key)
+    return bool(row and row[0])
+
+
+def _svc_admin_ids():
+    """مستقبلو تنبيهات المراقبة: حسابات البيئة (ADMIN_IDS + OWNER_IDS)
+    + كل مستخدم نشط بفئة admin/manager — نفس منطق تنبيهات الزيت."""
+    ids = set(ADMIN_IDS or ())
+    try:
+        ids.update(OWNER_IDS or ())
+    except Exception:
+        pass
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT telegram_id FROM users "
+                    "WHERE telegram_id IS NOT NULL AND role IN ('admin', 'manager') AND active = TRUE"
+                )
+                for r in cur.fetchall():
+                    ids.add(r[0])
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            release_connection(conn)
+    except Exception:
+        pass
+    return [i for i in ids if i]
+
+
+def _svc_startup_check():
+    """v71: تسجيل صامت للتوقف عند الإقلاع (يوسف لا يريد تنبيهاً بعد العودة):
+    المدة + السبب الأرجح يُخزنان في service_monitor وتظهر في بطاقة الحالة فقط.
+    تذكير وحيد فقط إذا كان الصمام الخارجي (تنبيه لحظة التوقف) غير مفعّل."""
+    global _svc_boot_at
+    _svc_boot_at = _svc_now()
+    try:
+        _svc_ensure_table()
+        _svc_set("boot_at", _svc_boot_at.strftime("%Y-%m-%d %H:%M:%S"))
+        row = _svc_get("last_alive")
+        if not row or not row[1] or not isinstance(row[1], datetime.datetime):
+            return None  # أول تشغيل بعد التحديث — لا مرجع للفجوة
+        last_at = row[1].astimezone(SVC_TZ)
+        gap_min = (_svc_boot_at - last_at).total_seconds() / 60.0
+        if gap_min < SVC_DOWN_MIN:
+            return None  # إعادة تشغيل عادية (تحديث/نشر) — بلا إزعاج
+        _svc_set("down_from", last_at.strftime("%Y-%m-%d %H:%M"))
+        _svc_set("down_to", _svc_boot_at.strftime("%Y-%m-%d %H:%M"))
+        _svc_set("down_min", str(int(gap_min)))
+        reason = "غير معروف — راجع لوجات Render"
+        try:
+            mrow = _svc_get("render_min_" + last_at.strftime("%Y-%m"))
+            if mrow and mrow[0] and float(mrow[0]) / 60.0 >= SVC_RENDER_FREE_HOURS * 0.98:
+                reason = "الأرجح: نفاد ساعات Render المجانية"
+        except Exception:
+            pass
+        _svc_set("down_reason", reason)
+        logging.info("[MONITOR] downtime recorded silently: " + str(int(gap_min)) + " min — " + reason)
+        # تذكير واحد فقط بالتفعيل إن كان الصمام الخارجي غير مفعّل —
+        # فبدونه لا يصلك أي تنبيه أثناء التوقف نفسه
+        if not _svc_hc_url():
+            return (
+                "🔔 حدث توقف للبوت من " + last_at.strftime("%Y-%m-%d %H:%M")
+                + " إلى " + _svc_boot_at.strftime("%Y-%m-%d %H:%M")
+                + " (" + _svc_fmt_dur(gap_min) + ").\n"
+                "مراقبة التوقف الفوري غير مفعّلة بعد — فعّلها من زر «🔔 مراقبة التوقف» "
+                "لتصلك حالة فورية على تلغرام في المرة القادمة."
+            )
+        return None
+    except Exception as e:
+        logging.warning("[MONITOR] startup check skipped: " + str(e))
+        return None
+
+
+def _svc_tick():
+    """دورة مراقبة واحدة (متزامنة، تُستدعى من خيط): نبض + دقائق ساعات Render
+    + فحص Neon وحجمها + عتبات التنبيه. ترجع قائمة نصوص التنبيهات."""
+    global _svc_db_fails, _svc_primary_alerted
+    alerts = []
+    now = _svc_now()
+    month = now.strftime("%Y-%m")
+    db_ok = True
+    db_size_mb = None
+    minutes = 0.0
+    try:
+        _svc_ensure_table()
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                # 1) النبض
+                cur.execute(
+                    "INSERT INTO service_monitor (k, v, at) VALUES ('last_alive', %s, NOW()) "
+                    "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, at = NOW()",
+                    (now.strftime("%Y-%m-%d %H:%M:%S"),),
+                )
+                # 2) حجم قاعدة البيانات
+                cur.execute("SELECT pg_database_size(current_database())")
+                db_size_mb = (cur.fetchone()[0] or 0) / (1024.0 * 1024.0)
+                # 3) تراكم دقائق ساعات Render لهذا الشهر — منفصل حتى لا يُفسد
+                #    أي خلل في قراءته فحصَ Neon الصحيح
+                try:
+                    add_min = SVC_LOOP_SEC / 60.0
+                    cur.execute(
+                        "INSERT INTO service_monitor (k, v, at) VALUES (%s, %s, NOW()) "
+                        "ON CONFLICT (k) DO UPDATE SET "
+                        "v = (COALESCE(NULLIF(service_monitor.v, '')::numeric, 0) + %s)::text, at = NOW() "
+                        "RETURNING v",
+                        ("render_min_" + month, str(add_min), add_min),
+                    )
+                    minutes = float(cur.fetchone()[0] or 0.0)
+                except Exception as e:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    logging.warning("[MONITOR] minutes accrual failed: " + str(e))
+            conn.commit()
+        finally:
+            release_connection(conn)
+    except Exception as e:
+        db_ok = False
+        logging.warning("[MONITOR] DB tick failed: " + str(e))
+
+    # ── Neon: كسر / عودة / قاعدة احتياطية ──
+    if db_ok:
+        if _svc_db_fails >= SVC_DB_FAIL_ALERT_AFTER:
+            alerts.append("✅ قاعدة البيانات (Neon) عادت للعمل — كل شيء طبيعي الآن.")
+        _svc_db_fails = 0
+        try:
+            if len(_db_urls) > 1 and _active_db_index != 0:
+                if not _svc_primary_alerted:
+                    alerts.append(
+                        "⚠️ قاعدة البيانات الأساسية غير متاحة\n\n"
+                        "البوت انتقل تلقائياً للقاعدة الاحتياطية رقم "
+                        + str(_active_db_index + 1) + " حتى لا يتوقف.\n"
+                        "🔎 راجع حسابك في neon.tech — قد يكون السبب انتهاء الحد المجاني."
+                    )
+                    _svc_primary_alerted = True
+            else:
+                _svc_primary_alerted = False
+        except Exception:
+            pass
+        # ── حجم Neon مقابل الحد المجاني (تنبيه ≥90%، إعادة تسليح <80%) ──
+        if db_size_mb:
+            try:
+                pct_size = db_size_mb / SVC_NEON_FREE_MB * 100.0
+                if pct_size >= 90.0 and not _svc_flag("dbsize_alert"):
+                    alerts.append(
+                        "⚠️ حجم قاعدة البيانات يقترب من الحد المجاني\n\n"
+                        "💾 الحجم الحالي: " + "{:.0f}".format(db_size_mb) + " من 512MB\n\n"
+                        "💡 خذ نسخة احتياطية (زر 💾 نسخ احتياطي) ثم احذف السلع "
+                        "أو السجلات القديمة غير المستخدمة."
+                    )
+                    _svc_set("dbsize_alert", "1")
+                elif pct_size < 80.0 and _svc_flag("dbsize_alert"):
+                    _svc_clear("dbsize_alert")
+            except Exception:
+                pass
+        # ── ساعات Render: 80% ثم 95% (أعلام شهرية — تتجدد كل شهر تلقائياً) ──
+        try:
+            hours = minutes / 60.0
+            pct_hours = hours / SVC_RENDER_FREE_HOURS * 100.0
+            if pct_hours >= 95.0 and not _svc_flag("render95_" + month):
+                alerts.append(
+                    "🚨 عاجل: ساعات Render على وشك النفاد\n\n"
+                    "📊 استهلكت: " + "{:.1f}".format(hours) + " من "
+                    + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
+                    + str(int(round(pct_hours))) + "%)\n"
+                    "⛔ إذا انتهت الساعات يتوقف البوت فوراً حتى بداية الشهر القادم.\n\n"
+                    "💡 ما يمكنك فعله الآن:\n"
+                    "1️⃣ خذ نسخة احتياطية (زر 💾 نسخ احتياطي).\n"
+                    "2️⃣ احذف من Render أي خدمات أخرى لا تستخدمها — الساعات مشتركة.\n"
+                    "3️⃣ أو فعّل الخطة المدفوعة في Render للاستمرار دون توقف."
+                )
+                _svc_set("render95_" + month, "1")
+            elif pct_hours >= 80.0 and not _svc_flag("render80_" + month):
+                alerts.append(
+                    "⚠️ تنبيه: ساعات Render تستهلك بسرعة\n\n"
+                    "📊 استهلكت هذا الشهر: " + "{:.1f}".format(hours) + " من "
+                    + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
+                    + str(int(round(pct_hours))) + "%)\n\n"
+                    "⛔ عند نفاد الساعات المجانية يتوقف البوت تلقائياً حتى بداية الشهر القادم.\n"
+                    "💡 اضغط «🩺 حالة الخدمات» لرؤية التوقع لنهاية الشهر."
+                )
+                _svc_set("render80_" + month, "1")
+        except Exception:
+            pass
+    else:
+        _svc_db_fails += 1
+        if _svc_db_fails == SVC_DB_FAIL_ALERT_AFTER:
+            alerts.append(
+                "🔴 تنبيه: قاعدة البيانات (Neon) لا تستجيب\n\n"
+                "البوت يعمل لكنه لا يستطيع الوصول لقاعدة البيانات.\n"
+                "السبب المحتمل: انتهاء الاشتراك المجاني أو صيانة مؤقتة.\n\n"
+                "🔎 افتح حسابك في neon.tech وتحقق من حالة المشروع والاستهلاك.\n"
+                "⚠️ العمليات أثناء الانقطاع قد لا تُسجّل — أعد المحاولة بعد قليل."
+            )
+    return alerts
+
+
+async def _svc_upstash_check():
+    """فحص Upstash كل دورة — فقط إن وُجدت متغيرات REST في البيئة.
+    يرصد انقطاع الخدمة وتجاوز الحد المجاني (HTTP 429) ويرصد العودة."""
+    global _svc_upstash_ok, _svc_upstash_detail
+    if not _svc_upstash_configured:
+        return None
+    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(url + "/ping", headers={"Authorization": "Bearer " + token}) as r:
+                if r.status == 429:
+                    was = _svc_upstash_ok
+                    _svc_upstash_ok = False
+                    _svc_upstash_detail = "تجاوز الحد المجاني للطلبات"
+                    if was is not False:
+                        return (
+                            "🔴 تنبيه: Upstash تجاوزت الحد المجاني للطلبات\n\n"
+                            "🔎 افتح console.upstash.com لترى الاستهلاك.\n"
+                            "ℹ️ البوت لا يعتمد على Upstash في عمله الأساسي — لا تقلق."
+                        )
+                    return None
+                if r.status != 200:
+                    raise RuntimeError("HTTP " + str(r.status))
+                data = await r.json(content_type=None)
+                if str((data or {}).get("result", "")).upper() != "PONG":
+                    raise RuntimeError("رد غير متوقع من Upstash")
+                if _svc_upstash_ok is False:
+                    _svc_upstash_ok = True
+                    _svc_upstash_detail = ""
+                    return "✅ Upstash عادت للعمل."
+                _svc_upstash_ok = True
+                _svc_upstash_detail = ""
+                return None
+    except Exception as e:
+        was = _svc_upstash_ok
+        _svc_upstash_ok = False
+        _svc_upstash_detail = str(e)[:120]
+        if was is not False:
+            return (
+                "🔴 تنبيه: Upstash لا تستجيب\n\n"
+                "السبب المحتمل: انتهاء الحد المجاني أو انقطاع مؤقت.\n"
+                "🔎 افتح console.upstash.com وتحقق.\n"
+                "ℹ️ البوت لا يعتمد على Upstash في عمله الأساسي — لا تقلق."
+            )
+        return None
+
+
+async def _svc_alert(bot, text):
+    """إرسال تنبيه مراقبة لكل المدراء فقط (خاص — لا مجموعات)."""
+    if not text:
+        return
+    ids = await asyncio.to_thread(_svc_admin_ids)
+    for tid in ids:
+        try:
+            await bot.send_message(chat_id=tid, text=text)
+        except Exception as e:
+            logging.warning("[MONITOR] alert to " + str(tid) + " failed: " + str(e))
+
+
+# ── v71: صمام التوقف الخارجي (healthchecks.io) — تنبيه لحظة التوقف ──
+_svc_hc_cache = {"url": None, "loaded": False}
+
+
+def _svc_hc_url():
+    """رابط healthchecks.io من ذاكرة سريعة، وإلا من القاعدة (تحميل لمرة واحدة)."""
+    if not _svc_hc_cache["loaded"]:
+        try:
+            row = _svc_get("hc_ping_url")
+            _svc_hc_cache["url"] = (row[0] or "").strip() if row and row[0] else None
+        except Exception:
+            pass
+        _svc_hc_cache["loaded"] = True
+    return _svc_hc_cache["url"]
+
+
+def _svc_hc_set_url(url):
+    """حفظ/حذف رابط الصمام — القاعدة + تحديث الذاكرة فوراً (بلا إعادة تشغيل)."""
+    _svc_set("hc_ping_url", (url or "").strip() or None)
+    _svc_hc_cache["url"] = (url or "").strip() or None
+    _svc_hc_cache["loaded"] = True
+
+
+async def _svc_hc_ping(suffix=""):
+    """نبضة خارجية لـ healthchecks.io — تعمل حتى لو انقطعت قاعدة البيانات
+    (الرابط مخزّن في الذاكرة). النبضات المتباعدة ~10 دقائق = تنبيه تلغرام فوري."""
+    url = _svc_hc_url()
+    if not url:
+        return
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(url.rstrip("/") + suffix) as r:
+                if r.status != 200:
+                    logging.warning("[MONITOR] hc-ping status " + str(r.status))
+    except Exception as e:
+        logging.warning("[MONITOR] hc-ping failed: " + str(e))
+
+
+async def _svc_hc_loop():
+    """v71: نبضة كل 5 دقائق للصمام الخارجي (إن فعّله المالك).
+    حين يتوقف البوت تنقطع النبضات — فيرصد healthchecks.io التوقف
+    ويرسل تنبيه تلغرام فورياً للمالك حتى والبوت ميت تماماً."""
+    await asyncio.sleep(45)  # بعد استقرار الإقلاع
+    while True:
+        try:
+            await _svc_hc_ping()
+        except Exception as e:
+            logging.warning("[MONITOR] hc loop error: " + str(e))
+        await asyncio.sleep(300)
+
+
+async def _service_monitor_loop(bot):
+    """حلقة 🩺 مراقبة الخدمات: فحص توقف عند الإقلاع ثم نبض كل 15 دقيقة.
+    مهمة asyncio خفيفة داخل البوت — بلا أي مكتبات خارجية."""
+    if os.getenv("SERVICE_MONITOR", "1") == "0":
+        logging.info("[MONITOR] disabled via SERVICE_MONITOR=0")
+        return
+    await asyncio.sleep(30)  # استقرار الإقلاع قبل فحص التوقف
+    try:
+        msg = await asyncio.to_thread(_svc_startup_check)
+        if msg:
+            await _svc_alert(bot, msg)
+    except Exception as e:
+        logging.error("[MONITOR] startup check error: " + str(e))
+    while True:
+        try:
+            alerts = await asyncio.to_thread(_svc_tick)
+            up = await _svc_upstash_check()
+            if up:
+                alerts.append(up)
+            for t in alerts:
+                await _svc_alert(bot, t)
+        except Exception as e:
+            logging.error("[MONITOR] loop error: " + str(e))
+        await asyncio.sleep(SVC_LOOP_SEC)
+
+
+def _service_status_card():
+    """بطاقة «🩺 حالة الخدمات» — نظرة واحدة على كل المنصات (متزامنة)."""
+    global _svc_boot_at
+    now = _svc_now()
+    month = now.strftime("%Y-%m")
+    lines = ["🩺 حالة الخدمات — LE ROI", ""]
+    # البوت
+    up_min = max(0.0, (now - _svc_boot_at).total_seconds() / 60.0)
+    lines.append("🟢 البوت: يعمل الآن")
+    lines.append("⏱ هذه الجلسة تعمل منذ: " + _svc_fmt_dur(up_min))
+    lines.append("🔁 آخر إقلاع: " + _svc_boot_at.strftime("%Y-%m-%d %H:%M"))
+    lines.append("")
+    # ساعات Render
+    minutes = 0.0
+    try:
+        row = _svc_get("render_min_" + month)
+        if row and row[0]:
+            minutes = float(row[0])
+    except Exception:
+        minutes = 0.0
+    hours = minutes / 60.0
+    pct_hours = hours / SVC_RENDER_FREE_HOURS * 100.0
+    lines.append("⏳ ساعات Render — شهر " + month)
+    lines.append(
+        "📊 المستهلك: " + "{:.1f}".format(hours) + " من "
+        + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
+        + str(int(round(pct_hours))) + "%)"
+    )
+    try:
+        days_in_month = _svc_calendar.monthrange(now.year, now.month)[1]
+        days_elapsed = max(0.5, now.day + (now.hour * 60 + now.minute) / 1440.0)
+        proj = minutes / days_elapsed * days_in_month / 60.0
+        if proj <= SVC_RENDER_FREE_HOURS:
+            lines.append("🔮 التوقع لنهاية الشهر: ~" + "{:.0f}".format(proj) + " ساعة (آمن ✅)")
+        else:
+            lines.append("🔮 التوقع لنهاية الشهر: ~" + "{:.0f}".format(proj) + " ساعة (خطر نفاد ⚠️)")
+    except Exception:
+        pass
+    lines.append("")
+    # Neon
+    db_state = "🟢 متصلة"
+    db_size_mb = None
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_database_size(current_database())")
+                db_size_mb = (cur.fetchone()[0] or 0) / (1024.0 * 1024.0)
+            conn.commit()
+        finally:
+            release_connection(conn)
+    except Exception:
+        db_state = "🔴 لا تستجيب"
+    lines.append("🗄 Neon (قاعدة البيانات): " + db_state)
+    try:
+        lines.append("🔢 القاعدة النشطة: #" + str(_active_db_index + 1)
+                     + " من " + str(len(_db_urls)))
+    except Exception:
+        pass
+    if db_size_mb:
+        lines.append(
+            "💾 الحجم: " + "{:.0f}".format(db_size_mb) + " من "
+            + str(int(SVC_NEON_FREE_MB)) + "MB ("
+            + str(int(round(db_size_mb / SVC_NEON_FREE_MB * 100.0))) + "%)"
+        )
+    lines.append("")
+    # Upstash
+    if not _svc_upstash_configured:
+        lines.append("⬜ Upstash: غير مربوطة بالبوت — البوت لا يستخدمها")
+    elif _svc_upstash_ok is True:
+        lines.append("🟢 Upstash: تستجيب")
+    elif _svc_upstash_ok is False:
+        lines.append("🔴 Upstash: مشكلة — " + (_svc_upstash_detail or "لا تستجيب"))
+    else:
+        lines.append("⏳ Upstash: أول فحص تلقائي بعد قليل")
+    hc = _svc_hc_url()
+    lines.append("🔔 مراقبة التوقف الفوري: "
+                 + ("مفعّلة ✅ — تنبيه تلغرام خلال ~10 دقائق من أي توقف" if hc
+                    else "غير مفعّلة ❌ — زر «🔔 مراقبة التوقف»"))
+    lines.append("")
+    # آخر توقف مسجل
+    try:
+        df = _svc_get("down_from")
+        dt_ = _svc_get("down_to")
+        dm = _svc_get("down_min")
+        if df and df[0] and dt_ and dt_[0]:
+            lines.append("⛔ آخر توقف مسجل:")
+            lines.append("   من " + df[0] + " إلى " + dt_[0]
+                         + " (" + _svc_fmt_dur(float(dm[0] or 0)) + ")")
+            try:
+                dr = _svc_get("down_reason")
+                if dr and dr[0]:
+                    lines.append("   السبب الأرجح: " + dr[0])
+            except Exception:
+                pass
+        else:
+            lines.append("⛔ آخر توقف مسجل: لا يوجد — البوت مستقر ✅")
+    except Exception:
+        pass
+    lines.append("")
+    lines.append("🕓 آخر فحص: " + now.strftime("%Y-%m-%d %H:%M"))
+    return "\n".join(lines)
+
 # ═══════════════════════════════════════════════════════════
 #  EXTRACTION PERMISSION & REQUEST HANDLERS
 # ═══════════════════════════════════════════════════════════
@@ -10658,8 +11274,12 @@ async def _on_app_post_init(application):
     """Start background tasks after the app is initialized (works for both webhook and polling)."""
     asyncio.create_task(_offline_retry_loop(application.bot))
     asyncio.create_task(_oil_monitor_loop(application.bot))
+    asyncio.create_task(_service_monitor_loop(application.bot))
+    asyncio.create_task(_svc_hc_loop())
     logging.info("[BOT] Offline retry task started via post_init")
     logging.info("[BOT] Oil monitor task started via post_init")
+    logging.info("[BOT] Service monitor task started via post_init (v70)")
+    logging.info("[BOT] External watchdog ping task started via post_init (v71)")
 
 
 def build_application():
@@ -11099,7 +11719,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v69"
+PWA_VERSION = "v71"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)

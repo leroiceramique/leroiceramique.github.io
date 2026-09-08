@@ -525,7 +525,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v69</span></p>
+      <span style="opacity:.65">الإصدار v71</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -623,7 +623,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v69</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v71</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -762,7 +762,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v69</p>
+      <p class="hint" id="setAbout">الإصدار v71</p>
     </section>
   </main>
   <nav class="tabs">
@@ -2697,7 +2697,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v69" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v71" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2715,7 +2715,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v69";
+const APP_VER = "v71";
 S.updDismissed = "";
 function swCleanup() {
   try {
