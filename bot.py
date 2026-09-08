@@ -11099,7 +11099,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v68"
+PWA_VERSION = "v69"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -13373,7 +13373,8 @@ def _pwa_incoming_requester_tid(requester_id):
 
 
 def _pwa_api_movements(user, limit, date_from=None, date_to=None,
-                       product_id=None, exclude_friday=False, q=None):
+                       product_id=None, exclude_friday=False, q=None,
+                       mov_type=None):
     """📋 v41: سجل الحركة بفلاتر كاملة — من تاريخ/إلى تاريخ + سلعة محددة
     + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة."""
     if not _pwa_perm_map(user["role"])["movements"]:
@@ -13397,6 +13398,12 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
             params.append(int(product_id))
         except (TypeError, ValueError):
             return {"ok": False, "error": "معرّف السلعة غير صالح."}
+    if mov_type:
+        if mov_type not in ("add", "remove", "reconcile"):
+            return {"ok": False, "error": "نوع الحركة غير صالح."}
+        # v69: تصنيف حقيقي لأزرار الإضافة/الإخراج/الجرد — كان العميل يرسل type منذ v48 والخادم يتجاهله
+        where.append("t.type = %s")
+        params.append(mov_type)
     if exclude_friday:
         # الأسبوع الجزائري: الجمعة راحة — ISODOW: الاثنين=1 … الجمعة=5
         where.append("EXTRACT(ISODOW FROM t.date) <> 5")
@@ -15094,7 +15101,8 @@ async def pwa_movements_handler(request):
         date_to=request.query.get("to"),
         product_id=request.query.get("product"),
         exclude_friday=(request.query.get("nofriday") in ("1", "true", "yes")),
-        q=request.query.get("q"))
+        q=request.query.get("q"),
+        mov_type=request.query.get("type"))   # v69: فلتر النوع
     if data is None:
         return _pwa_err(403, "ليست لديك صلاحية الحركة.")
     if isinstance(data, dict) and data.get("ok") is False:

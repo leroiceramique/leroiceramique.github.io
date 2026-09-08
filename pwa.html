@@ -220,16 +220,10 @@ html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b
 .rchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:8px 13px;
   font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
 .rchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
-/* v41: فلاتر الحركة */
-.fcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
-  margin-bottom:10px;box-shadow:var(--shadow)}
+/* v41: فلاتر الحركة (v69: بقيت رقاقة الفترة فقط) */
 .fchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:7px 13px;
   font-size:12.5px;font-weight:700;color:var(--mut);cursor:pointer}
 .fchip.on{background:var(--brand);border-color:var(--brand);color:#fff}
-.fdates{display:flex;gap:8px;margin-top:4px}
-.fdates label{flex:1;font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
-.fdates input{border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;
-  background:var(--bg);color:var(--ink);font-size:14px}
 .prodchip{display:inline-flex;align-items:center;gap:6px;background:var(--brandsoft);
   color:var(--brand);border:1px solid var(--brand);border-radius:99px;padding:6px 12px;
   font-size:12.5px;font-weight:800;margin:0 0 8px;cursor:pointer;max-width:100%}
@@ -255,10 +249,6 @@ html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b
   border:1.5px solid var(--line);border-radius:99px;padding:5px 12px;font-size:12.5px}
 .daypick input{border:none;background:transparent;color:var(--ink);font:inherit;
   font-weight:700;max-width:135px;padding:0}
-.movhead{margin-bottom:10px}
-.ftxt{margin-inline-start:auto;font-size:11px;font-weight:600;color:var(--mut);
-  max-width:44vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.flab{font-size:11px;font-weight:800;color:var(--mut);margin:0 0 6px}
 /* v41: ترويسة اليوم في الحركة */
 .dayhead{position:sticky;top:56px;z-index:2;background:var(--chip);color:var(--mut);
   border-radius:10px;padding:5px 12px;margin:10px 0 8px;font-size:12px;font-weight:800;text-align:center}
@@ -535,7 +525,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v68</span></p>
+      <span style="opacity:.65">الإصدار v69</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -633,7 +623,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v68</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v69</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -648,7 +638,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       </div>
       <div id="invList"><p class="empty">جارِ التحميل...</p></div>
     </section>
-    <!-- الحركة v41 — v48 — v68: أزرار عرض حسب النوع واليوم + لوحة فلاتر موسّعة مطوية -->
+    <!-- الحركة v69: أزرار تصنيف حسب النوع (فلترة الخادم فعلياً) + شريط اليوم — بلا لوحة فلاتر -->
     <section class="view" id="v-mov">
       <h2 class="vt">حركة المخزون</h2>
       <div class="tgrid" id="movTypes">
@@ -663,25 +653,6 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <span class="daypick">📅 <input type="date" id="movDay"></span>
       </div>
       <button class="prodchip" id="movProdChip" style="display:none">📦 <span id="movProdName"></span> ✕</button>
-      <button type="button" class="khead movhead" id="movFHead">⚙️ فلاتر موسّعة <span class="ftxt" id="movFTxt"></span> <span class="karr">▶</span></button>
-      <div id="movFBody" style="display:none">
-        <div class="fcard">
-          <div class="flab">فترة أطول</div>
-          <div class="chips" id="movPresets" style="margin-bottom:8px">
-            <button class="fchip" data-p="week">🗓 أسبوع بلا جمعة</button>
-            <button class="fchip" data-p="m30">٣٠ يوماً</button>
-            <button class="fchip" data-p="all">كل الفترات</button>
-          </div>
-          <div class="fdates">
-            <label>من تاريخ<input type="date" id="movFrom"></label>
-            <label>إلى تاريخ<input type="date" id="movTo"></label>
-          </div>
-          <div class="chips" style="margin:10px 0 0">
-            <button class="fchip on" id="movNoFri">🚫 بدون الجمعة</button>
-            <button class="fchip" id="movCsv">⬇️ تصدير CSV</button>
-          </div>
-        </div>
-      </div>
       <div class="sumcard" id="movSum" style="display:none"></div>
       <div id="movList"><p class="empty">جارِ التحميل...</p></div>
     </section>
@@ -791,7 +762,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v68</p>
+      <p class="hint" id="setAbout">الإصدار v69</p>
     </section>
   </main>
   <nav class="tabs">
@@ -828,17 +799,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
   <div id="camBar"><button id="camShot" disabled title="تصوير وإرسال"></button></div>
 </div>
 <!-- v62: لوحة فحص الميكروفون (v59) حُذفت بالكامل بطلب يوسف — زر 🎤 = مسجّل النظام مباشرة -->
-<dialog id="dlgCsv">
-  <div class="dh">📎 نسخة CSV احتياطية</div>
-  <div style="padding:4px 2px">
-    <p id="dlgCsvMsg" style="margin:0 0 10px;font-size:13.5px;color:var(--mut)"></p>
-    <textarea id="dlgCsvText" readonly style="width:100%;height:180px;font-family:monospace;font-size:12px;
-      direction:ltr;text-align:left;background:var(--bg);color:var(--ink);border:1.5px solid var(--line);
-      border-radius:10px;padding:10px"></textarea>
-    <button class="btn" id="dlgCsvCopy">📋 نسخ الملف كاملاً</button>
-    <button class="btn gray" id="dlgCsvClose" style="margin-top:8px">إغلاق</button>
-  </div>
-</dialog>
+<!-- v69: حوار CSV الاحتياطي حُذف مع زر تصدير CSV (كان داخل «فلاتر موسّعة») بطلب يوسف -->
 <dialog id="dlg">
   <div class="dh" id="dlgTitle">—</div>
   <div class="db">
@@ -1020,10 +981,10 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
              remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
              reconcile: [] },
-  /* v68: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
-     v48: type = خانة النوع ("" = الكل / add / remove / reconcile) */
-  mov: { preset: "today", from: "", to: "", nofriday: true, product: 0,
-         product_name: "", type: "", data: [], summary: null, open: false },
+  /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
+     type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
+  mov: { preset: "today", from: "", to: "", product: 0,
+         product_name: "", type: "", data: [], summary: null },
   invTab: "all", invData: [], serverVersion: "",
   /* v50: حالة الرسائل — الشات الداخلي */
   chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
@@ -1699,36 +1660,15 @@ function movSetType(t) {
     const b = $("#" + id);
     if (b) b.classList.toggle("on", MOV_SEG[id] === t);
   });
-  movFTxtUpdate();   /* v67 */
   loadMovements();
 }
 Object.keys(MOV_SEG).forEach((id) => {
   const b = $("#" + id);
   if (b) b.addEventListener("click", () => movSetType(MOV_SEG[id]));
 });
-/* ─── v68: أزرار أنواع الحركة للعرض لا للتنفيذ (تصحيح لفهم v67) ───
+/* ─── v69: تصنيف حقيقي حسب النوع — الفلترة في الخادم (t.type) لا واجهة فقط ───
    «الإضافة» تعرض إضافات اليوم أو يوم محدد، «الإخراج» كذلك، و«الجرد» كذلك —
-   والفلاتر الموسعة (أسبوع/٣٠ يوماً/كل الفترات/نطاق تواريخ/بدون الجمعة/CSV) في لوحة مطوية. */
-function movFTxtUpdate() {
-  const el = $("#movFTxt");
-  if (!el) return;
-  const tn = { "": "الكل", add: "الإضافة", remove: "الإخراج", reconcile: "الجرد" }[S.mov.type || ""] || "الكل";
-  let pn = { week: "أسبوع بلا جمعة", today: "اليوم", yest: "أمس",
-             m30: "٣٠ يوماً", all: "كل الفترات", custom: "" }[S.mov.preset] || "";
-  if (S.mov.preset === "custom" && S.mov.from && S.mov.from === S.mov.to) {
-    const dp = String(S.mov.from).split("-");
-    if (dp.length === 3) pn = "يوم " + (+dp[2]) + "/" + (+dp[1]);
-  }
-  if (!pn) pn = "فترة مخصّصة";
-  el.textContent = tn + (pn ? " • " + pn : "");
-}
-/* v67/v68: لوحة الفلاتر الموسعة مطوية افتراضياً */
-$("#movFHead").addEventListener("click", () => {
-  S.mov.open = !S.mov.open;
-  $("#movFHead").classList.toggle("open", S.mov.open);
-  $("#movFBody").style.display = S.mov.open ? "" : "none";
-});
-movFTxtUpdate();
+   وجذر شكوى «الضغط لا يحدث شيء» كان: العميل يرسل type منذ v48 والخادم يتجاهله. */
 const DAY_AR = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 function isoLocal(d) {
   const p = (n) => String(n).padStart(2, "0");
@@ -1736,45 +1676,24 @@ function isoLocal(d) {
 }
 function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر دون تحميل مزدوج */
   S.mov.preset = p;
-  document.querySelectorAll("#movPresets .fchip, #movDayScope .fchip").forEach((b) =>
+  document.querySelectorAll("#movDayScope .fchip").forEach((b) =>
     b.classList.toggle("on", b.dataset.p === p));
   const now = new Date(); let f = "", t = "";
-  if (p === "week") { const d = new Date(now); d.setDate(d.getDate() - 6); f = isoLocal(d); t = isoLocal(now); }
-  else if (p === "today") { f = t = isoLocal(now); }
+  if (p === "today") { f = t = isoLocal(now); }
   else if (p === "yest") { const d = new Date(now); d.setDate(d.getDate() - 1); f = t = isoLocal(d); }
-  else if (p === "m30") { const d = new Date(now); d.setDate(d.getDate() - 29); f = isoLocal(d); t = isoLocal(now); }
+  /* p === "all" تبقى متاحة برمجياً — تُستخدم من «حركات السلعة» في تفاصيل المنتج */
   S.mov.from = f; S.mov.to = t;
-  $("#movFrom").value = f; $("#movTo").value = t;
   $("#movDay").value = (f && f === t) ? f : "";   /* v68: تزامن يوم التحديد */
-  movFTxtUpdate();   /* v67 */
   if (!silent) loadMovements();
 }
-document.querySelectorAll("#movPresets .fchip, #movDayScope .fchip").forEach((b) =>
+document.querySelectorAll("#movDayScope .fchip").forEach((b) =>
   b.addEventListener("click", () => movSetPreset(b.dataset.p)));
-$("#movFrom").addEventListener("change", () => {
-  S.mov.from = $("#movFrom").value; S.mov.preset = "custom";
-  document.querySelectorAll("#movPresets .fchip, #movDayScope .fchip").forEach((b) => b.classList.remove("on"));
-  movFTxtUpdate();   /* v67 */
-  loadMovements();
-});
-$("#movTo").addEventListener("change", () => {
-  S.mov.to = $("#movTo").value; S.mov.preset = "custom";
-  document.querySelectorAll("#movPresets .fchip, #movDayScope .fchip").forEach((b) => b.classList.remove("on"));
-  movFTxtUpdate();   /* v67 */
-  loadMovements();
-});
 /* v68: يوم محدد — اختيار تاريخ واحد يعرض حركة ذلك اليوم فقط */
 $("#movDay").addEventListener("change", () => {
   const v = $("#movDay").value;
   if (!v) return;
   S.mov.from = v; S.mov.to = v; S.mov.preset = "custom";
-  document.querySelectorAll("#movPresets .fchip, #movDayScope .fchip").forEach((b) => b.classList.remove("on"));
-  movFTxtUpdate();
-  loadMovements();
-});
-$("#movNoFri").addEventListener("click", () => {
-  S.mov.nofriday = !S.mov.nofriday;
-  $("#movNoFri").classList.toggle("on", S.mov.nofriday);
+  document.querySelectorAll("#movDayScope .fchip").forEach((b) => b.classList.remove("on"));
   loadMovements();
 });
 $("#movProdChip").addEventListener("click", () => {
@@ -1782,43 +1701,7 @@ $("#movProdChip").addEventListener("click", () => {
   $("#movProdChip").style.display = "none";
   loadMovements();
 });
-/* v48: تصدير CSV — الملف يُبنى في الخادم من القاعدة بكامل الفلتر (لا حدّ 300)
-   ويصل وثيقة تلجرام تلقائياً من البوت؛ وإن تعذّر الإرسال تظهر نسخة نصية للنسخ */
-$("#movCsv").addEventListener("click", async () => {
-  if (!opGuard("movcsv")) return;
-  const btn = $("#movCsv"), old = btn.textContent;
-  btn.textContent = "⏳ جارِ التجهيز..."; btn.disabled = true;
-  try {
-    const body = {};
-    if (S.mov.from) body.from = S.mov.from;
-    if (S.mov.to) body.to = S.mov.to;
-    if (S.mov.nofriday) body.nofriday = true;
-    if (S.mov.product) body.product = String(S.mov.product);
-    if (S.mov.type) body.type = S.mov.type;
-    const d = await api("/api/export/movements",
-      { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body), timeout: 60000 });
-    if (d.sent) {
-      toast("📎 تم! وصل ملف CSV في بوت تلجرام (" + d.count + " عملية).");
-    } else if (d.csv) {
-      /* نسخة احتياطية: لا تلجرام مربوط أو فشل الإرسال — عرض النسخ */
-      $("#dlgCsvMsg").textContent = "تعذّر إرسال الملف عبر تلجرام — هذه نسخة نصية كاملة (" + d.count + " عملية). انسخها والصقها في ملف باسم " + (d.filename || "movements.csv");
-      $("#dlgCsvText").value = d.csv;
-      try { $("#dlgCsv").showModal(); } catch (e) {}
-    } else { toast("تم تجهيز التصدير.", false); }
-  } catch (e) { toast(e.message, true); }
-  finally { opRelease("movcsv"); btn.textContent = old; btn.disabled = false; }
-});
-$("#dlgCsvCopy").addEventListener("click", () => {
-  const t = $("#dlgCsvText");
-  const done = () => { toast("تم نسخ CSV — الصقه في ملف نصي واحفظه بامتداد .csv"); };
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText)
-      navigator.clipboard.writeText(t.value).then(done, () => { t.select(); document.execCommand("copy"); done(); });
-    else { t.select(); document.execCommand("copy"); done(); }
-  } catch (e) { t.select(); try { document.execCommand("copy"); done(); } catch (e2) {} }
-});
-$("#dlgCsvClose").addEventListener("click", () => { try { $("#dlgCsv").close(); } catch (e) {} });
+/* v69: تصدير CSV وحواره حُذفا مع «فلاتر موسّعة» بطلب يوسف */
 function movDayHeader(day) {
   try {
     const parts = String(day).split("-");
@@ -1834,13 +1717,11 @@ async function loadMovements() {
   const q = new URLSearchParams({ limit: "300" });
   if (S.mov.from) q.set("from", S.mov.from);
   if (S.mov.to) q.set("to", S.mov.to);
-  if (S.mov.nofriday) q.set("nofriday", "1");
   if (S.mov.product) q.set("product", String(S.mov.product));
-  if (S.mov.type) q.set("type", S.mov.type);   /* v48: خانة النوع */
+  if (S.mov.type) q.set("type", S.mov.type);   /* v69: الخادم يفلتر بها فعلاً */
   const prodChip = $("#movProdChip");
   if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
   else prodChip.style.display = "none";
-  $("#movNoFri").classList.toggle("on", S.mov.nofriday);
   try {
     const d = await api("/api/movements?" + q.toString());
     if (!fresh()) return;
@@ -1849,17 +1730,26 @@ async function loadMovements() {
     const s = S.mov.summary;
     if (s && s.count) {
       $("#movSum").style.display = "flex";
-      $("#movSum").innerHTML =
-        '<div><b style="color:var(--ok)">➕ ' + s.add_qty + '</b><span>إضافة (' + s.add_cnt + ')</span></div>'
-        + '<div><b style="color:var(--bad)">➖ ' + s.remove_qty + '</b><span>إخراج (' + s.remove_cnt + ')</span></div>'
-        + '<div><b>⚖️ ' + s.rec_cnt + '</b><span>جرد</span></div>'
-        + '<div><b>' + s.count + '</b><span>عملية</span></div>';
+      if (S.mov.type) {
+        /* v69: مع خانة نوع نشطة تظهر بطاقة واحدة واضحة لذلك النوع */
+        const one = { add: ["➕ ", "إضافة", s.add_qty, s.add_cnt, "var(--ok)"],
+                      remove: ["➖ ", "إخراج", s.remove_qty, s.remove_cnt, "var(--bad)"],
+                      reconcile: ["⚖️ ", "جرد", s.rec_cnt, s.rec_cnt, "var(--brand)"] }[S.mov.type];
+        $("#movSum").innerHTML =
+          '<div><b style="color:' + one[4] + '">' + one[0] + one[2] + '</b><span>' + one[1] + ' — ' + one[3] + ' عملية</span></div>';
+      } else {
+        $("#movSum").innerHTML =
+          '<div><b style="color:var(--ok)">➕ ' + s.add_qty + '</b><span>إضافة (' + s.add_cnt + ')</span></div>'
+          + '<div><b style="color:var(--bad)">➖ ' + s.remove_qty + '</b><span>إخراج (' + s.remove_cnt + ')</span></div>'
+          + '<div><b>⚖️ ' + s.rec_cnt + '</b><span>جرد</span></div>'
+          + '<div><b>' + s.count + '</b><span>عملية</span></div>';
+      }
     } else { $("#movSum").style.display = "none"; }
     if (!S.mov.data.length) {
       const tn = { add: "الإضافة", remove: "الإخراج", reconcile: "الجرد والتسوية" }[S.mov.type];
       box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
         + (tn ? ' — خانة «' + tn + '»' : '')
-        + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 أو وسّع الفترة من ⚙️ فلاتر موسّعة' + (S.mov.nofriday ? ' أو ألغِ استثناء الجمعة' : '') + '.</span></p>';
+        + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 اليوم / أمس أو اختر تاريخاً 📅.</span></p>';
       return;
     }
     let html = "", lastDay = "";
@@ -1874,7 +1764,7 @@ async function loadMovements() {
     }
     const shown = S.mov.data.length;
     if (s && s.count > shown)
-      html += '<p class="hint">المعروض ' + shown + ' من ' + s.count + ' — استخدم فلاتر أدق لعرض الباقي.</p>';
+      html += '<p class="hint">المعروض ' + shown + ' من ' + s.count + '.</p>';
     box.innerHTML = html;
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
@@ -2807,7 +2697,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v68" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v69" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2825,7 +2715,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v68";
+const APP_VER = "v69";
 S.updDismissed = "";
 function swCleanup() {
   try {
