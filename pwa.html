@@ -196,6 +196,26 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
 .chip{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:6px 14px;
   font-size:12.5px;font-weight:700;color:var(--mut)}
 .chip b{color:var(--brand)}
+/* v65: قائمة مستخدمين منظمة — مرشّحات فعلية + شارات فئة مرتّبة + قسم المطرودون المطوي */
+button.chip{font-family:inherit;cursor:pointer}
+.chip.on{background:var(--brandsoft);border-color:var(--brand);color:var(--brand)}
+.chip.on b{color:var(--brand)}
+.rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:800;line-height:1.7;margin-inline-end:6px}
+.rk-admin{background:rgba(169,126,47,.16);color:#8a6420}
+html[data-theme="dark"] .rk-admin{background:rgba(202,158,68,.2);color:#e5c069}
+.rk-manager{background:var(--brandsoft);color:var(--brand)}
+.rk-stock{background:rgba(2,132,199,.13);color:#0369a1}
+html[data-theme="dark"] .rk-stock{background:rgba(56,189,248,.16);color:#7dd3fc}
+.rk-seller{background:rgba(31,122,69,.13);color:var(--ok)}
+.rk-external{background:rgba(124,58,237,.13);color:#6d28d9}
+html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b5fd}
+.rk-customer{background:var(--chip);color:var(--mut)}
+.usub{display:block;line-height:2;word-break:break-word}
+.khead{width:100%;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:12px 14px;font-family:inherit;font-size:13.5px;font-weight:800;color:var(--bad);
+  cursor:pointer;margin-top:12px}
+.khead .karr{margin-inline-start:auto;color:var(--mut);transition:transform .15s}
+.khead.open .karr{transform:rotate(90deg)}
 .rchips{display:flex;gap:8px;flex-wrap:wrap}
 .rchip{background:var(--card);border:1.5px solid var(--line);border-radius:99px;padding:8px 13px;
   font-size:13px;font-weight:700;color:var(--mut);cursor:pointer}
@@ -496,7 +516,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v64</span></p>
+      <span style="opacity:.65">الإصدار v66</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -594,7 +614,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v64</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v66</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -696,10 +716,16 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
     <!-- المستخدمون -->
     <section class="view" id="v-users">
       <h2 class="vt">المستخدمون</h2>
-      <div class="chips">
-        <span class="chip">الكل <b id="cAll">0</b></span>
-        <span class="chip">🔑 ويب <b id="cWeb">0</b></span>
-        <span class="chip">🚫 مطرودون <b id="cKick">0</b></span>
+      <!-- v65: بحث + مرشّحات فعلية بدل العدّادات الميتة + أقسام مرتبة -->
+      <div class="fld" style="margin-bottom:10px">
+        <input id="usrSearch" type="search" placeholder="🔍 بحث بالاسم أو الهاتف أو اسم الدخول…" autocomplete="off">
+      </div>
+      <div class="chips" id="usrChips">
+        <button type="button" class="chip on" data-f="all">الكل <b id="cAll">0</b></button>
+        <button type="button" class="chip" data-f="staff">👑 الإدارة والموظفون <b id="cStaff">0</b></button>
+        <button type="button" class="chip" data-f="cust">👤 العملاء <b id="cCust">0</b></button>
+        <button type="button" class="chip" data-f="web">🔑 ويب <b id="cWeb">0</b></button>
+        <button type="button" class="chip" data-f="kick">🚫 مطرودون <b id="cKick">0</b></button>
       </div>
       <div id="usrList"><p class="empty">جارِ التحميل...</p></div>
     </section>
@@ -739,7 +765,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v64</p>
+      <p class="hint" id="setAbout">الإصدار v66</p>
     </section>
   </main>
   <nav class="tabs">
@@ -1816,21 +1842,77 @@ async function loadOil() {
 }
 
 /* ─── المستخدمون ─── */
-async function loadUsers() {
-  const box = $("#usrList");
-  const fresh = freshGen("usr");   /* v45 */
+/* ── v65: قائمة مستخدمين منظمة — بحث + مرشّحات فعلية + ترتيب هرمي + قسم المطرودون المطوي ── */
+S.usrFilter = "all"; S.usrQ = ""; S.usrKickOpen = false; S.usrLast = null;
+const USR_RANK = { admin: 0, manager: 1, stock: 2, seller: 3, external: 4, customer: 5 };
+function usrRank(u) { return USR_RANK[u.role] !== undefined ? USR_RANK[u.role] : 9; }
+function usrOnline(u) {
+  if (!u.last_seen) return "";
   try {
-    const [d, regsResp, resetsResp] = await Promise.all([
-      api("/api/users"),
-      api("/api/registrations").catch(() => ({ registrations: [] })),
-      api("/api/resets").catch(() => ({ resets: [] }))
-    ]);
-    if (!fresh()) return;
-    $("#cAll").textContent = d.counts.all;
-    $("#cWeb").textContent = d.counts.web;
-    $("#cKick").textContent = d.counts.kicked;
-    let html = "";
-    const waiting = (regsResp && regsResp.registrations) || [];
+    if (Date.now() - new Date(u.last_seen).getTime() < 65000)
+      return ' <span class="conline" title="متصل الآن">●</span>';
+  } catch (e) {}
+  return "";
+}
+function usrMatch(u, q) {
+  if (!q) return true;
+  return [u.name, u.phone, u.email, u.web_username, u.role_label]
+    .some((v) => (v || "").toString().toLowerCase().indexOf(q) !== -1);
+}
+function usrFilterHit(u) {
+  if (S.usrFilter === "staff") return u.active && u.role !== "customer";
+  if (S.usrFilter === "cust") return u.active && u.role === "customer";
+  if (S.usrFilter === "web") return !!u.web;
+  if (S.usrFilter === "kick") return !u.active;
+  return !!u.active;   /* الكل: النشطون في القائمة والمطرودون بقسم مطوي أسفلها */
+}
+function usrRow(u) {
+  const self = u.telegram_id === S.user.telegram_id;
+  const hasTg = !!u.telegram_id;
+  let acts = "";
+  if (!self && hasTg && !u.protected) {
+    acts += '<button class="btn mini blue" data-role="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
+    if (u.role !== "admin") {
+      acts += u.active
+        ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
+        : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
+    }
+  }
+  /* v64: حذف حساب التطبيق فقط (من لديه دخول ويب) — دون المساس بحسابه في البوت */
+  if (!self && !u.protected && u.web && u.telegram_id) {
+    acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
+  }
+  acts += self
+    ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
+    : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
+  const sub = [
+    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",
+    u.phone ? "📞 " + esc(u.phone) : "",
+    u.email ? "✉️ " + esc(u.email) : ""
+  ].filter(Boolean).join(" · ");
+  return '<div class="row"><div class="info"><b>' + esc(u.name) + usrOnline(u)
+    + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
+    + '<span class="usub"><span class="rk rk-' + (USR_RANK[u.role] !== undefined ? u.role : "customer") + '">' + esc(u.role_label) + '</span>'
+    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + '</span></div>'
+    + (u.active ? "" : '<span class="badge r">مطرود</span>')
+    + '<div class="acts">' + acts + '</div>'
+    + '</div>';
+}
+function renderUsers() {
+  if (!S.usrLast) return;
+  const box = $("#usrList");
+  const d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;
+  const q = (S.usrQ || "").trim().toLowerCase();
+  const users = d.users || [];
+  $("#cAll").textContent = d.counts.all;
+  $("#cWeb").textContent = d.counts.web;
+  $("#cKick").textContent = d.counts.kicked;
+  $("#cStaff").textContent = users.filter((u) => u.active && u.role !== "customer").length;
+  $("#cCust").textContent = users.filter((u) => u.active && u.role === "customer").length;
+  let html = "";
+  if (S.usrFilter === "all") {
+    const waiting = regs.filter((w) => !q || [w.name, w.username, w.email, w.phone, w.role_label]
+      .some((v) => (v || "").toString().toLowerCase().indexOf(q) !== -1));
     if (waiting.length) {
       html += '<p style="margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)">⏳ طلبات انضمام بانتظار الموافقة (' + waiting.length + ')</p>';
       html += waiting.map((w) =>
@@ -1842,56 +1924,77 @@ async function loadUsers() {
         + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
         + '</div>').join("");
     }
-    const resets = (resetsResp && resetsResp.resets) || [];
-    if (resets.length) {
-      html += '<p style="margin:10px 0 8px;font-weight:800;font-size:13px;color:var(--brand)">🔑 طلبات استعادة كلمة المرور (' + resets.length + ')</p>';
-      html += resets.map((r) =>
+    const rs = resets.filter((r) => !q || (r.username || "").toLowerCase().indexOf(q) !== -1);
+    if (rs.length) {
+      html += '<p style="margin:10px 0 8px;font-weight:800;font-size:13px;color:var(--brand)">🔑 طلبات استعادة كلمة المرور (' + rs.length + ')</p>';
+      html += rs.map((r) =>
         '<div class="row"><div class="info"><b>' + esc(r.username) + '</b>'
         + '<span>طالب باستعادة رقمه السري' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + '</span></div>'
         + '<div class="acts"><button class="btn mini gold" data-reset="' + r.id + '" data-runame="' + esc(r.username) + '">🔑 توليد رقم سر مؤقت</button></div>'
         + '</div>').join("");
     }
-    html += d.users.map((u) => {
-      const self = u.telegram_id === S.user.telegram_id;
-      const hasTg = !!u.telegram_id;
-      let acts = "";
-      if (!self && hasTg && !u.protected) {
-        acts += '<button class="btn mini blue" data-role="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
-        if (u.role !== "admin") {
-          acts += u.active
-            ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
-            : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
-        }
+  }
+  if (S.usrFilter === "kick") {
+    const kick = users.filter((u) => usrFilterHit(u) && usrMatch(u, q))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));
+    html += kick.length ? kick.map(usrRow).join("")
+      : '<p class="empty">' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + '</p>';
+  } else {
+    const act = users.filter((u) => usrFilterHit(u) && usrMatch(u, q));
+    act.sort((a, b) => {
+      const sa = a.telegram_id === S.user.telegram_id ? 0 : 1;
+      const sb = b.telegram_id === S.user.telegram_id ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);
+      return (a.name || "").localeCompare(b.name || "", "ar");
+    });
+    html += act.length ? act.map(usrRow).join("")
+      : '<p class="empty">' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + '</p>';
+    if (S.usrFilter === "all") {
+      const kick = users.filter((u) => !u.active && usrMatch(u, q))
+        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));
+      if (kick.length) {
+        html += '<button type="button" class="khead' + (S.usrKickOpen ? " open" : "") + '" id="usrKickHead">🚫 المطرودون (' + kick.length + ') <span class="karr">▶</span></button>'
+          + '<div id="usrKickList" style="display:' + (S.usrKickOpen ? "" : "none") + '">' + kick.map(usrRow).join("") + '</div>';
       }
-      /* v64: حذف حساب التطبيق فقط (من لديه دخول ويب) — دون المساس بحسابه في البوت */
-      if (!self && !u.protected && u.web && u.telegram_id) {
-        acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
-      }
-      acts += self
-        ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
-        : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
-      return '<div class="row"><div class="info"><b>' + esc(u.name) + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
-        + '<span>' + esc(u.role_label) + (u.web ? " • اسم الدخول: " + esc(u.web_username) : "") + '</span></div>'
-        + (u.active ? "" : '<span class="badge r">مطرود</span>')
-        + (u.phone ? '<span class="badge b">📞 ' + esc(u.phone) + '</span>' : "")
-        + (u.email ? '<span class="badge b">✉️ ' + esc(u.email) + '</span>' : "")
-        + (u.web ? '<span class="badge n">🔑 ويب</span>' : "")
-        + '<div class="acts">' + acts + '</div>'
-        + '</div>';
-    }).join("");
-    box.innerHTML = html;
-    box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {
-      if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
-      else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
-      else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);
-      else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);
-      else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);
-      else if (b.dataset.self) openPass(null, b.dataset.n, true);
-      else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
-      else openPass(+b.dataset.tg, b.dataset.n, false);
-    }));
+    }
+  }
+  box.innerHTML = html;
+  box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
+    else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
+    else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);
+    else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);
+    else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);
+    else if (b.dataset.self) openPass(null, b.dataset.n, true);
+    else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
+    else openPass(+b.dataset.tg, b.dataset.n, false);
+  }));
+  const kh = box.querySelector("#usrKickHead");
+  if (kh) kh.addEventListener("click", () => { S.usrKickOpen = !S.usrKickOpen; renderUsers(); });
+}
+async function loadUsers() {
+  const box = $("#usrList");
+  const fresh = freshGen("usr");   /* v45 */
+  try {
+    const [d, regsResp, resetsResp] = await Promise.all([
+      api("/api/users"),
+      api("/api/registrations").catch(() => ({ registrations: [] })),
+      api("/api/resets").catch(() => ({ resets: [] }))
+    ]);
+    if (!fresh()) return;
+    S.usrLast = { d, regs: (regsResp && regsResp.registrations) || [], resets: (resetsResp && resetsResp.resets) || [] };
+    renderUsers();
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
+/* v65: ربط البحث والمرشّحات مرة واحدة */
+$("#usrSearch").addEventListener("input", () => { S.usrQ = $("#usrSearch").value || ""; renderUsers(); });
+$("#usrChips").querySelectorAll("button.chip").forEach((b) => b.addEventListener("click", () => {
+  S.usrFilter = b.dataset.f || "all";
+  $("#usrChips").querySelectorAll("button.chip").forEach((x) => x.classList.remove("on"));
+  b.classList.add("on");
+  renderUsers();
+}));
 async function resetGenerate(id, uname) {
   if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;
   if (!opGuard("rst:" + id)) return;   /* v45 */
@@ -2640,7 +2743,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    $("#setAbout").textContent = "الإصدار v64" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار v66" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -2658,7 +2761,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "v64";
+const APP_VER = "v66";
 S.updDismissed = "";
 function swCleanup() {
   try {

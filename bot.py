@@ -11099,7 +11099,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v64"
+PWA_VERSION = "v66"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11682,14 +11682,24 @@ def _notify_recipients():
         release_connection(conn)
 
 
-async def notify_everyone(kind, title, body, actor="", source="web"):
+# v66: الحركات الروتينية عبر التطبيق تصلح تلغرام — التنبيه التلغرامي للمميزة فقط
+# (↩️ إرجاع من زبون / 🚚 وصول شاحنة / 💰 بيع لرابح / 💰 بيع لحسان).
+# الباقي (بيع لزبون، تصحيح مخزون، جرد…) يُسجَّل في نظام الحركة والإشعارات
+# الداخلية للتطبيق كالمعتاد — دون إزعاج تلغرام.
+def _pwa_tg_worthy_reason(reason):
+    _r = str(reason or "")
+    return any(k in _r for k in ("شاحنة", "إرجاع", "ارجاع", "رابح", "حسان"))
+
+
+async def notify_everyone(kind, title, body, actor="", source="web", tg=True):
     """(v30) تسجيل إشعار في القاعدة ثم بثه تلغرامياً للجميع —
-    تزامن تام بين تطبيق الويب وبوت تلغرام. آمنة للاستدعاء من أي سياق."""
+    تزامن تام بين تطبيق الويب وبوت تلغرام. آمنة للاستدعاء من أي سياق.
+    v66: tg=False يسجّل الإشعار داخلياً (جرس التطبيق) دون بث تلغرامي."""
     try:
         await _pwa_run(db_insert_notification, kind, title, body, actor, source)
     except Exception:
         pass
-    if TG_APP is None:
+    if TG_APP is None or not tg:
         return
     text = str(title) + "\n\n" + str(body or "") + \
         "\n\n👤 " + (str(actor) if actor else "موظف") + " • عبر التطبيق 📱"
@@ -13463,7 +13473,7 @@ def _pwa_api_users(user):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
-                "u.role, u.active, u.email, u.phone, u.identity_verified, "
+                "u.role, u.active, u.email, u.phone, u.identity_verified, u.last_seen, "
                 "a.username AS web_username "
                 "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "ORDER BY u.active DESC, u.role, LOWER(COALESCE(u.first_name, u.username, ''))")
@@ -13477,8 +13487,10 @@ def _pwa_api_users(user):
             "telegram_id": r["telegram_id"], "name": r["first_name"] or r["tg_username"] or str(r["telegram_id"]),
             "role": r["role"], "role_label": ROLE_LABELS.get(r["role"], r["role"]),
             "active": bool(r["active"]), "web": bool(r["web_username"]),
+            "web_username": r.get("web_username"),   # v65: كان ينقص — كان يظهر «اسم الدخول: undefined»
             "email": r.get("email"), "phone": r.get("phone"),
             "verified": bool(r.get("identity_verified")),
+            "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else "",   # v65: «متصل الآن»
             "protected": bool(_protected_account(r["telegram_id"])),
         })
     counts = {"all": len(out), "kicked": sum(1 for u in out if not u["active"]),
@@ -14806,8 +14818,11 @@ async def pwa_qty_handler(request):
         else:
             _title, _line = "⚖️ جرد المخزون", "⚖️ الكمية بعد الجرد: " + str(qty)
         _body = "📦 " + _pname + "\n" + _line + (("\n📌 " + _reason) if _reason else "")
+        # v66: البث التلغرامي للحركات المميزة فقط (إرجاع/شاحنة/رابح/حسان) —
+        # وبيع لزبون والتصحيح والجرد يبقيان مسجّلين داخلياً بلا إزعاج تلغرام
         asyncio.create_task(notify_everyone(qtype, _title, _body,
-                                            str(user.get("name") or ""), "web"))
+                                            str(user.get("name") or ""), "web",
+                                            tg=_pwa_tg_worthy_reason(_reason)))
     except Exception as _ne:
         logging.warning("[PWA] notify failed: " + str(_ne))
     return _pwa_jr({"ok": True, "message": msg,
