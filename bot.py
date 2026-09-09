@@ -1160,7 +1160,6 @@ DB_CONNECT_KWARGS = {
     "keepalives_idle": 30,
     "keepalives_interval": 10,
     "keepalives_count": 3,
-    "options": "-c statement_timeout=15000 -c idle_in_transaction_session_timeout=30000",
 }
 
 
@@ -1191,6 +1190,8 @@ def _try_single_connection(url):
         conn = psycopg2.connect(dsn=url, **DB_CONNECT_KWARGS)
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
+            cur.execute("SET statement_timeout = 15000")  # v73: SET جلسة — Neon pooler يرفض options في حزمة الإقلاع
+            cur.execute("SET idle_in_transaction_session_timeout = 30000")
             cur.execute("SET TIME ZONE 'Africa/Algiers'")
         conn.commit()
         return conn, True
@@ -1357,6 +1358,8 @@ def get_connection():
             try:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
+                    cur.execute("SET statement_timeout = 15000")  # v73
+                    cur.execute("SET idle_in_transaction_session_timeout = 30000")
                     cur.execute("SET TIME ZONE 'Africa/Algiers'")
                 return conn
             except Exception:
@@ -1384,6 +1387,8 @@ def get_connection():
                 init_pool()
             conn = _pool.getconn()
             with conn.cursor() as cur:
+                cur.execute("SET statement_timeout = 15000")  # v73
+                cur.execute("SET idle_in_transaction_session_timeout = 30000")
                 cur.execute("SET TIME ZONE 'Africa/Algiers'")
             return conn
         except Exception as e:
@@ -1395,6 +1400,8 @@ def get_connection():
         conn = _pool.getconn()
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
+            cur.execute("SET statement_timeout = 15000")  # v73
+            cur.execute("SET idle_in_transaction_session_timeout = 30000")
             cur.execute("SET TIME ZONE 'Africa/Algiers'")
         return conn
     except Exception as e:
@@ -11781,7 +11788,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v72"
+PWA_VERSION = "v73"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
