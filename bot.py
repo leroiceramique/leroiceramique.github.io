@@ -1150,6 +1150,20 @@ def get_active_db_url():
     return _db_urls[_active_db_index % len(_db_urls)]
 
 
+# ═══ v72: صمامات زمنية قسرية لكل اتصال Postgres — لا انتظار لانهائي بعد الآن ═══
+# connect_timeout=10: أي محاولة اتصال معلقة تُقتل بعد 10 ث بدل دقائق/ساعات.
+# TCP keepalives: الاتصال الميت (Neon suspend) يُكتشف خلال ~60 ث بدل 15+ دقيقة.
+# statement_timeout: أي استعلام عالق يُقطع بعد 15 ث — لا تجميد دائم.
+DB_CONNECT_KWARGS = {
+    "connect_timeout": 10,
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+    "options": "-c statement_timeout=15000 -c idle_in_transaction_session_timeout=30000",
+}
+
+
 def init_pool(url=None):
     """Create connection pool for the given URL (or active DB).
     Thread-safe: guarded by a dedicated lock, and any previous pool is fully
@@ -1165,7 +1179,7 @@ def init_pool(url=None):
             except Exception:
                 pass
         _pool = psycopg2.pool.SimpleConnectionPool(
-            minconn=2, maxconn=20, dsn=dsn,
+            minconn=2, maxconn=20, dsn=dsn, **DB_CONNECT_KWARGS
         )
     return _pool
 
@@ -1174,7 +1188,7 @@ def _try_single_connection(url):
     """Test if a single DB URL is reachable. Returns (conn, True) or (None, False)."""
     conn = None
     try:
-        conn = psycopg2.connect(dsn=url)
+        conn = psycopg2.connect(dsn=url, **DB_CONNECT_KWARGS)
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             cur.execute("SET TIME ZONE 'Africa/Algiers'")
@@ -1195,7 +1209,7 @@ def _emergency_full_backup(url):
     Returns backup dict or None. Used during failover to preserve all data."""
     conn = None
     try:
-        conn = psycopg2.connect(dsn=url)
+        conn = psycopg2.connect(dsn=url, **DB_CONNECT_KWARGS)
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             import datetime as _dt
             cur.execute("SELECT * FROM products ORDER BY id")
@@ -6595,7 +6609,7 @@ async def backup_command(update, context):
     try:
         import io
         from telegram import InputFile
-        backup = db_export_backup()
+        backup = await asyncio.to_thread(db_export_backup)  # v72: خارج حلقة الأحداث
         _last_backup_data = backup
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
         file_bytes = json_str.encode("utf-8")
@@ -11270,13 +11284,55 @@ def _get_telegram_id(user_db_id):
         release_connection(conn)
 
 
+# ═══════════ v72: حارس التجمّد — إعادة تشغيل ذاتية عند أي تجمّد ═══════════
+_loop_hb = {"t": 0.0, "got": False}
+
+
+def _loop_heartbeat():
+    _loop_hb["t"] = time.time()
+    _loop_hb["got"] = True
+
+
+async def _loop_heartbeat_task():
+    """نبضة على حلقة الأحداث كل 30 ث — إن تجمدت الحلقة يتوقف هذا السجل فوراً."""
+    loop = asyncio.get_running_loop()
+    while True:
+        loop.call_soon_threadsafe(_loop_heartbeat)
+        await asyncio.sleep(30)
+
+
+def _freeze_watchdog():
+    """خيط خارجي مستقل عن الحلقة: إذا لم تنبض حلقة الأحداث ≥ 4 دقائق فالعملية
+    مجمّدة تماماً (لا تلغرام ولا PWA ولا مراقبة) → قتل ذاتي os._exit(1)
+    → Render يعيد التشغيل تلقائياً خلال دقائق بدل انتظار ريستارت يدوي."""
+    def _run():
+        while True:
+            time.sleep(60)
+            try:
+                if not _loop_hb["got"]:
+                    continue
+                _age = time.time() - _loop_hb["t"]
+                if _age > 240:
+                    logging.error(
+                        "[WATCHDOG] Event loop frozen for "
+                        + str(int(_age)) + "s — self-restarting (v72)"
+                    )
+                    os._exit(1)
+            except Exception:
+                pass
+    threading.Thread(target=_run, daemon=True, name="freeze-watchdog").start()
+
+
 async def _on_app_post_init(application):
     """Start background tasks after the app is initialized (works for both webhook and polling)."""
     asyncio.create_task(_offline_retry_loop(application.bot))
     asyncio.create_task(_oil_monitor_loop(application.bot))
     asyncio.create_task(_service_monitor_loop(application.bot))
     asyncio.create_task(_svc_hc_loop())
+    _freeze_watchdog()  # v72: حارس التجمّد الذاتي — ريستارت تلقائي عند أي تجمّد
+    asyncio.create_task(_loop_heartbeat_task())  # v72: نبضة الحلقة للحارس
     logging.info("[BOT] Offline retry task started via post_init")
+    logging.info("[BOT] Freeze watchdog armed via post_init (v72)")
     logging.info("[BOT] Oil monitor task started via post_init")
     logging.info("[BOT] Service monitor task started via post_init (v70)")
     logging.info("[BOT] External watchdog ping task started via post_init (v71)")
@@ -11573,7 +11629,7 @@ async def _daily_backup(bot, label="auto"):
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
     result = {"memory": False, "disk": False, "email": False, "channel": False, "bytes": 0, "error": None}
     try:
-        backup = db_export_backup()
+        backup = await asyncio.to_thread(db_export_backup)  # v72: خارج حلقة الأحداث
         _last_backup_data = backup
         result["memory"] = True
         json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
@@ -11659,6 +11715,18 @@ async def _daily_backup_loop(bot):
         await asyncio.sleep(60)
 
 
+def _db_ping_sync():
+    """v72: نبضة DB متزامنة — تُستدعى حصراً عبر asyncio.to_thread حتى لا تجمد حلقة الأحداث.
+    (السبب الجذري لتجميد البوت المتكرر: SELECT 1 متزامن داخل الحلقة + اتصال بلا مهلة)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        conn.commit()
+    finally:
+        release_connection(conn)
+
+
 async def _keep_alive(app):
     """Ping the external Render URL + Neon DB every 3 min to prevent spin-down."""
     external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
@@ -11676,15 +11744,9 @@ async def _keep_alive(app):
                 async with session.get(ping_url) as r:
                     if r.status != 200:
                         logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
-                # Ping Neon database to prevent auto-suspend (cold start)
+                # v72: Ping Neon عبر خيط منفصل — لم يعد يجمد حلقة الأحداث أبداً
                 try:
-                    conn = get_connection()
-                    try:
-                        with conn.cursor() as cur:
-                            cur.execute("SELECT 1")
-                        conn.commit()
-                    finally:
-                        release_connection(conn)
+                    await asyncio.to_thread(_db_ping_sync)
                 except Exception as db_err:
                     logging.warning("[KEEP-ALIVE] DB ping failed: " + str(db_err))
             except Exception as e:
@@ -11719,7 +11781,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v71"
+PWA_VERSION = "v72"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
