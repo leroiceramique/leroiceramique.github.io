@@ -1123,6 +1123,7 @@ _active_db_index = 0
 _db_urls = []
 _db_switching_lock = threading.Lock()
 _pool_creation_lock = threading.Lock()
+_db_fail_streak = 0  # v74: عداد نبضات DB الفاشلة المتتابعة للشفاء الذاتي
 
 
 def _init_db_urls():
@@ -1166,7 +1167,10 @@ DB_CONNECT_KWARGS = {
 def init_pool(url=None):
     """Create connection pool for the given URL (or active DB).
     Thread-safe: guarded by a dedicated lock, and any previous pool is fully
-    drained first so repeated calls never leak connections."""
+    drained first so repeated calls never leak connections.
+    v74: ThreadedConnectionPool إلزامي — توثيق psycopg2 يمنع مشاركة
+    SimpleConnectionPool بين الخيوط (تزامن getconn/putconn يُتلف دفاتر
+    الـPool تدريجياً → فشل شامل حتى /start يتشافى فقط بإعادة تشغيل)."""
     global _pool
     dsn = url or get_active_db_url()
     with _pool_creation_lock:
@@ -1177,7 +1181,7 @@ def init_pool(url=None):
                 old.closeall()
             except Exception:
                 pass
-        _pool = psycopg2.pool.SimpleConnectionPool(
+        _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=2, maxconn=20, dsn=dsn, **DB_CONNECT_KWARGS
         )
     return _pool
@@ -11735,7 +11739,9 @@ def _db_ping_sync():
 
 
 async def _keep_alive(app):
-    """Ping the external Render URL + Neon DB every 3 min to prevent spin-down."""
+    """Ping the external Render URL + Neon DB every 3 min to prevent spin-down.
+    v74: شفاء ذاتي — فشل متتابع للنبضة = إعادة بناء Pool ثم تبديل قاعدة تلقائياً."""
+    global _db_fail_streak
     external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
     if not external_url:
         port = int(os.getenv("PORT", 10000))
@@ -11752,10 +11758,26 @@ async def _keep_alive(app):
                     if r.status != 200:
                         logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
                 # v72: Ping Neon عبر خيط منفصل — لم يعد يجمد حلقة الأحداث أبداً
+                # v74: عداد الفشل المتتابع + شفاء ذاتي (إعادة بناء Pool ثم تبديل قاعدة)
                 try:
                     await asyncio.to_thread(_db_ping_sync)
+                    _db_fail_streak = 0
                 except Exception as db_err:
-                    logging.warning("[KEEP-ALIVE] DB ping failed: " + str(db_err))
+                    _db_fail_streak += 1
+                    logging.warning("[KEEP-ALIVE] DB ping failed (" + str(_db_fail_streak) + "): " + str(db_err))
+                    if _db_fail_streak == 2:
+                        logging.warning("[DB-HEAL] نبضتان فاشلتان متتابعتان — إعادة بناء Pool إجبارية...")
+                        try:
+                            await asyncio.to_thread(init_pool)
+                            logging.info("[DB-HEAL] Pool rebuilt OK")
+                        except Exception as heal_err:
+                            logging.error("[DB-HEAL] Pool rebuild failed: " + str(heal_err)[:150])
+                    elif _db_fail_streak >= 3 and len(_db_urls) > 1:
+                        logging.warning("[DB-HEAL] 3 نبضات فاشلة — تبديل تلقائي للقاعدة التالية...")
+                        try:
+                            await asyncio.to_thread(_switch_to_next_db, "[DB-HEAL] repeated ping failures")
+                        except Exception as sw_err:
+                            logging.error("[DB-HEAL] DB switch failed: " + str(sw_err)[:150])
             except Exception as e:
                 logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
             await asyncio.sleep(180)
@@ -11788,7 +11810,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v73"
+PWA_VERSION = "v74"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
