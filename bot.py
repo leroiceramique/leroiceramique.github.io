@@ -2240,6 +2240,7 @@ def register_user(telegram_id, username=None, first_name=None):
                   telegram_id, username, first_name, role))
             user = cur.fetchone()
         conn.commit()
+        _users_cache_clear()
         return dict(user)
     except Exception:
         conn.rollback()
@@ -2283,20 +2284,52 @@ def sync_user_info(user):
                   user.id, username, user.first_name,
                   "admin" if user.id in ADMIN_IDS else "pending"))
         conn.commit()
+        _users_cache_clear()
     except Exception:
         conn.rollback()
     finally:
         release_connection(conn)
 
 
+# ── v76: كاش قراءة قصير للمسار الساخن — كل رسالة تمر عبر get_user/is_admin ──
+_USER_CACHE = {}
+_USER_CACHE_LOCK = threading.Lock()
+_USER_CACHE_TTL = 45.0
+
+def _users_cache_clear():
+    """تفريغ كاش المستخدمين — يُستدعى بعد أي تعديل على users."""
+    try:
+        with _USER_CACHE_LOCK:
+            _USER_CACHE.clear()
+    except Exception:
+        pass
+
 def get_user(telegram_id):
+    # v76: كاش 45ث — تعليق Neon اللحظي لم يعد يجمد الحلقة مع كل أمر
+    try:
+        _now = time.time()
+        with _USER_CACHE_LOCK:
+            _hit = _USER_CACHE.get(telegram_id)
+            if _hit is not None and _now - _hit[0] < _USER_CACHE_TTL:
+                return dict(_hit[1]) if _hit[1] is not None else None
+    except Exception:
+        pass
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
             row = cur.fetchone()
         conn.commit()
-        return dict(row) if row else None
+        _result = dict(row) if row else None
+        try:
+            with _USER_CACHE_LOCK:
+                if _result is not None:
+                    if len(_USER_CACHE) > 300:
+                        _USER_CACHE.clear()
+                    _USER_CACHE[telegram_id] = (time.time(), dict(_result))
+        except Exception:
+            pass
+        return dict(_result) if _result else None
     except Exception:
         conn.rollback()
         raise
@@ -2488,6 +2521,7 @@ def approve_user(telegram_id, role=None):
                 )
             row = cur.fetchone()
         conn.commit()
+        _users_cache_clear()
         return dict(row) if row else None
     except Exception:
         conn.rollback()
@@ -2506,6 +2540,7 @@ def set_user_role(telegram_id, role):
             cur.execute("UPDATE users SET role = %s WHERE telegram_id = %s", (role, telegram_id))
             changed = cur.rowcount > 0
         conn.commit()
+        _users_cache_clear()
         return changed
     except Exception:
         conn.rollback()
@@ -2524,6 +2559,7 @@ def set_user_active(telegram_id, active):
                         (bool(active), telegram_id))
             row = cur.fetchone()
         conn.commit()
+        _users_cache_clear()
         return row[0] if row else None
     except Exception:
         conn.rollback()
@@ -2777,6 +2813,7 @@ def db_import_backup(data):
             summary += "\n  طلبات التوريد: " + str(len(inc_orders))
         if len(pend_delivs) > 0:
             summary += "\n  الطلبات المعلقة: " + str(len(pend_delivs))
+        _users_cache_clear()
         return summary
     except Exception:
         conn.rollback()
@@ -6622,8 +6659,12 @@ async def backup_command(update, context):
         from telegram import InputFile
         backup = await asyncio.to_thread(db_export_backup)  # v72: خارج حلقة الأحداث
         _last_backup_data = backup
-        json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
+        # v75: بناء JSON في خيط منفصل وبلا indent — لا تجميد ولا ملف ضخم
+        json_str = await asyncio.to_thread(
+            lambda: json.dumps(backup, ensure_ascii=False, default=str)
+        )
         file_bytes = json_str.encode("utf-8")
+        del json_str
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 استيراد هذه النسخة", callback_data="restore_last")],
@@ -10718,15 +10759,132 @@ async def callback_extract_approve_handler(update, context):
 #  ERROR HANDLER
 # ═══════════════════════════════════════════════════════════
 
+# ── v76: سجل الأخطاء الحي — لا تخمين بعد اليوم ──
+_recent_errors = []          # (time, type, msg, user_hint)
+_err_notify_rate = {}        # توقيع الخطأ -> آخر إشعار (حد 60ث ضد الفيضان)
+_err_lock = threading.Lock()
+
+def _read_bot_setting(key):
+    """قراءة قيمة من bot_settings (v76). الفشل = None."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM bot_settings WHERE key = %s", (key,))
+            r = cur.fetchone()
+        conn.commit()
+        return r[0] if r else None
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _write_bot_setting(key, value):
+    """كتابة قيمة في bot_settings (v76). الفشل = False."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_settings (key, value) VALUES (%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                (key, str(value)),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        release_connection(conn)
+
+
 async def error_handler(update, context):
     from telegram.error import Conflict
     if isinstance(context.error, Conflict):
         logging.warning("[BOT] Conflict detected - another instance running. Will recover automatically.")
         return
-    logging.error("[BOT ERROR] %s: %s", type(context.error).__name__, context.error, exc_info=True)
+    err = context.error
+    err_type = type(err).__name__
+    err_msg = str(err)[:400]
+    _hint = ""
+    try:
+        _eu = update.effective_user if update is not None else None
+        if _eu is not None:
+            _hint = _eu.username or _eu.first_name or str(_eu.id)
+    except Exception:
+        pass
+    try:
+        with _err_lock:
+            _recent_errors.append((
+                datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%m-%d %H:%M:%S"),
+                err_type, err_msg, _hint,
+            ))
+            del _recent_errors[:-30]
+    except Exception:
+        pass
+    logging.error("[BOT ERROR] %s: %s", err_type, err, exc_info=True)
+    # v76: إشعار المالك بالخطأ الحقيقي فوراً (مرة/دقيقة لكل توقيع خطأ)
+    try:
+        _sig = err_type + ":" + err_msg[:80]
+        _now = time.time()
+        _send = False
+        with _err_lock:
+            if _now - _err_notify_rate.get(_sig, 0) > 60:
+                _err_notify_rate[_sig] = _now
+                _send = True
+        if _send:
+            _txt = ("🚨 خطأ حقيقي في البوت\n"
+                    "🔸 النوع: " + err_type + "\n"
+                    "🔸 التفاصيل: " + err_msg[:350] +
+                    ((" — من: " + _hint) if _hint else "") + "\n"
+                    "🧾 /errors لآخر الأخطاء")
+            for _oid in list(OWNER_IDS)[:3]:
+                try:
+                    await context.bot.send_message(chat_id=_oid, text=_txt)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # v76: الحقيقة للمدراء/المالك — والرسالة العامة للبقية
     try:
         if update and update.effective_message:
-            await update.effective_message.reply_text("❌ حدث خطأ حاول مرة أخرى.")
+            _eu = update.effective_user
+            if _eu is not None and (_eu.id in OWNER_IDS or _eu.id in ADMIN_IDS):
+                await update.effective_message.reply_text("❌ خطأ: " + err_type + " — " + err_msg[:200])
+            else:
+                await update.effective_message.reply_text("❌ حدث خطأ حاول مرة أخرى.")
+    except Exception:
+        pass
+
+
+async def errors_command(update, context):
+    """v76: آخر الأخطاء الحقيقية المسجلة منذ الإقلاع — للمالك فقط."""
+    if not is_owner(update.effective_user.id):
+        try:
+            await update.message.reply_text("🔒 للمالك فقط.")
+        except Exception:
+            pass
+        return
+    with _err_lock:
+        rows = list(_recent_errors)[-20:]
+    if not rows:
+        try:
+            await update.message.reply_text("✅ لا أخطاء مسجلة منذ الإقلاع.")
+        except Exception:
+            pass
+        return
+    lines = ["🧾 آخر الأخطاء (" + str(len(rows)) + "):"]
+    for _t, _ty, _m, _h in reversed(rows):
+        lines.append("▪ " + _t + " [" + _ty + "] " + _m[:160] + ((" — " + _h) if _h else ""))
+    try:
+        await update.message.reply_text("\n".join(lines)[:4000])
     except Exception:
         pass
 
@@ -11336,6 +11494,23 @@ def _freeze_watchdog():
 
 async def _on_app_post_init(application):
     """Start background tasks after the app is initialized (works for both webhook and polling)."""
+    # v76: تنبيه التوقف غير النظيف — لو العلم كان 0 عند الإقلاع فالتشغيل السابق مات قسرياً (تجمد/قتل/كراش)
+    try:
+        _prev = await asyncio.to_thread(_read_bot_setting, "clean_shutdown")
+        if _prev == "0":
+            for _aid in list(ADMIN_IDS)[:5]:
+                try:
+                    await application.bot.send_message(
+                        chat_id=_aid,
+                        text="⚠️ أعيد تشغيل البوت بعد توقف غير نظيف (تجمد أو قتل عملية).\n"
+                             "🧾 أرسل /errors لرؤية آخر الأخطاء الحقيقية،\n"
+                             "📋 وتبويب Logs في Render للتفاصيل الكاملة.",
+                    )
+                except Exception:
+                    pass
+        await asyncio.to_thread(_write_bot_setting, "clean_shutdown", "0")
+    except Exception:
+        pass
     asyncio.create_task(_offline_retry_loop(application.bot))
     asyncio.create_task(_oil_monitor_loop(application.bot))
     asyncio.create_task(_service_monitor_loop(application.bot))
@@ -11350,7 +11525,13 @@ async def _on_app_post_init(application):
 
 
 def build_application():
-    app = Application.builder().token(BOT_TOKEN).post_init(_on_app_post_init).build()
+    async def _on_app_post_shutdown(application):
+        # v76: علامة إغلاق نظيف — غيابها في الإقلاع القادم يعني موتاً قسرياً
+        try:
+            await asyncio.to_thread(_write_bot_setting, "clean_shutdown", "1")
+        except Exception:
+            pass
+    app = Application.builder().token(BOT_TOKEN).post_init(_on_app_post_init).post_shutdown(_on_app_post_shutdown).build()
 
     # ── تنظيف الشاشة: تتبع رسائل البوت الصادرة + رسائل المستخدم (تُحذف عند العودة للقائمة) ──
     _install_sweep_tracking(app.bot)
@@ -11442,6 +11623,7 @@ def build_application():
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CommandHandler("webpass", webpass_command))
     app.add_handler(CommandHandler("audit", audit_command))
+    app.add_handler(CommandHandler("errors", errors_command))  # v76: سجل الأخطاء الحي — المالك فقط
     app.add_handler(MessageHandler(filters.Document.ALL, handle_backup_document))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.UpdateType.EDITED, handle_receipt_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_message))
@@ -11605,11 +11787,31 @@ def _load_backup_from_disk():
     return None
 
 
+def _rss_mb():
+    """v75: ذاكرة العملية الحالية بالميغابايت (Linux /proc مع بديل resource)."""
+    try:
+        with open("/proc/self/status", "r") as _fh:
+            for _line in _fh:
+                if _line.startswith("VmRSS:"):
+                    return round(int(_line.split()[1]) / 1024, 1)
+    except Exception:
+        pass
+    try:
+        import resource as _res
+        return round(_res.getrusage(_res.RUSAGE_SELF).ru_maxrss / 1024, 1)
+    except Exception:
+        return -1
+
+
 async def _send_backup_to_channel(bot, file_bytes, filename, label="auto"):
     """Send backup JSON file to the configured Telegram channel.
     Returns True on success, False otherwise.
     """
     if not BACKUP_CHANNEL_ID:
+        return False
+    # v75: حارس الحجم — حد تليغرام 50MB؛ نتجنب المحاولة المستحيلة ونسجل السبب بوضوح
+    if len(file_bytes) > 48 * 1024 * 1024:
+        logging.error("[BACKUP] Channel send SKIPPED: %s bytes > Telegram 50MB limit", format(len(file_bytes), ","))
         return False
     try:
         from io import BytesIO
@@ -11640,12 +11842,18 @@ async def _daily_backup(bot, label="auto"):
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d")
     result = {"memory": False, "disk": False, "email": False, "channel": False, "bytes": 0, "error": None}
     try:
+        logging.info("[BACKUP] %s export start (RSS %s MB)", label, _rss_mb())
         backup = await asyncio.to_thread(db_export_backup)  # v72: خارج حلقة الأحداث
         _last_backup_data = backup
         result["memory"] = True
-        json_str = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
+        # v75: بناء JSON في خيط منفصل وبلا indent — لا تجميد وملف أصغر (الاستيراد لا يهتم بالتنسيق)
+        json_str = await asyncio.to_thread(
+            lambda: json.dumps(backup, ensure_ascii=False, default=str)
+        )
         file_bytes = json_str.encode("utf-8")
+        del json_str
         result["bytes"] = len(file_bytes)
+        logging.info("[BACKUP] %s export done: %s bytes (RSS %s MB)", label, format(result["bytes"], ","), _rss_mb())
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         filename = "backup_" + now_str + ".json"
         # 1) Save to disk as fallback (always, even if email succeeds)
@@ -11810,7 +12018,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v74"
+PWA_VERSION = "v76"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
