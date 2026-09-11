@@ -3721,8 +3721,7 @@ BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
 BTN_OIL = "🔧 زيت الرافعة"
-BTN_SERVICES = "🩺 حالة الخدمات"  # v70: مراقبة الخدمات (Render/Neon/Upstash)
-BTN_WATCHDOG = "🔔 مراقبة التوقف"  # v71: صمام التوقف الخارجي (healthchecks.io) — تنبيه لحظة التوقف
+BTN_SERVICES = "🩺 حالة الخدمات"  # v70: مراقبة الخدمات الداخلية — v77: تسمية عامة بلا أسماء منصات
 
 # ═══════════════════════════════════════════════════════════
 #  نظام الفئات (الأدوار) — ROLES SYSTEM
@@ -4391,7 +4390,7 @@ def get_admin_keyboard(user_id=None):
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
         [BTN_RESET_STOCK],
-        [BTN_OIL, BTN_SERVICES, BTN_WATCHDOG],
+        [BTN_OIL, BTN_SERVICES],
         [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -6714,7 +6713,7 @@ async def backup_test_command(update, context):
         lines.append("   1. أنشئ قناة خاصة في تيليغرام")
         lines.append("   2. أضف البوت كمسؤول في القناة")
         lines.append("   3. أرسل رسالة في القناة")
-        lines.append("   4. أضف BACKUP_CHANNEL_ID في Render (مثل: -1001234567890)")
+        lines.append("   4. أضف BACKUP_CHANNEL_ID في متغيرات البيئة (مثل: -1001234567890)")
         lines.append("   💡 للحصول على ID القناة: أرسل رسالة ثم افتح:")
         lines.append("   https://api.telegram.org/bot<TOKEN>/getUpdates")
     await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
@@ -8241,7 +8240,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL, BTN_SERVICES, BTN_WATCHDOG]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL, BTN_SERVICES]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -8283,30 +8282,6 @@ async def handle_admin_message(update, context):
     # ═══════════════════════════════════════════════════════════
     #  Handle admin buttons FIRST — before any state handler
     # ═══════════════════════════════════════════════════════════
-    # ── v71: مراقبة التوقف الفوري — لصق رابط healthchecks.io أو إلغاؤها (المالك فقط) ──
-    if is_owner(user.id):
-        if text.startswith("https://hc-ping.com/"):
-            _u = text.strip().split()[0]
-            if re.match(r"^https://hc-ping\.com/[A-Za-z0-9\-_]+$", _u):
-                context.user_data.clear()
-                _svc_hc_set_url(_u)
-                await update.message.reply_text(
-                    "✅ تم تفعيل مراقبة التوقف الفوري\n\n"
-                    "من الآن أي توقف للبوت سيصلك تنبيه فوري على تلغرام "
-                    "من بوت Healthchecks خلال ~10 دقائق من التوقف — "
-                    "حتى لو كان البوت ميتاً تماماً.\n"
-                    "🔍 للتأكد: البوت يرسل نبضة كل 5 دقائق وسيظهر الموقع «UP».\n"
-                    "للإلغاء أرسل: حذف مراقبة التوقف")
-            else:
-                await update.message.reply_text(
-                    "❌ الرابط غير صالح — يجب أن يبدأ بـ https://hc-ping.com/ وينتهي برمز.")
-            return
-        if text == "حذف مراقبة التوقف":
-            context.user_data.clear()
-            _svc_hc_set_url("")
-            await update.message.reply_text("🗑 أُلغيت مراقبة التوقف الفوري.")
-            return
-
     # ═══════════════════════════════════════════════════════════
     #  Handle admin buttons FIRST — before any state handler
     # ═══════════════════════════════════════════════════════════
@@ -8329,26 +8304,6 @@ async def handle_admin_message(update, context):
             # 🩺 حالة الخدمات (v70) — وصل هنا مدير فقط (بوابة الفئات أعلاه)
             card = await asyncio.to_thread(_service_status_card)
             await update.message.reply_text(card, reply_markup=get_role_keyboard(user.id))
-            return
-        if text == BTN_WATCHDOG:
-            # 🔔 مراقبة التوقف الفوري (v71) — وصل هنا مدير فقط
-            _hc = _svc_hc_url()
-            _wd_txt = (
-                "🔔 مراقبة التوقف الفوري\n\n"
-                "الحالة: " + ("✅ مفعّلة — أي توقف سيصلك تنبيه فوري على تلغرام" if _hc
-                              else "❌ غير مفعّلة") + "\n\n"
-                "لماذا؟ البوت المتوقف لا يستطيع مراسلة أحد — لذلك نستخدم "
-                "مراقباً خارجياً مجانياً (healthchecks.io) يراقب البوت من الخارج "
-                "ويرسل لك تنبيهاً على تلغرام خلال ~10 دقائق من أي توقف.\n\n"
-                "التفعيل (مرة واحدة — 5 دقائق):\n"
-                "1) افتح healthchecks.io وسجّل حساباً بالبريد الإلكتروني\n"
-                "2) أنشئ Check باسم LE ROI — واجعل Period = 5 دقائق و Grace = 5 دقائق (مهم جداً)\n"
-                "3) من Integrations أضف Telegram واضغط Start في بوتهم لربط حسابك\n"
-                "4) انسخ رابط PING (يبدأ بـ https://hc-ping.com/)\n"
-                "5) الصق الرابط هنا في المحادثة — خلاص ✅\n\n"
-                "للإلغاء أرسل: حذف مراقبة التوقف"
-            )
-            await update.message.reply_text(_wd_txt, reply_markup=get_role_keyboard(user.id))
             return
         if text == BTN_ADD:
             await ask_add_name(update, context)
@@ -10154,9 +10109,8 @@ def _svc_admin_ids():
 
 
 def _svc_startup_check():
-    """v71: تسجيل صامت للتوقف عند الإقلاع (يوسف لا يريد تنبيهاً بعد العودة):
-    المدة + السبب الأرجح يُخزنان في service_monitor وتظهر في بطاقة الحالة فقط.
-    تذكير وحيد فقط إذا كان الصمام الخارجي (تنبيه لحظة التوقف) غير مفعّل."""
+    """v71/v77: تسجيل صامت للتوقف عند الإقلاع (بلا إزعاج بعد العودة):
+    المدة + السبب الأرجح يُخزنان في service_monitor وتظهر في بطاقة الحالة فقط."""
     global _svc_boot_at
     _svc_boot_at = _svc_now()
     try:
@@ -10172,25 +10126,16 @@ def _svc_startup_check():
         _svc_set("down_from", last_at.strftime("%Y-%m-%d %H:%M"))
         _svc_set("down_to", _svc_boot_at.strftime("%Y-%m-%d %H:%M"))
         _svc_set("down_min", str(int(gap_min)))
-        reason = "غير معروف — راجع لوجات Render"
+        reason = "غير معروف — راجع السجلات التقنية"
         try:
             mrow = _svc_get("render_min_" + last_at.strftime("%Y-%m"))
             if mrow and mrow[0] and float(mrow[0]) / 60.0 >= SVC_RENDER_FREE_HOURS * 0.98:
-                reason = "الأرجح: نفاد ساعات Render المجانية"
+                reason = "الأرجح: نفاد ساعات التشغيل المجانية"
         except Exception:
             pass
         _svc_set("down_reason", reason)
         logging.info("[MONITOR] downtime recorded silently: " + str(int(gap_min)) + " min — " + reason)
-        # تذكير واحد فقط بالتفعيل إن كان الصمام الخارجي غير مفعّل —
-        # فبدونه لا يصلك أي تنبيه أثناء التوقف نفسه
-        if not _svc_hc_url():
-            return (
-                "🔔 حدث توقف للبوت من " + last_at.strftime("%Y-%m-%d %H:%M")
-                + " إلى " + _svc_boot_at.strftime("%Y-%m-%d %H:%M")
-                + " (" + _svc_fmt_dur(gap_min) + ").\n"
-                "مراقبة التوقف الفوري غير مفعّلة بعد — فعّلها من زر «🔔 مراقبة التوقف» "
-                "لتصلك حالة فورية على تلغرام في المرة القادمة."
-            )
+        # v77: التسجيل صامت دائماً — لا تذكير بزر محذوف، والتفاصيل في بطاقة الحالة
         return None
     except Exception as e:
         logging.warning("[MONITOR] startup check skipped: " + str(e))
@@ -10198,8 +10143,8 @@ def _svc_startup_check():
 
 
 def _svc_tick():
-    """دورة مراقبة واحدة (متزامنة، تُستدعى من خيط): نبض + دقائق ساعات Render
-    + فحص Neon وحجمها + عتبات التنبيه. ترجع قائمة نصوص التنبيهات."""
+    """دورة مراقبة واحدة (متزامنة، تُستدعى من خيط): نبض + دقائق ساعات التشغيل
+    + فحص قاعدة البيانات وحجمها + عتبات التنبيه. ترجع قائمة نصوص التنبيهات."""
     global _svc_db_fails, _svc_primary_alerted
     alerts = []
     now = _svc_now()
@@ -10249,7 +10194,7 @@ def _svc_tick():
     # ── Neon: كسر / عودة / قاعدة احتياطية ──
     if db_ok:
         if _svc_db_fails >= SVC_DB_FAIL_ALERT_AFTER:
-            alerts.append("✅ قاعدة البيانات (Neon) عادت للعمل — كل شيء طبيعي الآن.")
+            alerts.append("✅ قاعدة البيانات عادت للعمل — كل شيء طبيعي الآن.")
         _svc_db_fails = 0
         try:
             if len(_db_urls) > 1 and _active_db_index != 0:
@@ -10258,7 +10203,7 @@ def _svc_tick():
                         "⚠️ قاعدة البيانات الأساسية غير متاحة\n\n"
                         "البوت انتقل تلقائياً للقاعدة الاحتياطية رقم "
                         + str(_active_db_index + 1) + " حتى لا يتوقف.\n"
-                        "🔎 راجع حسابك في neon.tech — قد يكون السبب انتهاء الحد المجاني."
+                        "🔎 راجع لوحة قاعدة البيانات — قد يكون السبب انتهاء الحد المجاني."
                     )
                     _svc_primary_alerted = True
             else:
@@ -10287,20 +10232,20 @@ def _svc_tick():
             pct_hours = hours / SVC_RENDER_FREE_HOURS * 100.0
             if pct_hours >= 95.0 and not _svc_flag("render95_" + month):
                 alerts.append(
-                    "🚨 عاجل: ساعات Render على وشك النفاد\n\n"
+                    "🚨 عاجل: ساعات التشغيل على وشك النفاد\n\n"
                     "📊 استهلكت: " + "{:.1f}".format(hours) + " من "
                     + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
                     + str(int(round(pct_hours))) + "%)\n"
                     "⛔ إذا انتهت الساعات يتوقف البوت فوراً حتى بداية الشهر القادم.\n\n"
                     "💡 ما يمكنك فعله الآن:\n"
                     "1️⃣ خذ نسخة احتياطية (زر 💾 نسخ احتياطي).\n"
-                    "2️⃣ احذف من Render أي خدمات أخرى لا تستخدمها — الساعات مشتركة.\n"
-                    "3️⃣ أو فعّل الخطة المدفوعة في Render للاستمرار دون توقف."
+                    "2️⃣ احذف من لوحة الاستضافة أي خدمات أخرى لا تستخدمها — الساعات مشتركة.\n"
+                    "3️⃣ أو فعّل الخطة المدفوعة للاستضافة للاستمرار دون توقف."
                 )
                 _svc_set("render95_" + month, "1")
             elif pct_hours >= 80.0 and not _svc_flag("render80_" + month):
                 alerts.append(
-                    "⚠️ تنبيه: ساعات Render تستهلك بسرعة\n\n"
+                    "⚠️ تنبيه: ساعات التشغيل تستهلك بسرعة\n\n"
                     "📊 استهلكت هذا الشهر: " + "{:.1f}".format(hours) + " من "
                     + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
                     + str(int(round(pct_hours))) + "%)\n\n"
@@ -10314,17 +10259,17 @@ def _svc_tick():
         _svc_db_fails += 1
         if _svc_db_fails == SVC_DB_FAIL_ALERT_AFTER:
             alerts.append(
-                "🔴 تنبيه: قاعدة البيانات (Neon) لا تستجيب\n\n"
+                "🔴 تنبيه: قاعدة البيانات لا تستجيب\n\n"
                 "البوت يعمل لكنه لا يستطيع الوصول لقاعدة البيانات.\n"
                 "السبب المحتمل: انتهاء الاشتراك المجاني أو صيانة مؤقتة.\n\n"
-                "🔎 افتح حسابك في neon.tech وتحقق من حالة المشروع والاستهلاك.\n"
+                "🔎 افتح لوحة قاعدة البيانات وتحقق من حالة المشروع والاستهلاك.\n"
                 "⚠️ العمليات أثناء الانقطاع قد لا تُسجّل — أعد المحاولة بعد قليل."
             )
     return alerts
 
 
 async def _svc_upstash_check():
-    """فحص Upstash كل دورة — فقط إن وُجدت متغيرات REST في البيئة.
+    """فحص خدمة التسريع كل دورة — فقط إن وُجدت متغيرات REST في البيئة.
     يرصد انقطاع الخدمة وتجاوز الحد المجاني (HTTP 429) ويرصد العودة."""
     global _svc_upstash_ok, _svc_upstash_detail
     if not _svc_upstash_configured:
@@ -10340,20 +10285,20 @@ async def _svc_upstash_check():
                     _svc_upstash_detail = "تجاوز الحد المجاني للطلبات"
                     if was is not False:
                         return (
-                            "🔴 تنبيه: Upstash تجاوزت الحد المجاني للطلبات\n\n"
-                            "🔎 افتح console.upstash.com لترى الاستهلاك.\n"
-                            "ℹ️ البوت لا يعتمد على Upstash في عمله الأساسي — لا تقلق."
+                            "🔴 تنبيه: خدمة التسريع تجاوزت الحد المجاني للطلبات\n\n"
+                            "🔎 راجع لوحة الخدمة لترى الاستهلاك.\n"
+                            "ℹ️ البوت لا يعتمد على هذه الخدمة في عمله الأساسي — لا تقلق."
                         )
                     return None
                 if r.status != 200:
                     raise RuntimeError("HTTP " + str(r.status))
                 data = await r.json(content_type=None)
                 if str((data or {}).get("result", "")).upper() != "PONG":
-                    raise RuntimeError("رد غير متوقع من Upstash")
+                    raise RuntimeError("رد غير متوقع من الخدمة")
                 if _svc_upstash_ok is False:
                     _svc_upstash_ok = True
                     _svc_upstash_detail = ""
-                    return "✅ Upstash عادت للعمل."
+                    return "✅ خدمة التسريع عادت للعمل."
                 _svc_upstash_ok = True
                 _svc_upstash_detail = ""
                 return None
@@ -10363,10 +10308,10 @@ async def _svc_upstash_check():
         _svc_upstash_detail = str(e)[:120]
         if was is not False:
             return (
-                "🔴 تنبيه: Upstash لا تستجيب\n\n"
+                "🔴 تنبيه: خدمة التسريع لا تستجيب\n\n"
                 "السبب المحتمل: انتهاء الحد المجاني أو انقطاع مؤقت.\n"
-                "🔎 افتح console.upstash.com وتحقق.\n"
-                "ℹ️ البوت لا يعتمد على Upstash في عمله الأساسي — لا تقلق."
+                "🔎 راجع لوحة الخدمة وتحقق.\n"
+                "ℹ️ البوت لا يعتمد على هذه الخدمة في عمله الأساسي — لا تقلق."
             )
         return None
 
@@ -10472,7 +10417,7 @@ def _service_status_card():
     lines.append("⏱ هذه الجلسة تعمل منذ: " + _svc_fmt_dur(up_min))
     lines.append("🔁 آخر إقلاع: " + _svc_boot_at.strftime("%Y-%m-%d %H:%M"))
     lines.append("")
-    # ساعات Render
+    # ساعات التشغيل
     minutes = 0.0
     try:
         row = _svc_get("render_min_" + month)
@@ -10482,7 +10427,7 @@ def _service_status_card():
         minutes = 0.0
     hours = minutes / 60.0
     pct_hours = hours / SVC_RENDER_FREE_HOURS * 100.0
-    lines.append("⏳ ساعات Render — شهر " + month)
+    lines.append("⏳ ساعات التشغيل — شهر " + month)
     lines.append(
         "📊 المستهلك: " + "{:.1f}".format(hours) + " من "
         + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
@@ -10513,7 +10458,7 @@ def _service_status_card():
             release_connection(conn)
     except Exception:
         db_state = "🔴 لا تستجيب"
-    lines.append("🗄 Neon (قاعدة البيانات): " + db_state)
+    lines.append("🗄 قاعدة البيانات: " + db_state)
     try:
         lines.append("🔢 القاعدة النشطة: #" + str(_active_db_index + 1)
                      + " من " + str(len(_db_urls)))
@@ -10528,17 +10473,13 @@ def _service_status_card():
     lines.append("")
     # Upstash
     if not _svc_upstash_configured:
-        lines.append("⬜ Upstash: غير مربوطة بالبوت — البوت لا يستخدمها")
+        lines.append("⬜ خدمة التسريع: غير مفعّلة — البوت لا يحتاجها")
     elif _svc_upstash_ok is True:
-        lines.append("🟢 Upstash: تستجيب")
+        lines.append("🟢 خدمة التسريع: تستجيب")
     elif _svc_upstash_ok is False:
-        lines.append("🔴 Upstash: مشكلة — " + (_svc_upstash_detail or "لا تستجيب"))
+        lines.append("🔴 خدمة التسريع: مشكلة — " + (_svc_upstash_detail or "لا تستجيب"))
     else:
-        lines.append("⏳ Upstash: أول فحص تلقائي بعد قليل")
-    hc = _svc_hc_url()
-    lines.append("🔔 مراقبة التوقف الفوري: "
-                 + ("مفعّلة ✅ — تنبيه تلغرام خلال ~10 دقائق من أي توقف" if hc
-                    else "غير مفعّلة ❌ — زر «🔔 مراقبة التوقف»"))
+        lines.append("⏳ خدمة التسريع: أول فحص تلقائي بعد قليل")
     lines.append("")
     # آخر توقف مسجل
     try:
@@ -11504,7 +11445,7 @@ async def _on_app_post_init(application):
                         chat_id=_aid,
                         text="⚠️ أعيد تشغيل البوت بعد توقف غير نظيف (تجمد أو قتل عملية).\n"
                              "🧾 أرسل /errors لرؤية آخر الأخطاء الحقيقية،\n"
-                             "📋 وتبويب Logs في Render للتفاصيل الكاملة.",
+                             "📋 والسجلات التقنية للتفاصيل الكاملة.",
                     )
                 except Exception:
                     pass
@@ -12018,7 +11959,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v76"
+PWA_VERSION = "v77"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -13293,28 +13234,28 @@ def _pwa_mask_password(pw):
     if not pw:
         return "(فارغ ⚠️)"
     if pw.startswith("xkeysib-"):
-        return "مفتاح Brevo صحيح الشكل (xkeysib-…) ✓"
-    return "طوله " + str(len(pw)) + " — ⚠️ لا يبدأ بـ xkeysib- (ليس مفتاح Brevo SMTP!)"
+        return "مفتاح البريد صحيح الشكل (xkeysib-…) ✓"
+    return "طوله " + str(len(pw)) + " — ⚠️ لا يبدأ بـ xkeysib- (ليس مفتاح SMTP!)"
 
 
 async def testmail_command(update, context):
     """v38: /testmail — للمدير فقط: فاحص شامل لإعدادات البريد:
     1) عرض الإعدادات الحالية كما يراها الخادم (كشف الأخطاء المطبعية)
-    2) مصفوفة اتصال TCP لمنافذ SMTP: مضيفك + Brevo 587/465 + Gmail كمرجع
-    3) فحص Brevo HTTPS API (منفذ 443 — الوحيد غير المحجوب في الاستضافة المجانية)
+    2) مصفوفة اتصال TCP لمنافذ SMTP: مضيفك + خدمة البريد 587/465 + خادم مرجعي
+    3) فحص خدمة البريد HTTPS API (منفذ 443 — الوحيد غير المحجوب في الاستضافة المجانية)
     4) حكم مباشر + إرسال فعلي إلى BACKUP_EMAIL مع السبب عند الفشل."""
     if not update.effective_user or not is_admin(update.effective_user.id):
         await update.message.reply_text("هذا الأمر للمدير فقط.")
         return
     if not _pwa_otp_email_ready() or not BACKUP_EMAIL:
         await update.message.reply_text(
-            "⚠️ الإعداد ناقص — المطلوب على Render (Environment):\n"
+            "⚠️ الإعداد ناقص — المطلوب في متغيرات البيئة (Environment):\n"
             "SMTP_HOST = smtp-relay.brevo.com\n"
             "SMTP_PORT = 587\n"
-            "SMTP_EMAIL = بريد تسجيلك في Brevo\n"
-            "SMTP_PASSWORD = مفتاح SMTP من Brevo (يبدأ بـ xkeysib-)\n"
+            "SMTP_EMAIL = بريد تسجيلك في خدمة البريد\n"
+            "SMTP_PASSWORD = مفتاح SMTP من خدمة البريد (يبدأ بـ xkeysib-)\n"
             "BACKUP_EMAIL = بريدك لاستقبال التجربة\n"
-            "ثم اضغط Manual Deploy.")
+            "ثم أعد نشر التطبيق.")
         return
 
     # 1) الإعدادات كما يراها الخادم — هنا تظهر الأخطاء المطبعية فوراً
@@ -13336,9 +13277,9 @@ async def testmail_command(update, context):
     probes = [
         ("إعداداتك (" + str(SMTP_HOST) + ":" + str(SMTP_PORT) + ")",
          SMTP_HOST, SMTP_PORT),
-        ("Brevo 587", "smtp-relay.brevo.com", 587),
-        ("Brevo 465", "smtp-relay.brevo.com", 465),
-        ("Gmail 465 (مرجع)", "smtp.gmail.com", 465),
+        ("خدمة البريد 587", "smtp-relay.brevo.com", 587),
+        ("خدمة البريد 465", "smtp-relay.brevo.com", 465),
+        ("خادم مرجعي 465", "smtp.gmail.com", 465),
     ]
     lines = []
     mine_ok = False
@@ -13353,7 +13294,7 @@ async def testmail_command(update, context):
                      + ("" if ok else " — " + err))
     await update.message.reply_text(
         "📡 منافذ SMTP:\n" + "\n".join(lines)
-        + "\n(ملاحظة: الاستضافات المجانية مثل Render تحجب منافذ البريد "
+        + "\n(ملاحظة: الاستضافات السحابية المجانية تحجب منافذ البريد "
           "25/465/587 — هذا ليس خطأك)")
 
     # 3) فحص Brevo HTTPS API — منفذ 443 (نفس منفذ تلغرام الذي يعمل لديك)
@@ -13367,17 +13308,17 @@ async def testmail_command(update, context):
             if ok:
                 api_ok = True
                 await update.message.reply_text(
-                    "🔑 Brevo API عبر HTTPS: ✅ يعمل — المفتاح " + tail + " صالح.")
+                    "🔑 API خدمة البريد عبر HTTPS: ✅ يعمل — المفتاح " + tail + " صالح.")
                 break
             if status in (401, 403):
                 await update.message.reply_text(
-                    "🔑 Brevo API عبر HTTPS: المنفذ مفتوح لكن المفتاح " + tail
+                    "🔑 API خدمة البريد عبر HTTPS: المنفذ مفتوح لكن المفتاح " + tail
                     + " مرفوض (401).\nهذا مفتاح SMTP وليس مفتاح API — أنشئ مفتاح "
-                      "API من: لوحة Brevo ← SMTP & API ← تبويب API ← Generate new "
-                      "key، ثم أضفه كمتغير BREVO_API_KEY على Render.")
+                      "API من: لوحة خدمة البريد ← SMTP & API ← تبويب API ← Generate new "
+                      "key، ثم أضفه كمتغير BREVO_API_KEY في متغيرات البيئة.")
             else:
                 await update.message.reply_text(
-                    "🔑 Brevo API عبر HTTPS: استجابة غير متوقعة — HTTP "
+                    "🔑 API خدمة البريد عبر HTTPS: استجابة غير متوقعة — HTTP "
                     + str(status) + " " + str(info)[:90])
     else:
         await update.message.reply_text(
@@ -13387,26 +13328,26 @@ async def testmail_command(update, context):
     # 4) الحكم النهائي — يفرّق بين خطأ القيم وحجب المنافذ في الاستضافة
     if not mine_ok and others_ok:
         await update.message.reply_text(
-            "🎯 التشخيص: إعداداتك لا تفتح اتصالاً بينما Brevo نفسه متاح!\n"
+            "🎯 التشخيص: إعداداتك لا تفتح اتصالاً بينما خدمة البريد نفسها متاحة!\n"
             "→ الخطأ في SMTP_HOST أو SMTP_PORT (حرف أو مسافة زائدة).\n"
             "القيم الصحيحة: SMTP_HOST = smtp-relay.brevo.com و SMTP_PORT = 587\n"
-            "عدّلها ثم Manual Deploy وأعد /testmail.")
+            "عدّلها ثم أعد نشر التطبيق وأعد /testmail.")
         return
     if not mine_ok and not others_ok:
         if not api_ok:
             await update.message.reply_text(
                 "🎯 التشخيص: إعداداتك صحيحة لكن استضافتك تحجب كل منافذ البريد "
-                "الصادرة (25/465/587) — سياسة الاستضافات المجانية مثل Render، "
-                "وليست مشكلة منك إطلاقاً.\nالحل: مفتاح Brevo API عبر HTTPS:\n"
-                "1) لوحة Brevo ← SMTP & API ← تبويب API ← Generate new key "
+                "الصادرة (25/465/587) — سياسة الاستضافات السحابية المجانية، "
+                "وليست مشكلة منك إطلاقاً.\nالحل: مفتاح API لخدمة البريد عبر HTTPS:\n"
+                "1) لوحة خدمة البريد ← SMTP & API ← تبويب API ← Generate new key "
                 "(يبدأ بـ xkeysib-)\n"
-                "2) أضفه على Render كمتغير جديد: BREVO_API_KEY\n"
-                "3) اضغط Manual Deploy ثم أعد /testmail.")
+                "2) أضفه في متغيرات البيئة كمتغير جديد: BREVO_API_KEY\n"
+                "3) أعد نشر التطبيق ثم أعد /testmail.")
             return
         await update.message.reply_text(
-            "🎯 التشخيص: إعداداتك صحيحة 100% — لكن استضافتك (Render المجاني) تحجب "
+            "🎯 التشخيص: إعداداتك صحيحة 100% — لكن استضافتك السحابية المجانية تحجب "
             "كل منافذ البريد الصادرة 25/465/587 منذ 2025، ولهذا فشل SMTP حتى مع "
-            "Brevo وGmail.\n✅ لا مشكلة — النسخة الجديدة سترسل عبر HTTPS API "
+            "خوادم البريد الخارجية.\n✅ لا مشكلة — النسخة الجديدة سترسل عبر HTTPS API "
             "تلقائياً (نفس منفذ تلغرام الذي يعمل عندك).")
 
     # 5) إرسال فعلي
@@ -13439,25 +13380,25 @@ def _pwa_smtp_classify(e):
     if ("535" in s or "530" in s or "badcredentials" in low
             or "authentic" in low or "username and password" in low
             or "authorization failed" in low or "login failed" in low):
-        return ("بيانات دخول SMTP مرفوضة — تأكد أن SMTP_PASSWORD هو مفتاح SMTP من "
-                "Brevo (يبدأ بـ xkeysib-) وليس كلمة سر حساب Brevo، وأن SMTP_EMAIL "
-                "هو بريد تسجيلك في Brevo نفسه.")
+        return ("بيانات دخول البريد مرفوضة — تأكد أن SMTP_PASSWORD هو مفتاح SMTP من "
+                "خدمة البريد (يبدأ بـ xkeysib-) وليس كلمة سر الحساب، وأن SMTP_EMAIL "
+                "هو بريد تسجيلك في خدمة البريد نفسه.")
     if "getaddrinfo" in low or "name or service not known" in low or "nodename" in low:
-        return "تعذر الوصول لخادم البريد — تحقق من SMTP_HOST (smtp-relay.brevo.com)."
+        return "تعذر الوصول لخادم البريد — تحقق من صحة SMTP_HOST."
     if ("timed out" in low or "timeout" in low or "refused" in low
             or "unreachable" in low):
-        return ("تعذر الاتصال بخوادم البريد — الاستضافات المجانية مثل Render تحجب "
-                "منافذ البريد الصادرة (25/465/587). الحل: أنشئ مفتاح Brevo API "
-                "(SMTP & API ← تبويب API ← Generate new key) وأضفه كمتغير "
-                "BREVO_API_KEY على Render ثم اضغط Manual Deploy — الإرسال عبر "
+        return ("تعذر الاتصال بخوادم البريد — الاستضافات السحابية المجانية تحجب "
+                "منافذ البريد الصادرة (25/465/587). الحل: أنشئ مفتاح API لخدمة "
+                "البريد (SMTP & API ← تبويب API ← Generate new key) وأضفه كمتغير "
+                "BREVO_API_KEY في متغيرات البيئة ثم أعد نشر التطبيق — الإرسال عبر "
                 "HTTPS يتجاوز هذا الحجب. أرسل /testmail في البوت لتشخيص فوري.")
     if (("sender" in low and ("reject" in low or "denied" in low
             or "not verified" in low or "unverified" in low)) or "553" in s):
-        return ("بريد المُرسِل مرفوض — في Brevo استعمل SMTP_EMAIL بنفس بريد تسجيل "
-                "الحساب (مُرسِل موثَّق تلقائياً) أو فعّل المُرسِل من لوحة Brevo.")
+        return ("بريد المُرسِل مرفوض — استعمل SMTP_EMAIL بنفس بريد تسجيل "
+                "الحساب (مُرسِل موثَّق تلقائياً) أو فعّل المُرسِل من لوحة خدمة البريد.")
     if "550" in s or "551" in s or "recipient" in low:
         return "البريد المُرسَل إليه مرفوض من خادم البريد — تحقق من صحة البريد."
-    return "خطأ غير متوقع في SMTP — راجع سجلات Render (سطر [PWA] email failed)."
+    return "خطأ غير متوقع أثناء إرسال البريد — حاول مرة أخرى بعد قليل."
 
 
 def _pwa_brevo_api_keys():
@@ -13510,17 +13451,17 @@ def _pwa_brevo_api_send_sync(api_key, to_email, subject, body):
 
 
 def _pwa_email_final_err(last_raw):
-    """v38: السبب النهائي المعروض — أولوية لأخطاء مفتاح API (المسار الأساسي على Render)."""
+    """v38/v77: السبب النهائي المعروض — أولوية لأخطاء مفتاح API (المسار الأساسي عبر HTTPS)."""
     api_fails = [err for (_h, _p, m, ok, err) in _PWA_SMTP_PROBE_LOG
                  if m == "api" and not ok]
     if any(("401" in err or "403" in err) for err in api_fails):
-        return ("مفتاح Brevo API مرفوض — أنشئ مفتاح API من لوحة Brevo "
+        return ("مفتاح خدمة البريد مرفوض — أنشئ مفتاح API من لوحة خدمة البريد "
                 "(SMTP & API ← تبويب API ← Generate new key، يبدأ بـ xkeysib-) "
-                "وضعه في متغير جديد على Render: BREVO_API_KEY ثم اضغط Manual "
-                "Deploy. ملاحظة: مفتاح SMTP ومفتاح API مفتاحان مختلفان في Brevo.")
+                "وضعه في متغير جديد: BREVO_API_KEY ثم أعد نشر التطبيق. "
+                "ملاحظة: مفتاح SMTP ومفتاح API مفتاحان مختلفان.")
     if any("sender" in err.lower() for err in api_fails):
-        return ("بريد المُرسِل غير موثّق في Brevo — استعمل SMTP_EMAIL بنفس بريد "
-                "تسجيلك في Brevo أو فعّل المُرسِل من لوحة Brevo (Senders).")
+        return ("بريد المُرسِل غير موثّق في خدمة البريد — استعمل SMTP_EMAIL بنفس بريد "
+                "تسجيلك أو فعّل المُرسِل من لوحة الخدمة (Senders).")
     return _pwa_smtp_classify(last_raw)
 
 
