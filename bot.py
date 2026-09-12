@@ -943,26 +943,6 @@ def set_extract_permission(telegram_id, allowed):
         release_connection(conn)
 
 
-def create_extraction_request(product_id, quantity, requester_id):
-    """Create a new extraction request (status: pending)."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "INSERT INTO extraction_requests (product_id, quantity, requester_id, status) "
-                "VALUES (%s, %s, %s, 'pending') RETURNING *",
-                (product_id, quantity, requester_id),
-            )
-            row = cur.fetchone()
-        conn.commit()
-        return dict(row)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
 def get_pending_extraction_requests():
     """Get all pending extraction requests."""
     conn = get_connection()
@@ -1517,6 +1497,15 @@ def _execute_queued_op(op):
                     log_transaction(data["product_id"], "remove", data["qty"], data["user_id"], reason=data.get("reason"))
                 except Exception as tx_err:
                     logging.error("[OFFLINE] Replay: ledger write failed after qty remove: " + str(tx_err))
+            # (v80) قفل حلقة العجز: إعادة تشغيل إخراج أوفلاين قد تخلق سالب بلا تسجيل
+            try:
+                _sync_r = sync_product_pending_deficit_now(data["product_id"], data.get("user_id"))
+                if _sync_r and _sync_r["created"] > 0:
+                    logging.warning("[OFFLINE] Replay remove: deficit "
+                                    + str(_sync_r["created"]) + " registered as pending (product "
+                                    + str(data["product_id"]) + ")")
+            except Exception as sync_err:
+                logging.error("[OFFLINE] Replay remove: deficit sync failed: " + str(sync_err))
         elif op_type == "add_product":
             _rp, _rp_created = db_add_product(data["name"], data.get("quantity", 0), data.get("location", ""), data.get("minimum_stock", 5))
             # If the name already existed the stock just increased —
@@ -1674,32 +1663,6 @@ def get_cached_products():
         with _cache_lock:
             return list(_PRODUCT_CACHE.values())
     return []
-
-
-def search_products_cached(query):
-    """Search products using cache when DB is unavailable."""
-    if not query or not query.strip():
-        return []
-    try:
-        return search_products(query)
-    except Exception as e:
-        logging.warning("[CACHE] DB search failed, using cache: " + str(e))
-    products = get_cached_products()
-    if not products:
-        return []
-    q = query.strip().lower()
-    q_norm = unicodedata.normalize("NFKD", q)
-    results = []
-    seen = set()
-    for p in products:
-        if p["id"] in seen:
-            continue
-        name = (p.get("name") or "").lower()
-        name_norm = unicodedata.normalize("NFKD", name)
-        if q in name or q_norm in name_norm or q in name_norm or q_norm in name:
-            results.append(p)
-            seen.add(p["id"])
-    return results
 
 
 def get_offline_queue_count():
@@ -2353,16 +2316,6 @@ def is_owner(telegram_id):
     return telegram_id in OWNER_IDS
 
 
-def is_approved(telegram_id):
-    """Check if user is approved (any active role, not pending)."""
-    if telegram_id in ADMIN_IDS:
-        return True
-    user = get_user(telegram_id)
-    return user is not None and user["role"] in (
-        "admin", "manager", "stock", "seller", "external", "customer"
-    )
-
-
 # ═══════════════════════════════════════════════════════════
 #  INCOMING ORDERS (طلبات التوريد)
 # ═══════════════════════════════════════════════════════════
@@ -2379,27 +2332,6 @@ def create_incoming_order(requester_id, product_name, quantity, photo_file_id=No
             order = cur.fetchone()
         conn.commit()
         return dict(order)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-def get_pending_incoming_orders():
-    """جلب كل طلبات التوريد المعلّقة."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECT io.*, u.first_name, u.username, u.telegram_id
-                FROM incoming_orders io
-                LEFT JOIN users u ON u.id = io.requester_id
-                WHERE io.status = 'pending'
-                ORDER BY io.created_at ASC
-                """)
-            rows = cur.fetchall()
-        conn.commit()
-        return [dict(r) for r in rows]
     except Exception:
         conn.rollback()
         raise
@@ -2459,26 +2391,6 @@ def receive_incoming_order(order_id):
             order = cur.fetchone()
         conn.commit()
         return dict(order) if order else None
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-def complete_all_pending_orders():
-    """تحديث كل طلبات التوريد المعلّقة إلى 'مكتمل'."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                UPDATE incoming_orders
-                SET status = 'completed', completed_at = NOW()
-                WHERE status = 'pending'
-                RETURNING *
-                """)
-            rows = cur.fetchall()
-        conn.commit()
-        return [dict(r) for r in rows]
     except Exception:
         conn.rollback()
         raise
@@ -2813,6 +2725,15 @@ def db_import_backup(data):
             summary += "\n  طلبات التوريد: " + str(len(inc_orders))
         if len(pend_delivs) > 0:
             summary += "\n  الطلبات المعلقة: " + str(len(pend_delivs))
+        # (v80) قفل حلقة العجز بعد الاستيراد: كمية سالبة مستوردة بلا طلب معلق تُسجل فوراً
+        try:
+            _sync_sum = sync_all_pending_deficits()
+            if _sync_sum["created_units"] > 0:
+                summary += ("\n  ⚠️ عجز بلا طلبات معلقة سُجل تلقائياً: "
+                            + str(_sync_sum["created_units"]) + " وحدة ("
+                            + str(_sync_sum["created_products"]) + " سلعة)")
+        except Exception as _sync_err:
+            logging.error("[PENDING-SYNC][v80] post-import sync failed: " + str(_sync_err))
         _users_cache_clear()
         return summary
     except Exception:
@@ -3219,8 +3140,17 @@ def delete_transaction(tx_id, admin_tid):
             if tx.get("user_tid") != admin_tid:
                 return False, "❌ لا يمكنك حذف عملية ليست لك."
             # Reverse the quantity change on the product
+            _undo_note = ""
             if tx["type"] == "add":
-                cur.execute("UPDATE products SET quantity = quantity - %s WHERE id = %s", (tx["quantity"], tx["product_id"]))
+                cur.execute("UPDATE products SET quantity = quantity - %s WHERE id = %s RETURNING quantity", (tx["quantity"], tx["product_id"]))
+                _undo_row = cur.fetchone()
+                _undo_qty = _pd_row_val(_undo_row, "quantity", 0) or 0
+                if _undo_qty < 0:
+                    # (v80) قفل حلقة العجز: عكس الإضافة خلق عجزاً — سجله داخل نفس المعاملة
+                    _sync_r = sync_product_pending_deficit(tx["product_id"], cur, owner_user_id=tx.get("user_id"))
+                    if _sync_r and _sync_r["created"] > 0:
+                        _undo_note = ("\n\n⚠️ الكمية أصبحت سالبة — تم تسجيل "
+                                      + str(_sync_r["created"]) + " وحدة كطلب معلق")
             else:
                 cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s", (tx["quantity"], tx["product_id"]))
                 # Reverse pending delivery: reduce or delete the most recent pending for this user+product
@@ -3242,7 +3172,7 @@ def delete_transaction(tx_id, admin_tid):
             cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
         conn.commit()
         action = "إضافة" if tx["type"] == "add" else "إخراج"
-        return True, "✅ تم حذف عملية " + action + " " + str(tx["quantity"]) + " بنجاح وعكس الكمية."
+        return True, "✅ تم حذف عملية " + action + " " + str(tx["quantity"]) + " بنجاح وعكس الكمية." + _undo_note
     except Exception as e:
         conn.rollback()
         logging.error("[DEL_TX] Failed to delete tx " + str(tx_id) + ": " + str(e))
@@ -3449,6 +3379,139 @@ def auto_reconcile_all(admin_user_id=None):
     return {"total_covered": total_covered, "fulfilled": total_fulfilled}
 
 
+# ═══ (v80) قفل حلقة العجز: كل عجز مخزون له صف في الطلبات المعلقة ═══
+# المعيار (Invariant): مجموع الطلبات المعلقة المفتوحة للسلعة = max(0, -كميتها).
+# قبل v80 كان ثلاثة مسارات تنشئ كمية سالبة بلا تسجيل طلب معلق: الإخراج السريع
+# (± من بطاقة السلعة)، حذف عملية «إضافة» كانت سترفع الكمية فوق المتاح، وإعادة
+# تشغيل عمليات الإخراج الأوفلاين — إضافة إلى عجز تاريخي/مستورد من نسخ احتياطية.
+# هذه الدوال تُنشئ الناقص فقط (اتجاه الزائد يبقى بيد auto_reconcile_product FIFO).
+
+def _pd_row_val(row, key, idx):
+    """قراءة عمود من صف بنمطي المؤشر (dict أو tuple) معاً."""
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(key)
+    return row[idx] if idx < len(row) else None
+
+
+def sync_product_pending_deficit(product_id, cur, owner_user_id=None):
+    """(v80) يضمن انعكاس عجز السلعة في الطلبات المعلقة — يُنشئ الناقص فقط.
+
+    cur: مؤشر داخل معاملة قائمة (يلتزم بمعاملة المستدعي ولا يلتزم بنفسه).
+    owner_user_id: صاحب العجز المعروف للمستدعي (المشغّل الذي نفذ العملية)؛
+    وإلا يُستنتج من آخر حركة إخراج للسلعة، ثم من أول مدير في القاعدة.
+
+    Returns {"product", "target", "open", "created"} أو None إن غابت السلعة.
+    """
+    cur.execute(
+        "SELECT id, name, quantity FROM products WHERE id = %s",
+        (product_id,),
+    )
+    prod = cur.fetchone()
+    if not prod:
+        return None
+    qty = _pd_row_val(prod, "quantity", 2) or 0
+    target = max(0, -qty)
+    cur.execute(
+        "SELECT COALESCE(SUM(pending_qty), 0) AS total FROM pending_deliveries "
+        "WHERE product_id = %s AND pending_qty > 0",
+        (product_id,),
+    )
+    total_open = _pd_row_val(cur.fetchone(), "total", 0) or 0
+    created = 0
+    missing = target - total_open
+    if missing > 0:
+        uid = owner_user_id
+        if uid is not None:
+            cur.execute("SELECT 1 AS ok FROM users WHERE id = %s", (uid,))
+            if cur.fetchone() is None:
+                uid = None
+        if uid is None:
+            cur.execute(
+                "SELECT user_id AS uid FROM transactions "
+                "WHERE product_id = %s AND type = 'remove' "
+                "ORDER BY date DESC LIMIT 1",
+                (product_id,),
+            )
+            uid = _pd_row_val(cur.fetchone(), "uid", 0)
+        if uid is None:
+            cur.execute(
+                "SELECT id AS uid FROM users "
+                "ORDER BY CASE WHEN role = 'admin' THEN 0 WHEN role = 'manager' THEN 1 ELSE 2 END, "
+                "id ASC LIMIT 1"
+            )
+            uid = _pd_row_val(cur.fetchone(), "uid", 0)
+        if uid is not None:
+            cur.execute(
+                "INSERT INTO pending_deliveries (user_id, product_id, pending_qty) "
+                "VALUES (%s, %s, %s)",
+                (uid, product_id, missing),
+            )
+            created = missing
+    return {"product": _pd_row_val(prod, "name", 1), "target": target,
+            "open": total_open, "created": created}
+
+
+def sync_product_pending_deficit_now(product_id, owner_user_id=None):
+    """(v80) نسخة ذاتية الاتصال — تفتح اتصالاً وتلتزم بنفسها، للنداءات خارج معاملة."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            r = sync_product_pending_deficit(product_id, cur, owner_user_id=owner_user_id)
+        conn.commit()
+        if r and r["created"] > 0:
+            logging.warning(
+                "[PENDING-SYNC][v80] product " + str(product_id)
+                + ": deficit " + str(r["target"]) + " had " + str(r["created"])
+                + " unregistered pending unit(s) — created now")
+        return r
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PENDING-SYNC][v80] product " + str(product_id) + " failed: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+
+
+def sync_all_pending_deficits():
+    """(v80) مسح شامل: أي سلعة سالبة بلا طلب معلق يُسجل عجزها فوراً.
+    يُستدعى عند الإقلاع وبعد كل استيراد نسخة احتياطية — شفاء العجز التاريخي."""
+    conn = get_connection()
+    summary = {"scanned": 0, "deficit_products": 0, "created_products": 0,
+               "created_units": 0, "products": []}
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT id FROM products WHERE quantity < 0 ORDER BY id")
+            ids = [_pd_row_val(r, "id", 0) for r in cur.fetchall()]
+        conn.commit()
+        for pid in ids:
+            if pid is None:
+                continue
+            summary["scanned"] += 1
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                r = sync_product_pending_deficit(pid, cur)
+            conn.commit()
+            if r:
+                summary["deficit_products"] += 1
+                if r["created"] > 0:
+                    summary["created_products"] += 1
+                    summary["created_units"] += r["created"]
+                    summary["products"].append({"product": r["product"], "created": r["created"]})
+        if summary["created_units"] > 0:
+            logging.warning(
+                "[PENDING-SYNC][v80] scan: " + str(summary["created_units"])
+                + " unregistered deficit unit(s) across " + str(summary["created_products"])
+                + " product(s) — registered now")
+        return summary
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PENDING-SYNC][v80] scan failed: " + str(e))
+        return summary
+    finally:
+        release_connection(conn)
+
+
 def get_all_pending_deliveries():
     """Get all pending deliveries grouped by product for admin view."""
     conn = get_connection()
@@ -3498,24 +3561,6 @@ def get_user_pending_deliveries(user_db_id):
         release_connection(conn)
 
 
-def get_pending_deliveries_count():
-    """Get count of products with pending deliveries."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0"
-            )
-            count = cur.fetchone()[0]
-        conn.commit()
-        return count
-    except Exception:
-        conn.rollback()
-        return 0
-    finally:
-        release_connection(conn)
-
-
 def get_admin_last_transaction(admin_tid):
     """Get the admin's most recent non-reconcile transaction."""
     conn = get_connection()
@@ -3536,30 +3581,6 @@ def get_admin_last_transaction(admin_tid):
         conn.rollback()
         logging.error("[GET_LAST_TX] Error: " + str(e))
         return None
-    finally:
-        release_connection(conn)
-
-
-def get_transactions(limit=20, offset=0):
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""\n                SELECT
-                    t.id, t.type, t.quantity, t.date,
-                    p.name AS product_name,
-                    u.username AS operator_name
-                FROM transactions t
-                JOIN products p ON p.id = t.product_id
-                LEFT JOIN users u ON u.id = t.user_id
-                ORDER BY t.date DESC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-            rows = cur.fetchall()
-        conn.commit()
-        return [dict(r) for r in rows]
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         release_connection(conn)
 
@@ -3676,13 +3697,9 @@ STATE_REMOVE_QTY = "waiting_remove_qty"
 STATE_EDIT_PRODUCT = "waiting_edit_product"
 STATE_DELETE_PRODUCT = "waiting_delete_product"
 STATE_SEARCH_ADMIN = "waiting_search_admin"
-STATE_CUST_ADD_QTY = "waiting_cust_add_qty"
-STATE_CUST_REMOVE_QTY = "waiting_cust_remove_qty"
 STATE_WAITING_SELLER = "waiting_seller_name"
-STATE_SELLER_ACTION = "seller_action"  # stores 'add' or 'remove'
 STATE_ADMIN_ADD_SEL = "waiting_admin_add_sel"
 STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
-STATE_ADD_TYPE = "waiting_add_type"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
 STATE_ADD_NAME_PLANTE = "waiting_add_name_plante"
@@ -3692,7 +3709,6 @@ STATE_INVOICE_PRODUCT = "waiting_invoice_product"
 STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
-STATE_INVOICE_REVIEW = "waiting_invoice_review"
 STATE_RESET_PIN = "waiting_reset_pin"
 STATE_OIL_READING = "waiting_oil_reading"
 STATE_OIL_NEW_HOURS = "waiting_oil_new_hours"
@@ -4018,17 +4034,6 @@ def format_product_admin(product):
     )
 
 
-def format_product_customer(product):
-    qty = product["quantity"]
-    min_stock = product["minimum_stock"]
-    if qty > min_stock:
-        return "\U0001f4e6 " + product["name"] + "\n\U0001f7e2 \u0645\u062a\u0648\u0641\u0631"
-    elif qty > 0:
-        return "\U0001f4e6 " + product["name"] + "\n\U0001f7e1 \u0643\u0645\u064a\u0629 \u0645\u062d\u062f\u0648\u062f\u0629"
-    else:
-        return "\U0001f4e6 " + product["name"] + "\n\U0001f534 \u063a\u064a\u0631 \u0645\u062a\u0648\u0641\u0631 \u062d\u0627\u0644\u064a\u0627\u064b"
-
-
 async def _broadcast_update_notification(update, context):
     """إرسال إشعار آخر تحديث تلقائياً بدون كتابة من المدير."""
     conn = get_connection()
@@ -4143,28 +4148,6 @@ async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
         msg = ("↩️ إرجاع سلعة من زبون" + chr(10) + chr(10)
                + "📦 " + pname + chr(10)
                + "➕ الكمية: " + str(qty))
-    await _broadcast_to_all_users(bot, msg)
-
-
-async def _broadcast_remove_notification(bot, product, qty, actor, reason="sale"):
-    """Broadcast remove-notification to all users with reason."""
-    pname = product.get("name", "") if isinstance(product, dict) else str(product)
-    reason_msgs = {
-        "return": "↩️ إرجاع سلعة من زبون",
-        "sale": "🚚 بيع لزبون",
-        "saoula": "🏪 بيع لرابح Saoula",
-        "carthago": "🏪 بيع لحسان Carthago",
-    }
-    reason_text = reason_msgs.get(reason, "🚚 بيع لزبون")
-    # (v30) أرشف الإشعار في القاعدة ليظهر في جرس تطبيق الويب أيضاً
-    try:
-        db_insert_notification("remove", reason_text,
-            "📦 " + pname + "\n➖ الكمية: " + str(qty), str(actor or ""), "bot")
-    except Exception:
-        pass
-    msg = (reason_text + chr(10) + chr(10)
-           + "📦 " + pname + chr(10)
-           + "➖ الكمية: " + str(qty))
     await _broadcast_to_all_users(bot, msg)
 
 
@@ -4309,42 +4292,6 @@ def parse_qty_input(text):
 # ═══════════════════════════════════════════════
 #  BOT SETTINGS HELPERS
 # ═══════════════════════════════════════════════
-
-
-def get_bot_setting(key, default=None):
-    """Get a bot setting value from bot_settings table."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM bot_settings WHERE key = %s", (key,))
-            row = cur.fetchone()
-        conn.commit()
-        if row:
-            return row[0]
-        return default
-    except Exception as e:
-        conn.rollback()
-        logging.warning("[SETTINGS] Get failed: " + str(e))
-        return default
-    finally:
-        release_connection(conn)
-
-
-def set_bot_setting(key, value):
-    """Set a bot setting value."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO bot_settings (key, value) VALUES (%s, %s)"
-                " ON CONFLICT (key) DO UPDATE SET value = %s",
-                (key, value, value))
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logging.warning("[SETTINGS] Set failed: " + str(e))
-    finally:
-        release_connection(conn)
 
 
 # 🎯 سياق المستخدم الحالي: تضبطه نقاط الدخول (متعقب الرسائل + معالجات الكولباك)
@@ -5248,31 +5195,6 @@ def _build_movements_text(rows):
         summary += "  |  🔵 " + str(pending_count) + " طلب معلق"
     lines.append(summary)
     return chr(10).join(lines)
-
-def _fetch_today_movements():
-    """Fetch today's movements from DB. Uses regular cursor to avoid RealDictCursor + 'type' column conflict."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
-                "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0)) AS has_pending_deficit "
-                "FROM transactions t "
-                "JOIN products p ON p.id = t.product_id "
-                "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.date >= CURRENT_DATE AND t.type != 'reconcile' AND (t.reason IS NULL OR t.reason NOT LIKE '%تصحيح مخزون%') "
-                "ORDER BY t.date DESC")
-            col_names = [desc[0] for desc in cur.description]
-            rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
-        conn.commit()
-        return rows
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
 
 def _fetch_movements_by_date(target_date):
     """Fetch movements for a specific date from DB."""
@@ -8126,48 +8048,6 @@ async def _process_mov_product_input(update, context, text, is_admin=True):
     )
 
 
-async def _show_product_movements(update, context, product):
-    """Display movement history for a specific product."""
-    txns = get_product_transactions(product["id"], limit=200)
-    txns = _filter_test_pairs(txns)
-    unit = _get_unit_ar(product["name"])
-    if not txns:
-        if update.message:
-            await update.message.reply_text("📜 لا توجد حركات مسجلة لـ\n" + product["name"])
-        else:
-            await update.get_bot().send_message(chat_id=update.effective_chat.id, text="📜 لا توجد حركات مسجلة لـ\n" + product["name"])
-        return
-    lines = ["📜 سجل حركات — " + product["name"] + " (" + str(len(txns)) + ")"]
-    for tx in txns:
-        icon = "\U0001f7e2" if tx["tx_type"] == "add" else "\U0001f534"
-        date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
-        op = tx.get("operator_name") or "مجهول"
-        sign = "+" if tx["tx_type"] == "add" else "-"
-        reason = tx.get("reason") or ""
-        if reason:
-            reason = " | " + reason
-        lines.append(
-            icon + " " + date_str + " — " + sign + str(tx["quantity"]) + " " + unit
-            + " | " + op + reason
-        )
-    text_out = "\n".join(lines)
-    # Split if too long
-    if len(text_out) > 4000:
-        parts = []
-        current = [lines[0]]
-        for ln in lines[1:]:
-            if len("\n".join(current)) + len("\n" + ln) > 3900:
-                parts.append("\n".join(current))
-                current = ["📜 تابع حركات — " + product["name"]]
-            current.append(ln)
-        if current:
-            parts.append("\n".join(current))
-        for part in parts:
-            await update.message.reply_text(part)
-    else:
-        await update.message.reply_text(text_out)
-
-
 async def _process_mov_range_input(update, context, text, is_admin):
     """Shared handler for date-range input states (waiting_mov_range_from / _to)."""
     state = context.user_data.get("state")
@@ -8771,6 +8651,16 @@ async def handle_admin_message(update, context):
                 msg = "\u2705 \u062a\u0645\u062a \u0627\u0644\u0625\u0636\u0627\u0641\u0629!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
             else:
                 msg = "\u2705 \u062a\u0645 \u0625\u062e\u0631\u0627\u062c!\n\n" + updated["name"] + "\n\U0001f4e6 \u0627\u0644\u0643\u0645\u064a\u0629: " + str(updated["quantity"]) + " " + unit_ar + " " + icon
+            if action == "remove":
+                # (v80) قفل حلقة العجز: الإخراج السريع كان يسمح بالسالب بلا تسجيل
+                try:
+                    _sync_r = sync_product_pending_deficit_now(
+                        updated["id"], db_user["id"] if db_user else None)
+                    if _sync_r and _sync_r["created"] > 0:
+                        msg += ("\n\n⚠️ الكمية أصبحت سالبة — تم تسجيل "
+                                + str(_sync_r["created"]) + " وحدة كطلب معلق")
+                except Exception as _sync_err:
+                    logging.error("[PENDING-SYNC][v80] pact flow failed: " + str(_sync_err))
             if action == "add":
                 # (v19) تسوية تلقائية: فور زيادة المخزون غطِّ المنتظرين وأشعِرهم
                 try:
@@ -10358,13 +10248,6 @@ def _svc_hc_url():
     return _svc_hc_cache["url"]
 
 
-def _svc_hc_set_url(url):
-    """حفظ/حذف رابط الصمام — القاعدة + تحديث الذاكرة فوراً (بلا إعادة تشغيل)."""
-    _svc_set("hc_ping_url", (url or "").strip() or None)
-    _svc_hc_cache["url"] = (url or "").strip() or None
-    _svc_hc_cache["loaded"] = True
-
-
 async def _svc_hc_ping(suffix=""):
     """نبضة خارجية لـ healthchecks.io — تعمل حتى لو انقطعت قاعدة البيانات
     (الرابط مخزّن في الذاكرة). النبضات المتباعدة ~10 دقائق = تنبيه تلغرام فوري."""
@@ -10610,47 +10493,6 @@ async def _show_pending_extractions(update, context):
             await context.bot.send_message(chat_id=query.message.chat_id, text="\n".join(txt_lines), reply_markup=InlineKeyboardMarkup(buttons))
         except Exception:
             pass
-
-async def callback_extract_request_handler(update, context):
-    """Handle member click on request extract button — direct execution, no approval needed."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    try:
-        product_id = int(data.split("_")[2])
-    except (IndexError, ValueError):
-        await query.edit_message_text("❌ خطأ في الاختيار.")
-        return
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, name, quantity FROM products WHERE id = %s", (product_id,))
-            row = cur.fetchone()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-    if not row:
-        await query.edit_message_text("❌ المنتج غير موجود.")
-        return
-    product = dict(row)
-    context.user_data["cust_product"] = product
-    context.user_data["pact_action"] = "remove"
-    _set_state(context, "waiting_pact_qty")
-    unit = _get_unit_code(product["name"])
-    unit_ar = _get_unit_ar(product["name"])
-    text = (
-        "📦 " + product["name"]
-        + " (المتوفر: " + str(product["quantity"]) + " " + unit + ")"
-        + "\n➖ إخراج " + unit_ar
-        + "\nأرسل العدد (" + unit + "):"
-    )
-    try:
-        await query.edit_message_text(text)
-    except Exception:
-        await context.bot.send_message(chat_id=query.message.chat_id, text=text)
 
 async def callback_extract_approve_handler(update, context):
     """Handle admin approve/reject extraction request."""
@@ -11591,70 +11433,6 @@ def build_application():
 # ═══════════════════════════════════════════════════════════
 
 
-def _fetch_latest_backup_from_email():
-    """Fetch latest backup JSON from email via IMAP. Returns dict or None.
-    Robustness fixes over the previous version:
-    - Subject filtering is done client-side (IMAP SUBJECT search with raw
-      Arabic/emoji is unreliable across providers).
-    - Session is always logged out in finally, even on partial failures.
-    - Malformed attachment payloads can no longer abort the whole scan."""
-    if not IMAP_HOST or not SMTP_EMAIL or not SMTP_PASSWORD:
-        return None
-    import imaplib
-    import ssl
-    import email as email_lib
-    from email.header import decode_header, make_header
-    mail = None
-    try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, ssl_context=ssl.create_default_context())
-        mail.login(SMTP_EMAIL, SMTP_PASSWORD)
-        status, _ = mail.select("INBOX")
-        if status != "OK":
-            return None
-        status, msg_ids = mail.search(None, "ALL")
-        if status != "OK" or not msg_ids[0]:
-            return None
-        # Scan the newest messages only (bandwidth cap), newest first.
-        candidates = msg_ids[0].split()[-100:]
-        for mid in reversed(candidates):
-            status, msg_data = mail.fetch(mid, "(RFC822)")
-            if status != "OK" or not msg_data or not msg_data[0]:
-                continue
-            raw_email = msg_data[0][1]
-            try:
-                msg = email_lib.message_from_bytes(raw_email)
-                subj_raw = msg.get("Subject", "") or ""
-                subject = str(make_header(decode_header(subj_raw)))
-            except Exception as parse_err:
-                logging.warning("[IMAP] Skip unparsable message: " + str(parse_err))
-                continue
-            if ("نسخة احتياطية" not in subject) and ("backup" not in subject.lower()):
-                continue
-            for part in msg.walk():
-                cd = str(part.get("Content-Disposition", ""))
-                if "attachment" not in cd:
-                    continue
-                fname = part.get_filename()
-                if not (fname and fname.endswith(".json")):
-                    continue
-                payload = part.get_payload(decode=True)
-                if not payload:
-                    continue
-                try:
-                    return json.loads(payload.decode("utf-8"))
-                except Exception as json_err:
-                    logging.warning("[IMAP] Bad backup payload: " + str(json_err))
-        return None
-    except Exception as e:
-        logging.error("[IMAP] Failed to fetch backup: " + str(e))
-        return None
-    finally:
-        if mail is not None:
-            try:
-                mail.logout()
-            except Exception:
-                pass
-
 def _send_backup_email(backup_bytes, filename):
     """Send backup JSON to configured email. Returns True on success, False otherwise."""
     if not SMTP_EMAIL or not SMTP_PASSWORD or not BACKUP_EMAIL:
@@ -11973,7 +11751,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v79"
+PWA_VERSION = "v80"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -14954,30 +14732,6 @@ async def _notify_admins_pwa_registration(reg_id, full_name, username, role_labe
             logging.error("[PWA] reg notify failed for " + str(aid) + ": " + str(e))
 
 
-async def _notify_admins_pwa_activated(name, email, role_label):
-    """v33: إشعار معلوماتي للمدراء في تلغرام — انضمام عبر حساب Google تمت موافقته.
-    بلا أزرار — إدارة الأعضاء من لوحة المستخدمين."""
-    if TG_APP is None:
-        return
-    text = ("✅ عضو جديد انضم عبر حساب Google:\n"
-            "👤 " + str(name or "") + " — 🎯 " + str(role_label or "") + "\n"
-            "✉️ " + str(email or "") + "\n"
-            "البريد محفوظ في القاعدة ويمكنه الدخول الآن.")
-    seen = set()
-    for admin_id in list(ADMIN_IDS) + list(OWNER_IDS or []):
-        try:
-            aid = int(admin_id)
-        except (TypeError, ValueError):
-            continue
-        if aid in seen:
-            continue
-        seen.add(aid)
-        try:
-            await TG_APP.bot.send_message(chat_id=aid, text=text)
-        except Exception as e:
-            logging.error("[PWA] activated notify failed for " + str(aid) + ": " + str(e))
-
-
 async def callback_pwreg_handler(update, context):
     """v34: أزرار الموافقة/الحذف على طلبات الانضمام (للمدير في تلغرام).
     الموافقة تُنشئ الحساب بالبريد والرقم السري المحفوظين وتُشعِر صاحبه بالبريد."""
@@ -17659,6 +17413,15 @@ if __name__ == "__main__":
                 logging.info("[STARTUP] DB is empty and no usable backup found — starting fresh.")
     except Exception as e:
         logging.error("[STARTUP] Auto-restore check failed: " + str(e))
+    # (v80) قفل حلقة العجز عند الإقلاع: أي سلعة سالبة بلا طلب معلق تُسجل تلقائياً
+    try:
+        _sync_boot = sync_all_pending_deficits()
+        if _sync_boot["created_units"] > 0:
+            logging.warning("[STARTUP][v80] deficit sync: " + str(_sync_boot["created_units"])
+                            + " unit(s) registered across " + str(_sync_boot["created_products"])
+                            + " product(s)")
+    except Exception as _sync_boot_err:
+        logging.error("[STARTUP][v80] deficit sync failed: " + str(_sync_boot_err))
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
