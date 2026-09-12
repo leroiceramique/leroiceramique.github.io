@@ -3084,6 +3084,9 @@ def db_delete_product(product_id):
             if _unshipped_table_exists(cur):
                 cur.execute("UPDATE unshipped_sales SET product_id = NULL WHERE product_id = %s", (product_id,))
             cur.execute("UPDATE pending_deliveries SET product_id = NULL WHERE product_id = %s", (product_id,))
+            # v78: حركات السلعة تُحذف معها (الوعد في الواجهة: «حذف السلعة وجميع سجلاتها») —
+            # قيد transactions RESTRICT كان يمنع حذف أي سلعة لها حركات.
+            cur.execute("DELETE FROM transactions WHERE product_id = %s", (product_id,))
             cur.execute("DELETE FROM products WHERE id = %s RETURNING id", (product_id,))
             deleted = cur.fetchone() is not None
         conn.commit()
@@ -3109,6 +3112,8 @@ def db_bulk_delete_products(id_list):
                                 "WHERE product_id = ANY(%s)", (list(id_list),))
                 cur.execute("UPDATE pending_deliveries SET product_id = NULL "
                             "WHERE product_id = ANY(%s)", (list(id_list),))
+                # v78: حركات كل سلعة تُحذف معها — وإلا منعنا قيد RESTRICT الحذف
+                cur.execute("DELETE FROM transactions WHERE product_id = ANY(%s)", (list(id_list),))
             for pid in id_list:
                 cur.execute("DELETE FROM products WHERE id = %s RETURNING id", (pid,))
                 if cur.fetchone():
@@ -5016,15 +5021,19 @@ async def process_search(update, context, text, admin_view=False):
                 mark = "✅ متوفرة حالياً" if p["quantity"] > 0 else "❌ غير متوفرة حالياً"
                 await update.message.reply_text(p["name"] + "\n\n" + mark)
             else:
+                _cap = 30  # v78: نفس سقف الأمان لنتائج البائع الخارجي
+                _shown = results[:_cap]
                 lines = ["🔍 نتائج البحث عن " + text + " (" + str(len(results)) + "):", ""]
                 buttons = []
-                for p in results:
+                for p in _shown:
                     mark = "✅" if p["quantity"] > 0 else "❌"
                     lines.append(mark + " " + p["name"])
                     label = p["name"]
                     if len(label) > 40:
                         label = label[:37] + "..."
                     buttons.append([InlineKeyboardButton(label, callback_data="psel_" + str(p["id"]))])
+                if len(results) > _cap:
+                    lines.append("ℹ️ توجد نتائج أخرى — دقّق البحث لعرضها.")
                 lines.append("👆 اضغط على السلعة لمعرفة توفرها.")
                 await update.message.reply_text(
                     "\n".join(lines),
@@ -5036,10 +5045,15 @@ async def process_search(update, context, text, admin_view=False):
             p = results[0]
             await _show_product_detail(update, context, p)
         else:
+            _cap = 30  # v78: حد تليغرام 4096 حرف — بحث واسع كان يفجّر «Message is too long»
+            _shown = results[:_cap]
             header = "🔍 وجدت " + str(len(results)) + " منتجات:\n"
+            if len(results) > _cap:
+                header = ("🔍 وجدت " + str(len(results)) + " منتجات — أعرض أول " + str(_cap)
+                          + " فقط (دقّق البحث لرؤية البقية):\n")
             text_lines = [header]
             buttons = []
-            for p in results:
+            for p in _shown:
                 qty = p["quantity"]
                 unit_ar = _get_unit_ar(p["name"])
                 text_lines.append(
@@ -11959,7 +11973,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v77"
+PWA_VERSION = "v78"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -15351,6 +15365,8 @@ def _pwa_api_registration_approve(reg_id, role):
             # (حساب واحد لكل شخص — لا دمج في حساب مدير حمايةً من خداع الصلاحيات)
             name_key = " ".join((full_name or "").split()).lower()
             uid = None
+            _applied_role = final_role   # v78: الفئة المطبقة فعلياً (قد تُبقى القديمة)
+            _role_note = ""
             if name_key:
                 cur.execute(
                     "SELECT id FROM users WHERE active = TRUE AND telegram_id IS NOT NULL "
@@ -15362,16 +15378,36 @@ def _pwa_api_registration_approve(reg_id, role):
                 if len(cands) == 1:
                     uid = cands[0][0]
             if uid is not None:
+                # v78: الموظف القائم بفئة حقيقية لا تُكتَب فوق فئته عند ربط تسجيل بالاسم —
+                # الربط يملأ الهوية فقط، وتغيير الفئة يبقى من زر «🎯 الفئة» الصريح.
+                cur.execute("SELECT role FROM users WHERE id = %s", (uid,))
+                _erow = cur.fetchone()
+                _erole = _erow[0] if _erow else None
+                _keep_role = _erole not in (None, ROLE_PENDING, ROLE_CUSTOMER)
                 cur.execute(
                     "UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
                     "first_name = COALESCE(NULLIF(first_name, ''), %s), "
                     "email = COALESCE(email, %s) WHERE id = %s",
-                    (final_role, full_name, (reg_email or None), uid))
+                    (_erole if _keep_role else final_role, full_name, (reg_email or None), uid))
+                if _keep_role:
+                    _applied_role = _erole
+                    _role_note = (" — أُبقيت فئته الحالية («" + ROLE_LABELS.get(_erole, _erole)
+                                  + "»)، لتغييرها استخدم زر 🎯 الفئة")
             elif reg_email:
+                # v78: نفس الحماية عند الربط بالبريد — لا كتابة فوق فئة موظف قائم
+                cur.execute("SELECT id, role FROM users WHERE lower(email) = %s "
+                            "ORDER BY id LIMIT 1", (reg_email,))
+                _ematch = cur.fetchone()
+                _erole2 = _ematch[1] if _ematch else None
+                _keep2 = _erole2 not in (None, ROLE_PENDING, ROLE_CUSTOMER)
                 cur.execute("UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
                             "first_name = COALESCE(NULLIF(first_name, ''), %s) "
                             "WHERE lower(email) = %s RETURNING id",
-                            (final_role, full_name, reg_email))
+                            (_erole2 if _keep2 else final_role, full_name, reg_email))
+                if _keep2:
+                    _applied_role = _erole2
+                    _role_note = (" — أُبقيت فئته الحالية («" + ROLE_LABELS.get(_erole2, _erole2)
+                                  + "»)، لتغييرها استخدم زر 🎯 الفئة")
                 uid = cur.fetchone()
                 if not uid:
                     cur.execute(
@@ -15409,7 +15445,8 @@ def _pwa_api_registration_approve(reg_id, role):
     finally:
         release_connection(conn)
     return True, ("✅ تمت الموافقة: " + str(full_name)
-                  + " ← " + ROLE_LABELS.get(final_role, final_role)
+                  + " ← " + ROLE_LABELS.get(_applied_role, _applied_role)
+                  + _role_note
                   + " — يدخل الآن باسم دخوله ورقمه السري.")
 
 
