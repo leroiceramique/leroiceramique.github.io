@@ -924,48 +924,6 @@ def get_product_by_id(product_id):
         release_connection(conn)
 
 
-def set_extract_permission(telegram_id, allowed):
-    """Grant or revoke extraction permission."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET can_extract = %s WHERE telegram_id = %s RETURNING id",
-                (allowed, telegram_id),
-            )
-            updated = cur.fetchone() is not None
-        conn.commit()
-        return updated
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-def get_pending_extraction_requests():
-    """Get all pending extraction requests."""
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT er.*, p.name AS product_name, u.username, u.telegram_id AS requester_tid "
-                "FROM extraction_requests er "
-                "JOIN products p ON p.id = er.product_id "
-                "JOIN users u ON u.id = er.requester_id "
-                "WHERE er.status = 'pending' "
-                "ORDER BY er.created_at DESC"
-            )
-            rows = cur.fetchall()
-        conn.commit()
-        return [dict(r) for r in rows]
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
 def process_extraction_request(request_id, approved, admin_id):
     """Approve or reject an extraction request. Returns (success, message)."""
     conn = get_connection()
@@ -5938,6 +5896,11 @@ async def _sweep_user_tracker(update, context):
 async def start_command(update, context):
     # تنظيف الشاشة: حذف رسائل المهمة السابقة قبل عرض القائمة
     await sweep_screen(update, context)
+    # v82: مسح الحالة المعلقة — /start بداية نظيفة كي لا تختطف مهمة قديمة الرسائل التالية
+    try:
+        context.user_data.clear()
+    except Exception:
+        pass
     user = update.effective_user
     sync_user_info(user)
     # ── v32: deep link تسجيل من التطبيق: ?start=reg_123456 ──
@@ -6988,33 +6951,6 @@ async def callback_rem_notify_handler(update, context):
     context.user_data["state"] = None
 
 
-async def callback_email_restore_handler(update, context):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data == "email_restore_confirm":
-        restore_data = context.user_data.get("email_restore_data")
-        if not restore_data:
-            await _safe_edit(query, "❌ لا يوجد بيانات.")
-            return
-        try:
-            result = db_import_backup(restore_data)
-            await _safe_edit(query, result)
-        except Exception as e:
-            await _safe_edit(query, "❌ فشل الاستيراد: " + str(e))
-        context.user_data.pop("email_restore_data", None)
-        try:
-            await _send_themed(context.bot, query.message.chat_id, "\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
-        except Exception:
-            pass
-    elif data == "email_restore_cancel":
-        await _safe_edit(query, "❌ تم الإلغاء.")
-        context.user_data.pop("email_restore_data", None)
-        try:
-            await _send_themed(context.bot, query.message.chat_id, "\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
-        except Exception:
-            pass
-
 async def callback_restore_last_confirm_handler(update, context):
     query = update.callback_query
     # ── AUTH GUARD ── الاستعادة تحلّ محل قاعدة البيانات بالكامل: صاحب البوت فقط.
@@ -8037,35 +7973,6 @@ async def callback_invoice_handler(update, context):
                     [InlineKeyboardButton("🔙 تراجع", callback_data="invoice_back_product"),
                      InlineKeyboardButton("❌ إلغاء", callback_data="invoice_cancel")]
                 ]))
-
-    elif data.startswith("inv_area_"):
-        # Box area selection callback - no longer used, but keep for compatibility
-        try:
-            box_area = float(data[len("inv_area_"):])
-        except ValueError:
-            return
-        product_name = context.user_data.get("invoice_tmp_product", "")
-        product_id = context.user_data.get("invoice_tmp_pid")
-        qty_m2 = context.user_data.get("invoice_tmp_qty", 0)
-        price_m2 = context.user_data.get("invoice_tmp_price", 0)
-        # Calculate number of boxes (informational only)
-        import math
-        raw_boxes = qty_m2 / box_area
-        num_boxes = math.ceil(raw_boxes)
-        # Subtotal = user-requested area × price/m² (exact)
-        total_price = qty_m2 * price_m2
-        # Show summary and add item
-        summary = "📦 " + product_name + chr(10) + chr(10)
-        summary += "📐 المساحة المطلوبة: " + str(qty_m2) + " m²" + chr(10)
-        summary += "💰 السعر/m²: " + _fmt_price(price_m2) + " د.ج" + chr(10)
-        summary += "━" * 20 + chr(10)
-        summary += "💵 الإجمالي: " + _fmt_price(total_price) + " د.ج"
-        try:
-            await query.edit_message_text(summary)
-        except Exception:
-            pass
-        await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, "m2",
-                                 extra_info={"requested_area": qty_m2, "box_area": box_area, "num_boxes": num_boxes})
 
     elif data.startswith("inv_worker_"):
         parts = data.split("_")
@@ -10496,94 +10403,6 @@ def _service_status_card():
 #  EXTRACTION PERMISSION & REQUEST HANDLERS
 # ═══════════════════════════════════════════════════════════
 
-async def callback_extract_perm_handler(update, context):
-    """Handle grant/revoke extraction permission from users list."""
-    query = update.callback_query
-    # ── AUTH GUARD ── يجب الفحص قبل query.answer حتى يظهر التحذير فعلاً.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ للمديرين فقط.", show_alert=True)
-        return
-    await query.answer()
-    data = query.data
-    try:
-        if data.startswith("ext_grant_"):
-            tid = int(data.split("_")[2])
-            set_extract_permission(tid, True)
-            db_u = get_user(tid)
-            uname = db_u.get("username") or str(tid) if db_u else str(tid)
-            await query.edit_message_text("✅ تم منح صلاحية الإخراج لـ " + uname)
-            try:
-                await context.bot.send_message(
-                    chat_id=tid,
-                    text="🛑 تم منحك صلاحية طلب إخراج السلع.\nابحث عن سلعة واضغط طلب إخراج.",
-                )
-            except Exception as e:
-                logging.error("[EXTRACT] Notify user failed: " + str(e))
-        elif data.startswith("ext_revoke_"):
-            tid = int(data.split("_")[2])
-            set_extract_permission(tid, False)
-            db_u = get_user(tid)
-            uname = db_u.get("username") or str(tid) if db_u else str(tid)
-            await query.edit_message_text("❌ تم سحب صلاحية الإخراج من " + uname)
-            try:
-                await context.bot.send_message(
-                    chat_id=tid,
-                    text="❌ تم سحب صلاحية طلب إخراج السلع.",
-                )
-            except Exception as e:
-                logging.error("[EXTRACT] Notify user failed: " + str(e))
-        elif data == "ext_pending_list":
-            await _show_pending_extractions(update, context)
-    except Exception as e:
-        logging.error("[EXTRACT_PERM] Error: " + str(e))
-        try:
-            await query.edit_message_text("❌ خطأ: " + str(e))
-        except Exception:
-            pass
-
-
-async def _show_pending_extractions(update, context):
-    """Show list of pending extraction requests."""
-    query = update.callback_query
-    try:
-        pending = get_pending_extraction_requests()
-    except Exception as e:
-        logging.error("[EXTRACT] Get pending failed: " + str(e))
-        await query.edit_message_text("❌ خطأ في تحميل الطلبات.")
-        return
-    if not pending:
-        await query.edit_message_text("✅ لا توجد طلبات إخراج معلقة.")
-        return
-    txt_lines = ["🔔 طلبات الإخراج المعلقة (" + str(len(pending)) + "):"]
-    buttons = []
-    for req in pending:
-        req_name = req.get("username") or str(req.get("requester_tid", "?"))
-        pname = req.get("product_name", "?")
-        unit = _get_unit_code(pname)
-        date_str = req["created_at"].strftime("%m/%d %H:%M")
-        txt_lines.append(
-            "👤 " + req_name
-            + " | 📦 " + pname
-            + " | " + str(req["quantity"]) + " " + unit
-            + " | " + date_str
-        )
-        label = req_name + ": " + pname + " (" + str(req["quantity"]) + " " + unit + ")"
-        if len(label) > 35:
-            label = label[:32] + "..."
-        buttons.append([
-            InlineKeyboardButton("✅ " + label, callback_data="ext_approve_" + str(req["id"])),
-            InlineKeyboardButton("❌", callback_data="ext_reject_" + str(req["id"])),
-        ])
-    txt_lines.append("")
-    txt_lines.append("✅ موافقة | ❌ رفض")
-    try:
-        await query.edit_message_text("\n".join(txt_lines), reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception as e:
-        logging.error("[EXTRACT] Edit failed: " + str(e))
-        try:
-            await context.bot.send_message(chat_id=query.message.chat_id, text="\n".join(txt_lines), reply_markup=InlineKeyboardMarkup(buttons))
-        except Exception:
-            pass
 
 async def callback_extract_approve_handler(update, context):
     """Handle admin approve/reject extraction request."""
@@ -10805,6 +10624,11 @@ async def callback_go_start_handler(update, context):
     await query.answer()
     # تنظيف الشاشة: حذف كل رسائل المهمة السابقة قبل عرض القائمة
     await sweep_screen(update, context)
+    # v82: مسح الحالة المعلقة — زر التحديث بداية نظيفة كي لا تختطف مهمة قديمة الرسائل التالية
+    try:
+        context.user_data.clear()
+    except Exception:
+        pass
     user = query.from_user
     sync_user_info(user)
 
@@ -11478,15 +11302,11 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_rem_notify_handler, pattern="^remnotify_"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
-    app.add_handler(CallbackQueryHandler(callback_email_restore_handler, pattern="^email_restore_"))
     app.add_handler(CallbackQueryHandler(callback_restore_handler, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(callback_admin_done_handler, pattern="^admin_done$"))
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
-    app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_grant_"))
-    app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_revoke_"))
-    app.add_handler(CallbackQueryHandler(callback_extract_perm_handler, pattern="^ext_pending_list$"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
@@ -11500,7 +11320,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_remove_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invoice_(?!back_|remove_)"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_worker_"))
-    app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_area_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^invsel_"))
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
     # 🔧 صيانة الرافعة: إدارة الزيت (مدراء فقط) + زر تأكيد العامل
@@ -11842,7 +11661,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v81"
+PWA_VERSION = "v82"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -17471,7 +17290,6 @@ def register_pwa_routes(app):
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
-
 
 
 if __name__ == "__main__":
