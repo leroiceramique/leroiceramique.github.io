@@ -2088,25 +2088,52 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             # Migration: merge duplicate product names into the OLDEST row per name,
             # remapping all referencing tables first so no history is lost,
             # then enforce case-insensitive uniqueness going forward.
-            _dup_remap_sql = """
-                UPDATE {table} t SET product_id = m.keep_id
-                FROM (
-                    SELECT p.id AS dup_id, k.keep_id
-                    FROM products p
-                    JOIN (
-                        SELECT LOWER(name) AS lname, MIN(id) AS keep_id
-                        FROM products GROUP BY LOWER(name) HAVING COUNT(*) > 1
-                    ) k ON LOWER(p.name) = k.lname AND p.id <> k.keep_id
-                ) m
-                WHERE t.product_id = m.dup_id
-            """
-            for _t in ("transactions", "extraction_requests", "invoice_items"):
-                cur.execute(_dup_remap_sql.format(table=_t))
+            # v81 حماية: عمود archived قد لا يكون موجوداً بعد على قاعدة جديدة —
+            # إضافة idempotent رخيصة تضمن سلامة الدمج والشفاء أدناه في كل الأحوال.
             cur.execute(
-                "DELETE FROM products p USING products q "
-                "WHERE LOWER(p.name) = LOWER(q.name) AND p.id > q.id"
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS archived "
+                "BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            # v81: اختيار الباقي من كل مجموعة أسماء مكررة تغيّر جذرياً:
+            # قديماً كان الأقدم (أصغر id) يبقى حتى لو كان محذوفاً — فتُحذف السلعة
+            # الحية المسجلة حديثاً! ولا كان أي دمج للكميات (تضيع كمية المحذوف)،
+            # ولا إعادة ربط للطلبات المعلقة (product_id يُصفَّر بالـ FK).
+            # الآن: الحية أولاً ثم الأقدم، مع دمج كميات المكررات في الباقية،
+            # وإعادة ربط كل الجداول المرجعية (حتى المعلقات) قبل الحذف.
+            cur.execute(
+                "CREATE TEMP TABLE _dup_keepers ON COMMIT DROP AS "
+                "SELECT DISTINCT ON (LOWER(name)) LOWER(name) AS lname, id AS keep_id "
+                "FROM products "
+                "WHERE LOWER(name) IN (SELECT LOWER(name) FROM products "
+                "GROUP BY LOWER(name) HAVING COUNT(*) > 1) "
+                "ORDER BY LOWER(name), archived ASC, id ASC"
+            )
+            _dup_remap_sql = """
+                UPDATE {table} t SET product_id = k.keep_id
+                FROM _dup_keepers k, products x
+                WHERE t.product_id = x.id
+                  AND LOWER(x.name) = k.lname AND x.id <> k.keep_id
+            """
+            for _t in ("transactions", "extraction_requests", "invoice_items",
+                       "pending_deliveries"):
+                cur.execute(_dup_remap_sql.format(table=_t))
+            if _unshipped_table_exists(cur):
+                cur.execute(_dup_remap_sql.format(table="unshipped_sales"))
+            cur.execute(
+                "UPDATE products p SET quantity = COALESCE(p.quantity, 0) + m.added "
+                "FROM (SELECT k.keep_id, SUM(COALESCE(x.quantity, 0)) AS added "
+                      "FROM _dup_keepers k, products x "
+                      "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id "
+                      "GROUP BY k.keep_id) m "
+                "WHERE p.id = m.keep_id AND m.added <> 0"
+            )
+            cur.execute(
+                "DELETE FROM products WHERE id IN ("
+                "SELECT x.id FROM products x, _dup_keepers k "
+                "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id)"
             )
             prod_dupes = cur.rowcount
+            cur.execute("DROP TABLE IF EXISTS _dup_keepers")
             try:
                 cur.execute("SAVEPOINT products_name_uniq")
                 cur.execute(
@@ -2139,6 +2166,46 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
                 EXCEPTION WHEN OTHERS THEN NULL; END $$;
             """)
+            # v81: شفاء السلع «المختفية» — أي سلعة محذوفة ما زالت تحمل كمية تعود
+            # للحياة تلقائياً عند الإقلاع. الجذر: الكمية كانت تُطعَم صامتة في سلعة
+            # محذوفة (تليغرام/الطابور) فتبدو السلعة مسجلة ومختفية من كل القوائم.
+            # كل استعادة تُسجَّل في audit_log (action=auto_restore) ومحفوظة SAVEPOINT
+            # حتى لا يسمّ أي فشل معاملة تهيئة القاعدة كاملة.
+            try:
+                cur.execute("SAVEPOINT v81_heal")
+                cur.execute(
+                    "UPDATE products SET archived = FALSE "
+                    "WHERE archived AND COALESCE(quantity, 0) > 0 "
+                    "RETURNING id, name, quantity"
+                )
+                _healed_rows = cur.fetchall()
+                for _h in _healed_rows:
+                    logging.warning(
+                        "[DB][v81] استعادة تلقائية عند الإقلاع: «%s» (كمية %s)",
+                        _h[1], _h[2])
+                    try:
+                        cur.execute("SAVEPOINT v81_heal_audit")
+                        cur.execute(
+                            "INSERT INTO audit_log (action, details) VALUES (%s, %s)",
+                            ("auto_restore",
+                             ("استعادة تلقائية عند الإقلاع: " + str(_h[1])
+                              + " (كمية " + str(_h[2]) + ")")[:500]))
+                        cur.execute("RELEASE SAVEPOINT v81_heal_audit")
+                    except Exception:
+                        try:
+                            cur.execute("ROLLBACK TO SAVEPOINT v81_heal_audit")
+                        except Exception:
+                            pass
+                cur.execute("RELEASE SAVEPOINT v81_heal")
+                if _healed_rows:
+                    print("[DB] v81: استُعيدت " + str(len(_healed_rows))
+                          + " سلعة كانت محذوفة وبها كمية.")
+            except Exception as heal_err:
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT v81_heal")
+                except Exception:
+                    pass
+                logging.warning("[DB][v81] startup heal skipped: " + str(heal_err))
         conn.commit()
         if dedup_count:
             print("[DB] Deduplicated " + str(dedup_count) + " duplicate username(s).")
@@ -2605,14 +2672,17 @@ def db_import_backup(data):
             # ── Import products ──
             products = data.get("products", [])
             if products:
+                # v81: حفظ حالة archived في الاستيراد — قديماً كانت المحذوفات
+                # تعود حية بعد أي استعادة/تبديل قاعدة (ظهور/اختفاء مخالف للواقع)
                 rows = [
                     (p["id"], p["name"], p["quantity"], p.get("location", ""),
-                     p.get("minimum_stock", 5), p.get("created_at"), p.get("selling_price", 0))
+                     p.get("minimum_stock", 5), p.get("created_at"),
+                     p.get("selling_price", 0), bool(p.get("archived", False)))
                     for p in products
                 ]
                 cur.executemany("""
-                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO products (id, name, quantity, location, minimum_stock, created_at, selling_price, archived)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, rows)
                 max_pid = max(p["id"] for p in products)
                 cur.execute("SELECT setval('products_id_seq', %s)", (max_pid,))
@@ -2765,10 +2835,31 @@ def db_add_product(name, quantity=0, location="", minimum_stock=5):
                 conn.commit()
                 return dict(product), True
             # Product already exists — try to find and update (case-insensitive to match
-            # the idx_products_name_uniq expression index)
-            cur.execute("SELECT * FROM products WHERE LOWER(name) = LOWER(%s) LIMIT 1", (clean_name,))
+            # the idx_products_name_uniq expression index).
+            # v81: نُفضّل السلعة الحية على المحذوفة. الجذر الموثق: الكمية كانت تدخل
+            # صامتة في سلعة محذوفة (مؤرشفة) فتبدو السلعة المسجلة «مختفية» من كل
+            # القوائم — الآن تُستعاد المحذوفة تلقائياً فتظهر فوراً في المخزون.
+            cur.execute(
+                "SELECT * FROM products WHERE LOWER(name) = LOWER(%s) "
+                "ORDER BY archived ASC, id ASC LIMIT 1", (clean_name,))
             existing = cur.fetchone()
             if existing:
+                if existing.get("archived"):
+                    # عالم بلا فهرس فريد فقط: هل توجد حية بنفس الاسم؟ أضف لها
+                    cur.execute(
+                        "SELECT * FROM products WHERE LOWER(name) = LOWER(%s) "
+                        "AND NOT archived ORDER BY id ASC LIMIT 1", (clean_name,))
+                    _active_twin = cur.fetchone()
+                    if _active_twin:
+                        existing = _active_twin
+                    else:
+                        cur.execute(
+                            "UPDATE products SET archived = FALSE WHERE id = %s",
+                            (existing["id"],))
+                        logging.warning(
+                            "[DB][v81] استعادة تلقائية عند التسجيل: سلعة كانت محذوفة "
+                            "عادت للحياة مع الكمية الجديدة: " + str(existing.get("name")))
+                        existing["archived"] = False
                 cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s RETURNING *", (quantity, existing["id"]))
                 updated = cur.fetchone()
                 conn.commit()
@@ -11751,7 +11842,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v80"
+PWA_VERSION = "v81"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11937,6 +12028,21 @@ _PWA_HTML_PATCHES = (
     # 5) شاشة الإعدادات تعرض الإصدار الحقيقي بدل «v74» المجمّد
     ('$("#setAbout").textContent = "الإصدار v74" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");',
      '$("#setAbout").textContent = "الإصدار " + APP_VER + (S.serverVersion ? " — الخادم " + S.serverVersion : "");'),
+    # 6) v81: تنبيه القائمة المقتطعة — لا اختفاء صامت للسلع بعد سقف العرض
+    ('S.invData = d.products || [];',
+     'S.invData = d.products || [];\n'
+     '    try {\n'
+     '      const __tot = d.total | 0, __n = (d.products || []).length;\n'
+     '      const __oh = document.getElementById("invTruncHint");\n'
+     '      if (__oh) __oh.remove();\n'
+     '      if (__tot > __n && __n > 0) {\n'
+     '        const h = document.createElement("div");\n'
+     '        h.id = "invTruncHint";\n'
+     '        h.style.cssText = "background:#fff7e6;border:1px solid #f0c36d;color:#8a5b00;padding:8px 10px;border-radius:10px;margin:0 0 8px;font-size:13px";\n'
+     '        h.textContent = "يُعرض أول " + __n + " من أصل " + __tot + " سلعة — استخدم البحث بالاسم للوصول إلى البقية.";\n'
+     '        box.insertBefore(h, box.firstChild);\n'
+     '      }\n'
+     '    } catch (_e) {}'),
 )
 
 
@@ -13560,15 +13666,21 @@ def _pwa_api_products(user, q, archived=False, low=False):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             asql = "archived" if archived else "NOT archived"   # v41: قسمة المحذوفات
             lsql = " AND (COALESCE(quantity,0) <= COALESCE(minimum_stock,0))" if low else ""   # v43: فلتر المنخفضة
+            # v81: السقف 200→500 + العدد الكلي — قديماً كانت القوائم الطويلة تُقتطع
+            # صامتة عند 200 فتبدو السلع «غير موجودة» مع أنها حية (تظهر بالبحث فقط)
             if q:
                 cur.execute(
                     "SELECT * FROM products WHERE " + asql + lsql + " AND name ILIKE %s "
-                    "ORDER BY LOWER(name) LIMIT 200",
+                    "ORDER BY LOWER(name) LIMIT 500",
                     ("%" + q + "%",))
             else:
                 cur.execute("SELECT * FROM products WHERE " + asql + lsql +
-                            " ORDER BY LOWER(name) LIMIT 200")
+                            " ORDER BY LOWER(name) LIMIT 500")
             rows = cur.fetchall()
+            cur.execute("SELECT COUNT(*) AS cnt FROM products WHERE " + asql + lsql +
+                        (" AND name ILIKE %s" if q else ""),
+                        ("%" + q + "%",) if q else ())
+            total = int(cur.fetchone()["cnt"])
         conn.commit()
     finally:
         release_connection(conn)
@@ -13584,7 +13696,7 @@ def _pwa_api_products(user, q, archived=False, low=False):
                         "price": r.get("selling_price"),
                         "unit": _get_unit_ar(r["name"]),
                         "low": (r["quantity"] or 0) <= (r["minimum_stock"] or 0)})
-    return {"ok": True, "products": out, "limited": external_only, "archived": bool(archived), "low": bool(low)}
+    return {"ok": True, "products": out, "total": total, "limited": external_only, "archived": bool(archived), "low": bool(low)}
 
 
 def _pwa_api_product_detail(user, product_id):
