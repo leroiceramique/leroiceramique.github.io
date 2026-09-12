@@ -11824,7 +11824,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v83"
+PWA_VERSION = "v84"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -12408,6 +12408,404 @@ _PWA_GROUPS_JS = r"""/* ═══ v83: مجموعات الدردشة — يُح�
 """
 
 
+_PWA_UI2_CSS = r"""/* ═══════════════════════════════════════════════════════════════════
+   UI 2.0 — v84: الطبقة البصرية الجديدة — تُحقن من bot.py
+   هوية LE ROI DE LA CÉRAMIQUE بنسخة معاصرة: زجاج، عمق، حركة، نعومة
+   قاعدة ذهبية: لا نحذف أي تنسيق قديم — نتجاوز فقط بأعلى الخصوصية الآمنة
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── 0) توكنز الطبقة الجديدة ── */
+:root{
+  --u2-grad:linear-gradient(135deg,var(--brand2),var(--brand));
+  --u2-grad-gold:linear-gradient(135deg,#c1913a,#8f6a24);
+  --u2-sheet:26px;
+  --u2-dockbg:rgba(253,250,242,.86);
+  --u2-headbg:rgba(253,250,242,.80);
+  --u2-shadow-lg:0 18px 44px rgba(61,43,28,.16);
+  --u2-focus:0 0 0 3px var(--goldsoft);
+}
+html[data-theme="dark"]{
+  --u2-dockbg:rgba(33,26,20,.88);
+  --u2-headbg:rgba(28,22,16,.82);
+  --u2-shadow-lg:0 18px 44px rgba(0,0,0,.5);
+}
+
+/* ── 1) الهيدر: زجاج ملكي بعنوان متدرّج وخط ذهبي ── */
+#app header{
+  background:var(--u2-headbg);
+  backdrop-filter:blur(18px) saturate(1.4);
+  -webkit-backdrop-filter:blur(18px) saturate(1.4);
+  border-bottom:1px solid var(--line);
+  box-shadow:0 4px 20px rgba(61,43,28,.07);
+  padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
+}
+html[data-theme="dark"] #app header{box-shadow:0 4px 20px rgba(0,0,0,.35)}
+#app header::after{
+  content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;
+  background:linear-gradient(90deg,transparent,var(--gold),transparent);
+  opacity:.55;pointer-events:none;
+}
+#app header .t b{
+  font-size:15.5px;letter-spacing:.2px;
+}
+@supports ((-webkit-background-clip:text) or (background-clip:text)){
+  #app header .t b{
+    background:linear-gradient(90deg,var(--brand) 20%,var(--gold));
+    -webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent;
+  }
+}
+#app header .t span{color:var(--mut)}
+#app header button{
+  background:var(--brandsoft);color:var(--brand);border:1px solid var(--goldline);
+  border-radius:12px;transition:transform .18s ease,box-shadow .18s ease;
+}
+#app header button:active{transform:scale(.9);box-shadow:0 0 0 6px var(--goldsoft)}
+#app header img{border-radius:12px;box-shadow:0 3px 10px rgba(122,58,18,.25)}
+#nBadge{
+  background:var(--bad);color:#fff;font-size:10px;font-weight:800;
+  min-width:17px;height:17px;border-radius:9px;display:flex;align-items:center;
+  justify-content:center;padding:0 4px;box-shadow:0 2px 6px rgba(160,44,44,.4);
+}
+
+/* ── 2) شريط التنقل: Dock عائم زجاجي بحبة دواء متدرجة ── */
+main{padding-bottom:calc(118px + env(safe-area-inset-bottom))}
+nav.tabs{
+  left:14px;right:14px;bottom:calc(12px + env(safe-area-inset-bottom));
+  border-radius:24px;border:1px solid var(--goldline);
+  background:var(--u2-dockbg);
+  backdrop-filter:blur(22px) saturate(1.5);
+  -webkit-backdrop-filter:blur(22px) saturate(1.5);
+  box-shadow:0 12px 34px rgba(61,43,28,.18);
+  padding:7px 8px calc(7px);
+}
+html[data-theme="dark"] nav.tabs{box-shadow:0 12px 34px rgba(0,0,0,.5)}
+nav.tabs button{
+  border-radius:16px;position:relative;
+  transition:background .22s ease,color .22s ease,transform .18s ease;
+}
+nav.tabs button .ic{transition:transform .22s cubic-bezier(.34,1.56,.64,1)}
+nav.tabs button:active{transform:scale(.9)}
+nav.tabs button.on{
+  background:var(--u2-grad);color:#fff;font-weight:800;
+  box-shadow:0 6px 16px rgba(122,58,18,.38);
+}
+html[data-theme="dark"] nav.tabs button.on{box-shadow:0 6px 16px rgba(217,166,72,.25)}
+nav.tabs button.on .ic{transform:translateY(-3px) scale(1.15)}
+nav.tabs .cnavb{z-index:2;box-shadow:0 0 0 2px var(--card)}
+
+/* ── 3) الانتقال بين الأقسام: تلاشٍ ناعم (opacity فقط — آمن للعناصر fixed) ── */
+.view.on{animation:u2view .24s ease}
+@keyframes u2view{from{opacity:0}to{opacity:1}}
+
+/* ── 4) النوافذ المنبثقة: Bottom Sheets ذكية على الهاتف ── */
+@media (max-width:699px){
+  dialog{
+    position:fixed;inset:auto 0 0 0;width:100%;max-width:none;margin:0;
+    border-radius:var(--u2-sheet) var(--u2-sheet) 0 0;
+    max-height:88vh;max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;
+    box-shadow:0 -20px 70px rgba(0,0,0,.38);
+  }
+  /* استثناء: عارض وسائط الشات يبقى ملء الشاشة */
+  dialog#chatView{inset:0;width:100%;height:100%;max-height:none;border-radius:0;
+    background:rgba(0,0,0,.92);overflow:hidden}
+  dialog[open]{animation:u2sheet .34s cubic-bezier(.22,1.15,.36,1)}
+  dialog#chatView[open]{animation:none}
+  @keyframes u2sheet{from{transform:translateY(55%);opacity:.35}to{transform:translateY(0);opacity:1}}
+  dialog .db{padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+}
+@media (min-width:700px){
+  dialog{border-radius:22px;box-shadow:var(--u2-shadow-lg)}
+  dialog[open]{animation:u2pop .26s cubic-bezier(.22,1.25,.36,1)}
+  @keyframes u2pop{from{transform:scale(.88);opacity:0}to{transform:scale(1);opacity:1}}
+}
+dialog::backdrop{
+  background:rgba(30,20,12,.48);
+  backdrop-filter:blur(5px) saturate(.9);
+  -webkit-backdrop-filter:blur(5px) saturate(.9);
+}
+dialog .dh{
+  background:transparent;color:var(--brand);
+  padding:8px 20px 2px;font-size:15.5px;font-weight:800;
+}
+dialog .dh::after{
+  content:"";display:block;height:3px;width:46px;border-radius:99px;
+  background:linear-gradient(90deg,var(--gold),var(--brand));
+  margin-top:7px;opacity:.9;
+}
+dialog .db{padding:14px 20px 18px}
+.u2grab{
+  width:46px;height:5px;border-radius:99px;background:var(--line);
+  margin:12px auto 4px;flex:none;
+}
+html[data-theme="dark"] .u2grab{background:#4a3b2a}
+
+/* ── 5) البطاقات والقوائم: عمق ناعم ولمسة ضغط ── */
+.card,.row,.stat,.chatrow,.oilcard,.skl{border-radius:18px}
+.card{box-shadow:var(--shadow)}
+.row{
+  transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease;
+}
+.row:active{transform:scale(.985);box-shadow:0 2px 8px rgba(61,43,28,.1)}
+.stat{
+  background:linear-gradient(165deg,var(--card) 55%,var(--brandsoft));
+  border:1px solid var(--goldline);position:relative;overflow:hidden;
+  transition:transform .16s ease;
+}
+.stat::before{
+  content:"";position:absolute;top:-46px;inset-inline-end:-38px;
+  width:110px;height:110px;border-radius:50%;
+  background:radial-gradient(circle,var(--goldsoft),transparent 68%);
+  pointer-events:none;
+}
+.stat:active{transform:scale(.94)}
+.stat b{font-size:26px;letter-spacing:-.5px}
+
+/* ── 6) الأزرار: تدرّج ملكي + إحساس ضغط ملموس ── */
+.btn{
+  border-radius:14px;font-weight:800;position:relative;overflow:hidden;
+  transition:transform .16s ease,box-shadow .16s ease,filter .16s ease;
+  box-shadow:0 5px 14px rgba(122,58,18,.22);
+}
+html[data-theme="dark"] .btn{box-shadow:0 5px 14px rgba(0,0,0,.35)}
+.btn:active{transform:scale(.955);box-shadow:0 2px 6px rgba(122,58,18,.2)}
+.btn.gray,.btn.red,.gbtn{box-shadow:none}
+.btn.gold{background:var(--u2-grad-gold);box-shadow:0 5px 14px rgba(169,126,47,.3)}
+.btn.red{background:linear-gradient(135deg,#c0392b,#8f2015)}
+.mbtn{border-radius:13px;transition:transform .15s ease}
+.u2rip{
+  position:absolute;border-radius:50%;transform:scale(0);
+  background:rgba(255,255,255,.42);pointer-events:none;
+  animation:u2rip .55s ease-out forwards;
+}
+.u2rip.dark{background:rgba(122,58,18,.16)}
+@keyframes u2rip{to{transform:scale(3);opacity:0}}
+
+/* ── 7) الزر الذكي العائم FAB ── */
+.u2fab{
+  position:fixed;z-index:8;inset-inline-end:18px;
+  bottom:calc(96px + env(safe-area-inset-bottom));
+  width:60px;height:60px;border:none;border-radius:20px;cursor:pointer;
+  background:var(--u2-grad);color:#fff;font-size:28px;line-height:1;
+  display:none;align-items:center;justify-content:center;
+  box-shadow:0 12px 30px rgba(122,58,18,.45),0 2px 8px rgba(122,58,18,.3);
+  transition:transform .2s cubic-bezier(.34,1.56,.64,1);
+  padding:0;
+}
+html[data-theme="dark"] .u2fab{box-shadow:0 12px 30px rgba(0,0,0,.55),0 0 0 1px var(--goldline)}
+.u2fab.show{display:flex;animation:u2fab .32s cubic-bezier(.34,1.56,.64,1)}
+.u2fab:active{transform:scale(.88) rotate(90deg)}
+@keyframes u2fab{from{transform:scale(0) rotate(-120deg);opacity:0}to{transform:scale(1) rotate(0);opacity:1}}
+
+/* ── 8) الحقول والبحث: حلقات تركيز ذهبية ── */
+.search{border-radius:16px;box-shadow:var(--shadow);transition:border-color .2s,box-shadow .2s}
+.fld input,.fld select,.fld textarea,#chatSrchQ{transition:border-color .2s,box-shadow .2s}
+.search:focus,.fld input:focus,.fld select:focus,.fld textarea:focus,#chatSrchQ:focus{
+  outline:none;border-color:var(--gold);box-shadow:var(--u2-focus)}
+.seg{border-radius:14px;padding:4px}
+.seg button{border-radius:11px;transition:all .2s ease}
+.seg button.on{
+  background:var(--card);color:var(--brand);
+  box-shadow:0 2px 8px rgba(61,43,28,.14),0 0 0 1px var(--goldline);
+}
+html[data-theme="dark"] .seg button.on{background:#3a2e20;color:var(--gold)}
+.chip,.rchip,.fchip{transition:transform .15s ease,background .2s,border-color .2s}
+.chip:active,.rchip:active,.fchip:active{transform:scale(.93)}
+
+/* ── 9) التوست: حبة زجاجية عائمة ── */
+#toast{
+  bottom:calc(104px + env(safe-area-inset-bottom));
+  border-radius:99px;padding:12px 22px;font-weight:700;
+  background:rgba(43,30,19,.9);color:#fdfaf2;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  box-shadow:0 12px 34px rgba(0,0,0,.35);
+  animation:u2toast .3s cubic-bezier(.34,1.4,.64,1);
+}
+html[data-theme="dark"] #toast{background:rgba(58,46,32,.95);color:#f3ead9}
+@keyframes u2toast{from{opacity:0;transform:translateX(-50%) translateY(14px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+
+/* ── 10) شاشة الدخول: مدخل ملكي فخم ── */
+#login{
+  background:
+    radial-gradient(1100px 540px at 50% -12%, var(--goldsoft), transparent 62%),
+    radial-gradient(900px 460px at 108% 112%, var(--brandsoft), transparent 55%),
+    var(--bg);
+}
+#login .logo{
+  border-radius:26px;
+  box-shadow:0 18px 44px rgba(122,58,18,.3),0 0 0 7px var(--goldsoft);
+}
+#login .card{border-radius:24px;box-shadow:var(--u2-shadow-lg);border-color:var(--goldline)}
+
+/* ── 11) الشات: لمسات خفيفة فقط — لا مساس بالمنطق ── */
+.cbar{
+  border-radius:20px;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  box-shadow:0 6px 20px rgba(61,43,28,.1);
+}
+.cbtn.go{background:var(--u2-grad);box-shadow:0 4px 12px rgba(122,58,18,.35)}
+.chatrow{transition:transform .16s ease}
+.chatrow:active{transform:scale(.985)}
+.cav{border-radius:50%;box-shadow:0 2px 8px rgba(61,43,28,.18)}
+
+/* ── 12) بطاقات الرئيسية الملهمة (طلبات/زيت) والدرجات ── */
+.oilcard{box-shadow:0 10px 26px rgba(21,128,61,.25);border-radius:20px}
+.oilcard.warn{box-shadow:0 10px 26px rgba(180,83,9,.28)}
+.oilcard.red{box-shadow:0 10px 26px rgba(185,28,28,.3)}
+
+/* ── 13) تفاصيل عامة: تمرير أنيق + انتقال ثيم سلس ── */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:99px}
+::-webkit-scrollbar-track{background:transparent}
+body,.card,.row,header,nav.tabs,dialog,.seg button,.chip{
+  transition-property:background-color,border-color;
+  transition-duration:.25s;transition-timing-function:ease;
+}
+button,.btn,.row,.chatrow{-webkit-tap-highlight-color:transparent}
+.badge{border-radius:99px}
+img{-webkit-user-drag:none;user-select:none}"""
+
+_PWA_UI2_JS = r"""/* ═══════════════════════════════════════════════════════════════════
+   UI 2.0 — v84: طبقة الذكاء والسلاسة — تُحقن من bot.py بعد كل السكربتات
+   المبادئ: لا نستبدل أي دالة قائمة إلا بتغليف آمن يستدعي الأصل،
+            كل شيء داخل IIFE + try/catch — أي عطل يبقى معزولاً بلا أثر.
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  function safe(fn) { try { fn(); } catch (e) { /* معزول بلا أثر */ } }
+  function $(s) { return document.querySelector(s); }
+
+  /* ── 1) ترقية النوافذ المنبثقة: مقبض سحب + إغلاق بلمس الخلفية + سحب للأسفل ──
+     (14 حواراً بالجرد — استثنٍ فقط chatView: عارض وسائط ملء شاشة له زر إغلاقه) ── */
+  var DIALOG_IDS = ["dlg", "dlgPass", "dlgRole", "dlgApprove", "dlgNew",
+    "dlgEdit", "dlgUser", "dlgDetail", "dlgPhoto", "dlgOrd",
+    "dlgMenu", "dlgNotif", "dlgUpd"];
+
+  function upgradeDialog(d) {
+    if (!d || d._u2) return;
+    d._u2 = true;
+    /* مقبض السحب أعلى الورقة */
+    var h = document.createElement("div");
+    h.className = "u2grab";
+    d.insertBefore(h, d.firstChild);
+    /* لمس الخلفية (backdrop) يغلق — نفس سلوك زر Esc الأصلي */
+    d.addEventListener("click", function (e) {
+      if (e.target === d) safe(function () { d.close(); });
+    });
+    /* سحب المقبض للأسفل يغلق — إغلاق فقط، لا منطق إلغاء مكرر */
+    var startY = null, dy = 0;
+    h.addEventListener("touchstart", function (e) {
+      startY = e.touches[0].clientY; dy = 0;
+    }, { passive: true });
+    h.addEventListener("touchmove", function (e) {
+      if (startY === null) return;
+      dy = e.touches[0].clientY - startY;
+      if (dy > 0) {
+        d.style.transition = "none";
+        d.style.transform = "translateY(" + dy + "px)";
+      }
+    }, { passive: true });
+    h.addEventListener("touchend", function () {
+      if (startY === null) return;
+      d.style.transition = "transform .25s ease";
+      d.style.transform = "";
+      if (dy > 110) safe(function () { d.close(); });
+      startY = null; dy = 0;
+    }, { passive: true });
+  }
+  DIALOG_IDS.forEach(function (id) { upgradeDialog(document.getElementById(id)); });
+
+  /* ── 2) الزر الذكي العائم FAB — يشغّل الأزرار الحقيقية القائمة (بلا منطق مكرر) ── */
+  var FAB_TARGET = { "v-inv": "btnAddProd", "v-ord": "btnNewOrd", "v-chat": "btnNewChat" };
+  var FAB_LABEL = { "v-inv": "إضافة سلعة جديدة", "v-ord": "طلب توريد جديد", "v-chat": "محادثة جديدة" };
+  var curView = "v-home";
+  var fab = document.createElement("button");
+  fab.type = "button";
+  fab.className = "u2fab";
+  fab.innerHTML = "＋";
+  document.body.appendChild(fab);
+
+  function fabTargetOk() {
+    var id = FAB_TARGET[curView];
+    if (!id) return false;
+    var b = document.getElementById(id);
+    if (!b || b.disabled) return false;
+    /* مخفي بالصلاحيات أو القسم الداخلي؟ offsetParent يكشفه بلا قراءة display يدوياً */
+    return b.offsetParent !== null;
+  }
+  function syncFab() {
+    var on = fabTargetOk();
+    fab.classList.toggle("show", on);
+    if (on) fab.setAttribute("aria-label", FAB_LABEL[curView] || "إجراء سريع");
+  }
+  fab.addEventListener("click", function () {
+    safe(function () {
+      var b = document.getElementById(FAB_TARGET[curView]);
+      if (b && !b.disabled) b.click();
+    });
+  });
+
+  /* ── 3) تتبّع القسم الحالي: تغليف switchView — الأصل يُستدعى دائماً ── */
+  safe(function () {
+    var orig = window.switchView;
+    if (typeof orig !== "function") return;
+    var active = document.querySelector(".view.on");
+    if (active) curView = active.id;
+    window.switchView = function (id) {
+      var r = orig.apply(this, arguments);
+      curView = id;
+      safe(syncFab);
+      /* القوائم تُبنى غير متزامنة — فحص متأخر لظهور/اختفاء الزر الهدف */
+      setTimeout(function () { safe(syncFab); }, 650);
+      setTimeout(function () { safe(syncFab); }, 1400);
+      return r;
+    };
+  });
+  safe(syncFab);
+
+  /* ── 4) أثر الموجة (Ripple) عند اللمس — تفويض عام، بلا تدخل في الأحداث القائمة ── */
+  document.addEventListener("pointerdown", function (e) {
+    safe(function () {
+      var b = e.target.closest(".btn,.tbtn,.chip,.rchip,.fchip,nav.tabs button");
+      if (!b || b.disabled) return;
+      var r = b.getBoundingClientRect();
+      var sz = Math.max(r.width, r.height);
+      var s = document.createElement("span");
+      var dark = !/btn$/.test(b.className || "") || b.classList.contains("gray") || b.classList.contains("rchip");
+      s.className = "u2rip" + (dark ? " dark" : "");
+      s.style.width = s.style.height = sz + "px";
+      s.style.left = (e.clientX - r.left - sz / 2) + "px";
+      s.style.top = (e.clientY - r.top - sz / 2) + "px";
+      if (getComputedStyle(b).position === "static") b.style.position = "relative";
+      b.appendChild(s);
+      setTimeout(function () { s.remove(); }, 560);
+    });
+  }, { passive: true });
+
+  /* ── 5) لون شريط النظام يتبع الثيم الزجاجي الجديد ── */
+  safe(function () {
+    var orig = window.applyTheme;
+    if (typeof orig !== "function") return;
+    window.applyTheme = function (mode, save) {
+      var r = orig.apply(this, arguments);
+      safe(function () {
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute("content", mode === "dark" ? "#151110" : "#f5ecdc");
+      });
+      return r;
+    };
+  });
+
+  /* ── 6) إصدار الرئيسية يعرض القيمة الحية بدل v74 المجمّدة ── */
+  safe(function () {
+    var p = document.querySelector("#v-home .hint");
+    if (p && typeof APP_VER !== "undefined") p.textContent = "الإصدار " + APP_VER + " — واجهة UI 2.0";
+  });
+
+  /* ── 7) مزامنة أولية متأخرة (بعد أول تحميل قوائم) ── */
+  setTimeout(function () { safe(syncFab); }, 1200);
+})();"""
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -12442,6 +12840,12 @@ _PWA_HTML_PATCHES = (
     # 7) v83: مجموعات الدردشة — الحقن قبل إغلاق الجسم (الدوال عالمية فتعاد تعريفها بأمان)
     ('</script>\n</body>',
      '</script>\n<script id="v83groups">\n' + _PWA_GROUPS_JS + '</script>\n</body>'),
+    # 8) v84: واجهة UI 2.0 — الطبقة البصرية (CSS) بعد إغلاق الستايل الأصلي
+    ('</style>',
+     '</style>\n<style id="ui2css">' + _PWA_UI2_CSS + '</style>'),
+    # 9) v84: واجهة UI 2.0 — طبقة الذكاء (JS) بعد سكربت المجموعات
+    ('</script>\n</body>',
+     '</script>\n<script id="ui2js">\n' + _PWA_UI2_JS + '</script>\n</body>'),
 )
 
 
