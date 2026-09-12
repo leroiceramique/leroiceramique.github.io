@@ -11973,7 +11973,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v78"
+PWA_VERSION = "v79"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -12138,6 +12138,46 @@ def _pwa_err(status, msg, code=None):
     return _pwa_jr(d, status=status)
 
 
+# ═══ v79: قتل حلقة إشعار «يوجد تحديث جديد» — الإصلاح كله من bot.py بلا تغيير pwa.html ═══
+# الجذر: pwa.html المقدَّم ما زال APP_VER="v74" بينما PWA_VERSION ترقّى مع كل إصدار يُرفع
+# bot.py وحده → شرط «يوجد تحديث» يتحقق في كل فحص، وزر «لاحقاً» يُحفظ بالذاكرة فقط فيموت
+# مع كل إعادة تحميل، وزر «نعم» يعيد تحميل نفس الصفحة → حلقة لا تنتهي + مسح كاش وإعادة
+# تحميل كاملة عند كل ضغطة = ثقل ملحوظ في التطبيق.
+_PWA_HTML_PATCHES = (
+    # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
+    ('const APP_VER = "v74";',
+     'const APP_VER = "__PWA_VER__";'),
+    # 2) الرفض يُقرأ من localStorage — ينجو من إعادة التحميل (كان متغير ذاكرة يموت)
+    ('S.updDismissed = "";',
+     'S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();'),
+    # 3) «نعم، حدّث الآن» يحفظ الإصدار قبل إعادة التحميل — لا حلقة حتى لو عادت نسخة قديمة
+    ('function doAppUpdate() {\n  toast("جارٍ التحديث…");',
+     'function doAppUpdate() {\n  try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}\n  toast("جارٍ التحديث…");'),
+    # 4) «لاحقاً» يحفظ الإصدار في localStorage — إشعار واحد كحد أقصى لكل إصدار لكل جهاز
+    ('  S.updDismissed = S.serverVersion || "";',
+     '  S.updDismissed = S.serverVersion || "";\n  try { localStorage.setItem("pwa_upd_seen", S.updDismissed); } catch (e) {}'),
+    # 5) شاشة الإعدادات تعرض الإصدار الحقيقي بدل «v74» المجمّد
+    ('$("#setAbout").textContent = "الإصدار v74" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");',
+     '$("#setAbout").textContent = "الإصدار " + APP_VER + (S.serverVersion ? " — الخادم " + S.serverVersion : "");'),
+)
+
+
+def _pwa_patch_html(body):
+    """v79: يطبّق رقع آلية التحديث الداخلي على pwa.html قبل تقديمه للمتصفح.
+    الهدف: إصلاح حلقة إشعار «يوجد تحديث جديد» من bot.py وحده — ملف pwa.html على
+    القرص لا يحتاج أي تعديل أبداً، وأي نسخة قديمة/جديدة تُقدَّم مصحّحة تلقائياً."""
+    out = body
+    for old, new in _PWA_HTML_PATCHES:
+        ob = old.encode("utf-8")
+        nb = new.encode("utf-8")
+        n = out.count(ob)
+        if n == 1:
+            out = out.replace(ob, nb)
+        else:
+            logging.warning("[PWA][v79] تخطّي رقعة (مرساة x%s): %s", n, old[:50])
+    return out
+
+
 def _pwa_read_html():
     """يقرأ pwa.html من مجلد bot.py مع كاش حسب تاريخ التعديل."""
     global _pwa_html_cache
@@ -12145,8 +12185,8 @@ def _pwa_read_html():
         mtime = os.path.getmtime(PWA_HTML_PATH)
         if _pwa_html_cache["mtime"] != mtime or _pwa_html_cache["body"] is None:
             with open(PWA_HTML_PATH, "rb") as f:
-                _pwa_html_cache = {"mtime": mtime, "body": f.read()}
-        return _pwa_html_cache["body"]
+                _pwa_html_cache = {"mtime": mtime, "body": _pwa_patch_html(f.read())}
+        return _pwa_html_cache["body"].replace(b"__PWA_VER__", PWA_VERSION.encode("utf-8"))
     except Exception as e:
         logging.warning("[PWA] pwa.html missing: " + str(e))
         return ("<!doctype html><html dir=rtl lang=ar><meta charset=utf-8>"
