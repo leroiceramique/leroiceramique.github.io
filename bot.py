@@ -3753,6 +3753,9 @@ STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
 STATE_ADD_NAME_PLANTE = "waiting_add_name_plante"
 STATE_ALERT_MSG = "waiting_alert_msg"
+# v83: التنبيه عام + خاص — حالة اختيار النوع وحالة نص التنبيه الخاص
+STATE_ALERT_MODE = "waiting_alert_mode"
+STATE_ALERT_PRIV_MSG = "waiting_alert_priv_msg"
 STATE_INVOICE_CUSTOMER = "waiting_invoice_customer"
 STATE_INVOICE_PRODUCT = "waiting_invoice_product"
 STATE_INVOICE_QTY = "waiting_invoice_qty"
@@ -6822,6 +6825,126 @@ async def callback_restore_last_handler(update, context):
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
+# ═══ v83: التنبيه عام + خاص — اختيار النوع ثم المستخدم ثم النص ═══
+_ALERT_PAGE = 12  # مستخدم لكل صفحة في قائمة الاختيار
+
+
+def _alert_users_keyboard(users, offset=0):
+    """لوحة اختيار مستخدم للتنبيه الخاص — 12 لكل صفحة مع تنقل وإلغاء وعام."""
+    rows = []
+    for uid, uname in users[offset:offset + _ALERT_PAGE]:
+        rows.append([InlineKeyboardButton("👤 " + uname[:40],
+                                          callback_data="alertu_" + str(uid))])
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("◀ السابق",
+                    callback_data="alertpg_" + str(max(0, offset - _ALERT_PAGE))))
+    if offset + _ALERT_PAGE < len(users):
+        nav.append(InlineKeyboardButton("التالي ▶",
+                    callback_data="alertpg_" + str(offset + _ALERT_PAGE)))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("📢 بدلاً من ذلك: عام",
+                                      callback_data="alertmode_all")])
+    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="alertmode_cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _alert_load_users():
+    """المستخدمون القابلون للتنبيه — نفس فلتر التنبيه العام: لديهم تلغرام ونشطون."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT u.id, COALESCE(NULLIF(u.display_name, ''), u.first_name, "
+                "u.username, '#' || u.id::text) AS name, u.username "
+                "FROM users u WHERE u.active = TRUE AND u.telegram_id IS NOT NULL "
+                "AND (u.role IS NULL OR u.role <> %s) ORDER BY name",
+                (ROLE_PENDING,))
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    out = []
+    for r in rows:
+        nm = str(r[1] or "").strip() or ("#" + str(r[0]))
+        if r[2]:
+            nm = nm + " (@" + str(r[2]) + ")"
+        out.append((int(r[0]), nm))
+    return out
+
+
+async def callback_alert_pick_handler(update, context):
+    """v83: أزرار التنبيه — النوع (عام/خاص/إلغاء) + اختيار المستخدم + ترقيم الصفحات."""
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("للمدير فقط.", show_alert=True)
+        return
+    await query.answer()
+    data = query.data or ""
+    if data == "alertmode_cancel":
+        context.user_data.clear()
+        await query.edit_message_text("تم الإلغاء.", reply_markup=get_admin_keyboard())
+        return
+    if data == "alertmode_all":
+        _set_state(context, STATE_ALERT_MSG)
+        await query.edit_message_text(
+            "\U0001f514 أرسل نص التنبيه العام:" + chr(10) + chr(10)
+            + "سيتم إرساله لجميع المستخدمين.",
+            reply_markup=get_input_keyboard())
+        return
+    if data == "alertmode_priv":
+        try:
+            users = await _alert_load_users()
+        except Exception as e:
+            context.user_data.clear()
+            await query.edit_message_text("❌ خطأ في قراءة المستخدمين: " + str(e))
+            return
+        if not users:
+            context.user_data.clear()
+            await query.edit_message_text(
+                "لا يوجد مستخدمون لديهم حساب تلغرام.",
+                reply_markup=get_admin_keyboard())
+            return
+        context.user_data["alert_users"] = users
+        pages = (len(users) + _ALERT_PAGE - 1) // _ALERT_PAGE
+        await query.edit_message_text(
+            "👤 اختر المستخدم المُراد تنبيهه (صفحة 1 من " + str(pages) + "):",
+            reply_markup=_alert_users_keyboard(users, 0))
+        return
+    if data.startswith("alertpg_"):
+        users = context.user_data.get("alert_users") or []
+        if not users:
+            context.user_data.clear()
+            await query.edit_message_text(
+                "❌ انتهت صلاحية القائمة — اضغط 🔔 تنبيه من جديد.")
+            return
+        try:
+            off = int(data.split("_", 1)[1])
+        except ValueError:
+            off = 0
+        off = max(0, min(off, ((len(users) - 1) // _ALERT_PAGE) * _ALERT_PAGE))
+        await query.edit_message_reply_markup(
+            reply_markup=_alert_users_keyboard(users, off))
+        return
+    if data.startswith("alertu_"):
+        try:
+            uid = int(data.split("_", 1)[1])
+        except ValueError:
+            uid = 0
+        users = context.user_data.get("alert_users") or []
+        uname = next((n for i, n in users if i == uid), "#" + str(uid))
+        context.user_data["alert_target"] = {"id": uid, "name": uname}
+        _set_state(context, STATE_ALERT_PRIV_MSG)
+        await query.edit_message_text(
+            "\U0001f514 أرسل نص التنبيه الخاص إلى " + uname + ":",
+            reply_markup=get_input_keyboard())
+        return
+
+
 async def callback_add_notify_handler(update, context):
     """Handle the 'reason for add' choice: truck, customer return, or correction."""
     query = update.callback_query
@@ -8236,10 +8359,15 @@ async def handle_admin_message(update, context):
             await update.message.reply_text(del_prompt, reply_markup=get_input_keyboard())
             return
         if text == BTN_ALERT:
-            _set_state(context, STATE_ALERT_MSG)
-            alert_prompt = ("\U0001f514 أرسل نص التنبيه:" + chr(10) + chr(10)
-                + "سيتم إرساله لجميع المستخدمين.")
-            await update.message.reply_text(alert_prompt, reply_markup=get_input_keyboard())
+            # v83: التنبيه عام + خاص — اختيار النوع بلوحة أزرار قبل كتابة النص
+            _set_state(context, STATE_ALERT_MODE)
+            alert_mode_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 عام — لكل المستخدمين", callback_data="alertmode_all")],
+                [InlineKeyboardButton("👤 خاص — مستخدم محدد", callback_data="alertmode_priv")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="alertmode_cancel")],
+            ])
+            await update.message.reply_text(
+                "\U0001f514 إرسال تنبيه — اختر النوع:", reply_markup=alert_mode_kb)
             return
         if text == BTN_UPDATE:
             await _broadcast_update_notification(update, context)
@@ -8750,6 +8878,40 @@ async def handle_admin_message(update, context):
         context.user_data.clear()
         return
     
+    elif state == STATE_ALERT_MODE:
+        # v83: كتب نصاً قبل اختيار النوع — تذكير بالأزرار أعلاه
+        await update.message.reply_text(
+            "🔔 اختر نوع التنبيه أولاً من الأزرار أعلاه: 📢 عام أو 👤 خاص.",
+            reply_markup=get_input_keyboard())
+        return
+    elif state == STATE_ALERT_PRIV_MSG:
+        # v83: إرسال التنبيه إلى مستخدم محدد فقط
+        target = context.user_data.get("alert_target")
+        if not target:
+            context.user_data.clear()
+            await update.message.reply_text(
+                "❌ انتهت صلاحية اختيار المستخدم — ابدأ من زر 🔔 تنبيه.",
+                reply_markup=get_admin_keyboard())
+            return
+        alert_text = text.strip()
+        if not alert_text:
+            await update.message.reply_text("❌ أرسل نص التنبيه.", reply_markup=get_input_keyboard())
+            return
+        try:
+            priv_msg = "🔔 تنبيه خاص من الإدارة:"
+            priv_msg = priv_msg + chr(10) + chr(10) + alert_text[:4000]
+            await context.bot.send_message(chat_id=int(target["id"]), text=priv_msg)
+            tname = str(target.get("name") or "#" + str(target["id"]))
+            await update.message.reply_text(
+                "✅ تم إرسال التنبيه الخاص إلى " + tname + ".",
+                reply_markup=get_admin_keyboard())
+        except Exception as e:
+            await update.message.reply_text(
+                "❌ تعذر الإرسال: " + str(e) + chr(10)
+                + "ربما أوقف المستخدم البوت — لم يُرسل التنبيه.",
+                reply_markup=get_input_keyboard())
+        context.user_data.clear()
+        return
     elif state == STATE_OIL_READING:
         # 🔧 تحديث قراءة عداد الرافعة
         val = _oil_parse_hours(text)
@@ -11299,6 +11461,7 @@ def build_application():
     # Restore handlers - specific patterns first, then generic
     app.add_handler(CallbackQueryHandler(callback_restore_from_channel_handler, pattern="^restore_from_channel$"))
     app.add_handler(CallbackQueryHandler(callback_add_notify_handler, pattern="^addnotify_"))
+    app.add_handler(CallbackQueryHandler(callback_alert_pick_handler, pattern=r"^alertmode_|^alertu_|^alertpg_"))  # v83: التنبيه عام+خاص
     app.add_handler(CallbackQueryHandler(callback_rem_notify_handler, pattern="^remnotify_"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_handler, pattern="^restore_last$"))
     app.add_handler(CallbackQueryHandler(callback_restore_last_confirm_handler, pattern="^last_restore_"))
@@ -11661,7 +11824,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v82"
+PWA_VERSION = "v83"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11799,6 +11962,41 @@ DO $$ BEGIN
         REFERENCES chat_messages(id) ON DELETE SET NULL;
 EXCEPTION WHEN OTHERS THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_chat_reply ON chat_messages (reply_to);
+-- ═══ v83: مجموعات الدردشة — مثل تطبيقات المراسلة (قائمة + أعضاء + رسائل) ═══
+CREATE TABLE IF NOT EXISTS chat_groups (
+    id         SERIAL PRIMARY KEY,
+    name       VARCHAR(80) NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS chat_group_members (
+    group_id     INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_admin     BOOLEAN NOT NULL DEFAULT FALSE,
+    last_read_id INTEGER NOT NULL DEFAULT 0,
+    joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS chat_group_messages (
+    id         SERIAL PRIMARY KEY,
+    group_id   INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+    sender_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind       VARCHAR(10) NOT NULL DEFAULT 'text',
+    body       TEXT DEFAULT '',
+    media      BYTEA,
+    media_name VARCHAR(255),
+    media_mime VARCHAR(120),
+    media_size INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reply_to   INTEGER REFERENCES chat_group_messages(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_grp_msg ON chat_group_messages (group_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_grp_member ON chat_group_members (user_id);
+DO $$ BEGIN
+    ALTER TABLE chat_group_messages DROP CONSTRAINT IF EXISTS chat_group_messages_kind_check;
+    ALTER TABLE chat_group_messages ADD CONSTRAINT chat_group_messages_kind_check
+        CHECK (kind IN ('text', 'image', 'file', 'audio', 'video'));
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -11831,6 +12029,385 @@ def _pwa_err(status, msg, code=None):
 # bot.py وحده → شرط «يوجد تحديث» يتحقق في كل فحص، وزر «لاحقاً» يُحفظ بالذاكرة فقط فيموت
 # مع كل إعادة تحميل، وزر «نعم» يعيد تحميل نفس الصفحة → حلقة لا تنتهي + مسح كاش وإعادة
 # تحميل كاملة عند كل ضغطة = ثقل ملحوظ في التطبيق.
+# ═══ v83: مجموعات الدردشة — كود الواجهة يُحقن في pwa.html وقت التقديم ═══
+# (المنهجية نفسها: pwa.html على القرص لا يتغير — الرقعة تعمل مع أي نسخة قديمة)
+_PWA_GROUPS_JS = r"""/* ═══ v83: مجموعات الدردشة — يُحقن من الخادم (bot.py) ═══ */
+(function () {
+  if (window.__v83groups) return;
+  window.__v83groups = true;
+  var G = { g: null, timer: null, lastId: 0, busy: false, msgs: [],
+            meAdmin: false, isOwner: false };
+
+  function st(s) { try { if (window.toast) toast(s); } catch (e) {} }
+  function sterr(s) { try { if (window.toast) toast(s, true); } catch (e) {} }
+  function stop() { if (G.timer) { clearTimeout(G.timer); G.timer = null; } }
+  function inHome() {
+    var t = document.getElementById("chatThread");
+    return t && !t.classList.contains("on");
+  }
+  function q(id) { return document.getElementById(id); }
+
+  /* اسم المرسل فوق فقاعة الوارد — خاصية المجموعات */
+  function gAppend(m) {
+    var el = (typeof appendMsg === "function") ? appendMsg(m) : null;
+    if (el && !m.mine && m.sender_name) {
+      var lb = document.createElement("div");
+      lb.style.cssText = "font-size:11px;font-weight:700;opacity:.65;margin:0 0 2px";
+      lb.textContent = m.sender_name;
+      el.insertBefore(lb, el.firstChild);
+    }
+    return el;
+  }
+
+  function gBtns(on) {
+    var d = q("chatDel"), s = q("chatSrchB");
+    if (d) d.style.display = on ? "none" : "";
+    if (s) s.style.display = on ? "none" : "";
+  }
+
+  async function gOpen(id, name) {
+    if (!S.user) return;
+    stop(); chatStopTimers();
+    if (typeof chatMsgSheetClose === "function") { try { chatMsgSheetClose(); } catch (e) {} }
+    G.g = { id: id, name: name || ("مجموعة #" + id) };
+    G.lastId = 0; G.busy = false; G.msgs = [];
+    G.meAdmin = false; G.isOwner = false;
+    S.chat.peer = { id: -1, name: "👥 " + G.g.name, role: "" };
+    S.chat.lastId = 0; S.chat.readUpto = 0; S.chat.busy = false; S.chat.sending = false;
+    S.chat.firstId = 0; S.chat.hasMore = false; S.chat.loadingOlder = false;
+    S.chat.reply = null; S.chat.byId = {}; S.chat.lastDateKey = "";
+    S.chat.typing = false; S.chat.searchMode = false; S.chat.searchQ = "";
+    S.chat.hiddenIds = (typeof chatHiddenGet === "function") ? chatHiddenGet() : [];
+    var rb = q("chatReply"); if (rb) rb.style.display = "none";
+    var sb = q("chatSBar"); if (sb) sb.classList.remove("on");
+    var sq = q("chatSrchQ"); if (sq) sq.value = "";
+    var sn = q("chatSrchN"); if (sn) sn.textContent = "";
+    Object.keys(S.chat.urls).forEach(function (k) {
+      try { URL.revokeObjectURL(S.chat.urls[k]); } catch (e) {}
+    });
+    S.chat.urls = {};
+    q("chatHome").style.display = "none";
+    q("chatThread").classList.add("on");
+    q("chatPeerName").textContent = "👥 " + G.g.name;
+    q("chatPeerAv").textContent = "👥";
+    q("chatPeerRole").innerHTML = "مجموعة";
+    q("chatTxt").value = "";
+    var box = q("chatMsgs"); if (box) box.innerHTML = "";
+    var ob = q("chatOlder"); if (ob) ob.classList.remove("show");
+    gBtns(true); gInfoBtn(true);
+    try {
+      var d = await api("/api/chat/gmsg?g=" + id + "&after=0",
+                        { noCache: true, timeout: 30000 });
+      if (!G.g || G.g.id !== id) return;
+      (d.messages || []).forEach(function (m) {
+        if (m.id > G.lastId) { G.lastId = m.id; G.msgs.push(m); gAppend(m); }
+      });
+      if (d.members_count != null)
+        q("chatPeerRole").innerHTML = "مجموعة · " + d.members_count + " عضو";
+      scrollChat(true);
+      gPoll();
+    } catch (e) { sterr(e.message || "تعذر فتح المجموعة"); }
+  }
+
+  function gPoll() {
+    if (G.timer) clearTimeout(G.timer);
+    G.timer = setTimeout(async function () {
+      G.timer = null;
+      if (!G.g || !S.user) return;
+      var vc = q("v-chat");
+      if (!vc || !vc.classList.contains("on")) return;
+      if (G.busy || document.hidden) { gPoll(); return; }
+      G.busy = true;
+      try {
+        var d = await api("/api/chat/gmsg?g=" + G.g.id + "&after=" + G.lastId,
+                          { noCache: true, timeout: 20000 });
+        if (G.g && d.messages && d.messages.length) {
+          var inc = false;
+          d.messages.forEach(function (m) {
+            if (m.id > G.lastId) {
+              G.lastId = m.id; G.msgs.push(m); gAppend(m);
+              if (!m.mine) inc = true;
+            }
+          });
+          if (inc && typeof chatNotifyRecv === "function") chatNotifyRecv();
+          scrollChat(false);
+        }
+        if (G.g && typeof d.read_upto === "number" && d.read_upto > S.chat.readUpto) {
+          S.chat.readUpto = d.read_upto;
+          if (typeof updateTicks === "function") updateTicks();
+        }
+      } catch (e) { /* انقطاع مؤقت — الدورة القادمة تعيد المحاولة */ }
+      finally { G.busy = false; if (G.g && S.user) gPoll(); }
+    }, (typeof _CHAT_POLL_MSG === "number") ? _CHAT_POLL_MSG : 3500);
+  }
+
+  /* زر معلومات المجموعة في رأس المحادثة */
+  function gInfoBtn(on) {
+    var old = q("g83info"); if (old) old.remove();
+    if (!on) return;
+    var hdr = q("chatThread").querySelector(".thead");
+    if (!hdr) return;
+    var b = document.createElement("button");
+    b.id = "g83info"; b.type = "button"; b.className = "cbtn";
+    b.title = "أعضاء المجموعة"; b.textContent = "👥";
+    b.addEventListener("click", gMembersDlg);
+    var ref = q("chatSrchB") || null;
+    if (ref) hdr.insertBefore(b, ref); else hdr.appendChild(b);
+  }
+
+  function overlay() {
+    var o = document.createElement("div");
+    o.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);"
+      + "z-index:9999;display:flex;align-items:center;justify-content:center";
+    o.addEventListener("click", function (e) { if (e.target === o) o.remove(); });
+    document.body.appendChild(o);
+    return o;
+  }
+  function cardBase(title) {
+    var o = overlay();
+    var c = document.createElement("div");
+    c.style.cssText = "background:var(--bg,#fff);color:var(--tx,#111);"
+      + "width:min(92vw,380px);max-height:80vh;overflow:auto;border-radius:16px;padding:14px";
+    o.appendChild(c);
+    return { o: o, c: c, x: title };
+  }
+
+  async function gMembersDlg() {
+    if (!G.g) return;
+    var d;
+    try { d = await api("/api/chat/gmembers?g=" + G.g.id, { noCache: true }); }
+    catch (e) { sterr(e.message || "تعذر التحميل"); return; }
+    G.meAdmin = !!d.me_is_admin; G.isOwner = !!d.me_is_owner;
+    var ui = cardBase();
+    var ms = d.members || [];
+    var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<b>👥 ' + esc(G.g.name) + '</b>'
+      + '<button class="g83x" type="button" style="border:none;background:transparent;font-size:18px">✕</button></div>'
+      + '<div style="font-size:12px;opacity:.6;margin-bottom:8px">' + ms.length + ' عضو</div>';
+    ms.forEach(function (m) {
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0">'
+        + '<div class="cav" style="width:34px;height:34px">' + esc(chatAva(m.name)) + '</div>'
+        + '<div style="flex:1;min-width:0"><b style="font-size:14px">' + esc(m.name) + '</b>'
+        + '<div style="font-size:11px;opacity:.6">' + esc(m.role_label || "")
+        + (m.is_admin ? " · مدير المجموعة" : "") + '</div></div></div>';
+    });
+    html += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">';
+    if (G.meAdmin || G.isOwner)
+      html += '<button id="g83addm" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#2563eb;color:#fff;font-weight:700">＋ إضافة أعضاء</button>';
+    if (G.isOwner)
+      html += '<button id="g83delg" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#dc2626;color:#fff;font-weight:700">🗑 حذف المجموعة</button>';
+    html += '<button id="g83leave" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#e5e7eb;color:#111;font-weight:700">🚪 مغادرة</button></div>';
+    ui.c.innerHTML = html;
+    ui.c.querySelector(".g83x").addEventListener("click", function () { ui.o.remove(); });
+    var bm = ui.c.querySelector("#g83addm");
+    if (bm) bm.addEventListener("click", function () { ui.o.remove(); gAddDlg(); });
+    var bl = ui.c.querySelector("#g83leave");
+    if (bl) bl.addEventListener("click", async function () {
+      if (!confirm("مغادرة المجموعة «" + G.g.name + "»؟")) return;
+      try {
+        await api("/api/chat/gleave", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ g: G.g.id }) });
+        ui.o.remove(); chatReset(false); chatEnter(); st("تمت مغادرة المجموعة");
+      } catch (e2) { sterr(e2.message || "فشل"); }
+    });
+    var bd = ui.c.querySelector("#g83delg");
+    if (bd) bd.addEventListener("click", async function () {
+      if (!confirm("حذف المجموعة نهائياً مع كل رسائلها؟")) return;
+      try {
+        await api("/api/chat/gdelete", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ g: G.g.id }) });
+        ui.o.remove(); chatReset(false); chatEnter(); st("حُذفت المجموعة");
+      } catch (e2) { sterr(e2.message || "فشل"); }
+    });
+  }
+
+  function pickList(cs, have) {
+    var list = "";
+    cs.forEach(function (c) {
+      if (have && have.has(c.id)) return;
+      list += '<label style="display:flex;align-items:center;gap:8px;padding:7px 0;'
+        + 'border-bottom:1px solid rgba(128,128,128,.15)">'
+        + '<input type="checkbox" class="g83ck" value="' + c.id + '" style="width:18px;height:18px">'
+        + '<div style="flex:1;min-width:0"><b style="font-size:14px">' + esc(c.name) + '</b>'
+        + (c.tag ? '<span style="font-size:11px;opacity:.6"> ' + esc(c.tag) + '</span>' : "")
+        + '</div></label>';
+    });
+    return list;
+  }
+
+  async function gCreateDlg() {
+    var d;
+    try { d = await api("/api/chat/contacts", { noCache: true }); }
+    catch (e) { sterr(e.message || "تعذر تحميل جهات الاتصال"); return; }
+    var ui = cardBase();
+    var list = pickList(d.contacts || [], null);
+    ui.c.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<b>👥 مجموعة جديدة</b>'
+      + '<button class="g83x" type="button" style="border:none;background:transparent;font-size:18px">✕</button></div>'
+      + '<input id="g83name" type="text" maxlength="80" placeholder="اسم المجموعة" '
+      + 'style="width:100%;box-sizing:border-box;padding:10px;border:1px solid rgba(128,128,128,.35);'
+      + 'border-radius:10px;margin-bottom:8px;font-size:14px">'
+      + '<div style="max-height:40vh;overflow:auto">'
+      + (list || '<p style="opacity:.6;font-size:13px">لا جهات اتصال.</p>') + '</div>'
+      + '<button id="g83go" type="button" style="width:100%;margin-top:10px;border:none;border-radius:10px;'
+      + 'padding:11px;background:#2563eb;color:#fff;font-weight:800;font-size:15px">إنشاء المجموعة</button>';
+    ui.c.querySelector(".g83x").addEventListener("click", function () { ui.o.remove(); });
+    ui.c.querySelector("#g83go").addEventListener("click", async function () {
+      var nm = ui.c.querySelector("#g83name").value.trim();
+      var ids = Array.from(ui.c.querySelectorAll(".g83ck:checked")).map(function (x) { return Number(x.value); });
+      if (!nm) { sterr("اكتب اسم المجموعة."); return; }
+      if (!ids.length) { sterr("اختر عضواً واحداً على الأقل."); return; }
+      var btn = ui.c.querySelector("#g83go");
+      btn.textContent = "جارٍ الإنشاء..."; btn.disabled = true;
+      try {
+        var r = await api("/api/chat/groups/create", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: nm, members: ids }) });
+        ui.o.remove(); st("تم إنشاء المجموعة");
+        await window.loadChatList(true);
+        if (r && r.group) gOpen(r.group.id, r.group.name);
+      } catch (e2) {
+        btn.textContent = "إنشاء المجموعة"; btn.disabled = false;
+        sterr(e2.message || "فشل الإنشاء");
+      }
+    });
+  }
+
+  async function gAddDlg() {
+    if (!G.g) return;
+    var cd, md;
+    try {
+      cd = await api("/api/chat/contacts", { noCache: true });
+      md = await api("/api/chat/gmembers?g=" + G.g.id, { noCache: true });
+    } catch (e) { sterr(e.message || "تعذر التحميل"); return; }
+    var have = new Set((md.members || []).map(function (m) { return m.id; }));
+    var ui = cardBase();
+    var list = pickList(cd.contacts || [], have);
+    ui.c.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<b>＋ إضافة أعضاء — ' + esc(G.g.name) + '</b>'
+      + '<button class="g83x" type="button" style="border:none;background:transparent;font-size:18px">✕</button></div>'
+      + '<div style="max-height:50vh;overflow:auto">'
+      + (list || '<p style="opacity:.6;font-size:13px">لا مستخدمين جدد لإضافتهم.</p>') + '</div>'
+      + '<button id="g83go" type="button" style="width:100%;margin-top:10px;border:none;border-radius:10px;'
+      + 'padding:11px;background:#2563eb;color:#fff;font-weight:800;font-size:15px">إضافة</button>';
+    ui.c.querySelector(".g83x").addEventListener("click", function () { ui.o.remove(); });
+    ui.c.querySelector("#g83go").addEventListener("click", async function () {
+      var ids = Array.from(ui.c.querySelectorAll(".g83ck:checked")).map(function (x) { return Number(x.value); });
+      if (!ids.length) { sterr("اختر عضواً واحداً على الأقل."); return; }
+      try {
+        await api("/api/chat/gadd", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ g: G.g.id, members: ids }) });
+        ui.o.remove(); st("أُضيف الأعضاء");
+      } catch (e2) { sterr(e2.message || "فشل"); }
+    });
+  }
+
+  /* ── تمرير الإرسال والوسائط والقوائم عبر نسخ المجموعات ── */
+  var oChatSend = window.chatSend;
+  window.chatSend = async function (payload) {
+    if (!G.g) return oChatSend.apply(this, arguments);
+    if (S.chat.sending) return;
+    S.chat.sending = true;
+    var btn = q("chatSend");
+    btn.textContent = "⏳";
+    var replyId = S.chat.reply ? S.chat.reply.id : 0;
+    var rInfo = S.chat.reply ? { name: S.chat.reply.name, text: S.chat.reply.text } : null;
+    var temp = chatTempBubble(payload, rInfo);
+    var gid = G.g.id;
+    try {
+      var d = await api("/api/chat/gsend", {
+        method: "POST", headers: { "Content-Type": "application/json" }, timeout: 60000,
+        body: JSON.stringify(Object.assign({ g: gid, reply: replyId }, payload)) });
+      var m = d.message;
+      if (temp) { try { temp.remove(); } catch (e0) {} }
+      if (m && m.id > G.lastId) { G.lastId = m.id; G.msgs.push(m); gAppend(m); scrollChat(true); }
+      chatSetReply(null);
+      chatBeep("send");
+    } catch (e) {
+      if (typeof chatTempFail === "function") chatTempFail(temp);
+      sterr(e.message || "فشل الإرسال");
+    }
+    finally { S.chat.sending = false; btn.textContent = "➤"; }
+  };
+
+  var oMediaURL = window.chatMediaURL;
+  window.chatMediaURL = async function (id) {
+    if (!G.g) return oMediaURL.apply(this, arguments);
+    var key = "g" + id;
+    if (S.chat.urls[key]) return S.chat.urls[key];
+    var b = await chatBlob("/api/chat/gmedia?id=" + id);
+    var u = URL.createObjectURL(b);
+    S.chat.urls[key] = u;
+    return u;
+  };
+
+  var oChatReset = window.chatReset;
+  window.chatReset = function () {
+    stop(); G.g = null; gInfoBtn(false); gBtns(false);
+    return oChatReset.apply(this, arguments);
+  };
+
+  var oOpenChat = window.openChat;
+  window.openChat = async function () {
+    stop(); G.g = null; gInfoBtn(false); gBtns(false);
+    var r = await oOpenChat.apply(this, arguments);
+    return r;
+  };
+
+  var oLCL = window.loadChatList;
+  window.loadChatList = async function () {
+    var r = await oLCL.apply(this, arguments);
+    try { await gRenderHome(); } catch (e0) {}
+    return r;
+  };
+
+  async function gRenderHome() {
+    if (!S.user) return;
+    var box = q("chatList");
+    if (!box || !inHome()) return;
+    var d = await api("/api/chat/groups", { noCache: true });
+    if (!S.user || !inHome()) return;
+    box.querySelectorAll(".g83head,.g83grow").forEach(function (x) { x.remove(); });
+    var gs = d.groups || [];
+    var em = box.querySelector(".empty");
+    if (em && gs.length) em.remove();
+    var gun = 0;
+    var head = document.createElement("div");
+    head.className = "g83head";
+    head.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:6px 4px 2px";
+    head.innerHTML = '<b style="font-size:12px;opacity:.7">👥 المجموعات</b>'
+      + '<button class="g83newbtn" type="button" style="border:none;background:#2563eb;color:#fff;'
+      + 'border-radius:999px;padding:6px 12px;font-size:12px;font-weight:700">＋ مجموعة</button>';
+    head.querySelector(".g83newbtn").addEventListener("click", gCreateDlg);
+    box.insertBefore(head, box.firstChild);
+    if (gs.length) {
+      var frag = document.createDocumentFragment();
+      gs.forEach(function (g) {
+        gun += (g.unread || 0);
+        var row = document.createElement("div");
+        row.className = "chatrow g83grow";
+        row.innerHTML = '<div class="cav">👥</div>'
+          + '<div class="cinfo"><b>' + esc(g.name) + '</b>'
+          + '<span>' + esc(g.preview || ("مجموعة · " + g.members_count + " عضو")) + '</span></div>'
+          + '<div class="cside"><span class="ctime">'
+          + esc(g.last_at ? fmtChatTime(g.last_at) : "") + '</span>'
+          + (g.unread ? '<span class="cunread">' + (g.unread > 99 ? "99+" : g.unread) + '</span>' : "")
+          + '</div></div>';
+        row.addEventListener("click", function () { gOpen(g.id, g.name); });
+        frag.appendChild(row);
+      });
+      box.insertBefore(frag, head.nextSibling);
+    }
+    S.chat.total = (S.chat.total || 0) + gun;
+    renderChatBadge();
+  }
+})();
+"""
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -11862,6 +12439,9 @@ _PWA_HTML_PATCHES = (
      '        box.insertBefore(h, box.firstChild);\n'
      '      }\n'
      '    } catch (_e) {}'),
+    # 7) v83: مجموعات الدردشة — الحقن قبل إغلاق الجسم (الدوال عالمية فتعاد تعريفها بأمان)
+    ('</script>\n</body>',
+     '</script>\n<script id="v83groups">\n' + _PWA_GROUPS_JS + '</script>\n</body>'),
 )
 
 
@@ -16706,13 +17286,567 @@ def _pwa_api_chat_delete_conversation(user, other):
         release_connection(conn)
 
 
-def _pwa_api_chat_unread_total(user):
+# ═══════════ v83: مجموعات الدردشة — قائمة/إنشاء/رسائل/إرسال/أعضاء ═══════════
+
+def _chat_group_member_row(cur, gid, uid):
+    """صف عضوية المستخدم في مجموعة — أو None إن لم يكن عضواً."""
+    cur.execute(
+        "SELECT is_admin FROM chat_group_members WHERE group_id = %s AND user_id = %s",
+        (gid, uid))
+    return cur.fetchone()
+
+
+def _chat_group_reply_preview(kind, body, media_name):
+    """مقتطف اقتباس الرد — نفس دلالات المحادثة الفردية."""
+    k = kind or "text"
+    if k == "text":
+        return (body or "").strip()[:90] or "رسالة"
+    if k == "image":
+        return "🖼️ صورة"
+    if k == "audio":
+        return "🎤 رسالة صوتية"
+    if k == "video":
+        return "🎬 فيديو"
+    return "📎 " + ((media_name or "ملف")[:60])
+
+
+def _group_msg_dict(m, me):
+    """صف رسالة مجموعة → dict الواجهة (نفس حقول المحادثة الفردية + اسم المرسل)."""
+    return {
+        "id": int(m["id"]), "mine": m["sender_id"] == me,
+        "kind": m["kind"], "body": m["body"] or "",
+        "media": (m["kind"] or "text") != "text",
+        "media_name": m.get("media_name") or "",
+        "media_mime": m.get("media_mime") or "",
+        "media_size": int(m.get("media_size") or 0),
+        "sender_name": m.get("sender_name") or "",
+        "sender_id": int(m["sender_id"]),
+        "read": bool(m.get("isread")),
+        "reply_to": int(m["reply_to"]) if m.get("reply_to") else 0,
+        "rtext": m.get("rtext") or "", "rname": m.get("rname") or "",
+        "created_at": m["created_at"].isoformat() if m.get("created_at") else "",
+    }
+
+
+def _pwa_api_chat_groups_list(user):
+    """v83: مجموعاتي — آخر رسالة + عدد غير المقروء + عدد الأعضاء."""
+    me = user["id"]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT g.id, g.name, g.created_by, "
+                "(SELECT COUNT(*) FROM chat_group_members gm2 "
+                "WHERE gm2.group_id = g.id) AS members_count, "
+                "(SELECT MAX(id) FROM chat_group_messages m2 "
+                "WHERE m2.group_id = g.id) AS last_id, "
+                "(SELECT COUNT(*) FROM chat_group_messages m3 "
+                "WHERE m3.group_id = g.id AND m3.id > gm.last_read_id "
+                "AND m3.sender_id <> %s) AS unread "
+                "FROM chat_groups g JOIN chat_group_members gm "
+                "ON gm.group_id = g.id AND gm.user_id = %s "
+                "ORDER BY last_id DESC NULLS LAST LIMIT 60", (me, me))
+            rows = cur.fetchall()
+            last_ids = [int(r["last_id"]) for r in rows if r["last_id"]]
+            previews = {}
+            if last_ids:
+                cur.execute(
+                    "SELECT m.id, m.kind, m.body, m.media_name, m.created_at, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                    "'#' || u.id::text) AS sname "
+                    "FROM chat_group_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE m.id = ANY(%s)", (last_ids,))
+                for p in cur.fetchall():
+                    previews[int(p["id"])] = p
+        conn.commit()
+    finally:
+        release_connection(conn)
+    groups = []
+    for r in rows:
+        lid = int(r["last_id"]) if r["last_id"] else 0
+        p = previews.get(lid)
+        pv, last_at = "", ""
+        if p:
+            k = p["kind"] or "text"
+            if k == "text":
+                pv = (p["body"] or "").strip()[:60] or "رسالة"
+            elif k == "image":
+                pv = "🖼️ صورة"
+            elif k == "audio":
+                pv = "🎤 رسالة صوتية"
+            elif k == "video":
+                pv = "🎬 فيديو"
+            else:
+                pv = "📎 " + ((p.get("media_name") or "ملف")[:40])
+            pv = (p.get("sname") or "") + ": " + pv
+            last_at = p["created_at"].isoformat() if p.get("created_at") else ""
+        groups.append({"id": int(r["id"]), "name": r["name"],
+                       "members_count": int(r["members_count"]),
+                       "is_owner": r["created_by"] == me,
+                       "unread": int(r["unread"] or 0),
+                       "preview": pv, "last_at": last_at})
+    return {"ok": True, "groups": groups}
+
+
+def _pwa_api_chat_group_create(user, name, member_ids):
+    """v83: إنشاء مجموعة — المنشئ مديرها تلقائياً، والأعضاء نشطون غير معلقين."""
+    me = user["id"]
+    name = str(name or "").strip()[:80]
+    if not name:
+        return None, "اكتب اسم المجموعة."
+    ids, seen = [], set()
+    for x in (member_ids or []):
+        try:
+            i = int(x)
+        except (TypeError, ValueError):
+            continue
+        if i != me and i not in seen:
+            seen.add(i)
+            ids.append(i)
+    if len(ids) > 50:
+        return None, "الحد الأقصى 50 عضواً بالمجموعة."
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM chat_messages "
-                        "WHERE recip_id = %s AND read_at IS NULL", (user["id"],))
-            n = int(cur.fetchone()[0])
+            valid = [me]
+            if ids:
+                cur.execute(
+                    "SELECT id FROM users WHERE id = ANY(%s) AND active = TRUE "
+                    "AND (role IS NULL OR role <> %s)", (ids, ROLE_PENDING))
+                valid += [int(r[0]) for r in cur.fetchall()]
+            cur.execute(
+                "INSERT INTO chat_groups (name, created_by) VALUES (%s, %s) RETURNING id",
+                (name, me))
+            gid = int(cur.fetchone()[0])
+            vals = [(gid, i, i == me) for i in valid]
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO chat_group_members (group_id, user_id, is_admin) VALUES %s",
+                vals)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return {"id": gid, "name": name, "members_count": len(valid)}, None
+
+
+def _pwa_api_chat_group_messages(user, gid, after, before=0):
+    """v83: رسائل مجموعة — نفس دلالات المحادثة الفردية + اسم المرسل لكل فقاعة.
+    after=0 → آخر 100 تصاعدياً، after>0 → الجديد فقط، before>0 → أقدم (للمستقبل).
+    الجلب يعتبر قراءة — last_read_id يتقدم لأكبر رسالة معادة."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return None, 0, False, "طلب غير صالح.", None
+    try:
+        after = int(after or 0)
+        before = int(before or 0)
+    except (TypeError, ValueError):
+        after, before = 0, 0
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            mem = _chat_group_member_row(cur, gid, me)
+            if not mem:
+                return None, 0, False, "لست عضواً في هذه المجموعة.", None
+            if after > 0:
+                cur.execute(
+                    "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
+                    "m.media_mime, m.media_size, m.created_at, m.reply_to, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                    "'#' || u.id::text) AS sender_name "
+                    "FROM chat_group_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE m.group_id = %s AND m.id > %s ORDER BY m.id ASC LIMIT 200",
+                    (gid, after))
+                rows = list(cur.fetchall())
+                has_more = False
+            else:
+                cur.execute(
+                    "SELECT m.id, m.sender_id, m.kind, m.body, m.media_name, "
+                    "m.media_mime, m.media_size, m.created_at, m.reply_to, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                    "'#' || u.id::text) AS sender_name "
+                    "FROM chat_group_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE m.group_id = %s AND (%s = 0 OR m.id < %s) "
+                    "ORDER BY m.id DESC LIMIT 100", (gid, before, before))
+                rows = list(cur.fetchall())
+                rows.reverse()
+                has_more = len(rows) == 100
+            read_upto = 0
+            if rows:
+                max_id = int(rows[-1]["id"])
+                min_id = int(rows[0]["id"])
+                cur.execute(
+                    "UPDATE chat_group_members SET last_read_id = "
+                    "GREATEST(last_read_id, %s) WHERE group_id = %s AND user_id = %s "
+                    "RETURNING last_read_id", (max_id, gid, me))
+                r = cur.fetchone()
+                read_upto = int(r["last_read_id"]) if r else max_id
+                cur.execute(
+                    "SELECT m.id FROM chat_group_messages m "
+                    "JOIN chat_group_members gm ON gm.group_id = m.group_id "
+                    "AND gm.user_id <> m.sender_id AND gm.last_read_id >= m.id "
+                    "WHERE m.group_id = %s AND m.sender_id = %s "
+                    "AND m.id >= %s AND m.id <= %s", (gid, me, min_id, max_id))
+                readset = {int(x["id"]) for x in cur.fetchall()}
+                rids = list({int(m["reply_to"]) for m in rows if m.get("reply_to")})
+                rq = {}
+                if rids:
+                    cur.execute(
+                        "SELECT m.id, m.kind, m.body, m.media_name, "
+                        "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                        "'') AS sname "
+                        "FROM chat_group_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                        "WHERE m.id = ANY(%s)", (rids,))
+                    for qrow in cur.fetchall():
+                        rq[int(qrow["id"])] = (
+                            _chat_group_reply_preview(qrow["kind"], qrow["body"],
+                                                      qrow.get("media_name")),
+                            qrow["sname"] or "رد")
+                for m in rows:
+                    if m.get("reply_to") and int(m["reply_to"]) in rq:
+                        m["rtext"], m["rname"] = rq[int(m["reply_to"])]
+                    m["isread"] = (int(m["id"]) in readset) if m["sender_id"] == me else False
+            cur.execute("SELECT name FROM chat_groups WHERE id = %s", (gid,))
+            g = cur.fetchone()
+            gname = (g["name"] if g else "") or ""
+            cur.execute("SELECT COUNT(*) AS count FROM chat_group_members WHERE group_id = %s",
+                        (gid,))
+            cnt = int(cur.fetchone()["count"])
+        conn.commit()
+    finally:
+        release_connection(conn)
+    msgs = [_group_msg_dict(m, me) for m in rows]
+    extra = {"members_count": cnt, "group_name": gname}
+    return msgs, read_upto, has_more, None, extra
+
+
+def _pwa_api_chat_group_send(user, gid, kind, text, name, mime, data_b64, reply_to=0):
+    """v83: إرسال إلى مجموعة — نفس تحقق الوسائط وحد الإغراق المشترك.
+    يعيد (msg_dict, [(telegram_id, has_web)] للمستلمين عدا المرسل, اسم المجموعة, خطأ)."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return None, None, None, "طلب غير صالح."
+    now = time.time()
+    if len(_CHAT_RATE) > 400:
+        for k in [k2 for k2, v2 in _CHAT_RATE.items() if now - v2[0] > 600]:
+            _CHAT_RATE.pop(k, None)
+    win = _CHAT_RATE.get(me)
+    if not win or now - win[0] > 60:
+        _CHAT_RATE[me] = [now, 1]
+    else:
+        win[1] += 1
+        if win[1] > 25:
+            return None, None, None, "أرسلت رسائل كثيرة — انتظر قليلاً ثم أعد المحاولة."
+    kind = str(kind or "text").strip().lower()
+    if kind not in ("text", "image", "file", "audio", "video"):
+        kind = "text"
+    body, media, mname, mmime, msize = "", None, "", "", 0
+    if kind == "text":
+        body = str(text or "").strip()
+        if not body:
+            return None, None, None, "اكتب نص الرسالة أولاً."
+        body = body[:_CHAT_TEXT_MAX]
+    else:
+        raw = str(data_b64 or "")
+        if "," in raw and raw.strip().startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        try:
+            media = base64.b64decode(raw, validate=False)
+        except Exception:
+            return None, None, None, "المرفق غير صالح."
+        if not media:
+            return None, None, None, "المرفق فارغ."
+        if len(media) > _CHAT_MEDIA_MAX:
+            return None, None, None, "الملف كبير جداً — الحد 25 ميغابايت."
+        mname = str(name or "ملف").strip().replace("\r", " ").replace("\n", " ")[:200]
+        mmime = str(mime or "application/octet-stream").split(";")[0].strip().lower()[:100]
+        if kind == "image" and not mmime.startswith("image/"):
+            mmime = "image/jpeg"
+        if kind == "audio" and not (mmime.startswith("audio/") or mmime.startswith("video/webm")):
+            mmime = "audio/webm"
+        if kind == "video" and not mmime.startswith("video/"):
+            mmime = "video/mp4"
+        msize = len(media)
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            mem = _chat_group_member_row(cur, gid, me)
+            if not mem:
+                return None, None, None, "لست عضواً في هذه المجموعة."
+            try:
+                r_id = int(reply_to or 0)
+            except (TypeError, ValueError):
+                r_id = 0
+            rrow = None
+            if r_id:
+                cur.execute(
+                    "SELECT m.id, m.kind, m.body, m.media_name, "
+                    "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, '') AS rname "
+                    "FROM chat_group_messages m LEFT JOIN users u ON u.id = m.sender_id "
+                    "WHERE m.id = %s AND m.group_id = %s", (r_id, gid))
+                rrow = cur.fetchone()
+                if not rrow:
+                    r_id = 0
+            cur.execute(
+                "INSERT INTO chat_group_messages (group_id, sender_id, kind, body, media, "
+                "media_name, media_mime, media_size, reply_to) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+                (gid, me, kind, body, psycopg2.Binary(media) if media else None,
+                 mname, mmime, msize, r_id or None))
+            row = cur.fetchone()
+            cur.execute(
+                "UPDATE chat_group_members SET last_read_id = GREATEST(last_read_id, %s) "
+                "WHERE group_id = %s AND user_id = %s", (int(row["id"]), gid, me))
+            cur.execute(
+                "SELECT u.telegram_id, (a.user_id IS NOT NULL) AS has_web "
+                "FROM chat_group_members gm JOIN users u ON u.id = gm.user_id "
+                "LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE gm.group_id = %s AND gm.user_id <> %s "
+                "AND u.active = TRUE AND u.telegram_id IS NOT NULL", (gid, me))
+            recips = [(int(x["telegram_id"]), bool(x["has_web"])) for x in cur.fetchall()]
+            cur.execute("SELECT name FROM chat_groups WHERE id = %s", (gid,))
+            g2 = cur.fetchone()
+            gname = (g2["name"] if g2 else "") or ""
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] group send failed: " + str(e))
+        return None, None, None, "فشل الإرسال — أعد المحاولة."
+    finally:
+        release_connection(conn)
+    rtext, rname2 = "", ""
+    if rrow:
+        rtext = _chat_group_reply_preview(rrow["kind"], rrow["body"], rrow.get("media_name"))
+        rname2 = rrow.get("rname") or "رد"
+    msg = {"id": int(row["id"]), "mine": True, "kind": kind, "body": body,
+           "media": kind != "text", "media_name": mname, "media_mime": mmime,
+           "media_size": msize, "sender_name": user.get("name") or "",
+           "sender_id": me, "read": False, "reply_to": r_id,
+           "rtext": rtext, "rname": rname2,
+           "created_at": row["created_at"].isoformat() if row["created_at"] else ""}
+    return msg, recips, gname, None
+
+
+def _chat_unread_total_raw(cur, me):
+    """إجمالي غير المقروء (v83): المحادثات الفردية + كل مجموعاتي."""
+    cur.execute("SELECT COUNT(*) FROM chat_messages "
+                "WHERE recip_id = %s AND read_at IS NULL", (me,))
+    n = int(cur.fetchone()[0])
+    cur.execute(
+        "SELECT COALESCE(SUM(c), 0) FROM ("
+        "SELECT COUNT(*) AS c FROM chat_group_messages m "
+        "JOIN chat_group_members gm ON gm.group_id = m.group_id "
+        "WHERE gm.user_id = %s AND m.id > gm.last_read_id AND m.sender_id <> %s "
+        "GROUP BY m.group_id) t", (me, me))
+    n += int(cur.fetchone()[0])
+    return n
+
+
+def _pwa_api_chat_group_read(user, gid):
+    """v83: تعليم رسائل المجموعة مقروءة. يعيد إجمالي غير المقروء (فردي + مجموعات)."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return {"ok": False, "total": 0}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_group_members SET last_read_id = "
+                "GREATEST(last_read_id, COALESCE((SELECT MAX(id) FROM chat_group_messages "
+                "WHERE group_id = %s), 0)) WHERE group_id = %s AND user_id = %s",
+                (gid, gid, me))
+            n = _chat_unread_total_raw(cur, me)
+        conn.commit()
+        return {"ok": True, "total": min(n, 99)}
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_chat_group_members(user, gid):
+    """v83: أعضاء المجموعة — للعرض وإدارة الإضافة. للأعضاء فقط."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            mem = _chat_group_member_row(cur, gid, me)
+            if not mem:
+                return None, "لست عضواً في هذه المجموعة."
+            cur.execute(
+                "SELECT g.name, g.created_by FROM chat_groups g WHERE g.id = %s", (gid,))
+            g = cur.fetchone()
+            if not g:
+                return None, "المجموعة غير موجودة."
+            cur.execute(
+                "SELECT gm.user_id, gm.is_admin, u.role, u.last_seen, "
+                "COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username, "
+                "'#' || u.id::text) AS name "
+                "FROM chat_group_members gm JOIN users u ON u.id = gm.user_id "
+                "WHERE gm.group_id = %s ORDER BY gm.is_admin DESC, name", (gid,))
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    members = []
+    for r in rows:
+        members.append({"id": int(r["user_id"]), "name": r["name"],
+                        "role_label": ROLE_LABELS.get(r["role"], r["role"]),
+                        "is_admin": bool(r["is_admin"]),
+                        "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else ""})
+    me_row = next((m for m in members if m["id"] == me), None)
+    info = {"ok": True, "name": g["name"], "created_by": int(g["created_by"]),
+            "me_is_admin": bool(mem["is_admin"]),
+            "me_is_owner": int(g["created_by"]) == me,
+            "members": members}
+    return info, None
+
+
+def _pwa_api_chat_group_add_members(user, gid, member_ids):
+    """v83: إضافة أعضاء — مدير المجموعة أو مدير النظام فقط."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return None, "طلب غير صالح."
+    ids, seen = [], set()
+    for x in (member_ids or []):
+        try:
+            i = int(x)
+        except (TypeError, ValueError):
+            continue
+        if i not in seen:
+            seen.add(i)
+            ids.append(i)
+    if not ids:
+        return None, "اختر عضواً واحداً على الأقل."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            mem = _chat_group_member_row(cur, gid, me)
+            if not mem:
+                return None, "لست عضواً في هذه المجموعة."
+            cur.execute("SELECT created_by FROM chat_groups WHERE id = %s", (gid,))
+            g = cur.fetchone()
+            if not g:
+                return None, "المجموعة غير موجودة."
+            if not (mem["is_admin"] or int(g["created_by"]) == me
+                    or user.get("role") in ("admin", "manager")):
+                return None, "إضافة الأعضاء لمديري المجموعة فقط."
+            cur.execute(
+                "SELECT id FROM users WHERE id = ANY(%s) AND active = TRUE "
+                "AND (role IS NULL OR role <> %s)", (ids, ROLE_PENDING))
+            valid = [int(x[0]) for x in cur.fetchall()]
+            added = 0
+            if valid:
+                vals = [(gid, i, False) for i in valid]
+                psycopg2.extras.execute_values(
+                    cur,
+                    "INSERT INTO chat_group_members (group_id, user_id, is_admin) "
+                    "VALUES %s ON CONFLICT (group_id, user_id) DO NOTHING", vals)
+                added = len(valid)
+            cur.execute("SELECT COUNT(*) AS count FROM chat_group_members WHERE group_id = %s",
+                        (gid,))
+            cnt = int(cur.fetchone()["count"])
+        conn.commit()
+    finally:
+        release_connection(conn)
+    return {"ok": True, "added": added, "members_count": cnt}, None
+
+
+def _pwa_api_chat_group_leave(user, gid):
+    """v83: مغادرة مجموعة — وإن انفردت كلياً تُحذف تلقائياً."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM chat_group_members WHERE group_id = %s AND user_id = %s "
+                "RETURNING user_id", (gid, me))
+            if not cur.fetchone():
+                conn.rollback()
+                return None, "لست عضواً في هذه المجموعة."
+            cur.execute(
+                "DELETE FROM chat_groups WHERE id = %s AND NOT EXISTS ("
+                "SELECT 1 FROM chat_group_members WHERE group_id = %s)", (gid, gid))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return {"ok": True}, None
+
+
+def _pwa_api_chat_group_delete(user, gid):
+    """v83: حذف المجموعة كلياً برسائلها — المنشئ أو مدير النظام."""
+    me = user["id"]
+    try:
+        gid = int(gid)
+    except (TypeError, ValueError):
+        return None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT created_by FROM chat_groups WHERE id = %s", (gid,))
+            g = cur.fetchone()
+            if not g:
+                return None, "المجموعة غير موجودة."
+            if int(g[0]) != me and user.get("role") not in ("admin", "manager"):
+                return None, "الحذف لمنشئ المجموعة فقط."
+            cur.execute("DELETE FROM chat_groups WHERE id = %s", (gid,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return {"ok": True}, None
+
+
+def _pwa_api_chat_group_media(user, msg_id):
+    """v83: مرفق رسالة مجموعة — للأعضاء فقط. يعيد (bytes, mime, name, خطأ)."""
+    me = user["id"]
+    try:
+        msg_id = int(msg_id)
+    except (TypeError, ValueError):
+        return None, None, None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT m.media, m.media_mime, m.media_name FROM chat_group_messages m "
+                "JOIN chat_group_members gm ON gm.group_id = m.group_id AND gm.user_id = %s "
+                "WHERE m.id = %s", (me, msg_id))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row or not row[0]:
+        return None, None, None, "المرفق غير موجود."
+    return row[0], (row[1] or "application/octet-stream"), (row[2] or "ملف"), None
+
+
+def _pwa_api_chat_unread_total(user):
+    """v83: إجمالي غير المقروء يشمل المجموعات أيضاً."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            n = _chat_unread_total_raw(cur, user["id"])
         conn.commit()
         return {"ok": True, "total": min(n, 99)}
     finally:
@@ -16896,6 +18030,187 @@ def _pwa_api_receipt_thumb(user, order_id):
 
 
 # ─── معالجات الشات (async) ───
+
+# ─── v83: معالجات مجموعات الدردشة (async) ───
+
+async def pwa_chat_groups_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_chat_groups_list, user)
+    return _pwa_jr(data)
+
+
+async def pwa_chat_group_create_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    g, err2 = await _pwa_run(_pwa_api_chat_group_create, user,
+                             body.get("name"), body.get("members") or [])
+    if err2:
+        return _pwa_err(400, err2)
+    await _pwa_run(_audit_log, "group_create", user,
+                   details="مجموعة: " + str(g["name"]) + " — أعضاء: "
+                           + str(g["members_count"]),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "group": g})
+
+
+async def pwa_chat_gmsg_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    msgs, read_upto, has_more, err2, extra = await _pwa_run(
+        _pwa_api_chat_group_messages, user,
+        request.query.get("g"),
+        request.query.get("after", 0),
+        request.query.get("before", 0))
+    if err2:
+        return _pwa_err(400, err2)
+    d = {"ok": True, "messages": msgs, "read_upto": read_upto, "has_more": has_more}
+    if extra:
+        d["members_count"] = extra.get("members_count")
+        d["group_name"] = extra.get("group_name")
+    return _pwa_jr(d)
+
+
+async def pwa_chat_gsend_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    msg, recips, gname, err2 = await _pwa_run(
+        _pwa_api_chat_group_send, user, body.get("g"), body.get("kind"),
+        body.get("text"), body.get("name"), body.get("mime"), body.get("data"),
+        body.get("reply"))
+    if err2:
+        return _pwa_err(400, err2)
+    # إشعار تلغرام لأعضاء المجموعة عدا المرسل — 30 ثانية كحد أقصى لكل مستخدم
+    if TG_APP is not None and recips:
+        try:
+            if msg["kind"] == "text":
+                content = msg["body"][:300]
+            elif msg["kind"] == "image":
+                content = "🖼️ صورة مرفقة"
+            elif msg["kind"] == "audio":
+                content = "🎤 رسالة صوتية"
+            elif msg["kind"] == "video":
+                content = "🎬 فيديو مرفق"
+            else:
+                content = "📎 ملف: " + (msg["media_name"] or "")
+            note = ("💬 رسالة جديدة في مجموعة «" + str(gname or "") + "»\n"
+                    "من: " + str(user.get("name") or "?") + "\n\n" + content)
+            now = time.time()
+            for tid, _hw in recips:
+                if now - _CHAT_PING.get(tid, 0) >= 30:
+                    _CHAT_PING[tid] = now
+                    asyncio.create_task(_chat_ping_deliver(tid, note))
+        except Exception:
+            pass
+    await _pwa_run(_audit_log, "group_send", user,
+                   details="مجموعة: " + str(gname or body.get("g"))
+                           + " — نوع: " + msg["kind"],
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_chat_gread_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    data = await _pwa_run(_pwa_api_chat_group_read, user, body.get("g"))
+    return _pwa_jr(data)
+
+
+async def pwa_chat_gmembers_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    info, err2 = await _pwa_run(_pwa_api_chat_group_members, user,
+                                request.query.get("g"))
+    if err2:
+        return _pwa_err(400, err2)
+    return _pwa_jr(info)
+
+
+async def pwa_chat_gadd_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    data, err2 = await _pwa_run(_pwa_api_chat_group_add_members, user,
+                                body.get("g"), body.get("members") or [])
+    if err2:
+        return _pwa_err(400, err2)
+    await _pwa_run(_audit_log, "group_add", user,
+                   details="أضاف " + str(data.get("added")) + " عضواً للمجموعة #"
+                           + str(body.get("g")),
+                   ip=request.remote or "؟")
+    return _pwa_jr(data)
+
+
+async def pwa_chat_gleave_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    data, err2 = await _pwa_run(_pwa_api_chat_group_leave, user, body.get("g"))
+    if err2:
+        return _pwa_err(400, err2)
+    await _pwa_run(_audit_log, "group_leave", user,
+                   details="غادر المجموعة #" + str(body.get("g")),
+                   ip=request.remote or "؟")
+    return _pwa_jr(data)
+
+
+async def pwa_chat_gdelete_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    data, err2 = await _pwa_run(_pwa_api_chat_group_delete, user, body.get("g"))
+    if err2:
+        return _pwa_err(400, err2)
+    await _pwa_run(_audit_log, "group_delete", user,
+                   details="حذف المجموعة #" + str(body.get("g")),
+                   ip=request.remote or "؟")
+    return _pwa_jr(data)
+
+
+async def pwa_chat_gmedia_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data, mime, name, err2 = await _pwa_run(
+        _pwa_api_chat_group_media, user, request.query.get("id"))
+    if err2:
+        return _pwa_err(404, err2)
+    safe_name = str(name or "file").replace('"', "")[:120]
+    return web.Response(body=data, content_type=(mime or "application/octet-stream"),
+                        headers={"Cache-Control": "private, max-age=604800",
+                                 "Content-Disposition":
+                                     "inline; filename=\"" + safe_name + "\""})
+
 
 async def pwa_chat_contacts_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
@@ -17284,9 +18599,20 @@ def register_pwa_routes(app):
     # ── v61: واجهة المراسلة الاحترافية — يكتب الآن + بحث داخل المحادثة ──
     app.router.add_post("/api/chat/typing", pwa_chat_typing_handler)
     app.router.add_get("/api/chat/search", pwa_chat_search_handler)
+    # ── v83: مجموعات الدردشة ──
+    app.router.add_get("/api/chat/groups", pwa_chat_groups_handler)
+    app.router.add_post("/api/chat/groups/create", pwa_chat_group_create_handler)
+    app.router.add_get("/api/chat/gmsg", pwa_chat_gmsg_handler)
+    app.router.add_post("/api/chat/gsend", pwa_chat_gsend_handler)
+    app.router.add_post("/api/chat/gread", pwa_chat_gread_handler)
+    app.router.add_get("/api/chat/gmembers", pwa_chat_gmembers_handler)
+    app.router.add_post("/api/chat/gadd", pwa_chat_gadd_handler)
+    app.router.add_post("/api/chat/gleave", pwa_chat_gleave_handler)
+    app.router.add_post("/api/chat/gdelete", pwa_chat_gdelete_handler)
+    app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (38 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (48 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
