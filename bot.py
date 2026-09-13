@@ -1064,6 +1064,22 @@ _pool_creation_lock = threading.Lock()
 _db_fail_streak = 0  # v74: عداد نبضات DB الفاشلة المتتابعة للشفاء الذاتي
 
 
+# ═══ v85: إشعارات تشغيلية مؤجلة (تبديل قاعدة/استعادة) — لا إرسال تلغرامي
+# ═══ من خيوط قاعدة البيانات أبداً؛ حلقة keep-alive الحيّة هي من يرسلها.
+_pending_admin_notices = []
+_admin_notices_lock = threading.Lock()
+
+
+def _queue_admin_notice(text):
+    """v85: إدراج إشعار إدارة في الصف المؤجل (يُفرَّغ في keep-alive كل 3 دقائق)."""
+    try:
+        with _admin_notices_lock:
+            _pending_admin_notices.append(str(text)[:1500])
+            del _pending_admin_notices[:-5]
+    except Exception:
+        pass
+
+
 def _init_db_urls():
     """Parse DATABASE_URLS (comma-separated) or fall back to DATABASE_URL.
     Sets _db_urls list and validates at least one URL exists."""
@@ -1147,6 +1163,17 @@ def _try_single_connection(url):
         return None, False
 
 
+def _is_missing_table(err):
+    """v85: هل الخطأ = جدول غير موجود؟ (UndefinedTable عبر كل إصدارات psycopg2
+    بمطابقة اسم النوع أو نص الرسالة — بلا اعتماد على psycopg2.errors)."""
+    try:
+        tname = type(err).__name__
+        s = str(err)
+        return (tname == "UndefinedTable") or ("does not exist" in s and "relation" in s) or ("does not exist" in s and "table" in s.lower())
+    except Exception:
+        return False
+
+
 def _emergency_full_backup(url):
     """Attempt a FULL backup from a DB URL using a direct connection.
     Returns backup dict or None. Used during failover to preserve all data."""
@@ -1212,9 +1239,33 @@ def _switch_to_next_db(reason="connection failure"):
         old_index = _active_db_index
         old_url = _db_urls[old_index % len(_db_urls)]
         n = len(_db_urls)
+
+        # v85 حارس التبديل الكاذب: قبل أي مغادرة نعيد اختبار القاعدة الحالية
+        # اتصالاً مباشراً جديداً. إن كانت حيّة فالمشكل في الـPool فقط —
+        # نعيد بناءه ونبقى عليها (هذا ما يشفي انقطاع Neon العابر بلا هجرة).
+        try:
+            _re_conn, _re_ok = _try_single_connection(old_url)
+            if _re_ok:
+                try:
+                    _re_conn.close()
+                except Exception:
+                    pass
+                if _pool is not None:
+                    try:
+                        _pool.closeall()
+                    except Exception:
+                        pass
+                    _pool = None
+                init_pool(old_url)
+                logging.info("[DB] v85 anti-flap: القاعدة #" + str(old_index + 1)
+                             + " حيّة — أُعيد بناء الـPool فقط بلا تبديل")
+                return True
+        except Exception as _re_err:
+            logging.warning("[DB] v85 anti-flap re-test error: " + str(_re_err)[:150])
         
         # Step 1: Always try to grab a fresh full backup from current DB
         backup_data = None
+        _switch_restored = False
         # First try direct connection to old DB for fresh backup
         fresh_backup = _emergency_full_backup(old_url)
         if fresh_backup:
@@ -1224,6 +1275,17 @@ def _switch_to_next_db(reason="connection failure"):
             # Fall back to in-memory backup if direct connection failed
             backup_data = _last_backup_data
             logging.info("[DB] Using in-memory backup for switch (" + str(len(backup_data.get("products", []))) + " products)")
+        else:
+            # v85: لا نسخة ذاكرة — جرّب نسخة القرص (نجت داخل نفس الجلسة)
+            try:
+                _disk_b = _load_backup_from_disk()
+                if _disk_b and len(_disk_b.get("products", []) or []) > 0:
+                    backup_data = _disk_b
+                    _last_backup_data = _disk_b
+                    logging.info("[DB] v85: disk backup used for switch ("
+                                 + str(len(_disk_b.get("products", []))) + " products)")
+            except Exception as _dbk_err:
+                logging.warning("[DB] v85: disk backup fallback failed: " + str(_dbk_err)[:150])
 
         # Step 2: Close old pool
         if _pool is not None:
@@ -1248,6 +1310,20 @@ def _switch_to_next_db(reason="connection failure"):
                 _pool = None
                 init_pool(candidate_url)
                 logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
+                # v85: القاعدة الجديدة قد تكون حديثة الإنشاء بلا أي جداول —
+                # init_db هنا إلزامي (idempotent: CREATE IF NOT EXISTS + ترحيلات).
+                try:
+                    init_db()
+                    logging.info("[DB] v85: schema ensured on DB #" + str(candidate_index + 1))
+                except Exception as _sch_err:
+                    logging.error("[DB] v85: schema ensure failed on DB #"
+                                  + str(candidate_index + 1) + ": " + str(_sch_err)[:200])
+                # v85: عدّاد ساعات التشغيل خاصية زمن لا خاصية قاعدة —
+                # توحيده يمنع بطاقة 🩺 من العودة للحساب من الصفر.
+                try:
+                    _svc_merge_minutes_across_dbs()
+                except Exception as _mrg_err:
+                    logging.warning("[DB] v85: minutes merge skipped: " + str(_mrg_err)[:150])
                 # Step 4: Import backup into new DB — فقط إذا كانت القاعدة الهدف فارغة.
                 # الحماية: مع قاعدة واحدة قد ينقطع الاتصال عابراً ثم يعود وفيه بيانات
                 # أحدث من آخر نسخة — استيرادها هنا كان سيمحو العمليات الجديدة.
@@ -1265,16 +1341,34 @@ def _switch_to_next_db(reason="connection failure"):
                         finally:
                             release_connection(chk)
                     except Exception as e:
-                        logging.error("[DB] Empty-check on target DB failed: " + str(e))
-                        target_empty = False  # آمن: عند الشك لا تستورد شيئاً
+                        if _is_missing_table(e):
+                            # v85: القاعدة الهدف بلا جداول إطلاقاً = فارغة فعلاً —
+                            # الرفض هنا كان يترك البوت عالقاً على قاعدة عارية.
+                            target_empty = True
+                            logging.info("[DB] v85: target DB has no tables — treated as empty for restore")
+                        else:
+                            logging.error("[DB] Empty-check on target DB failed: " + str(e))
+                            target_empty = False  # آمن: عند الشك لا تستورد شيئاً
                     if target_empty:
                         try:
                             db_import_backup(backup_data)
                             logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1) + " (كانت فارغة — استعادة تلقائية)")
+                            _switch_restored = True
                         except Exception as e:
                             logging.error("[DB] Failed to restore backup into new DB: " + str(e))
                     else:
                         logging.info("[DB] Skipped auto-restore: DB #" + str(candidate_index + 1) + " تحتوي بيانات بالفعل — حماية من المحو")
+                # v85: إشعار الإدارة بالتبديل — كان موعوداً في التوثيق وغير منفَّذ
+                try:
+                    _queue_admin_notice(
+                        "🔄 تم تبديل قاعدة البيانات تلقائياً\n\n"
+                        "🗄 القاعدة النشطة الآن: #" + str(candidate_index + 1) + " من " + str(n) + "\n"
+                        "🛠 الجداول مهيأة تلقائياً"
+                        + (" واستُعيدت النسخة الاحتياطية ✅" if _switch_restored else "") + "\n"
+                        "ℹ️ بياناتك الأصلية باقية في قاعدتها السابقة."
+                    )
+                except Exception:
+                    pass
                 return True
 
         logging.error("[DB] ALL " + str(n) + " databases are unreachable!")
@@ -10139,6 +10233,61 @@ def _svc_clear(key):
         release_connection(conn)
 
 
+def _svc_merge_minutes_across_dbs():
+    """v85: عدّاد ساعات التشغيل خاصية زمن لا خاصية قاعدة. بعد أي تبديل أو
+    إقلاع على قاعدة أخرى تُقرأ قيمة render_min_<الشهر> من كل قاعدة مُعدّة
+    وتُكتب أكبر قيمة في القاعدة النشطة — فلا تعود بطاقة 🩺 للحساب من الصفر."""
+    month = _svc_now().strftime("%Y-%m")
+    key = "render_min_" + month
+    active_val = 0.0
+    best = 0.0
+    try:
+        _svc_ensure_table()
+        _row = _svc_get(key)
+        if _row and _row[0]:
+            active_val = float(_row[0] or 0.0)
+        best = active_val
+    except Exception as e:
+        logging.warning("[MONITOR] v85: merge read active failed: " + str(e)[:150])
+    for _u in (_db_urls or []):
+        if not _u:
+            continue
+        conn = None
+        try:
+            conn = psycopg2.connect(dsn=_u, **DB_CONNECT_KWARGS)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS service_monitor ("
+                    " k VARCHAR(80) PRIMARY KEY,"
+                    " v TEXT,"
+                    " at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+                )
+                cur.execute("SELECT v FROM service_monitor WHERE k = %s", (key,))
+                r = cur.fetchone()
+            conn.commit()
+            if r and r[0]:
+                try:
+                    best = max(best, float(r[0] or 0.0))
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.info("[MONITOR] v85: merge probe skipped for a DB: " + str(e)[:120])
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    if best > active_val:
+        try:
+            _svc_set(key, str(best))
+            logging.info("[MONITOR] v85: render_min merged to " + str(round(best, 1))
+                         + " min (كان " + str(round(active_val, 1)) + ")")
+        except Exception as e:
+            logging.warning("[MONITOR] v85: merge write failed: " + str(e)[:150])
+    return best
+
+
 def _svc_flag(key):
     row = _svc_get(key)
     return bool(row and row[0])
@@ -11794,6 +11943,26 @@ async def _keep_alive(app):
                             logging.error("[DB-HEAL] DB switch failed: " + str(sw_err)[:150])
             except Exception as e:
                 logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
+            # v85: تفريغ إشعارات الإدارة المؤجلة (تبديل قاعدة/تبنّي/استعادة)
+            try:
+                _drain = []
+                with _admin_notices_lock:
+                    if _pending_admin_notices:
+                        _drain = list(_pending_admin_notices)
+                        del _pending_admin_notices[:]
+                if _drain:
+                    try:
+                        _targets = sorted(set(ADMIN_IDS or ()) | set(OWNER_IDS or ()))
+                    except Exception:
+                        _targets = []
+                    for _nt in _drain:
+                        for _aid in _targets:
+                            try:
+                                await app.bot.send_message(chat_id=_aid, text=_nt)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
             await asyncio.sleep(180)
     finally:
         await session.close()
@@ -11824,7 +11993,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v84"
+PWA_VERSION = "v85"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -19048,8 +19217,14 @@ if __name__ == "__main__":
         _empty_db = False
         try:
             with _conn.cursor() as _cur:
-                _cur.execute("SELECT COUNT(*) FROM products")
-                _empty_db = (_cur.fetchone()[0] == 0)
+                try:
+                    _cur.execute("SELECT COUNT(*) FROM products")
+                    _empty_db = (_cur.fetchone()[0] == 0)
+                except Exception as _ce:
+                    if _is_missing_table(_ce):
+                        _empty_db = True  # v85: بلا جداول = فارغة فعلاً
+                    else:
+                        raise
             _conn.commit()
         finally:
             release_connection(_conn)
@@ -19071,8 +19246,59 @@ if __name__ == "__main__":
                 logging.info("[STARTUP] Auto-restored backup into empty DB (" + str(_nprod) + " products): " + str(_summary)[:150])
             else:
                 logging.info("[STARTUP] DB is empty and no usable backup found — starting fresh.")
+                # v85 التبنّي الذكي: إن وُجدت قاعدة مُعدّة أخرى فيها بيانات حقيقية
+                # تبنّها بدل العمل على قاعدة فارغة — تصحيح هدف فقط، لا نقل بيانات.
+                try:
+                    _adopt_idx = None
+                    _adopt_n = 0
+                    for _ai in range(len(_db_urls)):
+                        if _ai == _active_db_index:
+                            continue
+                        _ac, _aok = _try_single_connection(_db_urls[_ai])
+                        if not _aok:
+                            continue
+                        try:
+                            with _ac.cursor() as _acu:
+                                _acu.execute("SELECT COUNT(*) FROM products")
+                                _cnt = int(_acu.fetchone()[0] or 0)
+                            _ac.commit()
+                            if _cnt > _adopt_n:
+                                _adopt_n = _cnt
+                                _adopt_idx = _ai
+                        except Exception:
+                            pass  # قاعدة بلا جداول أو خطأ قراءة — تُتجاهل
+                        finally:
+                            try:
+                                _ac.close()
+                            except Exception:
+                                pass
+                    if _adopt_idx is not None and _adopt_n > 0:
+                        _active_db_index = _adopt_idx
+                        _pool = None
+                        init_pool(_db_urls[_adopt_idx])
+                        init_db()
+                        try:
+                            _svc_merge_minutes_across_dbs()
+                        except Exception:
+                            pass
+                        logging.warning("[STARTUP] v85: adopted populated DB #"
+                                        + str(_adopt_idx + 1) + " (" + str(_adopt_n) + " products)")
+                        _queue_admin_notice(
+                            "🛟 الإقلاع كان على قاعدة فارغة — تم التبنّي التلقائي\n\n"
+                            "🗄 القاعدة النشطة الآن: #" + str(_adopt_idx + 1)
+                            + " وفيها " + str(_adopt_n) + " سلعة.\n"
+                            "ℹ️ لم تُنقل أي بيانات — البوت صار يعمل على القاعدة المعبأة."
+                        )
+                except Exception as _adopt_err:
+                    logging.error("[STARTUP] v85: adopt check failed: " + str(_adopt_err)[:200])
     except Exception as e:
         logging.error("[STARTUP] Auto-restore check failed: " + str(e))
+    # v85: توحيد عدّاد ساعات التشغيل عبر كل القواعد عند كل إقلاع —
+    # بطاقة 🩺 تعرض الرقم الحقيقي التراكمي للشهر مهما كانت القاعدة النشطة.
+    try:
+        _svc_merge_minutes_across_dbs()
+    except Exception as _mrg_boot_err:
+        logging.warning("[STARTUP] v85: minutes merge failed: " + str(_mrg_boot_err)[:150])
     # (v80) قفل حلقة العجز عند الإقلاع: أي سلعة سالبة بلا طلب معلق تُسجل تلقائياً
     try:
         _sync_boot = sync_all_pending_deficits()
