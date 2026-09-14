@@ -1064,22 +1064,6 @@ _pool_creation_lock = threading.Lock()
 _db_fail_streak = 0  # v74: عداد نبضات DB الفاشلة المتتابعة للشفاء الذاتي
 
 
-# ═══ v85: إشعارات تشغيلية مؤجلة (تبديل قاعدة/استعادة) — لا إرسال تلغرامي
-# ═══ من خيوط قاعدة البيانات أبداً؛ حلقة keep-alive الحيّة هي من يرسلها.
-_pending_admin_notices = []
-_admin_notices_lock = threading.Lock()
-
-
-def _queue_admin_notice(text):
-    """v85: إدراج إشعار إدارة في الصف المؤجل (يُفرَّغ في keep-alive كل 3 دقائق)."""
-    try:
-        with _admin_notices_lock:
-            _pending_admin_notices.append(str(text)[:1500])
-            del _pending_admin_notices[:-5]
-    except Exception:
-        pass
-
-
 def _init_db_urls():
     """Parse DATABASE_URLS (comma-separated) or fall back to DATABASE_URL.
     Sets _db_urls list and validates at least one URL exists."""
@@ -1163,17 +1147,6 @@ def _try_single_connection(url):
         return None, False
 
 
-def _is_missing_table(err):
-    """v85: هل الخطأ = جدول غير موجود؟ (UndefinedTable عبر كل إصدارات psycopg2
-    بمطابقة اسم النوع أو نص الرسالة — بلا اعتماد على psycopg2.errors)."""
-    try:
-        tname = type(err).__name__
-        s = str(err)
-        return (tname == "UndefinedTable") or ("does not exist" in s and "relation" in s) or ("does not exist" in s and "table" in s.lower())
-    except Exception:
-        return False
-
-
 def _emergency_full_backup(url):
     """Attempt a FULL backup from a DB URL using a direct connection.
     Returns backup dict or None. Used during failover to preserve all data."""
@@ -1239,33 +1212,9 @@ def _switch_to_next_db(reason="connection failure"):
         old_index = _active_db_index
         old_url = _db_urls[old_index % len(_db_urls)]
         n = len(_db_urls)
-
-        # v85 حارس التبديل الكاذب: قبل أي مغادرة نعيد اختبار القاعدة الحالية
-        # اتصالاً مباشراً جديداً. إن كانت حيّة فالمشكل في الـPool فقط —
-        # نعيد بناءه ونبقى عليها (هذا ما يشفي انقطاع Neon العابر بلا هجرة).
-        try:
-            _re_conn, _re_ok = _try_single_connection(old_url)
-            if _re_ok:
-                try:
-                    _re_conn.close()
-                except Exception:
-                    pass
-                if _pool is not None:
-                    try:
-                        _pool.closeall()
-                    except Exception:
-                        pass
-                    _pool = None
-                init_pool(old_url)
-                logging.info("[DB] v85 anti-flap: القاعدة #" + str(old_index + 1)
-                             + " حيّة — أُعيد بناء الـPool فقط بلا تبديل")
-                return True
-        except Exception as _re_err:
-            logging.warning("[DB] v85 anti-flap re-test error: " + str(_re_err)[:150])
         
         # Step 1: Always try to grab a fresh full backup from current DB
         backup_data = None
-        _switch_restored = False
         # First try direct connection to old DB for fresh backup
         fresh_backup = _emergency_full_backup(old_url)
         if fresh_backup:
@@ -1275,17 +1224,6 @@ def _switch_to_next_db(reason="connection failure"):
             # Fall back to in-memory backup if direct connection failed
             backup_data = _last_backup_data
             logging.info("[DB] Using in-memory backup for switch (" + str(len(backup_data.get("products", []))) + " products)")
-        else:
-            # v85: لا نسخة ذاكرة — جرّب نسخة القرص (نجت داخل نفس الجلسة)
-            try:
-                _disk_b = _load_backup_from_disk()
-                if _disk_b and len(_disk_b.get("products", []) or []) > 0:
-                    backup_data = _disk_b
-                    _last_backup_data = _disk_b
-                    logging.info("[DB] v85: disk backup used for switch ("
-                                 + str(len(_disk_b.get("products", []))) + " products)")
-            except Exception as _dbk_err:
-                logging.warning("[DB] v85: disk backup fallback failed: " + str(_dbk_err)[:150])
 
         # Step 2: Close old pool
         if _pool is not None:
@@ -1310,20 +1248,26 @@ def _switch_to_next_db(reason="connection failure"):
                 _pool = None
                 init_pool(candidate_url)
                 logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
-                # v85: القاعدة الجديدة قد تكون حديثة الإنشاء بلا أي جداول —
-                # init_db هنا إلزامي (idempotent: CREATE IF NOT EXISTS + ترحيلات).
+                # v85 إصلاح جذري: زرع المخطط الكامل على القاعدة الهدف فور التبديل —
+                # قاعدة حديثة الإنشاء بلا جداول كانت تُسقط كل الأزرار
+                # (UndefinedTable: relation "users" does not exist) وتُبطل
+                # فحص الفراغ أدناه فلا تُستعاد النسخة تلقائياً أبداً.
+                # SCHEMA_SQL والترحيلات كلها idempotent: لا تضر قاعدة معمّرة
+                # وتُكمل ناقص قاعدة فارغة. اتصال مباشر بلا get_connection
+                # حتى لا تتكرر استدعاءات _switch_to_next_db داخل القفل.
                 try:
-                    init_db()
-                    logging.info("[DB] v85: schema ensured on DB #" + str(candidate_index + 1))
-                except Exception as _sch_err:
-                    logging.error("[DB] v85: schema ensure failed on DB #"
-                                  + str(candidate_index + 1) + ": " + str(_sch_err)[:200])
-                # v85: عدّاد ساعات التشغيل خاصية زمن لا خاصية قاعدة —
-                # توحيده يمنع بطاقة 🩺 من العودة للحساب من الصفر.
-                try:
-                    _svc_merge_minutes_across_dbs()
-                except Exception as _mrg_err:
-                    logging.warning("[DB] v85: minutes merge skipped: " + str(_mrg_err)[:150])
+                    _sc, _sc_ok = _try_single_connection(candidate_url)
+                    if _sc_ok:
+                        try:
+                            init_db(_sc)
+                            logging.info("[DB] v85: schema ensured on DB #" + str(candidate_index + 1))
+                        finally:
+                            try:
+                                _sc.close()
+                            except Exception:
+                                pass
+                except Exception as _schema_err:
+                    logging.error("[DB] v85 schema ensure failed: " + str(_schema_err)[:150])
                 # Step 4: Import backup into new DB — فقط إذا كانت القاعدة الهدف فارغة.
                 # الحماية: مع قاعدة واحدة قد ينقطع الاتصال عابراً ثم يعود وفيه بيانات
                 # أحدث من آخر نسخة — استيرادها هنا كان سيمحو العمليات الجديدة.
@@ -1341,34 +1285,16 @@ def _switch_to_next_db(reason="connection failure"):
                         finally:
                             release_connection(chk)
                     except Exception as e:
-                        if _is_missing_table(e):
-                            # v85: القاعدة الهدف بلا جداول إطلاقاً = فارغة فعلاً —
-                            # الرفض هنا كان يترك البوت عالقاً على قاعدة عارية.
-                            target_empty = True
-                            logging.info("[DB] v85: target DB has no tables — treated as empty for restore")
-                        else:
-                            logging.error("[DB] Empty-check on target DB failed: " + str(e))
-                            target_empty = False  # آمن: عند الشك لا تستورد شيئاً
+                        logging.error("[DB] Empty-check on target DB failed: " + str(e))
+                        target_empty = False  # آمن: عند الشك لا تستورد شيئاً
                     if target_empty:
                         try:
                             db_import_backup(backup_data)
                             logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1) + " (كانت فارغة — استعادة تلقائية)")
-                            _switch_restored = True
                         except Exception as e:
                             logging.error("[DB] Failed to restore backup into new DB: " + str(e))
                     else:
                         logging.info("[DB] Skipped auto-restore: DB #" + str(candidate_index + 1) + " تحتوي بيانات بالفعل — حماية من المحو")
-                # v85: إشعار الإدارة بالتبديل — كان موعوداً في التوثيق وغير منفَّذ
-                try:
-                    _queue_admin_notice(
-                        "🔄 تم تبديل قاعدة البيانات تلقائياً\n\n"
-                        "🗄 القاعدة النشطة الآن: #" + str(candidate_index + 1) + " من " + str(n) + "\n"
-                        "🛠 الجداول مهيأة تلقائياً"
-                        + (" واستُعيدت النسخة الاحتياطية ✅" if _switch_restored else "") + "\n"
-                        "ℹ️ بياناتك الأصلية باقية في قاعدتها السابقة."
-                    )
-                except Exception:
-                    pass
                 return True
 
         logging.error("[DB] ALL " + str(n) + " databases are unreachable!")
@@ -1902,8 +1828,12 @@ CREATE TABLE IF NOT EXISTS service_monitor (
 """
 
 
-def init_db():
-    conn = get_connection()
+def init_db(conn=None):
+    # v85: يقبل اتصالاً جاهزاً — لزرع المخطط أثناء تبديل القواعد مباشرة
+    # بلا مرور بـ get_connection (يمنع أي حلقة قفل/فشل تبادلية).
+    owned = conn is None
+    if owned:
+        conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
@@ -2269,7 +2199,8 @@ CREATE TABLE IF NOT EXISTS bot_settings (
         print("[DB] Schema init failed: " + str(e))
         raise
     finally:
-        release_connection(conn)
+        if owned:
+            release_connection(conn)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3850,6 +3781,9 @@ STATE_ALERT_MSG = "waiting_alert_msg"
 # v83: التنبيه عام + خاص — حالة اختيار النوع وحالة نص التنبيه الخاص
 STATE_ALERT_MODE = "waiting_alert_mode"
 STATE_ALERT_PRIV_MSG = "waiting_alert_priv_msg"
+# v86: تنبيه خاص لعدة معنيين — تحديد المستلمين في رسالة واحدة بدل القوائم
+STATE_ALERT_PRIV_MULTI = "waiting_alert_priv_multi"
+STATE_ALERT_PRIV_MULTI_MSG = "waiting_alert_priv_multi_msg"
 STATE_INVOICE_CUSTOMER = "waiting_invoice_customer"
 STATE_INVOICE_PRODUCT = "waiting_invoice_product"
 STATE_INVOICE_QTY = "waiting_invoice_qty"
@@ -6945,13 +6879,15 @@ def _alert_users_keyboard(users, offset=0):
 
 
 async def _alert_load_users():
-    """المستخدمون القابلون للتنبيه — نفس فلتر التنبيه العام: لديهم تلغرام ونشطون."""
+    """المستخدمون القابلون للتنبيه — نفس فلتر التنبيه العام: لديهم تلغرام ونشطون.
+    v86 إصلاح: العنصر الأول = telegram_id (وليس users.id) — إرسال التنبيه
+    يحتاج chat_id التلغرامي؛ كان يُرسل للرقم التسلسلي الداخلي فلا تصل الرسالة."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT u.id, COALESCE(NULLIF(u.display_name, ''), u.first_name, "
-                "u.username, '#' || u.id::text) AS name, u.username "
+                "SELECT u.telegram_id, COALESCE(NULLIF(u.display_name, ''), u.first_name, "
+                "u.username, '#' || u.telegram_id::text) AS name, u.username "
                 "FROM users u WHERE u.active = TRUE AND u.telegram_id IS NOT NULL "
                 "AND (u.role IS NULL OR u.role <> %s) ORDER BY name",
                 (ROLE_PENDING,))
@@ -6971,6 +6907,83 @@ async def _alert_load_users():
     return out
 
 
+def _alert_load_users_full():
+    """v86: كل المستخدمين النشطين ذوي تلغرام مع أعمدة المطابقة الكاملة —
+    لتطابق أسماء المستلمين في ميزة «عدة معنيين برسالة واحدة»."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT u.id, u.telegram_id, u.username, u.first_name, u.display_name "
+                "FROM users u WHERE u.active = TRUE AND u.telegram_id IS NOT NULL "
+                "AND (u.role IS NULL OR u.role <> %s)",
+                (ROLE_PENDING,))
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return rows
+
+
+def _resolve_alert_recipients(text):
+    """v86: مطابقة أسماء المستلمين من رسالة واحدة.
+    يقبل مزيجاً من: @username / username / الاسم المعروض / الاسم الأول / ID تلغرام،
+    مفصولة بمسافة أو سطر أو فاصلة (عربية ، لاتينية , أو ؛).
+    المطابقة: دقيقة أولاً (معرف ← اسم مستخدم ← اسم معروض/أول) ثم جزئية فريدة.
+    يعيد (resolved, unknown): resolved قواميس {id, tid, name}، unknown التوكنات غير المعروفة."""
+    tokens = [t for t in re.split(r"[\s،,؛;\n\r\t]+", str(text or "").strip()) if t]
+    if not tokens:
+        return [], []
+    rows = _alert_load_users_full()
+    by_uname, by_display, by_tid = {}, {}, {}
+    for r in rows:
+        _id, tid, uname, fname, dname = r[0], r[1], r[2], r[3], r[4]
+        u = _pwa_norm_username(uname)
+        if u:
+            by_uname[u] = (_id, tid, uname, fname, dname)
+        for nm in (_pwa_norm_username(dname), _pwa_norm_username(fname)):
+            if nm:
+                by_display.setdefault(nm, []).append((_id, tid, uname, fname, dname))
+        if tid:
+            by_tid[str(int(tid))] = (_id, tid, uname, fname, dname)
+    resolved, seen, unknown = [], set(), []
+    for tok in tokens:
+        key = _pwa_norm_username(tok)
+        hit = None
+        if key in by_tid:
+            hit = by_tid[key]
+        elif key and key in by_uname:
+            hit = by_uname[key]
+        elif key and key in by_display:
+            # v86: تطابق اسم معروض/أول لعدة مستخدمين = غموض — يُرفض ولا يُخمّن
+            # (وإلا وصل التنبيه لشخص خاطئ بصمت). الفريد فقط يُقبل.
+            cands0 = by_display[key]
+            uniq0 = {(c[0], c[1]) for c in cands0}
+            if len(uniq0) == 1:
+                hit = cands0[0]
+        if hit is None:
+            # مطابقة جزئية فريدة على الاسم المعروض/الأول — تسامح مع أسماء ناقصة
+            cands = [v for k, lst in by_display.items() if key and key in k for v in lst]
+            uniq = {(c[0], c[1]) for c in cands}
+            if len(uniq) == 1:
+                hit = cands[0]
+        if hit is None:
+            unknown.append(tok)
+            continue
+        if hit[0] in seen:
+            continue  # نفس المستخدم ذُكر مرتين — يُحسب مرة واحدة
+        seen.add(hit[0])
+        _id, tid, uname, fname, dname = hit
+        nm = str(dname or fname or uname or ("#" + str(tid))).strip()
+        if uname:
+            nm = nm + " (@" + str(uname) + ")"
+        resolved.append({"id": int(_id), "tid": int(tid), "name": nm})
+    return resolved, unknown
+
+
 async def callback_alert_pick_handler(update, context):
     """v83: أزرار التنبيه — النوع (عام/خاص/إلغاء) + اختيار المستخدم + ترقيم الصفحات."""
     query = update.callback_query
@@ -6981,13 +6994,37 @@ async def callback_alert_pick_handler(update, context):
     data = query.data or ""
     if data == "alertmode_cancel":
         context.user_data.clear()
-        await query.edit_message_text("تم الإلغاء.", reply_markup=get_admin_keyboard())
+        # v86 إصلاح BadRequest: edit_message_text تقبل لوحة inline فقط —
+        # لوحة الرد العادية تُرسل في رسالة منفصلة (نفس نمط المشروع الآمن).
+        await query.edit_message_text("تم الإلغاء.")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id, text="🏠 القائمة الرئيسية:",
+            reply_markup=get_admin_keyboard())
         return
     if data == "alertmode_all":
         _set_state(context, STATE_ALERT_MSG)
+        # v86 إصلاح BadRequest: لا لوحة رد داخل edit — رسالة منفصلة للوحة
         await query.edit_message_text(
             "\U0001f514 أرسل نص التنبيه العام:" + chr(10) + chr(10)
-            + "سيتم إرساله لجميع المستخدمين.",
+            + "سيتم إرساله لجميع المستخدمين.")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✍️ اكتب النص الآن أو اضغط ❌ إلغاء:",
+            reply_markup=get_input_keyboard())
+        return
+    if data == "alertmode_priv_multi":
+        # v86: تنبيه خاص لعدة معنيين — تحديدهم كلهم في رسالة واحدة
+        _set_state(context, STATE_ALERT_PRIV_MULTI)
+        await query.edit_message_text(
+            "👥 تنبيه خاص لعدة معنيين:" + chr(10) + chr(10)
+            + "أرسل المستلمين في رسالة واحدة، مفصولين بمسافة أو سطر أو فاصلة:" + chr(10)
+            + "• @اسم_المستخدم" + chr(10)
+            + "• الاسم المعروض أو الاسم الأول" + chr(10)
+            + "• رقم المستخدم ID" + chr(10) + chr(10)
+            + "مثال: @ali @محمد 123456789")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✍️ أرسل الأسماء الآن أو اضغط ❌ إلغاء:",
             reply_markup=get_input_keyboard())
         return
     if data == "alertmode_priv":
@@ -6999,8 +7036,11 @@ async def callback_alert_pick_handler(update, context):
             return
         if not users:
             context.user_data.clear()
+            # v86 إصلاح BadRequest: لا لوحة رد داخل edit — رسالة منفصلة
             await query.edit_message_text(
-                "لا يوجد مستخدمون لديهم حساب تلغرام.",
+                "لا يوجد مستخدمون لديهم حساب تلغرام.")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id, text="🏠 القائمة الرئيسية:",
                 reply_markup=get_admin_keyboard())
             return
         context.user_data["alert_users"] = users
@@ -7033,8 +7073,12 @@ async def callback_alert_pick_handler(update, context):
         uname = next((n for i, n in users if i == uid), "#" + str(uid))
         context.user_data["alert_target"] = {"id": uid, "name": uname}
         _set_state(context, STATE_ALERT_PRIV_MSG)
+        # v86 إصلاح BadRequest: لا لوحة رد داخل edit — رسالة منفصلة
         await query.edit_message_text(
-            "\U0001f514 أرسل نص التنبيه الخاص إلى " + uname + ":",
+            "\U0001f514 أرسل نص التنبيه الخاص إلى " + uname + ":")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✍️ اكتب النص الآن أو اضغط ❌ إلغاء:",
             reply_markup=get_input_keyboard())
         return
 
@@ -8458,6 +8502,7 @@ async def handle_admin_message(update, context):
             alert_mode_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📢 عام — لكل المستخدمين", callback_data="alertmode_all")],
                 [InlineKeyboardButton("👤 خاص — مستخدم محدد", callback_data="alertmode_priv")],
+                [InlineKeyboardButton("👥 خاص — عدة معنيين برسالة واحدة", callback_data="alertmode_priv_multi")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="alertmode_cancel")],
             ])
             await update.message.reply_text(
@@ -9004,6 +9049,61 @@ async def handle_admin_message(update, context):
                 "❌ تعذر الإرسال: " + str(e) + chr(10)
                 + "ربما أوقف المستخدم البوت — لم يُرسل التنبيه.",
                 reply_markup=get_input_keyboard())
+        context.user_data.clear()
+        return
+    elif state == STATE_ALERT_PRIV_MULTI:
+        # v86: تحديد المعنيين كلهم في رسالة واحدة
+        try:
+            resolved, unknown = await asyncio.to_thread(_resolve_alert_recipients, text)
+        except Exception as e:
+            context.user_data.clear()
+            await update.message.reply_text("❌ خطأ في قراءة المستخدمين: " + str(e),
+                                            reply_markup=get_input_keyboard())
+            return
+        if not resolved:
+            await update.message.reply_text(
+                "❌ لم أتعرف على أي اسم مما أرسلته:" + chr(10)
+                + chr(10).join("• " + u for u in unknown[:10]) + chr(10) + chr(10)
+                + "أعد إرسال الأسماء (أو اضغط ❌ إلغاء).",
+                reply_markup=get_input_keyboard())
+            return
+        context.user_data["alert_targets"] = resolved
+        _set_state(context, STATE_ALERT_PRIV_MULTI_MSG)
+        msg = "✅ تعرفت على " + str(len(resolved)) + " مستلم:" + chr(10)
+        msg = msg + chr(10).join("• " + r["name"] for r in resolved[:25])
+        if unknown:
+            msg = msg + chr(10) + chr(10) + "⚠️ لم أتعرف على: " + "، ".join(unknown[:10])
+        msg = msg + chr(10) + chr(10) + "✍️ الآن أرسل نص التنبيه (سيصل لكل المعنيين):"
+        await update.message.reply_text(msg, reply_markup=get_input_keyboard())
+        return
+    elif state == STATE_ALERT_PRIV_MULTI_MSG:
+        # v86: إرسال التنبيه الخاص لكل المعنيين المحددين في رسالة واحدة
+        targets = context.user_data.get("alert_targets") or []
+        alert_text = text.strip()
+        if not targets:
+            context.user_data.clear()
+            await update.message.reply_text(
+                "❌ انتهت صلاحية القائمة — ابدأ من زر 🔔 تنبيه.",
+                reply_markup=get_admin_keyboard())
+            return
+        if not alert_text:
+            await update.message.reply_text("❌ أرسل نص التنبيه.", reply_markup=get_input_keyboard())
+            return
+        priv_msg = "🔔 تنبيه خاص من الإدارة:"
+        priv_msg = priv_msg + chr(10) + chr(10) + alert_text[:4000]
+        sent, failed = 0, []
+        for t in targets:
+            try:
+                await context.bot.send_message(chat_id=int(t["tid"]), text=priv_msg)
+                sent = sent + 1
+            except Exception:
+                failed.append(str(t.get("name") or "#" + str(t.get("tid"))))
+            await asyncio.sleep(0.05)
+        result_msg = "✅ تم إرسال التنبيه الخاص إلى " + str(sent) + " من " + str(len(targets)) + "."
+        if failed:
+            result_msg = (result_msg + chr(10) + "⚠️ فشل الإرسال لـ: " + "، ".join(failed[:10])
+                          + chr(10) + "ربما أوقفوا البوت — حاول لاحقاً.")
+        await update.message.reply_text(result_msg, reply_markup=get_admin_keyboard())
         context.user_data.clear()
         return
     elif state == STATE_OIL_READING:
@@ -10231,61 +10331,6 @@ def _svc_clear(key):
         conn.commit()
     finally:
         release_connection(conn)
-
-
-def _svc_merge_minutes_across_dbs():
-    """v85: عدّاد ساعات التشغيل خاصية زمن لا خاصية قاعدة. بعد أي تبديل أو
-    إقلاع على قاعدة أخرى تُقرأ قيمة render_min_<الشهر> من كل قاعدة مُعدّة
-    وتُكتب أكبر قيمة في القاعدة النشطة — فلا تعود بطاقة 🩺 للحساب من الصفر."""
-    month = _svc_now().strftime("%Y-%m")
-    key = "render_min_" + month
-    active_val = 0.0
-    best = 0.0
-    try:
-        _svc_ensure_table()
-        _row = _svc_get(key)
-        if _row and _row[0]:
-            active_val = float(_row[0] or 0.0)
-        best = active_val
-    except Exception as e:
-        logging.warning("[MONITOR] v85: merge read active failed: " + str(e)[:150])
-    for _u in (_db_urls or []):
-        if not _u:
-            continue
-        conn = None
-        try:
-            conn = psycopg2.connect(dsn=_u, **DB_CONNECT_KWARGS)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "CREATE TABLE IF NOT EXISTS service_monitor ("
-                    " k VARCHAR(80) PRIMARY KEY,"
-                    " v TEXT,"
-                    " at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
-                )
-                cur.execute("SELECT v FROM service_monitor WHERE k = %s", (key,))
-                r = cur.fetchone()
-            conn.commit()
-            if r and r[0]:
-                try:
-                    best = max(best, float(r[0] or 0.0))
-                except Exception:
-                    pass
-        except Exception as e:
-            logging.info("[MONITOR] v85: merge probe skipped for a DB: " + str(e)[:120])
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-    if best > active_val:
-        try:
-            _svc_set(key, str(best))
-            logging.info("[MONITOR] v85: render_min merged to " + str(round(best, 1))
-                         + " min (كان " + str(round(active_val, 1)) + ")")
-        except Exception as e:
-            logging.warning("[MONITOR] v85: merge write failed: " + str(e)[:150])
-    return best
 
 
 def _svc_flag(key):
@@ -11901,6 +11946,23 @@ def _db_ping_sync():
         release_connection(conn)
 
 
+def _schema_missing_sync():
+    """v85: True فقط إذا كان جدول users مفقوداً من القاعدة النشطة.
+    SELECT 1 ينجح حتى على قاعدة بلا جداول — فكان النبض لا يكشف هذا العطل
+    ولا يُفتعل شفاء. هذا الفحص يغلق الثغرة. عند فشل الاتصال نفسه نُرجع
+    False (النبض والعداد _db_fail_streak يتكفلان بذلك المسار)."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.users')")
+                return cur.fetchone()[0] is None
+        finally:
+            release_connection(conn)
+    except Exception:
+        return False
+
+
 async def _keep_alive(app):
     """Ping the external Render URL + Neon DB every 3 min to prevent spin-down.
     v74: شفاء ذاتي — فشل متتابع للنبضة = إعادة بناء Pool ثم تبديل قاعدة تلقائياً."""
@@ -11925,6 +11987,31 @@ async def _keep_alive(app):
                 try:
                     await asyncio.to_thread(_db_ping_sync)
                     _db_fail_streak = 0
+                    # v85: مراقبة المخطط — قاعدة نشطة بلا جداول كانت تبقى
+                    # معطوبة للأبد (النبض SELECT 1 ينجح فلا تبديل ولا شفاء).
+                    if await asyncio.to_thread(_schema_missing_sync):
+                        logging.warning("[DB-HEAL] قاعدة نشطة بلا مخطط (users مفقود) — زرع init_db فوري...")
+                        await asyncio.to_thread(init_db)
+                        _lb = _last_backup_data
+                        if _lb and len(_lb.get("products", [])) > 0:
+                            try:
+                                db_import_backup(_lb)
+                                logging.info("[DB-HEAL] v85: استُعيدت النسخة الاحتياطية بعد زرع المخطط")
+                            except Exception as _ri:
+                                logging.error("[DB-HEAL] استعادة النسخة فشلت: " + str(_ri)[:150])
+                        try:
+                            for _oid in list(OWNER_IDS)[:3]:
+                                try:
+                                    await app.bot.send_message(
+                                        chat_id=_oid,
+                                        text=("🛠 شفاء ذاتي v85\n"
+                                              "القاعدة النشطة كانت بلا جداول — وهي سبب أخطاء UndefinedTable على كل الأزرار.\n"
+                                              "تم زرع المخطط تلقائياً والبوت عامل الآن.\n"
+                                              "إن ظهرت السلع فارغة فبياناتك محفوظة في القاعدة الأصلية وستعود مع أول استعادة/تبديل ناجح إليها."))
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                 except Exception as db_err:
                     _db_fail_streak += 1
                     logging.warning("[KEEP-ALIVE] DB ping failed (" + str(_db_fail_streak) + "): " + str(db_err))
@@ -11943,26 +12030,6 @@ async def _keep_alive(app):
                             logging.error("[DB-HEAL] DB switch failed: " + str(sw_err)[:150])
             except Exception as e:
                 logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
-            # v85: تفريغ إشعارات الإدارة المؤجلة (تبديل قاعدة/تبنّي/استعادة)
-            try:
-                _drain = []
-                with _admin_notices_lock:
-                    if _pending_admin_notices:
-                        _drain = list(_pending_admin_notices)
-                        del _pending_admin_notices[:]
-                if _drain:
-                    try:
-                        _targets = sorted(set(ADMIN_IDS or ()) | set(OWNER_IDS or ()))
-                    except Exception:
-                        _targets = []
-                    for _nt in _drain:
-                        for _aid in _targets:
-                            try:
-                                await app.bot.send_message(chat_id=_aid, text=_nt)
-                            except Exception:
-                                pass
-            except Exception:
-                pass
             await asyncio.sleep(180)
     finally:
         await session.close()
@@ -11993,7 +12060,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v85"
+PWA_VERSION = "v86"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -19217,14 +19284,8 @@ if __name__ == "__main__":
         _empty_db = False
         try:
             with _conn.cursor() as _cur:
-                try:
-                    _cur.execute("SELECT COUNT(*) FROM products")
-                    _empty_db = (_cur.fetchone()[0] == 0)
-                except Exception as _ce:
-                    if _is_missing_table(_ce):
-                        _empty_db = True  # v85: بلا جداول = فارغة فعلاً
-                    else:
-                        raise
+                _cur.execute("SELECT COUNT(*) FROM products")
+                _empty_db = (_cur.fetchone()[0] == 0)
             _conn.commit()
         finally:
             release_connection(_conn)
@@ -19246,59 +19307,8 @@ if __name__ == "__main__":
                 logging.info("[STARTUP] Auto-restored backup into empty DB (" + str(_nprod) + " products): " + str(_summary)[:150])
             else:
                 logging.info("[STARTUP] DB is empty and no usable backup found — starting fresh.")
-                # v85 التبنّي الذكي: إن وُجدت قاعدة مُعدّة أخرى فيها بيانات حقيقية
-                # تبنّها بدل العمل على قاعدة فارغة — تصحيح هدف فقط، لا نقل بيانات.
-                try:
-                    _adopt_idx = None
-                    _adopt_n = 0
-                    for _ai in range(len(_db_urls)):
-                        if _ai == _active_db_index:
-                            continue
-                        _ac, _aok = _try_single_connection(_db_urls[_ai])
-                        if not _aok:
-                            continue
-                        try:
-                            with _ac.cursor() as _acu:
-                                _acu.execute("SELECT COUNT(*) FROM products")
-                                _cnt = int(_acu.fetchone()[0] or 0)
-                            _ac.commit()
-                            if _cnt > _adopt_n:
-                                _adopt_n = _cnt
-                                _adopt_idx = _ai
-                        except Exception:
-                            pass  # قاعدة بلا جداول أو خطأ قراءة — تُتجاهل
-                        finally:
-                            try:
-                                _ac.close()
-                            except Exception:
-                                pass
-                    if _adopt_idx is not None and _adopt_n > 0:
-                        _active_db_index = _adopt_idx
-                        _pool = None
-                        init_pool(_db_urls[_adopt_idx])
-                        init_db()
-                        try:
-                            _svc_merge_minutes_across_dbs()
-                        except Exception:
-                            pass
-                        logging.warning("[STARTUP] v85: adopted populated DB #"
-                                        + str(_adopt_idx + 1) + " (" + str(_adopt_n) + " products)")
-                        _queue_admin_notice(
-                            "🛟 الإقلاع كان على قاعدة فارغة — تم التبنّي التلقائي\n\n"
-                            "🗄 القاعدة النشطة الآن: #" + str(_adopt_idx + 1)
-                            + " وفيها " + str(_adopt_n) + " سلعة.\n"
-                            "ℹ️ لم تُنقل أي بيانات — البوت صار يعمل على القاعدة المعبأة."
-                        )
-                except Exception as _adopt_err:
-                    logging.error("[STARTUP] v85: adopt check failed: " + str(_adopt_err)[:200])
     except Exception as e:
         logging.error("[STARTUP] Auto-restore check failed: " + str(e))
-    # v85: توحيد عدّاد ساعات التشغيل عبر كل القواعد عند كل إقلاع —
-    # بطاقة 🩺 تعرض الرقم الحقيقي التراكمي للشهر مهما كانت القاعدة النشطة.
-    try:
-        _svc_merge_minutes_across_dbs()
-    except Exception as _mrg_boot_err:
-        logging.warning("[STARTUP] v85: minutes merge failed: " + str(_mrg_boot_err)[:150])
     # (v80) قفل حلقة العجز عند الإقلاع: أي سلعة سالبة بلا طلب معلق تُسجل تلقائياً
     try:
         _sync_boot = sync_all_pending_deficits()
