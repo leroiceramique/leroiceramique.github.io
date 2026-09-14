@@ -1046,22 +1046,36 @@ def _init_low_stock_ids():
         logging.warning("[INIT] Failed to init low-stock IDs: " + str(e))
 
 # ═══════════════════════════════════════════════════════════
-#  DATABASE — MULTI-URL FALLBACK SYSTEM
+#  DATABASE — SINGLE SOURCE (v87)
 # ═══════════════════════════════════════════════════════════
-#  Supports DATABASE_URLS (comma-separated) for automatic failover.
-#  Only ONE database is active at a time — others stay idle (0 compute).
-#  When the active DB hits its quota, the system automatically:
-#    1. Tries to export a backup from the failing DB
-#    2. Switches to the next available DB
-#    3. Imports the backup into the new DB
-#    4. Notifies admins about the switch
+#  v87: قاعدة واحدة = مصدر البيانات الوحيد. لا نبض دوري ولا تبديل تلقائي
+#  (Scale-to-Zero في Neon يعود للعمل — توفير ~80% من الحصة المجانية).
+#  DATABASE_URLS ما زالت مدعومة للتوافق لكن يُستخدم الرابط الأول فقط.
+#  عند فشل حقيقي: إشعار فوري للمالك + الطابور الأوفلاين يحمي العمليات،
+#  وعند الإقلاع على قاعدة فارغة: استعادة تلقائية من آخر نسخة متاحة.
 
 _pool = None
 _active_db_index = 0
 _db_urls = []
-_db_switching_lock = threading.Lock()
 _pool_creation_lock = threading.Lock()
-_db_fail_streak = 0  # v74: عداد نبضات DB الفاشلة المتتابعة للشفاء الذاتي
+# v87: تنبيهات مبنية على الأخطاء الحقيقية فقط — صفر استعلامات دورية
+_db_down_alert_pending = False
+_db_was_down = False
+_db_up_alert_pending = False
+
+
+def _mark_db_ok():
+    """v87: أول اتصال ناجح بعد حادثة هبوط → علم إشعار العودة (يُرسل مرة واحدة)."""
+    global _db_was_down, _db_up_alert_pending
+    if _db_was_down:
+        _db_was_down = False
+        _db_up_alert_pending = True
+
+
+def _mark_db_down():
+    """v87: فشل كل محاولات الاتصال → علم إشعار الهبوط (يُرسل مرة واحدة)."""
+    global _db_down_alert_pending
+    _db_down_alert_pending = True
 
 
 def _init_db_urls():
@@ -1120,190 +1134,15 @@ def init_pool(url=None):
             except Exception:
                 pass
         _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=2, maxconn=20, dsn=dsn, **DB_CONNECT_KWARGS
+            minconn=1, maxconn=5, dsn=dsn, **DB_CONNECT_KWARGS
         )
     return _pool
 
 
-def _try_single_connection(url):
-    """Test if a single DB URL is reachable. Returns (conn, True) or (None, False)."""
-    conn = None
-    try:
-        conn = psycopg2.connect(dsn=url, **DB_CONNECT_KWARGS)
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.execute("SET statement_timeout = 15000")  # v73: SET جلسة — Neon pooler يرفض options في حزمة الإقلاع
-            cur.execute("SET idle_in_transaction_session_timeout = 30000")
-            cur.execute("SET TIME ZONE 'Africa/Algiers'")
-        conn.commit()
-        return conn, True
-    except Exception as e:
-        logging.warning("[DB] Connection test failed: " + str(e)[:200])
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        return None, False
-
-
-def _emergency_full_backup(url):
-    """Attempt a FULL backup from a DB URL using a direct connection.
-    Returns backup dict or None. Used during failover to preserve all data."""
-    conn = None
-    try:
-        conn = psycopg2.connect(dsn=url, **DB_CONNECT_KWARGS)
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            import datetime as _dt
-            cur.execute("SELECT * FROM products ORDER BY id")
-            products = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM transactions ORDER BY id")
-            transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
-            users = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM invoices ORDER BY id")
-            invoices = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM invoice_items ORDER BY id")
-            invoice_items = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM extraction_requests ORDER BY id")
-            extraction_requests = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM incoming_orders ORDER BY id")
-            incoming_orders = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
-            pending_deliveries = [dict(r) for r in cur.fetchall()]
-        conn.commit()
-        backup = {
-            "version": 5,
-            "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
-            "products": products,
-            "transactions": transactions,
-            "users": users,
-            "invoices": invoices,
-            "invoice_items": invoice_items,
-            "extraction_requests": extraction_requests,
-            "incoming_orders": incoming_orders,
-            "pending_deliveries": pending_deliveries,
-        }
-        logging.info("[DB] FULL emergency backup from " + url[:50] + "... (" + str(len(products)) + " products, " + str(len(transactions)) + " txns)")
-        return backup
-    except Exception as e:
-        logging.warning("[DB] Emergency full backup failed: " + str(e))
-        return None
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _switch_to_next_db(reason="connection failure"):
-    """Switch to the next available DB URL (circular).
-    Returns True if switch succeeded, False if all DBs are down.
-    
-    Circular behavior: DB#1 → DB#2 → DB#3 → DB#1 → ...
-    When DB#1's monthly quota resets, it will be picked up automatically.
-    
-    Emergency backup: Before EVERY switch (including back to DB#1),
-    the system tries to grab a full backup from the current active DB.
-    This ensures no data is lost when moving between databases."""
-    global _pool, _active_db_index, _last_backup_data
-    with _db_switching_lock:
-        old_index = _active_db_index
-        old_url = _db_urls[old_index % len(_db_urls)]
-        n = len(_db_urls)
-        
-        # Step 1: Always try to grab a fresh full backup from current DB
-        backup_data = None
-        # First try direct connection to old DB for fresh backup
-        fresh_backup = _emergency_full_backup(old_url)
-        if fresh_backup:
-            backup_data = fresh_backup
-            _last_backup_data = fresh_backup  # keep in memory for next switch
-        elif _last_backup_data is not None:
-            # Fall back to in-memory backup if direct connection failed
-            backup_data = _last_backup_data
-            logging.info("[DB] Using in-memory backup for switch (" + str(len(backup_data.get("products", []))) + " products)")
-
-        # Step 2: Close old pool
-        if _pool is not None:
-            try:
-                _pool.closeall()
-            except Exception:
-                pass
-            _pool = None
-
-        # Step 3: Try each DB URL in circular order (including old one)
-        for attempt in range(1, n + 1):
-            candidate_index = (old_index + attempt) % n
-            candidate_url = _db_urls[candidate_index]
-            logging.info("[DB] Trying DB #" + str(candidate_index + 1) + "/" + str(n) + " (" + candidate_url[:60] + "...)")
-            conn, ok = _try_single_connection(candidate_url)
-            if ok:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                _active_db_index = candidate_index
-                _pool = None
-                init_pool(candidate_url)
-                logging.info("[DB] Switched to DB #" + str(candidate_index + 1) + " successfully!")
-                # v85 إصلاح جذري: زرع المخطط الكامل على القاعدة الهدف فور التبديل —
-                # قاعدة حديثة الإنشاء بلا جداول كانت تُسقط كل الأزرار
-                # (UndefinedTable: relation "users" does not exist) وتُبطل
-                # فحص الفراغ أدناه فلا تُستعاد النسخة تلقائياً أبداً.
-                # SCHEMA_SQL والترحيلات كلها idempotent: لا تضر قاعدة معمّرة
-                # وتُكمل ناقص قاعدة فارغة. اتصال مباشر بلا get_connection
-                # حتى لا تتكرر استدعاءات _switch_to_next_db داخل القفل.
-                try:
-                    _sc, _sc_ok = _try_single_connection(candidate_url)
-                    if _sc_ok:
-                        try:
-                            init_db(_sc)
-                            logging.info("[DB] v85: schema ensured on DB #" + str(candidate_index + 1))
-                        finally:
-                            try:
-                                _sc.close()
-                            except Exception:
-                                pass
-                except Exception as _schema_err:
-                    logging.error("[DB] v85 schema ensure failed: " + str(_schema_err)[:150])
-                # Step 4: Import backup into new DB — فقط إذا كانت القاعدة الهدف فارغة.
-                # الحماية: مع قاعدة واحدة قد ينقطع الاتصال عابراً ثم يعود وفيه بيانات
-                # أحدث من آخر نسخة — استيرادها هنا كان سيمحو العمليات الجديدة.
-                # القاعدة الفارغة فعلاً (ضياع بيانات حقيقي أو قاعدة احتياطية جديدة)
-                # تُستعاد فيها النسخة تلقائياً كما هو مقصود.
-                if backup_data and len(backup_data.get("products", [])) > 0:
-                    target_empty = True
-                    try:
-                        chk = get_connection()
-                        try:
-                            with chk.cursor() as cur:
-                                cur.execute("SELECT COUNT(*) FROM products")
-                                target_empty = (cur.fetchone()[0] == 0)
-                            chk.commit()
-                        finally:
-                            release_connection(chk)
-                    except Exception as e:
-                        logging.error("[DB] Empty-check on target DB failed: " + str(e))
-                        target_empty = False  # آمن: عند الشك لا تستورد شيئاً
-                    if target_empty:
-                        try:
-                            db_import_backup(backup_data)
-                            logging.info("[DB] Backup restored into DB #" + str(candidate_index + 1) + " (كانت فارغة — استعادة تلقائية)")
-                        except Exception as e:
-                            logging.error("[DB] Failed to restore backup into new DB: " + str(e))
-                    else:
-                        logging.info("[DB] Skipped auto-restore: DB #" + str(candidate_index + 1) + " تحتوي بيانات بالفعل — حماية من المحو")
-                return True
-
-        logging.error("[DB] ALL " + str(n) + " databases are unreachable!")
-        return False
-
-
 def get_connection():
-    """Get a live connection from the pool. On repeated failure, attempts
-    failover to the next DB URL. Raises RuntimeError only if nothing works.
+    """v87: اتصال حي من الـ Pool للقاعدة الوحيدة — لا تبديل تلقائي إطلاقاً.
+    عند الفشل المتكرر: إعادة بناء Pool مرة واحدة ثم RuntimeError مع رفع
+    علم إشعار المالك (يُرسل عبر keep-alive مرة واحدة لكل حادثة).
 
     Fixes over the previous version:
     - init_pool() failure at startup now triggers failover instead of crashing.
@@ -1323,6 +1162,7 @@ def get_connection():
                     cur.execute("SET statement_timeout = 15000")  # v73
                     cur.execute("SET idle_in_transaction_session_timeout = 30000")
                     cur.execute("SET TIME ZONE 'Africa/Algiers'")
+                _mark_db_ok()
                 return conn
             except Exception:
                 # connection is dead → return it CLOSED through the pool API
@@ -1341,21 +1181,8 @@ def get_connection():
                 + str(e)[:150]
             )
             time.sleep(0.2 * (attempt + 1))
-    # All attempts failed with current pool — try failover to next DB
-    logging.warning("[DB] Current DB #" + str(_active_db_index + 1) + " failed, attempting failover...")
-    if len(_db_urls) > 1 and _switch_to_next_db():
-        try:
-            if _pool is None:
-                init_pool()
-            conn = _pool.getconn()
-            with conn.cursor() as cur:
-                cur.execute("SET statement_timeout = 15000")  # v73
-                cur.execute("SET idle_in_transaction_session_timeout = 30000")
-                cur.execute("SET TIME ZONE 'Africa/Algiers'")
-            return conn
-        except Exception as e:
-            logging.error("[DB] Failover getconn failed: " + str(e)[:150])
-    # Last resort: recreate current pool (single-DB or all multi-DBs failed)
+    # Last resort: recreate current pool
+# Last resort: recreate current pool (single-DB or all multi-DBs failed)
     logging.warning("[DB] Recreating pool for current DB...")
     try:
         init_pool()
@@ -1365,8 +1192,10 @@ def get_connection():
             cur.execute("SET statement_timeout = 15000")  # v73
             cur.execute("SET idle_in_transaction_session_timeout = 30000")
             cur.execute("SET TIME ZONE 'Africa/Algiers'")
+        _mark_db_ok()
         return conn
     except Exception as e:
+        _mark_db_down()
         raise RuntimeError(
             "No database connection available: " + str(last_err) + " / " + str(e)
         )
@@ -1817,13 +1646,6 @@ CREATE TABLE IF NOT EXISTS oil_log (
 
 CREATE INDEX IF NOT EXISTS idx_oil_readings_read_at ON oil_readings (read_at);
 CREATE INDEX IF NOT EXISTS idx_oil_log_changed_at ON oil_log (changed_at);
-
--- v70: مراقبة الخدمات — نبض البوت، دقائق ساعات Render الشهرية، أعلام التنبيه
-CREATE TABLE IF NOT EXISTS service_monitor (
-    k  VARCHAR(80) PRIMARY KEY,
-    v  TEXT,
-    at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 
 """
 
@@ -3789,7 +3611,6 @@ STATE_INVOICE_PRODUCT = "waiting_invoice_product"
 STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
-STATE_RESET_PIN = "waiting_reset_pin"
 STATE_OIL_READING = "waiting_oil_reading"
 STATE_OIL_NEW_HOURS = "waiting_oil_new_hours"
 
@@ -3809,7 +3630,6 @@ BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 BTN_INCOMING = "🚚 طلبات التوريد"
 BTN_INVOICE = "🧾 إنشاء فاتورة"
-BTN_RESET_STOCK = "🗑 تصفير المخزون"
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
@@ -3822,7 +3642,6 @@ BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
 BTN_OIL = "🔧 زيت الرافعة"
-BTN_SERVICES = "🩺 حالة الخدمات"  # v70: مراقبة الخدمات الداخلية — v77: تسمية عامة بلا أسماء منصات
 
 # ═══════════════════════════════════════════════════════════
 #  نظام الفئات (الأدوار) — ROLES SYSTEM
@@ -4421,8 +4240,7 @@ def get_admin_keyboard(user_id=None):
         [users_btn, BTN_BACKUP, BTN_ALERT],
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, pending_btn, BTN_UPDATE],
-        [BTN_RESET_STOCK],
-        [BTN_OIL, BTN_SERVICES],
+        [BTN_OIL],
         [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -4714,56 +4532,6 @@ async def callback_add_handler(update, context):
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
         await _send_themed(context.bot, query.message.chat_id, "\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
-
-
-def db_reset_all_stock():
-    """Delete all stock data: products, transactions, invoices, orders, extraction requests."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM invoice_items")
-            cur.execute("DELETE FROM invoices")
-            cur.execute("DELETE FROM extraction_requests")
-            cur.execute("DELETE FROM incoming_orders")
-            if _unshipped_table_exists(cur):
-                cur.execute("DELETE FROM unshipped_sales")
-            cur.execute("DELETE FROM pending_deliveries")
-            cur.execute("DELETE FROM transactions")
-            cur.execute("DELETE FROM products")
-            # Reset sequences
-            cur.execute("SELECT setval('products_id_seq', 1, false)")
-            cur.execute("SELECT setval('transactions_id_seq', 1, false)")
-            cur.execute("SELECT setval('invoices_id_seq', 1, false)")
-            cur.execute("SELECT setval('invoice_items_id_seq', 1, false)")
-            cur.execute("SELECT setval('extraction_requests_id_seq', 1, false)")
-            cur.execute("SELECT setval('incoming_orders_id_seq', 1, false)")
-            if _unshipped_table_exists(cur):
-                cur.execute("SELECT setval('unshipped_sales_id_seq', 1, false)")
-            cur.execute("SELECT setval('pending_deliveries_id_seq', 1, false)")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-
-
-async def process_reset_stock(update, context):
-    """Execute full stock reset after confirmation."""
-    try:
-        db_reset_all_stock()
-        await update.message.reply_text(
-            "✅ تم تصفير المخزون بالكامل.\n\n"
-            "📦 السلع: 0\n"
-            "📜 العمليات: 0\n"
-            "🧾 الفواتير: 0\n"
-            "🚚 طلبات التوريد: 0\n\n"
-            "يمكنك البدء بإضافة سلع جديدة.",
-            reply_markup=get_admin_keyboard(),
-        )
-    except Exception as e:
-        await update.message.reply_text("❌ فشل التصفير: " + str(e), reply_markup=get_admin_keyboard())
-    context.user_data.clear()
 
 
 async def process_seller_input(update, context, text):
@@ -8393,7 +8161,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_RESET_STOCK, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL, BTN_SERVICES]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -8452,11 +8220,6 @@ async def handle_admin_message(update, context):
             # 🔧 صيانة الرافعة — وصل هنا مدير فقط (بوابة الفئات أعلاه)
             card = await asyncio.to_thread(oil_status_card)
             await update.message.reply_text(card, reply_markup=oil_menu_keyboard())
-            return
-        if text == BTN_SERVICES:
-            # 🩺 حالة الخدمات (v70) — وصل هنا مدير فقط (بوابة الفئات أعلاه)
-            card = await asyncio.to_thread(_service_status_card)
-            await update.message.reply_text(card, reply_markup=get_role_keyboard(user.id))
             return
         if text == BTN_ADD:
             await ask_add_name(update, context)
@@ -8540,21 +8303,6 @@ async def handle_admin_message(update, context):
         if text == BTN_BACKUP:
             await backup_command(update, context)
             return
-        if text == BTN_RESET_STOCK:
-            _set_state(context, STATE_RESET_PIN)
-            await update.message.reply_text(
-                "⚠️ تصفير المخزون\n\n"
-                "سيتم حذف:\n"
-                "  • جميع السلع (" + str(len(get_all_products())) + ")\n"
-                "  • جميع العمليات\n"
-                "  • جميع الفواتير\n"
-                "  • جميع طلبات التوريد والاستخراج\n\n"
-                "💾 نصيحة: صدّر نسخة احتياطية أولاً!\n\n"
-                "🔐 أرسل رمز PIN للتأكيد:\n"
-                "(أو أرسل ❌ للإلغاء)",
-                reply_markup=get_input_keyboard(),
-            )
-            return
         # Fallback — should not reach here
         return
 
@@ -8582,19 +8330,6 @@ async def handle_admin_message(update, context):
         await update.message.reply_text(
             "\u0627\u0633\u062a\u062e\u062f\u0645 \u0627\u0644\u0623\u0632\u0631\u0627\u0631 \u0623\u062f\u0646\u0627\u0647 \u0623\u0648 \u0627\u0644\u0623\u0648\u0627\u0645\u0631:" + chr(10) + "/add, /search",
             reply_markup=get_admin_keyboard())
-        return
-
-    # ── Reset Stock PIN Confirmation ──
-    if state == STATE_RESET_PIN:
-        pin = text.strip()
-        if pin == BTN_CANCEL:
-            context.user_data.clear()
-            await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_admin_keyboard(user.id))
-        elif pin == RESET_STOCK_PIN:
-            await process_reset_stock(update, context)
-        else:
-            await update.message.reply_text("❌ رمز PIN خاطئ. تم الإلغاء.", reply_markup=get_admin_keyboard())
-            context.user_data.clear()
         return
 
     # ── Invoice FSM States ──
@@ -9183,7 +8918,7 @@ async def handle_customer_message(update, context):
             text in cust_buttons
             or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
                         BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
-                        BTN_PENDING_ADMIN, BTN_RESET_STOCK, BTN_CUST_ORDER_LEGACY)
+                        BTN_PENDING_ADMIN, BTN_CUST_ORDER_LEGACY)
             or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
             or text.startswith(BTN_PENDING_ADMIN)
         )
@@ -9208,7 +8943,7 @@ async def handle_customer_message(update, context):
             text in cust_buttons
             or text in (BTN_INVOICE, BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
                         BTN_DELETE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INCOMING,
-                        BTN_PENDING_ADMIN, BTN_RESET_STOCK)
+                        BTN_PENDING_ADMIN)
             or text.startswith(BTN_USERS) or text.startswith(BTN_INCOMING)
             or text.startswith(BTN_PENDING_ADMIN)
         )
@@ -10207,9 +9942,11 @@ async def _oil_send_alerts(bot, alerts):
                 logging.warning("[OIL] alert to " + str(tid) + " failed: " + str(e))
 
 
+_OIL_LOOP_SEC = int(os.getenv("OIL_LOOP_SEC", "3600"))  # v87: فحص الزيت كل ساعة (كان 600 ث)
+
 async def _oil_monitor_loop(bot):
-    """حلقة مراقبة زيت الرافعة: فحص كل 10 دقائق — تذكير الجمعة الأسبوعي،
-    تنبؤ قبل 200، يومي عند 200، أحمر كل 3 ساعات عند 250 (للمدراء فقط).
+    """حلقة مراقبة زيت الرافعة: فحص كل ساعة (v87 — كان كل 10 دقائق) —
+    تذكير الجمعة الأسبوعي، تنبؤ قبل 200، يومي عند 200، أحمر كل 3 ساعات.
     بلا أي مكتبة خارجية: مهمة asyncio خفيفة تعمل داخل البوت."""
     await asyncio.sleep(20)  # انتظار اكتمال إقلاع البوت
     while True:
@@ -10219,541 +9956,9 @@ async def _oil_monitor_loop(bot):
                 await _oil_send_alerts(bot, alerts)
         except Exception as e:
             logging.error("[OIL] monitor error: " + str(e))
-        await asyncio.sleep(600)
+        # v87: كل ساعة بدل 10 دقائق — تنبيهات الزيت أسبوعية/تنبؤات فقط (قرار المالك)
+        await asyncio.sleep(_OIL_LOOP_SEC)
 
-
-# ═══════════════════════════════════════════════════════════
-#  🩺 مراقبة الخدمات — SERVICE MONITOR (v70)
-#  يوسف لا يحتاج أن يفتح Render و Neon و Upstash بحثاً عن
-#  المشاكل — البوت يراقب نفسه ويرسل التنبيهات للمدراء مباشرة:
-#  1) توقف البوت: نبض داخلي كل 15 دقيقة في القاعدة — يُسجّل التوقف
-#     بصمت عند الإقلاع (المدة + السبب الأرجح) ويظهر في بطاقة الحالة فقط.
-#     والتنبيه الفوري «لحظة التوقف» عبر الصمام الخارجي — البند 5.
-#  2) ساعات Render المجانية (750/شهر): تراكم دقائق التشغيل
-#     الفعلية + تنبيه عند 80% و95% قبل التوقف الإجباري.
-#  3) قاعدة البيانات Neon: فحص اتصال كل دورة + الحجم مقابل
-#     حد 512MB (تنبيه عند 90%) + إن انتقل للقاعدة الاحتياطية.
-#  4) Upstash: تُفحص تلقائياً فقط عند إضافة UPSTASH_REDIS_REST_URL
-#     و UPSTASH_REDIS_REST_TOKEN لمتغيرات البيئة (البوت لا يستخدمها
-#     حالياً — الفحص جاهز للمستقبل، والبطاقة توضح ذلك بصدق).
-#  5) v71 صمام التوقف الخارجي (healthchecks.io): البوت المتوقف لا
-#     يستطيع مراسلة أحد — لذلك يرسل نبضة كل 5 دقائق لموقع
-#     healthchecks.io، وعند انقطاع النبضات يصلك تنبيه تلغرام فوري
-#     خلال ~10 دقائق من التوقف (تفعيل بلصق الرابط من زر 🔔 مراقبة
-#     التوقف — المالك فقط).
-#  كل التنبيهات للمدراء فقط (حسابات البيئة + فئة admin/manager).
-# ═══════════════════════════════════════════════════════════
-import calendar as _svc_calendar
-
-SVC_TZ = datetime.timezone(datetime.timedelta(hours=1))   # توقيت الجزائر (UTC+1)
-SVC_RENDER_FREE_HOURS = float(os.getenv("SVC_RENDER_HOURS", "750"))
-SVC_NEON_FREE_MB = 512.0
-SVC_LOOP_SEC = int(os.getenv("SVC_LOOP_SEC", "900"))      # دورة الفحص: 15 دقيقة
-SVC_DOWN_MIN = int(os.getenv("SVC_DOWN_MIN", "45"))       # فجوة تُعدّ توقفاً حقيقياً
-SVC_DB_FAIL_ALERT_AFTER = 2                               # فشلان متتاليان قبل تنبيه Neon
-_svc_db_fails = 0                # عدّاد فشل Neon المتتالي (ذاكرة العملية)
-_svc_primary_alerted = False     # هل أُرسل تنبيه الانتقال للقاعدة الاحتياطية
-_svc_upstash_ok = None           # None = لم يُفحص بعد
-_svc_upstash_detail = ""
-_svc_upstash_configured = bool(
-    os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
-    and os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
-)
-_svc_boot_at = datetime.datetime.now(SVC_TZ)  # يُحدَّث عند كل إقلاع
-
-
-def _svc_now():
-    """الوقت الحالي بتوقيت الجزائر (UTC+1 ثابت)."""
-    return datetime.datetime.now(SVC_TZ)
-
-
-def _svc_fmt_dur(minutes):
-    """مدة بالعربية بشكل مختصر واضح لغير التقنيين."""
-    minutes = max(0, int(round(minutes or 0)))
-    h, m = minutes // 60, minutes % 60
-    if h and m:
-        return str(h) + " ساعة و" + str(m) + " دقيقة"
-    if h:
-        return str(h) + " ساعة"
-    return str(m) + " دقيقة"
-
-
-def _svc_ensure_table():
-    """إنشاء جدول المراقبة إن لزم (CREATE IF NOT EXISTS رخيص — يُستدعى كل دورة
-    ليعمل حتى مع قواعد بيانات احتياطية جديدة بعد الانتقال التلقائي)."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS service_monitor ("
-                " k VARCHAR(80) PRIMARY KEY,"
-                " v TEXT,"
-                " at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
-            )
-        conn.commit()
-    finally:
-        release_connection(conn)
-
-
-def _svc_get(key):
-    """قراءة مفتاح مراقبة — ترجع (v, at) أو None."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT v, at FROM service_monitor WHERE k = %s", (key,))
-            row = cur.fetchone()
-        conn.commit()
-        return row if row else None
-    finally:
-        release_connection(conn)
-
-
-def _svc_set(key, v=None):
-    """كتابة/تحديث مفتاح مراقبة (upsert)."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO service_monitor (k, v, at) VALUES (%s, %s, NOW()) "
-                "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, at = NOW()",
-                (key, v),
-            )
-        conn.commit()
-    finally:
-        release_connection(conn)
-
-
-def _svc_clear(key):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM service_monitor WHERE k = %s", (key,))
-        conn.commit()
-    finally:
-        release_connection(conn)
-
-
-def _svc_flag(key):
-    row = _svc_get(key)
-    return bool(row and row[0])
-
-
-def _svc_admin_ids():
-    """مستقبلو تنبيهات المراقبة: حسابات البيئة (ADMIN_IDS + OWNER_IDS)
-    + كل مستخدم نشط بفئة admin/manager — نفس منطق تنبيهات الزيت."""
-    ids = set(ADMIN_IDS or ())
-    try:
-        ids.update(OWNER_IDS or ())
-    except Exception:
-        pass
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT telegram_id FROM users "
-                    "WHERE telegram_id IS NOT NULL AND role IN ('admin', 'manager') AND active = TRUE"
-                )
-                for r in cur.fetchall():
-                    ids.add(r[0])
-            conn.commit()
-        except Exception:
-            conn.rollback()
-        finally:
-            release_connection(conn)
-    except Exception:
-        pass
-    return [i for i in ids if i]
-
-
-def _svc_startup_check():
-    """v71/v77: تسجيل صامت للتوقف عند الإقلاع (بلا إزعاج بعد العودة):
-    المدة + السبب الأرجح يُخزنان في service_monitor وتظهر في بطاقة الحالة فقط."""
-    global _svc_boot_at
-    _svc_boot_at = _svc_now()
-    try:
-        _svc_ensure_table()
-        _svc_set("boot_at", _svc_boot_at.strftime("%Y-%m-%d %H:%M:%S"))
-        row = _svc_get("last_alive")
-        if not row or not row[1] or not isinstance(row[1], datetime.datetime):
-            return None  # أول تشغيل بعد التحديث — لا مرجع للفجوة
-        last_at = row[1].astimezone(SVC_TZ)
-        gap_min = (_svc_boot_at - last_at).total_seconds() / 60.0
-        if gap_min < SVC_DOWN_MIN:
-            return None  # إعادة تشغيل عادية (تحديث/نشر) — بلا إزعاج
-        _svc_set("down_from", last_at.strftime("%Y-%m-%d %H:%M"))
-        _svc_set("down_to", _svc_boot_at.strftime("%Y-%m-%d %H:%M"))
-        _svc_set("down_min", str(int(gap_min)))
-        reason = "غير معروف — راجع السجلات التقنية"
-        try:
-            mrow = _svc_get("render_min_" + last_at.strftime("%Y-%m"))
-            if mrow and mrow[0] and float(mrow[0]) / 60.0 >= SVC_RENDER_FREE_HOURS * 0.98:
-                reason = "الأرجح: نفاد ساعات التشغيل المجانية"
-        except Exception:
-            pass
-        _svc_set("down_reason", reason)
-        logging.info("[MONITOR] downtime recorded silently: " + str(int(gap_min)) + " min — " + reason)
-        # v77: التسجيل صامت دائماً — لا تذكير بزر محذوف، والتفاصيل في بطاقة الحالة
-        return None
-    except Exception as e:
-        logging.warning("[MONITOR] startup check skipped: " + str(e))
-        return None
-
-
-def _svc_tick():
-    """دورة مراقبة واحدة (متزامنة، تُستدعى من خيط): نبض + دقائق ساعات التشغيل
-    + فحص قاعدة البيانات وحجمها + عتبات التنبيه. ترجع قائمة نصوص التنبيهات."""
-    global _svc_db_fails, _svc_primary_alerted
-    alerts = []
-    now = _svc_now()
-    month = now.strftime("%Y-%m")
-    db_ok = True
-    db_size_mb = None
-    minutes = 0.0
-    try:
-        _svc_ensure_table()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                # 1) النبض
-                cur.execute(
-                    "INSERT INTO service_monitor (k, v, at) VALUES ('last_alive', %s, NOW()) "
-                    "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v, at = NOW()",
-                    (now.strftime("%Y-%m-%d %H:%M:%S"),),
-                )
-                # 2) حجم قاعدة البيانات
-                cur.execute("SELECT pg_database_size(current_database())")
-                db_size_mb = (cur.fetchone()[0] or 0) / (1024.0 * 1024.0)
-                # 3) تراكم دقائق ساعات Render لهذا الشهر — منفصل حتى لا يُفسد
-                #    أي خلل في قراءته فحصَ Neon الصحيح
-                try:
-                    add_min = SVC_LOOP_SEC / 60.0
-                    cur.execute(
-                        "INSERT INTO service_monitor (k, v, at) VALUES (%s, %s, NOW()) "
-                        "ON CONFLICT (k) DO UPDATE SET "
-                        "v = (COALESCE(NULLIF(service_monitor.v, '')::numeric, 0) + %s)::text, at = NOW() "
-                        "RETURNING v",
-                        ("render_min_" + month, str(add_min), add_min),
-                    )
-                    minutes = float(cur.fetchone()[0] or 0.0)
-                except Exception as e:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                    logging.warning("[MONITOR] minutes accrual failed: " + str(e))
-            conn.commit()
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        db_ok = False
-        logging.warning("[MONITOR] DB tick failed: " + str(e))
-
-    # ── Neon: كسر / عودة / قاعدة احتياطية ──
-    if db_ok:
-        if _svc_db_fails >= SVC_DB_FAIL_ALERT_AFTER:
-            alerts.append("✅ قاعدة البيانات عادت للعمل — كل شيء طبيعي الآن.")
-        _svc_db_fails = 0
-        try:
-            if len(_db_urls) > 1 and _active_db_index != 0:
-                if not _svc_primary_alerted:
-                    alerts.append(
-                        "⚠️ قاعدة البيانات الأساسية غير متاحة\n\n"
-                        "البوت انتقل تلقائياً للقاعدة الاحتياطية رقم "
-                        + str(_active_db_index + 1) + " حتى لا يتوقف.\n"
-                        "🔎 راجع لوحة قاعدة البيانات — قد يكون السبب انتهاء الحد المجاني."
-                    )
-                    _svc_primary_alerted = True
-            else:
-                _svc_primary_alerted = False
-        except Exception:
-            pass
-        # ── حجم Neon مقابل الحد المجاني (تنبيه ≥90%، إعادة تسليح <80%) ──
-        if db_size_mb:
-            try:
-                pct_size = db_size_mb / SVC_NEON_FREE_MB * 100.0
-                if pct_size >= 90.0 and not _svc_flag("dbsize_alert"):
-                    alerts.append(
-                        "⚠️ حجم قاعدة البيانات يقترب من الحد المجاني\n\n"
-                        "💾 الحجم الحالي: " + "{:.0f}".format(db_size_mb) + " من 512MB\n\n"
-                        "💡 خذ نسخة احتياطية (زر 💾 نسخ احتياطي) ثم احذف السلع "
-                        "أو السجلات القديمة غير المستخدمة."
-                    )
-                    _svc_set("dbsize_alert", "1")
-                elif pct_size < 80.0 and _svc_flag("dbsize_alert"):
-                    _svc_clear("dbsize_alert")
-            except Exception:
-                pass
-        # ── ساعات Render: 80% ثم 95% (أعلام شهرية — تتجدد كل شهر تلقائياً) ──
-        try:
-            hours = minutes / 60.0
-            pct_hours = hours / SVC_RENDER_FREE_HOURS * 100.0
-            if pct_hours >= 95.0 and not _svc_flag("render95_" + month):
-                alerts.append(
-                    "🚨 عاجل: ساعات التشغيل على وشك النفاد\n\n"
-                    "📊 استهلكت: " + "{:.1f}".format(hours) + " من "
-                    + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
-                    + str(int(round(pct_hours))) + "%)\n"
-                    "⛔ إذا انتهت الساعات يتوقف البوت فوراً حتى بداية الشهر القادم.\n\n"
-                    "💡 ما يمكنك فعله الآن:\n"
-                    "1️⃣ خذ نسخة احتياطية (زر 💾 نسخ احتياطي).\n"
-                    "2️⃣ احذف من لوحة الاستضافة أي خدمات أخرى لا تستخدمها — الساعات مشتركة.\n"
-                    "3️⃣ أو فعّل الخطة المدفوعة للاستضافة للاستمرار دون توقف."
-                )
-                _svc_set("render95_" + month, "1")
-            elif pct_hours >= 80.0 and not _svc_flag("render80_" + month):
-                alerts.append(
-                    "⚠️ تنبيه: ساعات التشغيل تستهلك بسرعة\n\n"
-                    "📊 استهلكت هذا الشهر: " + "{:.1f}".format(hours) + " من "
-                    + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
-                    + str(int(round(pct_hours))) + "%)\n\n"
-                    "⛔ عند نفاد الساعات المجانية يتوقف البوت تلقائياً حتى بداية الشهر القادم.\n"
-                    "💡 اضغط «🩺 حالة الخدمات» لرؤية التوقع لنهاية الشهر."
-                )
-                _svc_set("render80_" + month, "1")
-        except Exception:
-            pass
-    else:
-        _svc_db_fails += 1
-        if _svc_db_fails == SVC_DB_FAIL_ALERT_AFTER:
-            alerts.append(
-                "🔴 تنبيه: قاعدة البيانات لا تستجيب\n\n"
-                "البوت يعمل لكنه لا يستطيع الوصول لقاعدة البيانات.\n"
-                "السبب المحتمل: انتهاء الاشتراك المجاني أو صيانة مؤقتة.\n\n"
-                "🔎 افتح لوحة قاعدة البيانات وتحقق من حالة المشروع والاستهلاك.\n"
-                "⚠️ العمليات أثناء الانقطاع قد لا تُسجّل — أعد المحاولة بعد قليل."
-            )
-    return alerts
-
-
-async def _svc_upstash_check():
-    """فحص خدمة التسريع كل دورة — فقط إن وُجدت متغيرات REST في البيئة.
-    يرصد انقطاع الخدمة وتجاوز الحد المجاني (HTTP 429) ويرصد العودة."""
-    global _svc_upstash_ok, _svc_upstash_detail
-    if not _svc_upstash_configured:
-        return None
-    url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
-    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-            async with s.get(url + "/ping", headers={"Authorization": "Bearer " + token}) as r:
-                if r.status == 429:
-                    was = _svc_upstash_ok
-                    _svc_upstash_ok = False
-                    _svc_upstash_detail = "تجاوز الحد المجاني للطلبات"
-                    if was is not False:
-                        return (
-                            "🔴 تنبيه: خدمة التسريع تجاوزت الحد المجاني للطلبات\n\n"
-                            "🔎 راجع لوحة الخدمة لترى الاستهلاك.\n"
-                            "ℹ️ البوت لا يعتمد على هذه الخدمة في عمله الأساسي — لا تقلق."
-                        )
-                    return None
-                if r.status != 200:
-                    raise RuntimeError("HTTP " + str(r.status))
-                data = await r.json(content_type=None)
-                if str((data or {}).get("result", "")).upper() != "PONG":
-                    raise RuntimeError("رد غير متوقع من الخدمة")
-                if _svc_upstash_ok is False:
-                    _svc_upstash_ok = True
-                    _svc_upstash_detail = ""
-                    return "✅ خدمة التسريع عادت للعمل."
-                _svc_upstash_ok = True
-                _svc_upstash_detail = ""
-                return None
-    except Exception as e:
-        was = _svc_upstash_ok
-        _svc_upstash_ok = False
-        _svc_upstash_detail = str(e)[:120]
-        if was is not False:
-            return (
-                "🔴 تنبيه: خدمة التسريع لا تستجيب\n\n"
-                "السبب المحتمل: انتهاء الحد المجاني أو انقطاع مؤقت.\n"
-                "🔎 راجع لوحة الخدمة وتحقق.\n"
-                "ℹ️ البوت لا يعتمد على هذه الخدمة في عمله الأساسي — لا تقلق."
-            )
-        return None
-
-
-async def _svc_alert(bot, text):
-    """إرسال تنبيه مراقبة لكل المدراء فقط (خاص — لا مجموعات)."""
-    if not text:
-        return
-    ids = await asyncio.to_thread(_svc_admin_ids)
-    for tid in ids:
-        try:
-            await bot.send_message(chat_id=tid, text=text)
-        except Exception as e:
-            logging.warning("[MONITOR] alert to " + str(tid) + " failed: " + str(e))
-
-
-# ── v71: صمام التوقف الخارجي (healthchecks.io) — تنبيه لحظة التوقف ──
-_svc_hc_cache = {"url": None, "loaded": False}
-
-
-def _svc_hc_url():
-    """رابط healthchecks.io من ذاكرة سريعة، وإلا من القاعدة (تحميل لمرة واحدة)."""
-    if not _svc_hc_cache["loaded"]:
-        try:
-            row = _svc_get("hc_ping_url")
-            _svc_hc_cache["url"] = (row[0] or "").strip() if row and row[0] else None
-        except Exception:
-            pass
-        _svc_hc_cache["loaded"] = True
-    return _svc_hc_cache["url"]
-
-
-async def _svc_hc_ping(suffix=""):
-    """نبضة خارجية لـ healthchecks.io — تعمل حتى لو انقطعت قاعدة البيانات
-    (الرابط مخزّن في الذاكرة). النبضات المتباعدة ~10 دقائق = تنبيه تلغرام فوري."""
-    url = _svc_hc_url()
-    if not url:
-        return
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-            async with s.get(url.rstrip("/") + suffix) as r:
-                if r.status != 200:
-                    logging.warning("[MONITOR] hc-ping status " + str(r.status))
-    except Exception as e:
-        logging.warning("[MONITOR] hc-ping failed: " + str(e))
-
-
-async def _svc_hc_loop():
-    """v71: نبضة كل 5 دقائق للصمام الخارجي (إن فعّله المالك).
-    حين يتوقف البوت تنقطع النبضات — فيرصد healthchecks.io التوقف
-    ويرسل تنبيه تلغرام فورياً للمالك حتى والبوت ميت تماماً."""
-    await asyncio.sleep(45)  # بعد استقرار الإقلاع
-    while True:
-        try:
-            await _svc_hc_ping()
-        except Exception as e:
-            logging.warning("[MONITOR] hc loop error: " + str(e))
-        await asyncio.sleep(300)
-
-
-async def _service_monitor_loop(bot):
-    """حلقة 🩺 مراقبة الخدمات: فحص توقف عند الإقلاع ثم نبض كل 15 دقيقة.
-    مهمة asyncio خفيفة داخل البوت — بلا أي مكتبات خارجية."""
-    if os.getenv("SERVICE_MONITOR", "1") == "0":
-        logging.info("[MONITOR] disabled via SERVICE_MONITOR=0")
-        return
-    await asyncio.sleep(30)  # استقرار الإقلاع قبل فحص التوقف
-    try:
-        msg = await asyncio.to_thread(_svc_startup_check)
-        if msg:
-            await _svc_alert(bot, msg)
-    except Exception as e:
-        logging.error("[MONITOR] startup check error: " + str(e))
-    while True:
-        try:
-            alerts = await asyncio.to_thread(_svc_tick)
-            up = await _svc_upstash_check()
-            if up:
-                alerts.append(up)
-            for t in alerts:
-                await _svc_alert(bot, t)
-        except Exception as e:
-            logging.error("[MONITOR] loop error: " + str(e))
-        await asyncio.sleep(SVC_LOOP_SEC)
-
-
-def _service_status_card():
-    """بطاقة «🩺 حالة الخدمات» — نظرة واحدة على كل المنصات (متزامنة)."""
-    global _svc_boot_at
-    now = _svc_now()
-    month = now.strftime("%Y-%m")
-    lines = ["🩺 حالة الخدمات — LE ROI", ""]
-    # البوت
-    up_min = max(0.0, (now - _svc_boot_at).total_seconds() / 60.0)
-    lines.append("🟢 البوت: يعمل الآن")
-    lines.append("⏱ هذه الجلسة تعمل منذ: " + _svc_fmt_dur(up_min))
-    lines.append("🔁 آخر إقلاع: " + _svc_boot_at.strftime("%Y-%m-%d %H:%M"))
-    lines.append("")
-    # ساعات التشغيل
-    minutes = 0.0
-    try:
-        row = _svc_get("render_min_" + month)
-        if row and row[0]:
-            minutes = float(row[0])
-    except Exception:
-        minutes = 0.0
-    hours = minutes / 60.0
-    pct_hours = hours / SVC_RENDER_FREE_HOURS * 100.0
-    lines.append("⏳ ساعات التشغيل — شهر " + month)
-    lines.append(
-        "📊 المستهلك: " + "{:.1f}".format(hours) + " من "
-        + str(int(SVC_RENDER_FREE_HOURS)) + " ساعة ("
-        + str(int(round(pct_hours))) + "%)"
-    )
-    try:
-        days_in_month = _svc_calendar.monthrange(now.year, now.month)[1]
-        days_elapsed = max(0.5, now.day + (now.hour * 60 + now.minute) / 1440.0)
-        proj = minutes / days_elapsed * days_in_month / 60.0
-        if proj <= SVC_RENDER_FREE_HOURS:
-            lines.append("🔮 التوقع لنهاية الشهر: ~" + "{:.0f}".format(proj) + " ساعة (آمن ✅)")
-        else:
-            lines.append("🔮 التوقع لنهاية الشهر: ~" + "{:.0f}".format(proj) + " ساعة (خطر نفاد ⚠️)")
-    except Exception:
-        pass
-    lines.append("")
-    # Neon
-    db_state = "🟢 متصلة"
-    db_size_mb = None
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT pg_database_size(current_database())")
-                db_size_mb = (cur.fetchone()[0] or 0) / (1024.0 * 1024.0)
-            conn.commit()
-        finally:
-            release_connection(conn)
-    except Exception:
-        db_state = "🔴 لا تستجيب"
-    lines.append("🗄 قاعدة البيانات: " + db_state)
-    try:
-        lines.append("🔢 القاعدة النشطة: #" + str(_active_db_index + 1)
-                     + " من " + str(len(_db_urls)))
-    except Exception:
-        pass
-    if db_size_mb:
-        lines.append(
-            "💾 الحجم: " + "{:.0f}".format(db_size_mb) + " من "
-            + str(int(SVC_NEON_FREE_MB)) + "MB ("
-            + str(int(round(db_size_mb / SVC_NEON_FREE_MB * 100.0))) + "%)"
-        )
-    lines.append("")
-    # Upstash
-    if not _svc_upstash_configured:
-        lines.append("⬜ خدمة التسريع: غير مفعّلة — البوت لا يحتاجها")
-    elif _svc_upstash_ok is True:
-        lines.append("🟢 خدمة التسريع: تستجيب")
-    elif _svc_upstash_ok is False:
-        lines.append("🔴 خدمة التسريع: مشكلة — " + (_svc_upstash_detail or "لا تستجيب"))
-    else:
-        lines.append("⏳ خدمة التسريع: أول فحص تلقائي بعد قليل")
-    lines.append("")
-    # آخر توقف مسجل
-    try:
-        df = _svc_get("down_from")
-        dt_ = _svc_get("down_to")
-        dm = _svc_get("down_min")
-        if df and df[0] and dt_ and dt_[0]:
-            lines.append("⛔ آخر توقف مسجل:")
-            lines.append("   من " + df[0] + " إلى " + dt_[0]
-                         + " (" + _svc_fmt_dur(float(dm[0] or 0)) + ")")
-            try:
-                dr = _svc_get("down_reason")
-                if dr and dr[0]:
-                    lines.append("   السبب الأرجح: " + dr[0])
-            except Exception:
-                pass
-        else:
-            lines.append("⛔ آخر توقف مسجل: لا يوجد — البوت مستقر ✅")
-    except Exception:
-        pass
-    lines.append("")
-    lines.append("🕓 آخر فحص: " + now.strftime("%Y-%m-%d %H:%M"))
-    return "\n".join(lines)
 
 # ═══════════════════════════════════════════════════════════
 #  EXTRACTION PERMISSION & REQUEST HANDLERS
@@ -11581,15 +10786,11 @@ async def _on_app_post_init(application):
         pass
     asyncio.create_task(_offline_retry_loop(application.bot))
     asyncio.create_task(_oil_monitor_loop(application.bot))
-    asyncio.create_task(_service_monitor_loop(application.bot))
-    asyncio.create_task(_svc_hc_loop())
     _freeze_watchdog()  # v72: حارس التجمّد الذاتي — ريستارت تلقائي عند أي تجمّد
     asyncio.create_task(_loop_heartbeat_task())  # v72: نبضة الحلقة للحارس
     logging.info("[BOT] Offline retry task started via post_init")
     logging.info("[BOT] Freeze watchdog armed via post_init (v72)")
     logging.info("[BOT] Oil monitor task started via post_init")
-    logging.info("[BOT] Service monitor task started via post_init (v70)")
-    logging.info("[BOT] External watchdog ping task started via post_init (v71)")
 
 
 def build_application():
@@ -11934,45 +11135,17 @@ async def _daily_backup_loop(bot):
         await asyncio.sleep(60)
 
 
-def _db_ping_sync():
-    """v72: نبضة DB متزامنة — تُستدعى حصراً عبر asyncio.to_thread حتى لا تجمد حلقة الأحداث.
-    (السبب الجذري لتجميد البوت المتكرر: SELECT 1 متزامن داخل الحلقة + اتصال بلا مهلة)."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        conn.commit()
-    finally:
-        release_connection(conn)
-
-
-def _schema_missing_sync():
-    """v85: True فقط إذا كان جدول users مفقوداً من القاعدة النشطة.
-    SELECT 1 ينجح حتى على قاعدة بلا جداول — فكان النبض لا يكشف هذا العطل
-    ولا يُفتعل شفاء. هذا الفحص يغلق الثغرة. عند فشل الاتصال نفسه نُرجع
-    False (النبض والعداد _db_fail_streak يتكفلان بذلك المسار)."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT to_regclass('public.users')")
-                return cur.fetchone()[0] is None
-        finally:
-            release_connection(conn)
-    except Exception:
-        return False
-
-
 async def _keep_alive(app):
-    """Ping the external Render URL + Neon DB every 3 min to prevent spin-down.
-    v74: شفاء ذاتي — فشل متتابع للنبضة = إعادة بناء Pool ثم تبديل قاعدة تلقائياً."""
-    global _db_fail_streak
+    """v87: نبضة HTTP لخدمة Render فقط — صفر استعلامات للقاعدة (Scale-to-Zero يعود).
+    التنبيهات مبنية على الأخطاء الحقيقية: get_connection يرفع الأعلام عند فشل
+    اتصال فعلي، وهنا تُرسل إشعارات تلغرام للمالك (هبوط/عودة) مرة لكل حادثة."""
+    global _db_down_alert_pending, _db_was_down, _db_up_alert_pending
     external_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else ""
     if not external_url:
         port = int(os.getenv("PORT", 10000))
         external_url = "http://127.0.0.1:" + str(port) + "/"
     ping_url = external_url.rstrip("/") + "/"
-    logging.info("[KEEP-ALIVE] Target: " + ping_url + " + Neon DB ping")
+    logging.info("[KEEP-ALIVE] Target: " + ping_url + " (HTTP فقط — بلا نبضة DB منذ v87)")
     # Reuse one session instead of creating new each time
     session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
     try:
@@ -11982,52 +11155,30 @@ async def _keep_alive(app):
                 async with session.get(ping_url) as r:
                     if r.status != 200:
                         logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
-                # v72: Ping Neon عبر خيط منفصل — لم يعد يجمد حلقة الأحداث أبداً
-                # v74: عداد الفشل المتتابع + شفاء ذاتي (إعادة بناء Pool ثم تبديل قاعدة)
-                try:
-                    await asyncio.to_thread(_db_ping_sync)
-                    _db_fail_streak = 0
-                    # v85: مراقبة المخطط — قاعدة نشطة بلا جداول كانت تبقى
-                    # معطوبة للأبد (النبض SELECT 1 ينجح فلا تبديل ولا شفاء).
-                    if await asyncio.to_thread(_schema_missing_sync):
-                        logging.warning("[DB-HEAL] قاعدة نشطة بلا مخطط (users مفقود) — زرع init_db فوري...")
-                        await asyncio.to_thread(init_db)
-                        _lb = _last_backup_data
-                        if _lb and len(_lb.get("products", [])) > 0:
-                            try:
-                                db_import_backup(_lb)
-                                logging.info("[DB-HEAL] v85: استُعيدت النسخة الاحتياطية بعد زرع المخطط")
-                            except Exception as _ri:
-                                logging.error("[DB-HEAL] استعادة النسخة فشلت: " + str(_ri)[:150])
+                # v87: صفر استعلامات دورية — التنبيه من أخطاء الاستخدام الحقيقية فقط
+                if _db_down_alert_pending:
+                    _db_down_alert_pending = False
+                    _db_was_down = True
+                    for _oid in (list(OWNER_IDS)[:3] or list(ADMIN_IDS)[:3]):
                         try:
-                            for _oid in list(OWNER_IDS)[:3]:
-                                try:
-                                    await app.bot.send_message(
-                                        chat_id=_oid,
-                                        text=("🛠 شفاء ذاتي v85\n"
-                                              "القاعدة النشطة كانت بلا جداول — وهي سبب أخطاء UndefinedTable على كل الأزرار.\n"
-                                              "تم زرع المخطط تلقائياً والبوت عامل الآن.\n"
-                                              "إن ظهرت السلع فارغة فبياناتك محفوظة في القاعدة الأصلية وستعود مع أول استعادة/تبديل ناجح إليها."))
-                                except Exception:
-                                    pass
+                            await app.bot.send_message(
+                                chat_id=_oid,
+                                text=("🚨 قاعدة البيانات غير متاحة الآن\n"
+                                      "فشلت كل محاولات الاتصال أثناء استخدام حقيقي.\n"
+                                      "🛡 العمليات تُحفظ في الطابور وتُنفَّذ تلقائياً عند عودة القاعدة.\n"
+                                      "🔎 الأسباب المحتملة: نفاد حصة Neon الشهرية أو انقطاع الخدمة."))
                         except Exception:
                             pass
-                except Exception as db_err:
-                    _db_fail_streak += 1
-                    logging.warning("[KEEP-ALIVE] DB ping failed (" + str(_db_fail_streak) + "): " + str(db_err))
-                    if _db_fail_streak == 2:
-                        logging.warning("[DB-HEAL] نبضتان فاشلتان متتابعتان — إعادة بناء Pool إجبارية...")
+                elif _db_up_alert_pending:
+                    _db_up_alert_pending = False
+                    for _oid in (list(OWNER_IDS)[:3] or list(ADMIN_IDS)[:3]):
                         try:
-                            await asyncio.to_thread(init_pool)
-                            logging.info("[DB-HEAL] Pool rebuilt OK")
-                        except Exception as heal_err:
-                            logging.error("[DB-HEAL] Pool rebuild failed: " + str(heal_err)[:150])
-                    elif _db_fail_streak >= 3 and len(_db_urls) > 1:
-                        logging.warning("[DB-HEAL] 3 نبضات فاشلة — تبديل تلقائي للقاعدة التالية...")
-                        try:
-                            await asyncio.to_thread(_switch_to_next_db, "[DB-HEAL] repeated ping failures")
-                        except Exception as sw_err:
-                            logging.error("[DB-HEAL] DB switch failed: " + str(sw_err)[:150])
+                            await app.bot.send_message(
+                                chat_id=_oid,
+                                text=("✅ قاعدة البيانات عادت للعمل\n"
+                                      "الطابور الأوفلاين سيعيد تنفيذ العمليات المؤجلة تلقائياً."))
+                        except Exception:
+                            pass
             except Exception as e:
                 logging.warning("[KEEP-ALIVE] Ping failed: " + str(e))
             await asyncio.sleep(180)
@@ -12060,7 +11211,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v86"
+PWA_VERSION = "v87"
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
