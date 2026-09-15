@@ -11311,7 +11311,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v87.2"  # v87.2 = عرض بيانات دخول المستخدمين للمدير (اسم + كلمة مرور مسترجعة) — البصمة تظهر في /api/status ولوج الإقلاع
+PWA_VERSION = "v88"  # v88 = إعادة بناء تبويب المستخدمين بواجهة احترافية + فصل قائمة مستخدمي التطبيق عن مستخدمي البوت (البيانات مشتركة) — البصمة تظهر في /api/status ولوج الإقلاع
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -12417,6 +12417,325 @@ _PWA_CREDS_JS = r"""(function () {
   };
 })();"""
 
+# ═══ v88: Users 2.0 — إعادة بناء تبويب المستخدمين بالكامل ═══
+# لماذا؟ لقطة يوسف أثبتت انهيار عمود النص (حرف واحد لكل سطر) في صفوف تحمل
+# زر البيانات المُحقن — سلوك flexbox متقلب في WebView قديم. العلاج الجذري:
+# تخطيط Grid بطبقتين مضمونتين (بطاقة: صف المعلومات / صف الأزرار المستقل)
+# لا يمكن لأي محتوى أن يسحق عمود النص مهما كان عرض الشاشة أو عدد الأزرار.
+# كذلك: فصل واضح بين «مستخدمي التطبيق» (لهم حساب دخول) و«مستخدمي البوت»
+# (تليجرام فقط) — قائمتان منفصلتان فوق نفس قاعدة البيانات المشتركة.
+_PWA_USERS2_CSS = r""".u2seg{display:flex;gap:5px;background:var(--chip);border:1px solid var(--line);border-radius:15px;padding:4px;margin-bottom:12px}
+.u2segb{flex:1;min-width:0;border:none;background:transparent;color:var(--mut);font-weight:800;font-size:13px;padding:10px 4px;border-radius:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:background .2s ease,color .2s ease,box-shadow .2s ease;white-space:nowrap;font-family:inherit}
+.u2segb b{background:rgba(0,0,0,.07);border-radius:99px;padding:1px 8px;font-size:11.5px;font-weight:800}
+html[data-theme="dark"] .u2segb b{background:rgba(255,255,255,.08)}
+.u2segb.on{background:var(--card);color:var(--brand);box-shadow:0 2px 10px rgba(61,43,28,.13),0 0 0 1px var(--goldline)}
+html[data-theme="dark"] .u2segb.on{background:#3a2e20;color:var(--gold)}
+.u2segb.on b{background:var(--goldsoft);color:var(--brand)}
+html[data-theme="dark"] .u2segb.on b{color:var(--gold)}
+.u2gh{display:flex;align-items:center;gap:8px;margin:15px 2px 8px;font-size:12px;font-weight:800;color:var(--mut);letter-spacing:.3px}
+.u2gh::after{content:"";flex:1;height:1px;background:var(--line)}
+.u2gh:first-child{margin-top:2px}
+.u2card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:9px;box-shadow:var(--shadow);display:grid;grid-template-columns:auto 1fr;grid-template-areas:"ava main" "acts acts";gap:9px 12px;align-items:center}
+.u2card.pend{border-color:var(--goldline);box-shadow:0 4px 16px rgba(169,126,47,.12)}
+.u2card.off{opacity:.62}
+.u2ava{grid-area:ava;width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;color:var(--brand);background:var(--brandsoft);border:1.5px solid var(--goldline);position:relative}
+.u2ava .u2dot{position:absolute;top:-2px;inset-inline-end:-2px;width:12px;height:12px;border-radius:50%;background:#16a34a;border:2.5px solid var(--card)}
+.u2main{grid-area:main;min-width:0}
+.u2name{font-size:14.5px;font-weight:800;color:var(--ink);line-height:1.5;overflow-wrap:anywhere;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.u2name .mini{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:99px;background:var(--brandsoft);color:var(--brand);white-space:nowrap}
+.u2name .mini.r{background:var(--badsoft);color:var(--bad)}
+.u2lines{margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:var(--mut)}
+.u2un{display:inline-flex;align-items:center;gap:4px;background:var(--goldsoft);color:var(--warn);border-radius:99px;padding:2px 9px;font-size:11.5px;font-weight:800;max-width:100%;overflow-wrap:anywhere}
+html[data-theme="dark"] .u2un{color:var(--gold)}
+.u2sub{margin-top:4px;font-size:11.5px;color:var(--mut);overflow-wrap:anywhere;line-height:1.7}
+.u2acts{grid-area:acts;display:flex;flex-wrap:wrap;gap:6px;border-top:1px dashed var(--line);padding-top:9px}
+.u2btn{border:1px solid var(--line);background:var(--chip);color:var(--ink);border-radius:10px;padding:7px 11px;font-size:12.5px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-family:inherit;transition:transform .15s ease,filter .15s ease}
+.u2btn:active{transform:scale(.94);filter:brightness(.96)}
+.u2btn.b{background:var(--brandsoft);color:var(--brand);border-color:var(--goldline)}
+.u2btn.gold{background:var(--goldsoft);color:var(--warn);border-color:var(--goldline)}
+html[data-theme="dark"] .u2btn.gold{color:var(--gold)}
+.u2btn.red{background:var(--badsoft);color:var(--bad);border-color:var(--badline)}
+.u2btn.green{background:var(--oksoft);color:var(--ok);border-color:var(--okline)}
+.u2btn.prime{background:linear-gradient(135deg,var(--brand2),var(--brand));color:#fff;border-color:transparent;box-shadow:0 3px 10px rgba(122,58,18,.28)}
+html[data-theme="dark"] .u2btn.prime{background:linear-gradient(135deg,var(--brand),var(--gold));color:#1c130a}
+.u2empty{text-align:center;padding:36px 18px;color:var(--mut);font-size:13.5px;line-height:2}
+.u2empty .ic{font-size:36px;opacity:.45;display:block;margin-bottom:6px}
+.u2khead{width:100%;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--badline);color:var(--bad);border-radius:12px;padding:11px 14px;font-weight:800;font-size:13px;cursor:pointer;margin-top:14px;font-family:inherit}
+.u2khead .karr{margin-inline-start:auto;transition:transform .15s;font-size:11px}
+.u2khead.open .karr{transform:rotate(90deg)}
+.u2ava.rk-admin{background:rgba(169,126,47,.16);color:#8a6420}
+.u2ava.rk-manager{background:var(--brandsoft);color:var(--brand)}
+.u2ava.rk-stock{background:rgba(2,132,199,.13);color:#0369a1}
+.u2ava.rk-seller{background:rgba(31,122,69,.13);color:var(--ok)}
+.u2ava.rk-external{background:rgba(124,58,237,.13);color:#6d28d9}
+.u2ava.rk-customer{background:var(--chip);color:var(--mut)}
+html[data-theme="dark"] .u2ava.rk-admin{background:rgba(202,158,68,.2);color:#e5c069}
+html[data-theme="dark"] .u2ava.rk-stock{background:rgba(56,189,248,.16);color:#7dd3fc}
+html[data-theme="dark"] .u2ava.rk-seller{background:rgba(79,189,122,.14);color:var(--ok)}
+html[data-theme="dark"] .u2ava.rk-external{background:rgba(196,181,253,.16);color:#c4b5fd}"""
+
+# ═══ v88: منطق Users 2.0 — يستبدل عرض تبويب المستخدمين قديماً بإعادة بناء كاملة ═══
+# يلفّ loadUsers/renderUsers العالميتين (كل نقاط الاستدعاء القديمة تعمل بلا تعديل)
+# ويستعمل نفس نقاط النهاية (users/registrations/resets) — البيانات مشتركة كما هي.
+_PWA_USERS2_JS = r"""(function () {
+  "use strict";
+  function safe(fn) { try { return fn(); } catch (e) { return undefined; } }
+  var view = document.getElementById("v-users");
+  if (!view) return;
+
+  /* ── 1) هيكل التبويب الجديد ── */
+  view.innerHTML =
+    '<h2 class="vt">المستخدمون</h2>' +
+    '<div class="u2seg" id="u2Seg">' +
+    '<button type="button" class="u2segb on" data-s="app">🔐 مستخدمو التطبيق <b id="u2cApp">0</b></button>' +
+    '<button type="button" class="u2segb" data-s="bot">✈️ مستخدمو البوت <b id="u2cBot">0</b></button>' +
+    '</div>' +
+    '<div class="fld" style="margin:0 0 4px"><input id="u2Search" type="search" placeholder="🔍 بحث بالاسم أو الهاتف أو اسم الدخول…" autocomplete="off"></div>' +
+    '<div id="u2Pend"></div>' +
+    '<div id="u2List"><p class="u2empty"><span class="ic">⏳</span>جارِ التحميل…</p></div>';
+
+  var DATA = { users: [], regs: [], resets: [], counts: {} };
+  var selfTid = null, seg = "app", q = "", kickOpen = false;
+
+  var RANK = { admin: 0, manager: 1, stock: 2, seller: 3, external: 4, customer: 5 };
+  var GROUPS = [
+    { label: "الإدارة", roles: { admin: 1, manager: 1 } },
+    { label: "الموظفون", roles: { stock: 1, seller: 1, external: 1, _other: 1 } },
+    { label: "العملاء", roles: { customer: 1 } }
+  ];
+  function groupIndex(role) {
+    for (var i = 0; i < GROUPS.length; i++) { if (GROUPS[i].roles[role]) return i; }
+    return 1; /* فئة غير معروفة → الموظفون */
+  }
+  function rank(u) { return RANK[u.role] !== undefined ? RANK[u.role] : 9; }
+  function isSelf(u) { return !!u.telegram_id && u.telegram_id === selfTid; }
+  function escSafe(s) { return esc(String(s == null ? "" : s)); }
+  function initial(u) {
+    var s = String(u.name || "").trim();
+    return s ? s.charAt(0) : "؟";
+  }
+  function onlineDot(u) {
+    if (!u.last_seen) return "";
+    try {
+      if (Date.now() - new Date(u.last_seen).getTime() < 65000) return '<span class="u2dot"></span>';
+    } catch (e) {}
+    return "";
+  }
+  function matchQ(list, v) {
+    if (!q) return true;
+    return [v.name, v.phone, v.email, v.web_username, v.role_label].some(function (x) {
+      return (x || "").toString().toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  /* ── 2) بناء صف الأزرار — نفس صلاحيات وقواعد العرض القديمة حرفياً ── */
+  function actsHtml(u) {
+    var a = "";
+    if (u.web) a += '<button type="button" class="u2btn prime" data-act="creds" data-i="' + u._i + '">👁 بيانات الدخول</button>';
+    if (isSelf(u)) {
+      a += '<button type="button" class="u2btn gold" data-act="passself" data-i="' + u._i + '">🔑 كلمة مروري</button>';
+    } else {
+      if (u.telegram_id && !u.protected) a += '<button type="button" class="u2btn b" data-act="role" data-i="' + u._i + '">🎯 الفئة</button>';
+      if (u.telegram_id) a += '<button type="button" class="u2btn gold" data-act="pass" data-i="' + u._i + '">' + (u.web ? "🔑 كلمة مرور" : "🔑 إنشاء حساب تطبيق") + '</button>';
+      if (u.telegram_id && !u.protected && u.role !== "admin") {
+        a += u.active
+          ? '<button type="button" class="u2btn red" data-act="toggle" data-i="' + u._i + '" data-to="0">🚫 إيقاف</button>'
+          : '<button type="button" class="u2btn green" data-act="toggle" data-i="' + u._i + '" data-to="1">✅ إعادة تنشيط</button>';
+      }
+      if (!u.protected && u.web && u.telegram_id) a += '<button type="button" class="u2btn red" data-act="delweb" data-i="' + u._i + '">🗑 حذف من التطبيق</button>';
+    }
+    if (!a) a = '<span class="u2sub" style="margin:0;padding:2px 0">حساب محمي — لا إجراءات</span>';
+    return a;
+  }
+
+  /* ── 3) بطاقة مستخدم: Grid بطبقتين — عمود النص لا يُسحق أبداً ── */
+  function cardHtml(u) {
+    var roleCls = RANK[u.role] !== undefined ? u.role : "customer";
+    var lines = '<span class="rk rk-' + roleCls + '">' + escSafe(u.role_label) + '</span>';
+    if (u.web && u.web_username) lines += '<span class="u2un">🔑 <bdi dir="ltr">' + escSafe(u.web_username) + '</bdi></span>';
+    var contact = [];
+    if (u.phone) contact.push('📞 <bdi dir="ltr">' + escSafe(u.phone) + '</bdi>');
+    if (u.email) contact.push('✉️ <bdi dir="ltr">' + escSafe(u.email) + '</bdi>');
+    var sub = contact.join(" · ");
+    if (!u.web && u.active) sub += (sub ? " · " : "") + "لا حساب تطبيق له";
+    var badges = "";
+    if (isSelf(u)) badges += ' <span class="mini">أنت</span>';
+    if (u.protected) badges += ' 🛡';
+    if (!u.active) badges += ' <span class="mini r">مطرود</span>';
+    return '<div class="u2card' + (!u.active ? " off" : "") + '">' +
+      '<div class="u2ava rk-' + roleCls + '">' + escSafe(initial(u)) + onlineDot(u) + '</div>' +
+      '<div class="u2main">' +
+      '<div class="u2name"><b>' + escSafe(u.name) + '</b>' + badges + '</div>' +
+      '<div class="u2lines">' + lines + '</div>' +
+      (sub ? '<div class="u2sub">' + sub + '</div>' : "") +
+      '</div>' +
+      '<div class="u2acts">' + actsHtml(u) + '</div>' +
+      '</div>';
+  }
+  /* ── 4) بطاقات الانتظار: طلبات الانضمام واستعادة كلمة المرور (جانب التطبيق) ── */
+  function pendingHtml() {
+    var p = "";
+    if (seg !== "app") { return p; }
+    var regs = DATA.regs.filter(function (w) { return matchQ(null, w); });
+    if (regs.length) {
+      p += '<div class="u2gh">⏳ بانتظار موافقتك (' + regs.length + ')</div>';
+      regs.forEach(function (w) {
+        var i = DATA.regs.indexOf(w);
+        var codeBadge = (w.code || "").toUpperCase().indexOf("GO") === 0
+          ? '<span class="mini" style="background:var(--oksoft);color:var(--ok)">Google</span>'
+          : ((w.code || "").toUpperCase().indexOf("PW") === 0
+            ? '<span class="mini">🔑 اسم + رقم سر</span>'
+            : '<span class="mini">رمز: ' + escSafe(w.code) + '</span>');
+        var contact = [];
+        if (w.username) contact.push('🔑 <bdi dir="ltr">' + escSafe(w.username) + '</bdi>');
+        if (w.email) contact.push('✉️ <bdi dir="ltr">' + escSafe(w.email) + '</bdi>');
+        if (w.phone) contact.push('📞 <bdi dir="ltr">' + escSafe(w.phone) + '</bdi>');
+        p += '<div class="u2card pend">' +
+          '<div class="u2ava rk-customer">؟</div>' +
+          '<div class="u2main">' +
+          '<div class="u2name"><b>' + escSafe(w.name) + '</b> ' + codeBadge + '</div>' +
+          '<div class="u2lines"><span class="rk rk-customer">' + escSafe(w.role_label) + '</span></div>' +
+          (contact.length ? '<div class="u2sub">' + contact.join(" · ") + '</div>' : "") +
+          '</div>' +
+          '<div class="u2acts">' +
+          '<button type="button" class="u2btn green" data-act="appr" data-i="' + i + '">✅ موافقة</button>' +
+          '<button type="button" class="u2btn red" data-act="reg" data-rid="' + w.id + '">🗑 حذف</button>' +
+          '</div></div>';
+      });
+    }
+    var rs = DATA.resets.filter(function (r) { return !q || (r.username || "").toLowerCase().indexOf(q) !== -1; });
+    if (rs.length) {
+      p += '<div class="u2gh">🔑 طلبات استعادة كلمة المرور (' + rs.length + ')</div>';
+      rs.forEach(function (r) {
+        p += '<div class="u2card pend">' +
+          '<div class="u2ava rk-customer">🔑</div>' +
+          '<div class="u2main">' +
+          '<div class="u2name"><b>' + escSafe(r.username) + '</b></div>' +
+          '<div class="u2sub">طالب باستعادة رقمه السري' + (r.created_at ? " · ⏰ " + escSafe(r.created_at) : "") + '</div>' +
+          '</div>' +
+          '<div class="u2acts">' +
+          '<button type="button" class="u2btn gold" data-act="reset" data-rid="' + r.id + '" data-run="' + escSafe(r.username) + '">🔑 توليد رقم سر مؤقت</button>' +
+          '</div></div>';
+      });
+    }
+    return p;
+  }
+
+  /* ── 5) العرض الرئيسي: قسمان منفصلان فوق نفس البيانات المشتركة ── */
+  function sortUsers(arr) {
+    return arr.sort(function (a, b) {
+      var sa = isSelf(a) ? 0 : 1, sb = isSelf(b) ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      if (rank(a) !== rank(b)) return rank(a) - rank(b);
+      return String(a.name || "").localeCompare(String(b.name || ""), "ar");
+    });
+  }
+  function render() {
+    var listEl = document.getElementById("u2List");
+    var pendEl = document.getElementById("u2Pend");
+    if (!listEl) return;
+    var users = DATA.users;
+    var isApp = (seg === "app");
+    var cAppEl = document.getElementById("u2cApp"), cBotEl = document.getElementById("u2cBot");
+    if (cAppEl) cAppEl.textContent = DATA.counts.app !== undefined ? DATA.counts.app : users.filter(function (u) { return u.web && u.active; }).length;
+    if (cBotEl) cBotEl.textContent = DATA.counts.bot_only !== undefined ? DATA.counts.bot_only : users.filter(function (u) { return !u.web && u.active; }).length;
+
+    var html = "";
+    var active = sortUsers(users.filter(function (u) { return u.active && (u.web === isApp) && matchQ(null, u); }));
+    var kicked = users.filter(function (u) { return !u.active && (u.web === isApp) && matchQ(null, u); });
+
+    if (!active.length && !kicked.length) {
+      html = isApp
+        ? '<p class="u2empty"><span class="ic">🔐</span>لا حسابات تطبيق هنا بعد.<br>عند موافقتك على انضمام أحد أو إنشاء حساب لتليغرامي من البوت سيظهر في هذا القسم.</p>'
+        : '<p class="u2empty"><span class="ic">✈️</span>لا مستخدمي بوت هنا.<br>كل من راسل البوت بدون حساب تطبيق يظهر في هذا القسم.</p>';
+    } else {
+      GROUPS.forEach(function (g, gi) {
+        var arr = active.filter(function (u) { return groupIndex(u.role) === gi; });
+        if (!arr.length) return;
+        html += '<div class="u2gh">' + g.label + ' (' + arr.length + ')</div>';
+        html += arr.map(cardHtml).join("");
+      });
+      if (kicked.length) {
+        html += '<button type="button" class="u2khead' + (kickOpen ? " open" : "") + '" id="u2Kick">🚫 المطرودون (' + kicked.length + ') <span class="karr">▶</span></button>';
+        if (kickOpen) html += '<div id="u2KickList">' + kicked.map(cardHtml).join("") + '</div>';
+      }
+    }
+    listEl.innerHTML = html;
+    if (pendEl) pendEl.innerHTML = pendingHtml();
+  }
+
+  /* ── 6) تنفيذ الإجراءات — نفس دوال الحوارات الأصلية (صفر منطق مكرر) ── */
+  function actUser(btn) {
+    var u = DATA.users[+btn.dataset.i];
+    if (!u) return;
+    var act = btn.dataset.act;
+    if (act === "creds" && typeof openCreds === "function") return safe(function () { openCreds(u.id, u.name); });
+    if (act === "role") return safe(function () { openRole(u.telegram_id, u.name); });
+    if (act === "pass") return safe(function () { openPass(u.telegram_id, u.name, false); });
+    if (act === "passself") return safe(function () { openPass(null, u.name, true); });
+    if (act === "delweb") return safe(function () { delWeb(u.telegram_id, u.name); });
+    if (act === "toggle") return safe(function () { userToggle(u.telegram_id, btn.dataset.to === "1"); });
+  }
+  function actPend(btn) {
+    var act = btn.dataset.act;
+    if (act === "appr") { var w = DATA.regs[+btn.dataset.i]; if (w) safe(function () { openApprove(w); }); return; }
+    if (act === "reg") return safe(function () { regDelete(+btn.dataset.rid); });
+    if (act === "reset") return safe(function () { resetGenerate(+btn.dataset.rid, btn.dataset.run || ""); });
+  }
+
+  /* ── 7) ربط الأحداث (تفويض — ينجو من إعادة الرسم) ── */
+  safe(function () {
+    document.getElementById("u2Seg").addEventListener("click", function (e) {
+      var b = e.target.closest(".u2segb");
+      if (!b) return;
+      seg = b.dataset.s || "app";
+      this.querySelectorAll(".u2segb").forEach(function (x) { x.classList.toggle("on", x === b); });
+      render();
+    });
+    document.getElementById("u2Search").addEventListener("input", function () {
+      q = (this.value || "").trim().toLowerCase();
+      render();
+    });
+    document.getElementById("u2List").addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-act]");
+      if (b) return actUser(b);
+      var k = e.target.closest("#u2Kick");
+      if (k) { kickOpen = !kickOpen; render(); }
+    });
+    var pendEl = document.getElementById("u2Pend");
+    if (pendEl) pendEl.addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-act]");
+      if (b) actPend(b);
+    });
+  });
+
+  /* ── 8) تحميل البيانات: نفس نقاط النهاية + مزامنة الذات (كاش 60 ثانية) ── */
+  window.loadUsers = function () {
+    return Promise.all([
+      api("/api/users"),
+      api("/api/registrations").catch(function () { return { registrations: [] }; }),
+      api("/api/resets").catch(function () { return { resets: [] }; }),
+      api("/api/me").catch(function () { return null; })
+    ]).then(function (r) {
+      var d = r[0] || {};
+      DATA.users = d.users || [];
+      DATA.counts = d.counts || {};
+      DATA.users.forEach(function (u, i) { u._i = i; });
+      DATA.regs = (r[1] && r[1].registrations) || [];
+      DATA.resets = (r[2] && r[2].resets) || [];
+      if (r[3] && r[3].user) selfTid = r[3].user.telegram_id;
+      try { if (S.user && S.user.telegram_id != null) selfTid = S.user.telegram_id; } catch (e) {}
+      render();
+    }).catch(function (e) {
+      safe(function () {
+        var el = document.getElementById("u2List");
+        if (el) el.innerHTML = '<p class="u2empty"><span class="ic">⚠️</span>' + escSafe(e && e.message) + '</p>';
+      });
+    });
+  };
+  window.renderUsers = render;
+})();"""
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -12460,6 +12779,12 @@ _PWA_HTML_PATCHES = (
     # 10) v87.2: زر «بيانات الدخول» في تبويب المستخدمين — اسم الدخول وكلمة المرور للمدير
     ('</script>\n</body>',
      '</script>\n<script id="credsjs">\n' + _PWA_CREDS_JS + '</script>\n</body>'),
+    # 11) v88: Users 2.0 — CSS التبويب المعاد بناؤه (مرساة فريدة: وسم ui2css من الرقعة 8)
+    ('<style id="ui2css">',
+     '<style id="users2css">' + _PWA_USERS2_CSS + '</style>\n<style id="ui2css">'),
+    # 12) v88: Users 2.0 — منطق التبويب المعاد بناؤه (فصل التطبيق/البوت + بطاقات Grid)
+    ('</script>\n</body>',
+     '</script>\n<script id="users2js">\n' + _PWA_USERS2_JS + '</script>\n</body>'),
 )
 
 
@@ -14760,12 +15085,14 @@ def _pwa_api_users(user):
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # v88: الحسابات التطبيقية أولًا ثم بحسب الفئة والاسم — القائمتان يفصلهما الواجهة
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
                 "u.role, u.active, u.email, u.phone, u.identity_verified, u.last_seen, "
                 "a.username AS web_username, a.pass_enc "
                 "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
-                "ORDER BY u.active DESC, u.role, LOWER(COALESCE(u.first_name, u.username, ''))")
+                "ORDER BY (a.username IS NOT NULL) DESC, u.active DESC, u.role, "
+                "LOWER(COALESCE(u.first_name, u.username, ''))")
             rows = cur.fetchall()
         conn.commit()
     finally:
@@ -14784,8 +15111,11 @@ def _pwa_api_users(user):
             "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else "",   # v65: «متصل الآن»
             "protected": bool(_protected_account(r["telegram_id"])),
         })
+    # v88: فصل واضح — حسابات تطبيق حقيقية مقابل مستخدمي بوت فقط (نفس القاعدة، بلا أي فصل بيانات)
     counts = {"all": len(out), "kicked": sum(1 for u in out if not u["active"]),
-              "web": sum(1 for u in out if u["web"])}
+              "web": sum(1 for u in out if u["web"]),
+              "bot_only": sum(1 for u in out if not u["web"]),
+              "app": sum(1 for u in out if u["web"] and u["active"])}
     return {"ok": True, "users": out, "counts": counts}
 
 
@@ -18816,7 +19146,7 @@ def register_pwa_routes(app):
 if __name__ == "__main__":
     # v87.1: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
-    logging.info("[STARTUP] ===== BOT " + PWA_VERSION + " (import-FK-fix; creds-view) =====")
+    logging.info("[STARTUP] ===== BOT " + PWA_VERSION + " (import-FK-fix; creds-view; users-tab-2.0) =====")
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
