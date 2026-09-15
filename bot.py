@@ -11311,7 +11311,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v87.1"  # v87.1 = إصلاح فشل الاستيراد FK (8589) — البصمة تظهر في رسائل الاستيراد ولوج الإقلاع
+PWA_VERSION = "v87.2"  # v87.2 = عرض بيانات دخول المستخدمين للمدير (اسم + كلمة مرور مسترجعة) — البصمة تظهر في /api/status ولوج الإقلاع
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11338,6 +11338,9 @@ CREATE TABLE IF NOT EXISTS pwa_sessions (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_sessions_user ON pwa_sessions(user_id);
+-- ═══ v87.2: نسخة مشفّرة قابلة للاسترجاع من كلمة المرور — يعرضها المدير لصاحبها عند نسيانها ═══
+ALTER TABLE pwa_auth ADD COLUMN IF NOT EXISTS pass_enc TEXT;
+ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS pass_enc TEXT;
 CREATE TABLE IF NOT EXISTS audit_log (
     id        SERIAL PRIMARY KEY,
     ts        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -12293,6 +12296,127 @@ _PWA_UI2_JS = r"""/* ═══════════════════�
   setTimeout(function () { safe(syncFab); }, 1200);
 })();"""
 
+# ═══ v87.2: زر «بيانات الدخول» في تبويب المستخدمين — الحقن يعمل مع أي نسخة pwa.html على القرص ═══
+_PWA_CREDS_JS = r"""(function () {
+  "use strict";
+  function safe(fn) { try { fn(); } catch (e) {} }
+  if (typeof usrRow !== "function" || typeof renderUsers !== "function") return;
+
+  /* ── 1) حقن زر «👁 بيانات الدخول» في كل صف مستخدم لديه حساب تطبيق ── */
+  var __usrRow = window.usrRow;
+  window.usrRow = function (u) {
+    var h = __usrRow.apply(this, arguments);
+    safe(function () {
+      if (u && u.web && u.id) {
+        var btn = '<button class="btn mini blue" data-creds="' + u.id + '" data-n="' + esc(u.name) + '">👁 بيانات الدخول</button>';
+        h = h.replace(/<\/div><\/div>\s*$/, btn + "</div></div>");
+      }
+    });
+    return h;
+  };
+
+  var __renderUsers = window.renderUsers;
+  window.renderUsers = function () {
+    __renderUsers.apply(this, arguments);
+    safe(function () {
+      var box = document.getElementById("usrList");
+      if (!box) return;
+      box.querySelectorAll("button[data-creds]").forEach(function (b) {
+        b.addEventListener("click", function () { openCreds(+b.dataset.creds, b.dataset.n); });
+      });
+    });
+  };
+
+  /* ── 2) حوار بيانات الدخول: عرض + نسخ + توليد ── */
+  var dlg = null, cur = null;
+  function el(id) { return document.getElementById(id); }
+
+  function fallbackCopy(t) {
+    safe(function () {
+      var ta = document.createElement("textarea");
+      ta.value = t; ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove(); toast("تم النسخ ✅");
+    });
+  }
+  function copyText(t) {
+    t = String(t || "");
+    if (!t) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { toast("تم النسخ ✅"); },
+        function () { fallbackCopy(t); });
+    } else fallbackCopy(t);
+  }
+
+  function ensureDlg() {
+    if (dlg) return dlg;
+    dlg = document.createElement("dialog");
+    dlg.id = "dlgCreds";
+    dlg.style.cssText = "border:none;border-radius:18px;padding:0;max-width:430px;width:92%;box-shadow:0 18px 60px rgba(0,0,0,.35);background:var(--card,#fff);color:var(--ink,#111);direction:rtl";
+    dlg.innerHTML =
+      '<div style="padding:16px 18px">' +
+      '<h3 style="margin:0 0 2px;font-size:16px">👁 بيانات دخول: <span id="crName"></span></h3>' +
+      '<p id="crMsg" style="margin:0 0 10px;font-size:12.5px;color:#8a6d3b"></p>' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
+      '<div style="display:flex;gap:6px;align-items:center;background:rgba(0,0,0,.05);border-radius:10px;padding:8px 10px">' +
+      '<div style="flex:1;min-width:0"><div style="font-size:11px;opacity:.65">اسم الدخول</div><b id="crUser" style="word-break:break-all"></b></div>' +
+      '<button class="btn mini" type="button" id="crCopyU">نسخ</button></div>' +
+      '<div id="crPassBox" style="display:none;gap:6px;align-items:center;background:rgba(0,0,0,.05);border-radius:10px;padding:8px 10px">' +
+      '<div style="flex:1;min-width:0"><div style="font-size:11px;opacity:.65">كلمة المرور</div><b id="crPass" style="word-break:break-all"></b></div>' +
+      '<button class="btn mini" type="button" id="crCopyP">نسخ</button></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' +
+      '<button class="btn mini gold" type="button" id="crGen">🔑 توليد كلمة مرور جديدة</button>' +
+      '<button class="btn mini" type="button" id="crClose">إغلاق</button>' +
+      '</div>' +
+      '<p style="margin:10px 0 0;font-size:11px;opacity:.6">عرض هذه البيانات يُسجَّل في سجل التدقيق. التوليد يُبطل جلسات المستخدم الحالية.</p>' +
+      '</div>';
+    document.body.appendChild(dlg);
+    el("crClose").addEventListener("click", function () { dlg.close(); });
+    el("crCopyU").addEventListener("click", function () { copyText(el("crUser").textContent); });
+    el("crCopyP").addEventListener("click", function () { copyText(el("crPass").textContent); });
+    el("crGen").addEventListener("click", function () {
+      if (!cur) return;
+      if (!confirm("توليد كلمة مرور جديدة لـ «" + cur.name + "»؟\nستُبطل جلساته الحالية وسيستخدم الرقم الجديد للدخول.")) return;
+      if (!opGuard("genpass:" + cur.id)) return;
+      api("/api/users/genpass", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: cur.id })
+      }).then(function (d) {
+        show(cur.id, cur.name, d);
+        toast("تم التوليد — أعطه الاسم والرقم الجديدين الآن.");
+        safe(function () { loadUsers(); });
+      }).catch(function (e) { toast(e.message, true); })
+        .finally(function () { opRelease("genpass:" + cur.id); });
+    });
+    return dlg;
+  }
+
+  function show(id, name, d) {
+    cur = { id: id, name: name };
+    ensureDlg();
+    el("crName").textContent = name || ("#" + id);
+    el("crUser").textContent = d.username || "—";
+    el("crMsg").textContent = d.note || "";
+    var has = !!d.password;
+    el("crPassBox").style.display = has ? "flex" : "none";
+    el("crPass").textContent = has ? d.password : "";
+    el("crGen").textContent = has ? "🔄 إعادة تعيين بكلمة مرور جديدة" : "🔑 توليد كلمة مرور جديدة";
+    try { dlg.showModal(); } catch (e) {}
+  }
+
+  window.openCreds = function (id, name) {
+    if (!id) return;
+    if (!opGuard("creds:" + id)) return;
+    api("/api/users/creds", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id })
+    }).then(function (d) { show(id, name, d); })
+      .catch(function (e) { toast(e.message, true); })
+      .finally(function () { opRelease("creds:" + id); });
+  };
+})();"""
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -12333,6 +12457,9 @@ _PWA_HTML_PATCHES = (
     # 9) v84: واجهة UI 2.0 — طبقة الذكاء (JS) بعد سكربت المجموعات
     ('</script>\n</body>',
      '</script>\n<script id="ui2js">\n' + _PWA_UI2_JS + '</script>\n</body>'),
+    # 10) v87.2: زر «بيانات الدخول» في تبويب المستخدمين — اسم الدخول وكلمة المرور للمدير
+    ('</script>\n</body>',
+     '</script>\n<script id="credsjs">\n' + _PWA_CREDS_JS + '</script>\n</body>'),
 )
 
 
@@ -12395,6 +12522,64 @@ def _pwa_verify_password(password, stored):
         return _pwa_hmac.compare_digest(dk.hex(), hash_hex)
     except Exception:
         return False
+
+
+# ── v87.2: نسخة مشفّرة قابلة للاسترجاع من كلمة المرور ──
+# scrypt لا ينكسر عمداً (لا يمكن اشتقاق كلمة المرور منه)، لذا تُحفظ نسخة ثانية
+# مشفّرة بمفتاح مشتق من توكن البوت: تسريب القاعدة وحدها لا يكشف نصاً صريحاً،
+# ومن يملك bot.py وبيئة التشغيل يستطيع الاسترجاع للمدير. تشفير تدفق
+# HMAC-SHA256 بمفتاح لكل رسالة (nonce عشوائي 8 بايت) — بلا مكتبات خارجية.
+_PWA_ENC_PREFIX = "enc1$"
+_PWA_ENC_MASTER = None
+
+
+def _pwa_enc_master_key():
+    global _PWA_ENC_MASTER
+    if _PWA_ENC_MASTER is None:
+        base = (os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
+                or os.getenv("DATABASE_URL") or "pwa-local-fallback")
+        _PWA_ENC_MASTER = hashlib.sha256(
+            b"pwa-pass-recover-v1:" + str(base).encode("utf-8")).digest()
+    return _PWA_ENC_MASTER
+
+
+def _pwa_xor_stream(data, key):
+    out = bytearray()
+    i = 0
+    while len(out) < len(data):
+        out.extend(hashlib.sha256(key + b":" + i.to_bytes(4, "big")).digest())
+        i += 1
+    return bytes(a ^ b for a, b in zip(data, out))
+
+
+def _pwa_enc_secret(plain):
+    """يُشفّر نصاً صريحاً (كلمة مرور) إلى «enc1$base64» — فارغ/فشل = None."""
+    try:
+        p = str(plain or "")
+        if not p:
+            return None
+        nonce = os.urandom(8)
+        stream_key = hashlib.sha256(_pwa_enc_master_key() + nonce).digest()
+        ct = _pwa_xor_stream(p.encode("utf-8"), stream_key)
+        return _PWA_ENC_PREFIX + base64.b64encode(nonce + ct).decode("ascii")
+    except Exception:
+        return None
+
+
+def _pwa_dec_secret(stored):
+    """يفكّ «enc1$base64» — يعيد None عند أي مانع (قيمة قديمة/تالفة/مفتاح تغيّر)."""
+    try:
+        s = str(stored or "")
+        if not s.startswith(_PWA_ENC_PREFIX):
+            return None
+        raw = base64.b64decode(s[len(_PWA_ENC_PREFIX):], validate=True)
+        if len(raw) < 9:
+            return None
+        nonce, ct = raw[:8], raw[8:]
+        stream_key = hashlib.sha256(_pwa_enc_master_key() + nonce).digest()
+        return _pwa_xor_stream(ct, stream_key).decode("utf-8")
+    except Exception:
+        return None
 
 
 # إيموجي/رموز تُشال من أسماء الدخول: أعلام الدول والرموز ومحددات العرض وZWJ —
@@ -12843,12 +13028,13 @@ def pwa_set_password(user_id, username, password):
             row = cur.fetchone()
             if row and row[0] != user_id:
                 username = username + "_" + str(user_id)
+            # v87.2: مع التجزئة تُحفظ نسخة مشفّرة قابلة للاسترجاع (يظهرها المدير عند نسيان صاحبها)
             cur.execute(
-                "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
-                "VALUES (%s, %s, %s, NOW()) "
+                "INSERT INTO pwa_auth (user_id, username, pass_hash, pass_enc, updated_at) "
+                "VALUES (%s, %s, %s, %s, NOW()) "
                 "ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username, "
-                "pass_hash = EXCLUDED.pass_hash, updated_at = NOW()",
-                (user_id, username, _pwa_hash_password(password)),
+                "pass_hash = EXCLUDED.pass_hash, pass_enc = EXCLUDED.pass_enc, updated_at = NOW()",
+                (user_id, username, _pwa_hash_password(password), _pwa_enc_secret(password)),
             )
             cur.execute("DELETE FROM pwa_sessions WHERE user_id = %s", (user_id,))
         conn.commit()
@@ -13205,17 +13391,19 @@ def _pwa_api_register(name, username_raw, password, role, ip):
                 reused_id = int(row[0])
                 cur.execute(
                     "UPDATE pwa_registrations SET full_name = %s, role = %s, "
-                    "password_hash = %s, created_at = NOW() WHERE id = %s",
-                    (name, role, _pwa_hash_password(str(password)), reused_id))
+                    "password_hash = %s, pass_enc = %s, created_at = NOW() WHERE id = %s",
+                    (name, role, _pwa_hash_password(str(password)),
+                     _pwa_enc_secret(str(password)), reused_id))
                 reused = True
             else:
                 reused = False
                 code = "PW" + _pwa_secrets.token_hex(2).upper()
                 cur.execute(
                     "INSERT INTO pwa_registrations "
-                    "(code, full_name, username, role, status, password_hash, ip) "
-                    "VALUES (%s, %s, %s, %s, 'waiting', %s, %s) RETURNING id",
-                    (code, name, username, role, _pwa_hash_password(str(password)), ip))
+                    "(code, full_name, username, role, status, password_hash, pass_enc, ip) "
+                    "VALUES (%s, %s, %s, %s, 'waiting', %s, %s, %s) RETURNING id",
+                    (code, name, username, role, _pwa_hash_password(str(password)),
+                     _pwa_enc_secret(str(password)), ip))
                 reused_id = int(cur.fetchone()[0])
         conn.commit()
     except Exception as e:
@@ -13411,9 +13599,9 @@ def _pwa_api_reset_generate(user, reset_id):
                 conn.commit()
                 return False, "لا يوجد حساب نشط بهذا الاسم — أُلغي الطلب.", None
             uid = int(urow[0])
-            cur.execute("UPDATE pwa_auth SET pass_hash = %s, updated_at = NOW() "
+            cur.execute("UPDATE pwa_auth SET pass_hash = %s, pass_enc = %s, updated_at = NOW() "
                         "WHERE user_id = %s",
-                        (_pwa_hash_password(temp), uid))
+                        (_pwa_hash_password(temp), _pwa_enc_secret(temp), uid))
             cur.execute("UPDATE pwa_pass_resets SET status = 'done', temp_pass = %s, "
                         "done_at = NOW() WHERE id = %s", (temp, reset_id))
         conn.commit()
@@ -14575,7 +14763,7 @@ def _pwa_api_users(user):
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
                 "u.role, u.active, u.email, u.phone, u.identity_verified, u.last_seen, "
-                "a.username AS web_username "
+                "a.username AS web_username, a.pass_enc "
                 "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "ORDER BY u.active DESC, u.role, LOWER(COALESCE(u.first_name, u.username, ''))")
             rows = cur.fetchall()
@@ -14585,9 +14773,11 @@ def _pwa_api_users(user):
     out = []
     for r in rows:
         out.append({
+            "id": r["id"],   # v87.2: المعرّف الداخلي لزر بيانات الدخول
             "telegram_id": r["telegram_id"], "name": r["first_name"] or r["tg_username"] or str(r["telegram_id"]),
             "role": r["role"], "role_label": ROLE_LABELS.get(r["role"], r["role"]),
             "active": bool(r["active"]), "web": bool(r["web_username"]),
+            "pass_recoverable": bool(r.get("pass_enc")),   # v87.2: نسخة كلمة المرور قابلة للعرض؟
             "web_username": r.get("web_username"),   # v65: كان ينقص — كان يظهر «اسم الدخول: undefined»
             "email": r.get("email"), "phone": r.get("phone"),
             "verified": bool(r.get("identity_verified")),
@@ -14654,6 +14844,74 @@ def _pwa_api_webpass(user, target_tid, password):
         return False, "المستخدم غير موجود."
     uname = pwa_set_password(row[0], row[1] or ("u" + str(target_tid)), password)
     return True, "تم ضبط كلمة مرور الويب. اسم الدخول: " + uname
+
+
+# ── v87.2: بيانات دخول المستخدمين بين يدي المدير (اسم + كلمة مرور مسترجعة) ──
+
+def _pwa_api_creds(user, target_id):
+    """عرض اسم الدخول وكلمة المرور المسترجعة لمستخدم — للمدير فقط.
+    كلمات المرور القديمة (أُنشئت قبل خاصية الاسترجاع) لا يمكن اشتقاقها من
+    تجزئة scrypt عمداً — يظهر تنبيه بذلك ويستخدم المدير زر التوليد."""
+    if not _pwa_perm_map(user["role"])["users"]:
+        return None
+    try:
+        target_id = int(target_id)
+    except (TypeError, ValueError):
+        return False, "معرّف غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM users WHERE id = %s", (target_id,))
+            if not cur.fetchone():
+                return False, "المستخدم غير موجود."
+            cur.execute("SELECT username, pass_enc FROM pwa_auth WHERE user_id = %s", (target_id,))
+            arow = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not arow:
+        return False, "لا يوجد حساب تطبيق لهذا المستخدم — استخدم زر 🔑 لإنشاء اسم ورقم سر."
+    uname = str(arow[0] or "")
+    pwd = _pwa_dec_secret(arow[1]) if arow[1] else None
+    if pwd is None:
+        note = ("كلمة مرور هذا الحساب أُنشئت قبل خاصية الاسترجاع فلا يمكن عرضها — "
+                "استخدم «توليد كلمة مرور جديدة» وسيُحفظ الرقم الجديد قابلاً للعرض لاحقاً.")
+        return True, {"username": uname, "password": None, "note": note}
+    return True, {"username": uname, "password": pwd, "note": ""}
+
+
+def _pwa_api_genpass(user, target_id):
+    """توليد كلمة مرور جديدة لمستخدم وإظهارها للمدير فوراً — للمدير فقط.
+    تُحفظ نسخة مشفّرة قابلة للاسترجاع وتُبطل جلسات المستخدم الحالية."""
+    if not _pwa_perm_map(user["role"])["users"]:
+        return None
+    try:
+        target_id = int(target_id)
+    except (TypeError, ValueError):
+        return False, "معرّف غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(username, first_name), telegram_id FROM users WHERE id = %s",
+                        (target_id,))
+            urow = cur.fetchone()
+            if not urow:
+                return False, "المستخدم غير موجود."
+            if urow[1] is not None and _protected_account(urow[1]) \
+                    and user.get("telegram_id") != urow[1]:
+                return False, "🔒 هذا الحساب محمي (المالك) — لا يمكن توليد كلمة مرور له من هنا."
+            cur.execute("SELECT username FROM pwa_auth WHERE user_id = %s", (target_id,))
+            arow = cur.fetchone()
+            if not arow:
+                return False, "لا يوجد حساب تطبيق لهذا المستخدم — استخدم زر 🔑 لإنشاء اسم ورقم سر."
+            auth_name = str(arow[0] or "")
+        conn.commit()
+    finally:
+        release_connection(conn)
+    temp = _pwa_generate_temp_password(10)
+    uname = pwa_set_password(target_id, auth_name or ("u" + str(target_id)), temp)
+    return True, {"username": uname, "password": temp,
+                  "note": "أُبطلت جلساته الحالية — سيدخل بالرقم الجديد ويُستحسن أن يغيّره من الإعدادات."}
 
 
 def _pwa_has_accounts():
@@ -15549,13 +15807,13 @@ def _pwa_api_registration_approve(reg_id, role):
     reg_pass = None
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT full_name, email, username, role, password_hash "
+            cur.execute("SELECT full_name, email, username, role, password_hash, pass_enc "
                         "FROM pwa_registrations WHERE id = %s AND status = 'waiting'", (reg_id,))
             reg = cur.fetchone()
             if not reg:
                 return False, "الطلب غير موجود أو مُفعَّل مسبقاً."
-            full_name, reg_email, reg_username, reg_role, reg_pass = \
-                reg[0], (reg[1] or "").strip().lower(), (reg[2] or "").strip(), reg[3], reg[4]
+            full_name, reg_email, reg_username, reg_role, reg_pass, reg_pass_enc = \
+                reg[0], (reg[1] or "").strip().lower(), (reg[2] or "").strip(), reg[3], reg[4], reg[5]
             final_role = role if role != ROLE_CUSTOMER else reg_role
             # v52: هل الاسم مطابق لحساب تلجرام موجود؟ اربط به بدل إنشاء صف مكرر
             # (حساب واحد لكل شخص — لا دمج في حساب مدير حمايةً من خداع الصلاحيات)
@@ -15626,11 +15884,11 @@ def _pwa_api_registration_approve(reg_id, role):
                 if taken:
                     auth_name = "u" + str(uid)
                 cur.execute(
-                    "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
-                    "VALUES (%s, %s, %s, NOW()) "
+                    "INSERT INTO pwa_auth (user_id, username, pass_hash, pass_enc, updated_at) "
+                    "VALUES (%s, %s, %s, %s, NOW()) "
                     "ON CONFLICT (user_id) DO UPDATE SET pass_hash = EXCLUDED.pass_hash, "
-                    "username = EXCLUDED.username, updated_at = NOW()",
-                    (uid, auth_name, reg_pass))
+                    "pass_enc = EXCLUDED.pass_enc, username = EXCLUDED.username, updated_at = NOW()",
+                    (uid, auth_name, reg_pass, reg_pass_enc))
             cur.execute("UPDATE pwa_registrations SET status = 'confirmed', confirmed_at = NOW() "
                         "WHERE id = %s", (reg_id,))
         conn.commit()
@@ -16337,6 +16595,50 @@ async def pwa_users_webpass_handler(request):
                    details="للمستخدم #" + str(tid),
                    ip=request.remote or "؟")
     return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_users_creds_handler(request):
+    """v87.2: عرض بيانات دخول مستخدم (اسم + كلمة مرور مسترجعة) — للمدير فقط، مع تدقيق."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        tid = int(body.get("id"))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, data = await _pwa_run(_pwa_api_creds, user, tid)
+    if ok is None:
+        return _pwa_err(403, "للمدراء فقط.")
+    if not ok:
+        return _pwa_err(400, data)
+    await _pwa_run(_audit_log, "creds_view", user,
+                   details="عرض بيانات الدخول للمستخدم #" + str(tid),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "username": data.get("username"),
+                    "password": data.get("password"), "note": data.get("note", "")})
+
+
+async def pwa_users_genpass_handler(request):
+    """v87.2: توليد كلمة مرور جديدة لمستخدم وإظهارها للمدير — مع تدقيق."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        tid = int(body.get("id"))
+    except (TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, data = await _pwa_run(_pwa_api_genpass, user, tid)
+    if ok is None:
+        return _pwa_err(403, "للمدراء فقط.")
+    if not ok:
+        return _pwa_err(400, data)
+    await _pwa_run(_audit_log, "pass_gen", user,
+                   details="توليد كلمة مرور جديدة للمستخدم #" + str(tid),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "username": data.get("username"),
+                    "password": data.get("password"), "note": data.get("note", "")})
 
 
 # ═══════════ (v30) مركز إشعارات التطبيق: جرس + عدّاد غير المقروء + تعليم كمقروء ═══════════
@@ -18461,6 +18763,8 @@ def register_pwa_routes(app):
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
     app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
+    app.router.add_post("/api/users/creds", pwa_users_creds_handler)      # v87.2: عرض اسم الدخول وكلمة المرور للمدير
+    app.router.add_post("/api/users/genpass", pwa_users_genpass_handler)  # v87.2: توليد كلمة مرور جديدة وإظهارها
     app.router.add_post("/api/products/create", pwa_products_create_handler)
     app.router.add_post("/api/products/edit", pwa_products_edit_handler)        # v41: تعديل سلعة
     app.router.add_post("/api/products/archive", pwa_products_archive_handler)  # v41: حذف/استعادة ناعمة
@@ -18512,7 +18816,7 @@ def register_pwa_routes(app):
 if __name__ == "__main__":
     # v87.1: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
-    logging.info("[STARTUP] ===== BOT " + PWA_VERSION + " (import-FK-fix) =====")
+    logging.info("[STARTUP] ===== BOT " + PWA_VERSION + " (import-FK-fix; creds-view) =====")
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
