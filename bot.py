@@ -10658,7 +10658,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v88.1"  # v88.1 = سجل الفواتير الكامل + تحميل PDF محصّن (رسائل خطأ ظاهرة) + عرض سطح المكتب
+PWA_VERSION = "v88.2"  # v88.2 = معاينة PDF داخل التطبيق (iframe بنفس الأصل) + شارة إصدار مرئية + تنزيل ذو مسار بديل
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
@@ -11716,11 +11716,12 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     return pt === "pcs" ? "قطعة" : (pt === "plant" ? "م.ط" : "m²");
   }
 
-  // ── v88.1: تحميل PDF محصّن — fetch ثم تنزيل مباشر مع رسالة خطأ ظاهرة عند أي فشل
-  // (الروابط النقية كانت تفشل بصمت داخل PWA/ويبفيو على بعض الهواتف)
+  // ── v88.2: تحميل PDF محصّن — fetch ثم تنزيل مباشر مع رسالة خطأ ظاهرة عند أي فشل
+  // وإن منعت بيئة الهاتف التنزيل المباشر نعرض الملف نفسه لكي يُحفظ يدوياً.
   async function dlPdf(id, btn){
     var t = btn ? btn.textContent : "";
     if(btn){ btn.disabled = true; btn.textContent = "\u23F3 جارٍ..."; }
+    var url = null;
     try{
       var r = await fetch("/api/invoice/pdf?id=" + id, {credentials:"same-origin"});
       if(!r.ok){
@@ -11730,19 +11731,53 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       }
       var b = await r.blob();
       if(!b || b.size < 100) throw new Error("ملف PDF فارغ — أعد المحاولة");
-      var url = URL.createObjectURL(b);
-      var a = document.createElement("a");
-      a.href = url; a.download = "facture_" + id + ".pdf";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(function(){ try{ URL.revokeObjectURL(url); }catch(e){} }, 5000);
-      toast("\u2705 تم تحميل الفاتورة #" + id);
+      url = URL.createObjectURL(b);
+      try{
+        var a = document.createElement("a");
+        a.href = url; a.download = "facture_" + id + ".pdf";
+        document.body.appendChild(a); a.click(); a.remove();
+        toast("\u2705 تم تحميل الفاتورة #" + id);
+      }catch(dlErr){
+        // v88.2: بعض بيئات PWA/ويبفيو تمنع تنزيل blob — نعرضه بدل الصمت
+        location.href = url;
+      }
     }catch(err){
       toast(err && err.message ? err.message : "فشل تحميل PDF", 1);
     }finally{
       if(btn){ btn.disabled = false; btn.textContent = t; }
+      if(url) setTimeout(function(){ try{ URL.revokeObjectURL(url); }catch(e){} }, 60000);
     }
   }
   window.invDlPdf = dlPdf;
+
+  // ── v88.2: عارض الفاتورة داخل التطبيق — يشتغل حتى حيث يفشل target=_blank
+  // (تاب مستقل في الويبفيو/standalone) — iframe بنفس الأصل مع زر تحميل وإغلاق
+  function showPdf(id){
+    var ov = document.getElementById("pdfOv");
+    if(!ov){
+      ov = document.createElement("div");
+      ov.id = "pdfOv";
+      ov.style.cssText = "position:fixed;inset:0;background:#000c;z-index:9999;display:none;flex-direction:column";
+      ov.innerHTML = '<div style="display:flex;gap:8px;padding:8px 10px;align-items:center;background:#1c1c1e">'
+        + '<b style="color:#fff;flex:1;font-size:14px" id="pdfOvT"></b>'
+        + '<button type="button" class="btn mini soft-g" id="pdfOvDl">\u2B07\uFE0F تحميل</button>'
+        + '<button type="button" class="btn mini gray" id="pdfOvX">\u2715 إغلاق</button></div>'
+        + '<iframe id="pdfOvF" style="flex:1;border:0;width:100%;background:#fff" title="فاتورة PDF"></iframe>';
+      document.body.appendChild(ov);
+      document.getElementById("pdfOvX").addEventListener("click", function(){
+        ov.style.display = "none";
+        document.getElementById("pdfOvF").src = "about:blank";
+      });
+      document.getElementById("pdfOvDl").addEventListener("click", function(){
+        dlPdf(ov.getAttribute("data-id"), this);
+      });
+    }
+    ov.style.display = "flex";
+    ov.setAttribute("data-id", String(id));
+    document.getElementById("pdfOvT").textContent = "\uD83E\uDDFA فاتورة #" + id;
+    document.getElementById("pdfOvF").src = "/api/invoice/pdf?id=" + id + "&disp=inline";
+  }
+  window.invShowPdf = showPdf;
 
   // ── v88.1: صف فاتورة موحّد — زر تنزيل (fetch) + معاينة بالمتصفح
   function invRow(v){
@@ -11753,7 +11788,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       + '<span>' + esc(v.at) + (v.worker ? ' • &#128104; ' + esc(v.worker) : '')
       + ' • &#128176; ' + money(v.total) + '</span></div>'
       + '<button type="button" class="btn mini soft-g" data-invpdf="' + v.id + '">&#11015;&#65039; PDF</button>'
-      + '<a class="btn mini gray" href="/api/invoice/pdf?id=' + v.id + '&disp=inline" target="_blank" rel="noopener" title="معاينة">&#128065;</a></div>';
+      + '<button type="button" class="btn mini gray" data-invview="' + v.id + '" title="معاينة">&#128065;</button></div>';
   }
 
   // ── v88.1: سجل الفواتير الكامل — بحث + «فواتير أقدم» (ترقيم بالمؤشر)
@@ -11946,7 +11981,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       + '<br>&#128206; وصلتك نسخة PDF في البوت أيضاً</div>'
       + '<div class="acts">'
       + '<button type="button" class="btn green" data-invpdf="' + d.invoice_id + '">&#11015;&#65039; تحميل PDF</button>'
-      + '<a class="btn gray" href="/api/invoice/pdf?id=' + d.invoice_id + '&disp=inline" target="_blank" rel="noopener">&#128065; معاينة</a>'
+      + '<button type="button" class="btn gray" data-invview="' + d.invoice_id + '">&#128065; معاينة</button>'
       + '<button type="button" class="btn gray" id="invAgain">&#129534; فاتورة جديدة</button></div>';
     $("#invAgain").addEventListener("click", function(){
       sc.style.display = "none";
@@ -12016,6 +12051,8 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   document.addEventListener("click", function(ev){
     var p = ev.target.closest ? ev.target.closest("[data-invpdf]") : null;
     if(p){ ev.preventDefault(); dlPdf(p.getAttribute("data-invpdf"), p); return; }
+    var w = ev.target.closest ? ev.target.closest("[data-invview]") : null;
+    if(w){ ev.preventDefault(); showPdf(w.getAttribute("data-invview")); return; }
     if(ev.target && ev.target.id === "invArchMore") loadArch(false);
   });
   document.addEventListener("input", function(ev){
@@ -12107,6 +12144,18 @@ _PWA_HTML_PATCHES = (
     # 14) CSS سطح المكتب قبل طبقة ذكاء UI2 (المرساة تولدها الرقعة 9 — الترتيب مهم)
     ('<script id="ui2js">',
      '<style id="dtcss">' + _PWA_DESKTOP_CSS + '</style>\n<script id="ui2js">'),
+    # ── v88.2: شارة الإصدار المرئية — تنهي جهل «أي نسخة تعمل فعلاً» ──
+    # 15) رقعة صغيرة على مرساة </body> (ثابتة في كل نسخ pwa.html) — تُظهر
+    # APP_VER المحقون من الخادم في ركن الشاشة على كل الأجهزة دائماً
+    ('</body>\n</html>',
+     '<script>(function(){try{'
+     'var c=document.createElement("div");c.id="verChip";'
+     'c.textContent=(typeof APP_VER!=="undefined"?APP_VER:"؟");'
+     'c.style.cssText="position:fixed;bottom:52px;left:6px;z-index:9990;'
+     'font-size:10px;opacity:.45;color:#888;pointer-events:none;'
+     'font-family:inherit;line-height:1";'
+     'document.body.appendChild(c);'
+     '}catch(e){}})();</script>\n</body>\n</html>'),
 )
 
 
@@ -16920,11 +16969,16 @@ self.addEventListener("fetch", (e) => {
 
 @web.middleware
 async def _pwa_sec_middleware(request, handler):
-    """ترويسات أمنية على كل ردود الخادم (صفحة + API)."""
+    """ترويسات أمنية على كل ردود الخادم (صفحة + API).
+    v88.2: مسار PDF للفاتورة يُسمح بعرضه داخل إطار من نفس الأصل (SAMEORIGIN)
+    لتعمل معاينة الفاتورة داخل التطبيق — أي تأطير خارجي يبقى محجوباً."""
     resp = await handler(request)
     h = resp.headers
     h.setdefault("X-Content-Type-Options", "nosniff")
-    h.setdefault("X-Frame-Options", "DENY")
+    if request.path == "/api/invoice/pdf":
+        h.setdefault("X-Frame-Options", "SAMEORIGIN")
+    else:
+        h.setdefault("X-Frame-Options", "DENY")
     h.setdefault("Referrer-Policy", "no-referrer")
     return resp
 
@@ -18808,7 +18862,7 @@ if __name__ == "__main__":
     # v88: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
-                 + " (invoice-archive + safe-pdf-dl + desktop) =====")
+                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip) =====")
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
