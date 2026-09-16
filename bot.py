@@ -1061,6 +1061,15 @@ def init_db(conn=None):
                     ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_by INTEGER;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                -- Migration (v89): روابط Supabase Storage — الوسائط الجديدة خارج القاعدة.
+                -- الأعمدة القديمة (media/web_photo) تبقى كما هي: القديم يشتغل من القاعدة
+                -- والجديد يخزن رابطاً نصياً صغيراً فقط — صفر مخاطرة على أي بيانات موجودة.
+                DO $$ BEGIN
+                    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_url TEXT;
+                    ALTER TABLE chat_group_messages ADD COLUMN IF NOT EXISTS media_url TEXT;
+                    ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_url TEXT;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: create extraction_requests table
                 CREATE TABLE IF NOT EXISTS extraction_requests (
                     id            SERIAL PRIMARY KEY,
@@ -10602,6 +10611,11 @@ async def _keep_alive(app):
                 async with session.get(ping_url) as r:
                     if r.status != 200:
                         logging.warning("[KEEP-ALIVE] Render ping status " + str(r.status))
+                # v89: نبضة Supabase الأسبوعية — HTTP خالص، لا تلمس Neon إطلاقاً
+                try:
+                    await asyncio.to_thread(_supabase_ping)
+                except Exception:
+                    pass
                 # v87: صفر استعلامات دورية — التنبيه من أخطاء الاستخدام الحقيقية فقط
                 if _db_down_alert_pending:
                     _db_down_alert_pending = False
@@ -10658,8 +10672,127 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v88.2"  # v88.2 = معاينة PDF داخل التطبيق (iframe بنفس الأصل) + شارة إصدار مرئية + تنزيل ذو مسار بديل
+PWA_VERSION = "v89"  # v89 = وسائط جديدة على Supabase Storage (توفير حصة Neon) + رجعة فورية للوضع القديم
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
+
+# ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
+# الهدف: صور/صوات الشات وصور وصول الطلبات تُرفع إلى تخزين Supabase المجاني (1GB)
+# وتُخزن في القاعدة روابط نصية صغيرة بدل BYTEA ضخم — عمر حصة Neon يطول.
+# بلا مفاتيح (متغيرات البيئة) = الوضع القديم تماماً (التخزين في القاعدة) —
+# رجعة فورية: احذف المفتاحين أو اجعل SUPABASE_OFF=True.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+SUPABASE_BUCKET = (os.getenv("SUPABASE_BUCKET", "media").strip() or "media")
+SUPABASE_OFF = False                    # مفتاح تراجع يدوي — True يوقف الرفع للتخزين السحابي
+SUPABASE_MEDIA_MAX = 25 * 1024 * 1024   # نفس حد مرفقات الشات — احتياط صارم
+_SUPABASE_BUCKET_READY = False
+_SUPABASE_LAST_PING = 0.0
+_SUPABASE_LOCK = threading.Lock()
+_MEDIA_URL_MARK = "SURL::"              # علامة داخلية: القيمة رابط تخزين لا بايتات
+
+
+def _supabase_enabled():
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY and not SUPABASE_OFF)
+
+
+def _supabase_request(method, path, data=None, content_type=None, timeout=25, upsert=False):
+    import urllib.request as _ur
+    req = _ur.Request(SUPABASE_URL + path, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + SUPABASE_SERVICE_KEY)
+    req.add_header("apikey", SUPABASE_SERVICE_KEY)
+    if content_type:
+        req.add_header("Content-Type", content_type)
+    if upsert:
+        req.add_header("x-upsert", "true")
+    with _ur.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _supabase_public_url(path):
+    return SUPABASE_URL + "/storage/v1/object/public/" + SUPABASE_BUCKET + "/" + path
+
+
+def _supabase_ensure_bucket():
+    """إنشاء الدلو العام مرة واحدة كل إقلاع — لا خطوة يدوية في لوحة Supabase."""
+    global _SUPABASE_BUCKET_READY
+    if _SUPABASE_BUCKET_READY:
+        return
+    with _SUPABASE_LOCK:
+        if _SUPABASE_BUCKET_READY:
+            return
+        try:
+            body = json.dumps({"id": SUPABASE_BUCKET, "name": SUPABASE_BUCKET,
+                               "public": True}).encode("utf-8")
+            _supabase_request("POST", "/storage/v1/bucket", data=body,
+                              content_type="application/json")
+            logging.info("[SUPABASE] bucket '" + SUPABASE_BUCKET + "' created")
+        except Exception:
+            pass  # موجود مسبقاً (خطأ 400 يُعتبر نجاحاً) أو خلل عابر — الرفع الفعلي سيكشف
+        _SUPABASE_BUCKET_READY = True
+
+
+def _supabase_ext(name, mime):
+    """امتداد آمن من اسم الملف أو المايم — أسماء نظيفة داخل الدلو."""
+    s = str(name or "")
+    if "." in s:
+        e = re.sub(r"[^A-Za-z0-9]", "", s.rsplit(".", 1)[1]).lower()[:5]
+        if e:
+            return e
+    return {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+            "image/gif": "gif", "audio/ogg": "ogg", "audio/webm": "weba",
+            "audio/mpeg": "mp3", "audio/wav": "wav", "video/mp4": "mp4",
+            "video/webm": "webm", "application/pdf": "pdf"}.get(str(mime or ""), "bin")
+
+
+def _supabase_upload(data, folder, name, mime):
+    """يرفع وسائط جديدة إلى Supabase Storage ويعيد الرابط العام.
+    يعيد None عند تعذر أي شيء (بلا مفاتيح/شبكة/خطأ) — والمستدعي يخزن
+    البايتات في القاعدة كالوضع القديم تماماً (صفر مخاطرة على البيانات)."""
+    if not data or not _supabase_enabled():
+        return None
+    if len(data) > SUPABASE_MEDIA_MAX:
+        return None
+    try:
+        _supabase_ensure_bucket()
+        path = (str(folder or "media").strip("/ ") + "/" +
+                datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m") + "/" +
+                _pwa_secrets.token_hex(12) + "." + _supabase_ext(name, mime))
+        _supabase_request("POST", "/storage/v1/object/" + SUPABASE_BUCKET + "/" + path,
+                          data=data, content_type=(mime or "application/octet-stream"),
+                          upsert=True)
+        logging.info("[SUPABASE] uploaded " + path + " (" + str(len(data)) + " bytes)")
+        return _supabase_public_url(path)
+    except Exception as e:
+        logging.warning("[SUPABASE] upload failed → fallback to DB: " + str(e))
+        return None
+
+
+def _media_store_pack(data, name, mime, folder):
+    """قرار التخزين الموحد (v89): يعيد (payload_للقاعدة, رابط_أو_None).
+    نجاح الرفع → payload=None والقاعدة تخزن رابطاً نصياً فقط (توفير المساحة).
+    فشل/تعطيل → payload=Binary(data) والرابط None — الوضع القديم حرفياً."""
+    url = _supabase_upload(data, folder, name, mime) if data else None
+    if url:
+        return None, url
+    return (psycopg2.Binary(data) if data else None), None
+
+
+def _supabase_ping():
+    """نبضة أسبوعية تمنع نوم مشروع Supabase المجاني (HTTP خالص — لا تلمس Neon).
+    تُستدعى من حلقة _keep_alive كل 3 دقائق وتُغادر فوراً إلا مرة كل 6 أيام."""
+    global _SUPABASE_LAST_PING
+    if not _supabase_enabled():
+        return
+    now_t = time.time()
+    if now_t - _SUPABASE_LAST_PING < 6 * 86400:
+        return
+    _SUPABASE_LAST_PING = now_t
+    try:
+        _supabase_request("POST", "/storage/v1/object/" + SUPABASE_BUCKET + "/.keepalive",
+                          data=b"v89", content_type="text/plain", upsert=True)
+        logging.info("[SUPABASE] weekly keepalive ping sent")
+    except Exception as e:
+        logging.warning("[SUPABASE] keepalive ping failed: " + str(e))
 
 # أسباب عملية جاهزة بنقرة واحدة — موحّدة بين البوت والتطبيق (تُرسل عبر /api/status)
 PWA_REASONS = {
@@ -14181,6 +14314,8 @@ def _pwa_api_receipt_upload(user, order_id, photo_b64, mime):
     mime = str(mime or "image/jpeg").split(";")[0].strip().lower()
     if mime not in _PWA_PHOTO_MIMES:
         mime = "image/jpeg"
+    # v89: صورة الوصل → Supabase Storage إن توفّرت المفاتيح، وإلا القاعدة كالسابق
+    photo_pay, photo_url = _media_store_pack(data, "receipt_" + str(order_id), mime, "receipts")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -14192,9 +14327,9 @@ def _pwa_api_receipt_upload(user, order_id, photo_b64, mime):
             if not _pwa_receipt_allowed(user, order):
                 return False, "يمكنك رفع وصل طلباتك فقط."
             cur.execute(
-                "UPDATE incoming_orders SET web_photo = %s, web_photo_mime = %s, "
-                "web_photo_at = NOW(), web_photo_by = %s WHERE id = %s",
-                (psycopg2.Binary(data), mime, user["id"], order_id))
+                "UPDATE incoming_orders SET web_photo = %s, web_photo_url = %s, "
+                "web_photo_mime = %s, web_photo_at = NOW(), web_photo_by = %s WHERE id = %s",
+                (photo_pay, photo_url, mime, user["id"], order_id))
         conn.commit()
         return True, "تم حفظ صورة الوصل ✅"
     except Exception as e:
@@ -14214,7 +14349,7 @@ def _pwa_api_receipt_get(user, order_id):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT requester_id, web_photo, web_photo_mime FROM incoming_orders WHERE id = %s",
+            cur.execute("SELECT requester_id, web_photo, web_photo_url, web_photo_mime FROM incoming_orders WHERE id = %s",
                         (order_id,))
             row = cur.fetchone()
         conn.commit()
@@ -14225,9 +14360,11 @@ def _pwa_api_receipt_get(user, order_id):
     order = {"requester_id": row[0]}
     if not _pwa_receipt_allowed(user, order):
         return None, None, "لا تملك صلاحية عرض هذا الوصل."
-    if not row[1]:
+    if not row[1] and not row[2]:
         return None, None, "لا توجد صورة وصل لهذا الطلب بعد."
-    return bytes(row[1]), (row[2] or "image/jpeg"), None
+    if row[2] and not row[1]:
+        return _MEDIA_URL_MARK + str(row[2]), (row[3] or "image/jpeg"), None
+    return bytes(row[1]), (row[3] or "image/jpeg"), None
 
 
 def _pwa_api_incoming_create(user, product_name, quantity):
@@ -16278,6 +16415,9 @@ async def pwa_receipt_get_handler(request):
     data, mime, err2 = await _pwa_run(_pwa_api_receipt_get, user, oid)
     if err2:
         return _pwa_err(404, err2)
+    # v89: صورة الوصل على Supabase Storage → توجيه مباشر للتخزين
+    if isinstance(data, str) and data.startswith(_MEDIA_URL_MARK):
+        return web.HTTPFound(data[len(_MEDIA_URL_MARK):])
     return web.Response(body=data, content_type=(mime or "image/jpeg"),
                         headers={"Cache-Control": "no-store"})
 
@@ -16781,6 +16921,7 @@ async def pwa_status_handler(request):
     except Exception:
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
     return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
+                    "storage": ("supabase" if _supabase_enabled() else "db"),  # v89: وضع التخزين
                     "self_register": _pwa_self_register_enabled(),
                     "smtp_ready": _pwa_otp_email_ready(),  # للنسخ الاحتياطي البريدي فقط — التسجيل بلا بريد (v39)
                     "smtp_last_err": _PWA_SMTP_LAST_ERR,   # v36: سبب آخر فشل إرسال (تشخيص)
@@ -17354,6 +17495,8 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64, reply_to=0):
         if kind == "video" and not mmime.startswith("video/"):
             mmime = "video/mp4"
         msize = len(media)
+    # v89: الوسائط الجديدة → Supabase Storage إن توفّرت المفاتيح، وإلا القاعدة كالسابق
+    media_pay, media_url = _media_store_pack(media, mname, mmime, "chat")
     conn = get_connection()
     try:
         # v61: RealDictCursor — صف الرد يمر على _chat_reply_preview_row التي تقرأ حقولاً بالاسم
@@ -17385,9 +17528,9 @@ def _pwa_api_chat_send(user, to, kind, text, name, mime, data_b64, reply_to=0):
                     r_id = 0
             cur.execute(
                 "INSERT INTO chat_messages (sender_id, recip_id, kind, body, media, "
-                "media_name, media_mime, media_size, reply_to) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
-                (me, to, kind, body, psycopg2.Binary(media) if media else None,
+                "media_url, media_name, media_mime, media_size, reply_to) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+                (me, to, kind, body, media_pay, media_url,
                  mname, mmime, msize, r_id or None))
             row = cur.fetchone()
         conn.commit()
@@ -17806,6 +17949,8 @@ def _pwa_api_chat_group_send(user, gid, kind, text, name, mime, data_b64, reply_
         if kind == "video" and not mmime.startswith("video/"):
             mmime = "video/mp4"
         msize = len(media)
+    # v89: الوسائط الجديدة → Supabase Storage إن توفّرت المفاتيح، وإلا القاعدة كالسابق
+    gmedia_pay, gmedia_url = _media_store_pack(media, mname, mmime, "group")
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -17828,9 +17973,9 @@ def _pwa_api_chat_group_send(user, gid, kind, text, name, mime, data_b64, reply_
                     r_id = 0
             cur.execute(
                 "INSERT INTO chat_group_messages (group_id, sender_id, kind, body, media, "
-                "media_name, media_mime, media_size, reply_to) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
-                (gid, me, kind, body, psycopg2.Binary(media) if media else None,
+                "media_url, media_name, media_mime, media_size, reply_to) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+                (gid, me, kind, body, gmedia_pay, gmedia_url,
                  mname, mmime, msize, r_id or None))
             row = cur.fetchone()
             cur.execute(
@@ -18052,7 +18197,8 @@ def _pwa_api_chat_group_delete(user, gid):
 
 
 def _pwa_api_chat_group_media(user, msg_id):
-    """v83: مرفق رسالة مجموعة — للأعضاء فقط. يعيد (bytes, mime, name, خطأ)."""
+    """v83: مرفق رسالة مجموعة — للأعضاء فقط. يعيد (bytes, mime, name, خطأ).
+    v89: أو علامة رابط Supabase (_MEDIA_URL_MARK) إن كان المرفق على التخزين."""
     me = user["id"]
     try:
         msg_id = int(msg_id)
@@ -18062,16 +18208,18 @@ def _pwa_api_chat_group_media(user, msg_id):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT m.media, m.media_mime, m.media_name FROM chat_group_messages m "
+                "SELECT m.media, m.media_url, m.media_mime, m.media_name FROM chat_group_messages m "
                 "JOIN chat_group_members gm ON gm.group_id = m.group_id AND gm.user_id = %s "
                 "WHERE m.id = %s", (me, msg_id))
             row = cur.fetchone()
         conn.commit()
     finally:
         release_connection(conn)
-    if not row or not row[0]:
+    if not row or (not row[0] and not row[1]):
         return None, None, None, "المرفق غير موجود."
-    return row[0], (row[1] or "application/octet-stream"), (row[2] or "ملف"), None
+    if row[1] and not row[0]:
+        return _MEDIA_URL_MARK + str(row[1]), (row[2] or "application/octet-stream"), (row[3] or "ملف"), None
+    return row[0], (row[2] or "application/octet-stream"), (row[3] or "ملف"), None
 
 
 def _pwa_api_chat_unread_total(user):
@@ -18087,7 +18235,8 @@ def _pwa_api_chat_unread_total(user):
 
 
 def _pwa_api_chat_media(user, msg_id):
-    """💬 مرفق رسالة — للمُرسل والمستقبل فقط. يعيد (bytes, mime, name, err)."""
+    """💬 مرفق رسالة — للمُرسل والمستقبل فقط. يعيد (bytes, mime, name, err).
+    v89: أو علامة رابط Supabase (_MEDIA_URL_MARK) إن كان المرفق على التخزين."""
     try:
         msg_id = int(msg_id)
     except (TypeError, ValueError):
@@ -18095,17 +18244,19 @@ def _pwa_api_chat_media(user, msg_id):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT sender_id, recip_id, media, media_mime, media_name "
+            cur.execute("SELECT sender_id, recip_id, media, media_url, media_mime, media_name "
                         "FROM chat_messages WHERE id = %s", (msg_id,))
             row = cur.fetchone()
         conn.commit()
     finally:
         release_connection(conn)
-    if not row or not row[2]:
+    if not row or (not row[2] and not row[3]):
         return None, None, None, "المرفق غير موجود."
     if user["id"] not in (row[0], row[1]):
         return None, None, None, "لا تملك صلاحية عرض هذا المرفق."
-    return bytes(row[2]), (row[3] or "application/octet-stream"), (row[4] or "file"), None
+    if row[3] and not row[2]:
+        return _MEDIA_URL_MARK + str(row[3]), (row[4] or "application/octet-stream"), (row[5] or "file"), None
+    return bytes(row[2]), (row[4] or "application/octet-stream"), (row[5] or "file"), None
 
 
 # ─── v48: دخول بضغطة واحدة (رمز التذكّر) ───
@@ -18438,6 +18589,9 @@ async def pwa_chat_gmedia_handler(request):
         _pwa_api_chat_group_media, user, request.query.get("id"))
     if err2:
         return _pwa_err(404, err2)
+    # v89: مرفق على Supabase Storage → توجيه مباشر للتخزين (أخف على Render وNeon)
+    if isinstance(data, str) and data.startswith(_MEDIA_URL_MARK):
+        return web.HTTPFound(data[len(_MEDIA_URL_MARK):])
     safe_name = str(name or "file").replace('"', "")[:120]
     return web.Response(body=data, content_type=(mime or "application/octet-stream"),
                         headers={"Cache-Control": "private, max-age=604800",
@@ -18682,6 +18836,9 @@ async def pwa_chat_media_handler(request):
         _pwa_api_chat_media, user, request.query.get("id"))
     if err2:
         return _pwa_err(404, err2)
+    # v89: مرفق على Supabase Storage → توجيه مباشر للتخزين (أخف على Render وNeon)
+    if isinstance(data, str) and data.startswith(_MEDIA_URL_MARK):
+        return web.HTTPFound(data[len(_MEDIA_URL_MARK):])
     safe_name = str(name or "file").replace('"', "")[:120]
     return web.Response(body=data, content_type=(mime or "application/octet-stream"),
                         headers={"Cache-Control": "private, max-age=604800",
@@ -18862,7 +19019,10 @@ if __name__ == "__main__":
     # v88: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
-                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip) =====")
+                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage) =====")
+    logging.info("[SUPABASE] storage mode: "
+                 + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
+                    else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
