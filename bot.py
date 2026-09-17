@@ -10680,8 +10680,8 @@ import hmac as _pwa_hmac
 import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
-PWA_SESSION_DAYS = 30
-PWA_VERSION = "v93"  # v93 = «نبض المخزون» في الرئيسية: رسم بياني أسبوعي/شهري لنشاط المخزون (بيع/توريد يومياً بعمودين) + قائمة الأكثر بيعاً بتفاصيل مخفية تُكشف بالضغط على السلعة (الكمية المبيعة/عمليات البيع/المتبقي/آخر بيع + إيراد الفواتير المعتمدة للمدير فقط) — SVG مولّد محلياً بلا أي مكتبة خارجية، والبائع الخارجي/العميل لا يرى البطاقة + ملف الحزمة يُسلَّم باسم bot.py فقط (بدون لاحقة إصدار)
+PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
+PWA_VERSION = "v94"  # v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12787,6 +12787,9 @@ try {
 })();'''
 
 
+_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -13004,6 +13007,19 @@ _PWA_HTML_PATCHES = (
     # 39) نواة JS على سلسلة المراسي الحية (7→9→17→v91→v93) — تُحقن آخراً وتغلف loadHome
     ('</script>\n</body>',
      '</script>\n<script id="v93js">\n' + _PWA_V93_JS + '\n</script>\n</body>'),
+    # ── v94: «حارس الجلسة» — بلاغ يوسف: ضياع مستخدمين + وميض شاشة الدخول ──
+    # 40) الإقلاع: سبلاش فوري إن وُجد رمز تذكّر، كوكي أولاً، ثم استعادة صامتة — لا وميض
+    ('  try {\n    const me = await api("/api/me");\n    showApp(me);\n  } catch (e) {\n    showLogin(setupMode);\n  }\n})();',
+     '  /* v94: لا وميض — سبلاش فوري إن وُجد رمز تذكّر، ثم الكوكي أولاً ثم الاستعادة الصامتة */\n  try { if (window.v94SplashPrime) window.v94SplashPrime(); } catch (e94p) {}\n  try {\n    const me = await api("/api/me");\n    showApp(me);\n    try { if (window.v94SplashHide) window.v94SplashHide(); } catch (e94h) {}\n    return;\n  } catch (e0) {}\n  try {\n    if (window.v94BootEnter) { const __done = await window.v94BootEnter(setupMode); if (__done) return; }\n  } catch (e94b) {}\n  showLogin(setupMode);\n})();'),
+    # 41) أي 401 أثناء الاستخدام: استعادة صامتة عبر رمز التذكّر بدل رمي المستخدم لشاشة الدخول
+    ('  if (res.status === 401 && !opts.noKick) { showLogin(false); throw new Error((data && data.error) || "انتهت الجلسة — سجّل الدخول من جديد."); }',
+     '  if (res.status === 401 && !opts.noKick) {\n    const __e401 = new Error((data && data.error) || "انتهت الجلسة — سجّل الدخول من جديد.");\n    if (window.v94SessionLost) { try { window.v94SessionLost(__e401.message); } catch (e94l) {} }\n    else { showLogin(false); }\n    throw __e401;\n  }'),
+    # 42) المسار الموحد للاستعادة — المسح فقط عند رفض قاطع، والأخطاء العابرة تحافظ على الرمز
+    ('async function doRememberLogin() {\n  const r = remGet(); if (!r || !r.t) return;\n  const btn = $("#btnRemember");\n  const unlock = lockBtn(btn, "جارِ الدخول...");\n  try {\n    const d = await api("/api/remember/login", { noKick: true, method: "POST",\n      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: r.t }) });\n    remSave(d.remember || r.t, (d.user && d.user.name) || r.n);   /* دوران الرمز */\n    const me = await api("/api/me");\n    showApp(me);\n  } catch (e) {\n    /* الرمز انتهى أو أُبطل (طرد/كلمة مرور جديدة) — نمسحه ونعيد النموذج العادي */\n    remClear();\n    $("#rememberCard").style.display = "none"; $("#passPane").style.display = "";\n    const err = $("#loginErr");\n    err.textContent = e.message; err.style.display = "block";\n  } finally { if (unlock) unlock(); }\n}',
+     'async function doRememberLogin() {\n  /* v94: يمسح رمز التذكّر فقط عند الرفض القاطع من الخادم (رمز غير صالح/منتهٍ/حساب موقوف)،\n     ولا يمسحه أبداً على أخطاء الشبكة أو الخادم العابرة — جذر «ضياع المستخدمين» */\n  if (window.v94Recover) { try { await window.v94Recover({ manual: true }); return; } catch (e94) { return; } }\n  const r = remGet(); if (!r || !r.t) return;\n  const btn = $("#btnRemember");\n  const unlock = lockBtn(btn, "جارِ الدخول...");\n  try {\n    const d = await api("/api/remember/login", { noKick: true, method: "POST",\n      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: r.t }) });\n    remSave(d.remember || r.t, (d.user && d.user.name) || r.n);\n    const me = await api("/api/me");\n    showApp(me);\n  } catch (e) {\n    $("#rememberCard").style.display = "none"; $("#passPane").style.display = "";\n    const err = $("#loginErr");\n    err.textContent = e.message; err.style.display = "block";\n  } finally { if (unlock) unlock(); }\n}'),
+    # 43) نواة v94 — سبلاش + استعادة + حارس الجلسة (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<script id="v94js">\n' + _PWA_V94_JS + '\n</script>\n</body>'),
 )
 
 
@@ -19221,7 +19237,7 @@ def _pwa_api_chat_media(user, msg_id):
 # ─── v48: دخول بضغطة واحدة (رمز التذكّر) ───
 
 def _pwa_create_remember(user_id):
-    """رمز «تذكّرني» طويل الأمد (180 يوماً) — يُخزّن مجزّراً ويُدار لكل مستخدم (5 كحد أقصى)."""
+    """رمز «تذكّرني» طويل الأمد (180 يوماً) — يُخزّن مجزّراً ويُدار لكل مستخدم (10 كحد أقصى — v94)."""
     token = _pwa_secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     conn = get_connection()
@@ -19233,7 +19249,7 @@ def _pwa_create_remember(user_id):
             cur.execute("DELETE FROM pwa_remember WHERE expires_at < NOW()")
             cur.execute("DELETE FROM pwa_remember WHERE user_id = %s AND token_hash NOT IN "
                         "(SELECT token_hash FROM pwa_remember WHERE user_id = %s "
-                        "ORDER BY created_at DESC LIMIT 5)", (user_id, user_id))
+                        "ORDER BY created_at DESC LIMIT 10)", (user_id, user_id))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -19244,10 +19260,20 @@ def _pwa_create_remember(user_id):
 
 
 def _pwa_api_remember_login(token):
-    """دخول بضغطة من جهاز تم التذكّر فيه — الرمز يدور مع كل استخدام."""
+    """دخول بضغطة من جهاز تم التذكّر فيه — v94: دوران مشروط + نافذة سماح + تمديد انزلاقي.
+
+    - الرمز الأصغر من 7 أيام لا يدور: يبقى كما هو في الجهاز (لا سباق بين فتحتين،
+      ولا ضياع استجابة يترك الجهاز برمز محذوف) ويُمدَّد انزلاقياً 180 يوماً إضافية
+      — الجهاز النشط لا يفقد ثقته أبداً.
+    - عند الدوران (رمز أقدم من 7 أيام) لا يُحذف الرمز القديم فوراً بل تُمنح نافذة
+      سماح 15 دقيقة؛ فلو ضاعت استجابة الشبكة بعد التدوير أعاد الجهاز المحاولة
+      بالرمز القديم بنجاح.
+    - يُعيد (sess, remember, user, err, definitive): definitive=True للرفض القاطع
+      فقط (رمز غير صالح/منتهٍ/حساب موقوف/فئة بلا وصول)؛ أخطاء الخادم العابرة
+      definitive=False حتى لا يُمسح رمز الجهاز بسبب انقطاع عابر (جذر R1)."""
     token = str(token or "").strip()
     if not token or len(token) > 128:
-        return None, None, None, "رمز التذكّر غير صالح — سجّل الدخول بكلمتك السرية."
+        return None, None, None, "رمز التذكّر غير صالح — سجّل الدخول بكلمتك السرية.", True
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     conn = get_connection()
     row = None
@@ -19255,34 +19281,51 @@ def _pwa_api_remember_login(token):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
-                "u.display_name, u.role, u.active, a.username AS web_username "
+                "u.display_name, u.role, u.active, a.username AS web_username, "
+                "r.created_at "
                 "FROM pwa_remember r JOIN users u ON u.id = r.user_id "
                 "LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "WHERE r.token_hash = %s AND r.expires_at > NOW()", (token_hash,))
             row = cur.fetchone()
             if not row:
-                return None, None, None, "انتهت صلاحية التذكّر — سجّل الدخول بكلمتك السرية."
+                return None, None, None, "انتهت صلاحية التذكّر — سجّل الدخول بكلمتك السرية.", True
             if not row["active"]:
-                return None, None, None, KICK_NOTICE
+                return None, None, None, KICK_NOTICE, True
             if row["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
-                return None, None, None, "لا يوجد وصول ويب لفئتك حالياً — راجع الإدارة."
-            cur.execute("DELETE FROM pwa_remember WHERE token_hash = %s", (token_hash,))
+                return None, None, None, "لا يوجد وصول ويب لفئتك حالياً — راجع الإدارة.", True
+            # v94: قرار الدوران من عمر الرمز نفسه (وليس حذفاً أعمى في كل دخول)
+            _ca = row.get("created_at")
+            if _ca is not None:
+                if _ca.tzinfo is None:
+                    _ca = _ca.replace(tzinfo=datetime.timezone.utc)
+                _rotate = (datetime.datetime.now(datetime.timezone.utc) - _ca).total_seconds() > 7 * 86400
+            else:
+                _rotate = True
+            if _rotate:
+                # نافذة سماح 15 دقيقة للرمز القديم بدل الحذف الفوري — حصن ضد
+                # ضياع الاستجابة بعد التدوير والسباق بين فتحتين متقاربتين (جذر R2)
+                cur.execute("UPDATE pwa_remember SET expires_at = NOW() + INTERVAL '15 minutes' "
+                            "WHERE token_hash = %s", (token_hash,))
+            else:
+                # تمديد انزلاقي: الجهاز النشط يبقى موثوقاً بلا دوران ولا خروج
+                cur.execute("UPDATE pwa_remember SET expires_at = NOW() + INTERVAL '180 days' "
+                            "WHERE token_hash = %s", (token_hash,))
         conn.commit()
     except Exception as e:
         conn.rollback()
         logging.error("[PWA] remember login failed: " + str(e))
-        return None, None, None, "خطأ في الخادم، أعد المحاولة."
+        return None, None, None, "خطأ في الخادم، أعد المحاولة.", False
     finally:
         release_connection(conn)
     uid = row["id"]
-    new_remember = _pwa_create_remember(uid)
+    new_remember = _pwa_create_remember(uid) if _rotate else ""
     sess = _pwa_create_session(uid)
     user = {"id": uid, "telegram_id": row["telegram_id"],
             "name": (row.get("display_name") or row.get("first_name")
                      or row.get("tg_username") or row.get("web_username") or str(uid)),
             "role": row["role"],
             "role_label": ROLE_LABELS.get(row["role"], row["role"])}
-    return sess, new_remember, user, None
+    return sess, new_remember, user, None, False
 
 
 # ─── v48: تصدير CSV كامل لحركة المخزون (بلا حدّ 300) ───
@@ -19811,10 +19854,15 @@ async def pwa_remember_login_handler(request):
         body = await request.json()
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
-    sess, remember, user, err = await _pwa_run(_pwa_api_remember_login,
-                                               body.get("token"))
+    sess, remember, user, err, definitive = await _pwa_run(_pwa_api_remember_login,
+                                                           body.get("token"))
     if err:
-        return _pwa_err(401, err)
+        # v94: الرفض القاطع (رمز غير صالح/منتهٍ/حساب موقوف/فئة بلا وصول) يحمل رمز
+        # remember_invalid ليُمسح من الجهاز؛ الخطأ العابر 503 بلا رمز فلا يُمسح
+        # رمز التذكّر أبداً بسبب انقطاع شبكة أو ضغط خادم عابر (جذر R1).
+        if definitive:
+            return _pwa_err(401, err, "remember_invalid")
+        return _pwa_err(503, err)
     await _pwa_run(_audit_log, "remember_login", user, ip=request.remote or "؟")
     resp = _pwa_jr({"ok": True, "remember": remember, "user": user})
     secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
@@ -20114,7 +20162,8 @@ if __name__ == "__main__":
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
-                 + " + neg-qty + activity-chart) =====")
+                 + " + neg-qty + activity-chart"
+                 + " + session-guard) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
