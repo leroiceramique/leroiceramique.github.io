@@ -1070,6 +1070,15 @@ def init_db(conn=None):
                     ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_url TEXT;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                -- Migration (v90): صورة لكل سلعة — نفس معمارية v89 بالضبط:
+                -- رابط Supabase Storage إن توفّرت المفاتيح، وإلا بايتات في القاعدة كالوضع القديم.
+                -- أعمدة جديدة فقط — صفر لمس لأي بيانات موجودة.
+                DO $$ BEGIN
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS image BYTEA;
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS image_mime VARCHAR(60);
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: create extraction_requests table
                 CREATE TABLE IF NOT EXISTS extraction_requests (
                     id            SERIAL PRIMARY KEY,
@@ -10672,7 +10681,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v90"  # v90 = سحب من الحافة بين التابات + سحب للتحديث + حوار تأكيد محترم + لمسات خفيفة
+PWA_VERSION = "v91"  # v91 = حارس الرجوع (السحب من الحافة لا يغلق التطبيق — كان يُترجم «رجوع» نظامياً بلا سجل) + إلغاء صور السلع بقرار يوسف + إبقاء سحب الحافة/التحديث/اللمسات/التأكيد المحترم/إدارة المستخدمين
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -11170,7 +11179,7 @@ _PWA_GROUPS_JS = r"""/* ═══ v83: مجموعات الدردشة — يُح�
     if (bm) bm.addEventListener("click", function () { ui.o.remove(); gAddDlg(); });
     var bl = ui.c.querySelector("#g83leave");
     if (bl) bl.addEventListener("click", async function () {
-      if (!confirm("مغادرة المجموعة «" + G.g.name + "»؟")) return;
+      if (!await v90confirm("مغادرة المجموعة «" + G.g.name + "»؟")) return;
       try {
         await api("/api/chat/gleave", { method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -11180,7 +11189,7 @@ _PWA_GROUPS_JS = r"""/* ═══ v83: مجموعات الدردشة — يُح�
     });
     var bd = ui.c.querySelector("#g83delg");
     if (bd) bd.addEventListener("click", async function () {
-      if (!confirm("حذف المجموعة نهائياً مع كل رسائلها؟")) return;
+      if (!await v90confirm("حذف المجموعة نهائياً مع كل رسائلها؟")) return;
       try {
         await api("/api/chat/gdelete", { method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -12211,172 +12220,296 @@ _PWA_DESKTOP_CSS = r"""/* ═══ v88.1: عرض سطح المكتب — نفس
 }
 """
 
-# ═══════════ v90: احترافية اللمس ═══════════
-# سحب من الحافة للتنقل بين التابات + سحب للأسفل للتحديث + حوار تأكيد محترم
-# + لمسات خفيفة (اهتزاز + ظهور متدرج) — كلها تُحقن فوق pwa.html وقت التقديم
-# ولا تلمس الملف على القرص أبداً، وتحترم prefers-reduced-motion
-_PWA_V90_CSS = (
-    'html{overscroll-behavior-y:contain}\n'
-    '@keyframes v90inL{from{opacity:0;transform:translateX(-30px)}to{opacity:1;transform:none}}\n'
-    '@keyframes v90inR{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:none}}\n'
-    '.v90inL{animation:v90inL .30s cubic-bezier(.22,.9,.36,1) both}\n'
-    '.v90inR{animation:v90inR .30s cubic-bezier(.22,.9,.36,1) both}\n'
-    '@keyframes v90up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}\n'
-    '.view.on>*{animation:v90up .26s both}\n'
-    '.view.on>*:nth-child(2){animation-delay:.03s}\n'
-    '.view.on>*:nth-child(3){animation-delay:.06s}\n'
-    '.view.on>*:nth-child(4){animation-delay:.09s}\n'
-    '.view.on>*:nth-child(5){animation-delay:.12s}\n'
-    '.view.on>*:nth-child(6){animation-delay:.15s}\n'
-    '.view.on>*:nth-child(n+7){animation-delay:.17s}\n'
-    '#v90ptr{position:fixed;top:0;left:50%;transform:translate(-50%,-70px);z-index:9500;'
-    'background:var(--card);border:1px solid var(--line);border-radius:99px;padding:7px 14px;'
-    'display:flex;align-items:center;gap:7px;box-shadow:var(--shadow);opacity:0;'
-    'transition:transform .18s,opacity .18s;pointer-events:none;font-size:12.5px;color:var(--mut)}\n'
-    '#v90ptr.on{opacity:1}\n'
-    '#v90ptr .pi{display:inline-block;font-size:14px;color:var(--brand);transition:transform .1s}\n'
-    '#v90ptr.go .pi{transform:rotate(180deg)!important}\n'
-    '#v90ptr.busy .pi{animation:v90spin .8s linear infinite}\n'
-    '@keyframes v90spin{to{transform:rotate(360deg)}}\n'
-    'dialog#dlgC2{border:none;border-radius:18px;background:var(--card);color:var(--ink);'
-    'padding:0;max-width:330px;width:86vw;box-shadow:0 18px 60px rgba(0,0,0,.35);'
-    'animation:v90pop .18s cubic-bezier(.2,.9,.35,1.2)}\n'
-    'dialog#dlgC2.c2out{animation:v90popout .14s forwards}\n'
-    '@keyframes v90pop{from{opacity:0;transform:scale(.92) translateY(10px)}to{opacity:1;transform:none}}\n'
-    '@keyframes v90popout{to{opacity:0;transform:scale(.95) translateY(6px)}}\n'
-    'dialog#dlgC2::backdrop{background:rgba(20,16,8,.45)}\n'
-    '.c2b{padding:20px 18px 14px}\n'
-    '.c2m{font-size:14.5px;line-height:1.75;white-space:pre-wrap;max-height:46vh;overflow:auto;margin:0}\n'
-    '.c2a{display:flex;gap:9px;margin-top:16px}\n'
-    '.c2a .btn{flex:1;margin:0}\n'
-    '@media (prefers-reduced-motion: reduce){.v90inL,.v90inR,.view.on>*,#v90ptr,#v90ptr .pi,'
-    'dialog#dlgC2{animation:none!important;transition:none!important}}\n'
-)
+# ═══════════ v90: طبقة اللمسات — سحب/تحديث/اهتزاز/حوار محترم ═══════════
+_PWA_V90_CSS = r'''.view.on > *{animation:v90in .30s ease both}
+@keyframes v90in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.view.on > *:nth-child(2){animation-delay:.035s}.view.on > *:nth-child(3){animation-delay:.07s}
+.view.on > *:nth-child(4){animation-delay:.105s}.view.on > *:nth-child(5){animation-delay:.14s}
+.view.on > *:nth-child(6){animation-delay:.175s}.view.on > *:nth-child(7){animation-delay:.21s}
+.view.on > *:nth-child(8){animation-delay:.245s}.view.on > *:nth-child(9){animation-delay:.28s}
+.view.on > *:nth-child(10){animation-delay:.315s}
+@keyframes v90slL{from{opacity:.35;transform:translateX(-24%)}to{opacity:1;transform:none}}
+@keyframes v90slR{from{opacity:.35;transform:translateX(24%)}to{opacity:1;transform:none}}
+.view.v90slL{animation:v90slL .24s ease-out both}.view.v90slR{animation:v90slR .24s ease-out both}
+#v90ptr{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9995;width:36px;height:36px;
+  border-radius:50%;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);
+  display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .18s}
+#v90ptr i{width:18px;height:18px;border-radius:50%;border:2.5px solid var(--brand);border-top-color:transparent;display:block}
+#v90ptr.spin i{animation:v90spin .7s linear infinite}
+@keyframes v90spin{to{transform:rotate(360deg)}}
+.pimg{width:44px;height:44px;border-radius:11px;object-fit:cover;flex:0 0 auto;border:1px solid var(--line);background:var(--brandsoft)}
+.v90dlg{border:none;border-radius:18px;padding:20px 18px 16px;max-width:340px;width:88%;background:var(--card);
+  color:var(--ink);box-shadow:0 18px 60px rgba(0,0,0,.30);text-align:center}
+.v90dlg::backdrop{background:rgba(25,13,5,.48)}
+.v90ic{width:52px;height:52px;border-radius:50%;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:24px}
+.v90ic.ok{background:var(--oksoft)}.v90ic.dng{background:var(--badsoft)}
+.v90msg{font-size:14.5px;font-weight:700;line-height:1.7;white-space:pre-line;margin-bottom:14px;color:var(--ink)}
+.v90btns{display:flex;gap:8px;margin-top:4px}
+.v90b{flex:1;border:none;border-radius:12px;padding:11px 10px;font-weight:800;font-size:14px;cursor:pointer;font-family:inherit}
+.v90b.gold{background:var(--brand);color:#fff}
+html[data-theme="dark"] .v90b.gold{color:#151110}
+.v90b.red{background:var(--bad);color:#fff}.v90b.gray{background:var(--chip);color:var(--ink)}
+.v90cred{display:flex;align-items:center;gap:8px;background:var(--chip);border-radius:12px;padding:10px 12px;margin:8px 0;text-align:right}
+.v90cred span{font-size:11.5px;color:var(--mut);flex:0 0 auto}
+.v90cred b{flex:1;word-break:break-all;font-size:14px;color:var(--ink)}
+.v90cp{border:none;background:var(--brand);color:#fff;border-radius:9px;padding:6px 10px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit}
+.v90note{font-size:11.5px;color:var(--mut);margin:6px 0 10px}
+.v90admin{border:1.5px solid var(--goldline);background:linear-gradient(180deg,var(--goldsoft),transparent)}
+.v90arow{display:flex;align-items:center;gap:8px;margin-top:6px}
+.v90arow span{font-size:12px;color:var(--mut)}.v90arow b{flex:1;font-size:14px;word-break:break-all;color:var(--ink)}
+#v-users .row{border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);margin-bottom:8px}
+#v-users .acts{flex-wrap:wrap;gap:6px}
+@media (prefers-reduced-motion: reduce){.view.on > *,.view.v90slL,.view.v90slR,#v90ptr.spin i{animation:none !important}}'''
 
-_PWA_V90_JS = (
-    '/* ═══ v90: سحب من الحافة + سحب للتحديث + تأكيد محترم + لمسات خفيفة ═══ */\n'
-    '(function(){\n'
-    '"use strict";\n'
-    'var RM=false;try{RM=matchMedia("(prefers-reduced-motion: reduce)").matches}catch(e){}\n'
-    'function hp(ms){try{if(navigator.vibrate&&!RM)navigator.vibrate(ms)}catch(e){}}\n'
-    'function appOn(){var a=document.getElementById("app");'
-    'return !!(a&&a.style.display!=="none"&&getComputedStyle(a).display!=="none")}\n'
-    'function blocked(){if(!appOn())return true;'
-    'try{if(document.querySelector("dialog[open]"))return true}catch(e){}'
-    'var th=document.getElementById("chatThread");'
-    'return !!(th&&th.classList.contains("on"))}\n'
-    'function curView(){var v=document.querySelector(".view.on");return v?v.id:""}\n'
-    '/* ── حوار تأكيد محترم: window.confirm2(msg,opts) → Promise<boolean> ── */\n'
-    'window.confirm2=function(msg,opts){\n'
-    '  return new Promise(function(res){\n'
-    '    opts=opts||{};\n'
-    '    var d=document.getElementById("dlgC2");\n'
-    '    if(!d){res(window.confirm?window.confirm(msg):false);return}\n'
-    '    document.getElementById("c2msg").textContent=String(msg||"هل أنت متأكد؟");\n'
-    '    var ok=document.getElementById("c2ok");\n'
-    '    ok.textContent=opts.okText||"تأكيد";\n'
-    '    ok.className="btn"+(opts.danger?" red":"");\n'
-    '    d.classList.remove("c2out");\n'
-    '    var rv=false;\n'
-    '    ok.onclick=function(){hp(10);rv=true;try{d.close()}catch(e){}};\n'
-    '    document.getElementById("c2no").onclick=function(){try{d.close()}catch(e){}};\n'
-    '    d.oncancel=function(){rv=false};\n'
-    '    d.onclick=function(ev){if(ev.target===d){d.classList.add("c2out");'
-    'setTimeout(function(){try{d.close()}catch(e){}},130)}};\n'
-    '    d.onclose=function(){res(rv)};\n'
-    '    try{d.showModal()}catch(e){res(window.confirm?window.confirm(msg):false)}\n'
-    '    hp(6);\n'
-    '  });\n'
-    '};\n'
-    '/* ── سحب من الحافة فقط: تنقل بين التابات (يمين=التالي، يسار=السابق باتجاه RTL) ── */\n'
-    'var _order=null;\n'
-    'function tabOrder(){if(_order)return _order;_order=[];'
-    'document.querySelectorAll("nav.tabs button[data-v]").forEach(function(b){_order.push(b.dataset.v)});'
-    'return _order}\n'
-    'function go(step){\n'
-    '  var t=tabOrder(),cur=curView(),i=t.indexOf(cur),target;\n'
-    '  if(i<0)target=step>0?t[0]:t[t.length-1];\n'
-    '  else{target=t[i+step];if(!target||target===cur)return}\n'
-    '  hp(7);\n'
-    '  if(!RM){var el=document.getElementById(target);'
-    'if(el){el.classList.remove("v90inL","v90inR");void el.offsetWidth;'
-    'el.classList.add(step>0?"v90inR":"v90inL");'
-    'setTimeout(function(){el.classList.remove("v90inL","v90inR")},340)}}\n'
-    '  try{switchView(target)}catch(e){}\n'
-    '}\n'
-    'var EDGE=26,MINX=58,MAXY=76,sx=0,sy=0,armed=false,scool=0;\n'
-    'document.addEventListener("touchstart",function(e){\n'
-    '  if(armed||Date.now()<scool)return;\n'
-    '  if(blocked())return;\n'
-    '  var t=e.touches[0];if(!t)return;\n'
-    '  var w=window.innerWidth;\n'
-    '  if(t.clientX>EDGE&&t.clientX<w-EDGE)return;\n'
-    '  var tg=e.target;\n'
-    '  if(tg&&tg.closest&&tg.closest("input,textarea,select,button,a,label,dialog,nav.tabs"))return;\n'
-    '  sx=t.clientX;sy=t.clientY;armed=true;\n'
-    '},{passive:true});\n'
-    'document.addEventListener("touchmove",function(e){\n'
-    '  if(!armed)return;\n'
-    '  var t=e.touches[0];if(!t)return;\n'
-    '  var dx=t.clientX-sx,dy=t.clientY-sy;\n'
-    '  if(Math.abs(dy)>MAXY||Math.abs(dy)>Math.abs(dx)+6){armed=false;return}\n'
-    '  var right=sx>window.innerWidth/2;\n'
-    '  if(right&&dx<-MINX){armed=false;scool=Date.now()+380;go(1)}\n'
-    '  else if(!right&&dx>MINX){armed=false;scool=Date.now()+380;go(-1)}\n'
-    '  else if(right&&dx>MINX){armed=false}\n'
-    '  else if(!right&&dx<-MINX){armed=false}\n'
-    '},{passive:true});\n'
-    'document.addEventListener("touchend",function(){armed=false},{passive:true});\n'
-    'document.addEventListener("touchcancel",function(){armed=false},{passive:true});\n'
-    '/* ── سحب للأسفل للتحديث (من أعلى الصفحة فقط، مع دوران ومؤشر انشغال) ── */\n'
-    'var RELOAD={"v-home":"loadHome","v-inv":"loadInventory","v-mov":"loadMovements",'
-    '"v-ord":"loadOrders","v-chat":"chatEnter","v-oil":"loadInvoice","v-users":"loadUsers",'
-    '"v-set":"renderProfile"};\n'
-    'var pEl=null,pArmed=false,pBusy=false,px=0,py=0,pMax=0,pcool=0;\n'
-    'function ptr(){if(!pEl){pEl=document.createElement("div");pEl.id="v90ptr";'
-    'var pi=document.createElement("span");pi.className="pi";pi.textContent="↓";'
-    'var pt=document.createElement("span");pt.className="pt";pt.textContent="اسحب للتحديث";'
-    'pEl.appendChild(pi);pEl.appendChild(pt);document.body.appendChild(pEl)}return pEl}\n'
-    'document.addEventListener("touchstart",function(e){\n'
-    '  if(pBusy||pArmed||Date.now()<pcool)return;\n'
-    '  if(blocked())return;\n'
-    '  if(window.scrollY>2)return;\n'
-    '  var t=e.touches[0];if(!t)return;\n'
-    '  var tg=e.target;\n'
-    '  if(tg&&tg.closest&&tg.closest("input,textarea,select,dialog"))return;\n'
-    '  px=t.clientX;py=t.clientY;pMax=0;pArmed=true;\n'
-    '},{passive:true});\n'
-    'document.addEventListener("touchmove",function(e){\n'
-    '  if(!pArmed)return;\n'
-    '  if(window.scrollY>2){pArmed=false;return}\n'
-    '  var t=e.touches[0];if(!t)return;\n'
-    '  var dy=t.clientY-py,dx=t.clientX-px;\n'
-    '  if(dy<=0||Math.abs(dx)>Math.abs(dy)){pArmed=false;var e0=ptr();'
-    'e0.classList.remove("on","go");return}\n'
-    '  pMax=Math.min(96,dy*0.45);\n'
-    '  var el=ptr();el.classList.add("on");\n'
-    '  el.style.transform="translate(-50%,"+(6+pMax).toFixed(0)+"px)";\n'
-    '  var ar=el.querySelector(".pi");\n'
-    '  if(ar)ar.style.transform="rotate("+Math.min(180,Math.round(pMax*2.2))+"deg)";\n'
-    '  if(pMax>=34){if(!el.classList.contains("go")){el.classList.add("go");hp(9)}}\n'
-    '  else el.classList.remove("go");\n'
-    '},{passive:true});\n'
-    'document.addEventListener("touchend",function(){\n'
-    '  if(!pArmed)return;pArmed=false;\n'
-    '  var el=ptr(),fire=el.classList.contains("go");\n'
-    '  el.classList.remove("on","go","busy");\n'
-    '  el.style.transform="";\n'
-    '  var ar=el.querySelector(".pi");if(ar)ar.style.transform="";\n'
-    '  if(!fire||pBusy)return;\n'
-    '  pBusy=true;pcool=Date.now()+900;hp(12);\n'
-    '  el.classList.add("busy");\n'
-    '  var fn=RELOAD[curView()],p=(fn&&typeof window[fn]==="function")?window[fn]():null,fin=false;\n'
-    '  var done=function(){if(fin)return;fin=true;pBusy=false;el.classList.remove("busy")};\n'
-    '  if(p&&typeof p.finally==="function")p.finally(done);else setTimeout(done,800);\n'
-    '  setTimeout(done,9000);\n'
-    '},{passive:true});\n'
-    '})();\n'
-)
+_PWA_V90_JS = r'''(function () {
+"use strict";
+var G = { swipe: false, ptr: false };
+function vib(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} }
+window.v90vib = vib;
+function dlgOpen() { return !!document.querySelector("dialog[open]"); }
+
+window.v90confirm = function (msg, opts) {
+  opts = opts || {};
+  return new Promise(function (res) {
+    var wrap = document.createElement("div");
+    wrap.className = "v90dlgwrap";
+    var d = document.createElement("dialog");
+    d.className = "v90dlg";
+    var danger = !!opts.danger;
+    d.innerHTML = '<div class="v90ic ' + (danger ? "dng" : "ok") + '">' + (danger ? "⚠️" : "✋") + '</div>'
+      + '<div class="v90msg"></div>'
+      + '<div class="v90btns"><button type="button" class="v90b gray">إلغاء</button>'
+      + '<button type="button" class="v90b ' + (danger ? "red" : "gold") + '">' + (opts.yes || "تأكيد") + '</button></div>';
+    wrap.appendChild(d);
+    d.querySelector(".v90msg").textContent = msg;
+    var done = false;
+    function fin(v) {
+      if (done) return; done = true;
+      try { d.close(); } catch (e) {}
+      setTimeout(function () { wrap.remove(); }, 150);
+      res(v);
+    }
+    d.querySelector(".v90b.gray").addEventListener("click", function () { vib(6); fin(false); });
+    d.querySelector(".v90b.gold,.v90b.red").addEventListener("click", function () { vib(6); fin(true); });
+    d.addEventListener("cancel", function (e) { e.preventDefault(); fin(false); });
+    d.addEventListener("click", function (e) { if (e.target === d) fin(false); });
+    document.body.appendChild(wrap);
+    try { d.showModal(); } catch (e) { fin(window.confirm(msg)); }
+  });
+};
+
+window.v90copy = function (t) {
+  try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t); toast("📋 تم النسخ ✅"); return; } } catch (e) {}
+  try {
+    var ta = document.createElement("textarea"); ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast("📋 تم النسخ ✅");
+  } catch (e) { toast("انسخ يدوياً: " + t, true); }
+};
+
+window.v90creds = function (username, pw, title) {
+  var wrap = document.createElement("div");
+  wrap.className = "v90dlgwrap";
+  var d = document.createElement("dialog");
+  d.className = "v90dlg";
+  d.innerHTML = '<div class="v90ic ok">🔑</div><div class="v90msg"></div>'
+    + '<div class="v90cred"><span>اسم الدخول</span><b class="cu" dir="ltr"></b>'
+    + '<button type="button" class="v90cp" data-k="u">نسخ</button></div>'
+    + '<div class="v90cred"><span>الرقم السري</span><b class="cp" dir="ltr"></b>'
+    + '<button type="button" class="v90cp" data-k="p">نسخ</button></div>'
+    + '<p class="v90note">📋 انسخها الآن — لن يُعرض الرقم السري مرة أخرى.</p>'
+    + '<div class="v90btns"><button type="button" class="v90b gold">تم</button></div>';
+  wrap.appendChild(d);
+  d.querySelector(".v90msg").textContent = title || "بيانات الدخول جاهزة";
+  d.querySelector(".cu").textContent = username || "—";
+  d.querySelector(".cp").textContent = pw || "—";
+  d.querySelectorAll(".v90cp").forEach(function (b) {
+    b.addEventListener("click", function () { window.v90copy(b.dataset.k === "u" ? (username || "") : (pw || "")); });
+  });
+  d.querySelector(".v90b.gold").addEventListener("click", function () { vib(6); try { d.close(); } catch (e) {} setTimeout(function () { wrap.remove(); }, 150); });
+  document.body.appendChild(wrap);
+  try { d.showModal(); } catch (e) { wrap.remove(); }
+};
+
+var sw = { sx: 0, sy: 0, side: null, on: false, dx: 0, w: 0, cur: null, cool: 0 };
+var EDGE = 30, SW_TH = 68, SW_CD = 380;
+function visTabs() {
+  return Array.prototype.filter.call(document.querySelectorAll("nav.tabs button"),
+    function (b) { return b.offsetParent !== null; });
+}
+document.addEventListener("touchstart", function (e) {
+  if (e.touches.length !== 1 || Date.now() < sw.cool || G.ptr || dlgOpen()) return;
+  var t = e.touches[0], el = e.target;
+  if (el.closest && el.closest("input,textarea,select,a,button,audio,video,canvas,[contenteditable]")) return;
+  var iw = window.innerWidth, x = t.clientX;
+  if (x > EDGE && x < iw - EDGE) return;
+  sw.sx = x; sw.sy = t.clientY;
+  sw.side = (x <= EDGE) ? "L" : "R";
+  sw.on = false; sw.dx = 0; sw.w = 0;
+  sw.cur = document.querySelector(".view.on");
+}, { passive: true });
+document.addEventListener("touchmove", function (e) {
+  if (!sw.cur || !sw.side || G.ptr) return;
+  var t = e.touches[0];
+  sw.dx = t.clientX - sw.sx;
+  var dy = t.clientY - sw.sy;
+  if (!sw.on) {
+    if (Math.abs(sw.dx) > 14 && Math.abs(sw.dx) > Math.abs(dy) * 1.35) { sw.on = true; G.swipe = true; vib(6); }
+    else if (Math.abs(dy) > 18) { sw.side = null; return; }
+    else return;
+  }
+  e.preventDefault();
+  var lim = Math.max(70, window.innerWidth * 0.26);
+  sw.w = Math.max(-lim, Math.min(lim, sw.dx * 0.6));
+  sw.cur.style.transition = "none";
+  sw.cur.style.transform = "translateX(" + sw.w + "px)";
+}, { passive: false });
+function swEnd() {
+  if (sw.cur && sw.on) {
+    var c = sw.cur;
+    c.style.transition = ""; c.style.transform = "";
+    if (Math.abs(sw.w) >= 44 || Math.abs(sw.dx) >= SW_TH) {
+      var list = visTabs(), i = -1, k;
+      for (k = 0; k < list.length; k++) if (list[k].classList.contains("on")) { i = k; break; }
+      var j = (sw.side === "L" && sw.dx > 0) ? i + 1 : (sw.side === "R" && sw.dx < 0) ? i - 1 : i;
+      if (i >= 0 && j >= 0 && j < list.length && j !== i) {
+        sw.cool = Date.now() + SW_CD;
+        vib(10);
+        var v = list[j].dataset.v, vv = document.getElementById(v);
+        if (vv) {
+          vv.classList.add(sw.side === "L" ? "v90slL" : "v90slR");
+          setTimeout(function () { vv.classList.remove("v90slL", "v90slR"); }, 280);
+        }
+        try { switchView(v); } catch (e) {}
+      }
+    }
+  }
+  sw.cur = null; sw.side = null; sw.on = false; G.swipe = false; sw.w = 0; sw.dx = 0;
+}
+document.addEventListener("touchend", swEnd, { passive: true });
+document.addEventListener("touchcancel", swEnd, { passive: true });
+
+var ptr = { y0: null, x0: 0, on: false, dist: 0, cool: 0, el: null, tgt: null };
+function ptrEl() {
+  if (!ptr.el) {
+    ptr.el = document.createElement("div");
+    ptr.el.id = "v90ptr"; ptr.el.innerHTML = "<i></i>";
+    document.body.appendChild(ptr.el);
+  }
+  return ptr.el;
+}
+function scrollUnder(el) {
+  while (el && el !== document.body) {
+    if (el.scrollHeight > el.clientHeight + 2) {
+      var o = "";
+      try { o = getComputedStyle(el).overflowY; } catch (e) {}
+      if (o === "auto" || o === "scroll") return el;
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+window.v90Refresh = function () {
+  var cur = document.querySelector(".view.on"); if (!cur) return;
+  var m = {
+    "v-home": window.loadHome, "v-inv": window.loadInventory, "v-mov": window.loadMovements,
+    "v-ord": window.loadOrders, "v-chat": window.chatEnter, "v-users": window.loadUsers,
+    "v-oil": (typeof window.loadInvoice === "function" ? window.loadInvoice : window.loadOil),
+    "v-set": window.renderProfile
+  };
+  var f = m[cur.id];
+  try { if (f) f(); } catch (e) {}
+  toast("✅ تم التحديث");
+};
+document.addEventListener("touchstart", function (e) {
+  if (e.touches.length !== 1 || Date.now() < ptr.cool || G.swipe || dlgOpen()) return;
+  var t = e.touches[0];
+  if ((window.scrollY || (document.scrollingElement ? document.scrollingElement.scrollTop : 0)) > 2) return;
+  var s = scrollUnder(e.target);
+  if (s && s.scrollTop > 2) return;
+  ptr.y0 = t.clientY; ptr.x0 = t.clientX; ptr.on = false; ptr.dist = 0; ptr.tgt = e.target;
+}, { passive: true });
+document.addEventListener("touchmove", function (e) {
+  if (G.swipe || ptr.y0 === null) return;
+  var t = e.touches[0];
+  var dy = t.clientY - ptr.y0, dx = t.clientX - ptr.x0;
+  if (!ptr.on) {
+    if (dy > 14 && Math.abs(dx) < Math.abs(dy) * 0.7) {
+      var s2 = scrollUnder(ptr.tgt || e.target);
+      if (s2 && s2.scrollTop > 0) { ptr.y0 = null; return; }
+      ptr.on = true; G.ptr = true; vib(5);
+    } else if (Math.abs(dy) > 26 || Math.abs(dx) > 26) { ptr.y0 = null; return; }
+    else return;
+  }
+  e.preventDefault();
+  ptr.dist = Math.min(dy * 0.45, 90);
+  var el = ptrEl();
+  el.style.opacity = String(Math.min(1, ptr.dist / 50));
+  var ii = el.querySelector("i");
+  if (ii) ii.style.transform = "rotate(" + Math.round(ptr.dist * 3) + "deg)";
+}, { passive: false });
+document.addEventListener("touchend", function () {
+  if (ptr.on) {
+    var el = ptrEl();
+    if (ptr.dist >= 44) {
+      vib(12); el.classList.add("spin"); el.style.opacity = "1";
+      try { window.v90Refresh(); } catch (e) {}
+      setTimeout(function () { el.classList.remove("spin"); el.style.opacity = "0"; var ii = el.querySelector("i"); if (ii) ii.style.transform = ""; }, 700);
+      ptr.cool = Date.now() + 900;
+    } else { el.style.opacity = "0"; }
+  }
+  ptr.on = false; G.ptr = false; ptr.dist = 0; ptr.y0 = null;
+}, { passive: true });
+
+document.querySelectorAll("nav.tabs button").forEach(function (b) {
+  b.addEventListener("click", function () { vib(8); });
+});
+
+function v90adminSync() {
+  var c = document.getElementById("v90adminCard");
+  if (!c) return;
+  var show = false;
+  try { show = !!(S.perms && S.perms.admin); } catch (e) {}
+  c.style.display = show ? "" : "none";
+  if (!show) return;
+  var u = document.getElementById("v90adminUname");
+  if (u && S.user) u.textContent = S.user.web_username || "—";
+}
+window.v90adminSync = v90adminSync;
+window.v90genpw = function () {
+  var c = "bcdfghjklmnpstvwz", v = "aeiory", s = "", i;
+  for (i = 0; i < 3; i++) s += c.charAt(Math.floor(Math.random() * c.length)) + v.charAt(Math.floor(Math.random() * v.length));
+  s += String(10 + Math.floor(Math.random() * 90));
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+var acp = document.getElementById("v90adminCopy");
+if (acp) acp.addEventListener("click", function () {
+  var u = document.getElementById("v90adminUname");
+  window.v90copy((u && u.textContent) || "");
+});
+var ap = document.getElementById("v90adminPass");
+if (ap) ap.addEventListener("click", async function () {
+  if (!(await window.v90confirm("تعيين رقم سر جديد لحساب المدير؟\nتُلغى كل الجلسات القديمة وتبقى مسجلاً في هذا الجهاز تلقائياً.", { yes: "نعم، تعيين" }))) return;
+  try {
+    var pw = window.v90genpw();
+    var d = await api("/api/admin/selfpass", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw })
+    });
+    if (S.user) S.user.web_username = d.username || S.user.web_username;
+    v90adminSync();
+    window.v90creds(d.username || (S.user && S.user.web_username) || "admin", pw, "بيانات دخول المدير الجديدة");
+  } catch (e) { toast(e.message, true); }
+});
+try {
+  window.loadUsers = (function (orig) {
+    return async function () { var r = await orig.apply(this, arguments); try { v90adminSync(); } catch (e) {} return r; };
+  })(window.loadUsers);
+  window.refreshMe = (function (orig2) {
+    return async function () { var r = await orig2.apply(this, arguments); try { v90adminSync(); } catch (e) {} return r; };
+  })(window.refreshMe);
+} catch (e) {}
+try { v90adminSync(); } catch (e) {}
+})();'''
 
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
@@ -12456,56 +12589,138 @@ _PWA_HTML_PATCHES = (
      'font-family:inherit;line-height:1";'
      'document.body.appendChild(c);'
      '}catch(e){}})();</script>\n</body>\n</html>'),
-    # ── v90: احترافية اللمس — سحب من الحافة + سحب للتحديث + تأكيد محترم + لمسات خفيفة ──
-    # 16) طبقة CSS للوحدة — مرساة إغلاق الستايل الأصلي قبل </head> (فريدة بعد كل الرقع)
-    ('</style>\n</head>',
-     '<style id="v90css">' + _PWA_V90_CSS + '</style>\n</head>'),
-    # 17) حوار التأكيد المحترم — يُحقن قبل شريط التابات (مرساة ثابتة واحدة)
-    ('<nav class="tabs">',
-     '<!-- v90: حوار تأكيد محترم بدل confirm() الرمادية -->\n'
-     '<dialog id="dlgC2"><div class="c2b"><p class="c2m" id="c2msg"></p>\n'
-     '<div class="c2a"><button type="button" class="btn gray" id="c2no">إلغاء</button>\n'
-     '<button type="button" class="btn" id="c2ok">تأكيد</button></div></div></dialog>\n'
-     '<nav class="tabs">'),
-    # 18) حذف سلعة (invDelete async أصلاً — لا إعادة هيكلة)
-    ('  if (!confirm(\'حذف السلعة «\' + name + \'»؟\\n\\nستُخفى من المخزون بينما يبقى سجل حركتها\\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».\')) return;',
-     '  if (!(await confirm2(\'حذف السلعة «\' + name + \'»؟\\n\\nستُخفى من المخزون بينما يبقى سجل حركتها\\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».\', {danger: true}))) return;'),
-    # 19) استعادة سلعة (إجراء غير مدمّر — زر تأكيد عادي)
-    ('  if (!confirm(\'استعادة السلعة «\' + name + \'» إلى المخزون؟\')) return;',
-     '  if (!(await confirm2(\'استعادة السلعة «\' + name + \'» إلى المخزون؟\'))) return;'),
-    # 20) توليد رقم سر مؤقت لمستخدم
-    ('  if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;',
-     '  if (!(await confirm2("توليد رقم سر مؤقت لـ «" + uname + "»؟\\nستُبطل جلساته الحالية ويُستبدل رقمه السري."))) return;'),
-    # 21) إيقاف/تنشيط مستخدم — أحمر عند الطرد فقط
-    ('  if (!confirm(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.")) return;',
-     '  if (!(await confirm2(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.", {danger: !active}))) return;'),
-    # 22) حذف حساب التطبيق (الرسالة متعددة الأسطر كما هي — زر أحمر)
-    ('  if (!confirm("🗑️ حذف حساب «" + name + "» من التطبيق؟\\n\\n"\n'
-     '    + "سيُلغى دخوله إلى التطبيق نهائياً: اسم الدخول والرقم السري والجلسات و«تذكّرني».\\n"\n'
-     '    + "✅ حسابه في البوت يبقى كما هو تماماً — فئته وإيقافه وكل شيء لا يتغير.\\n"\n'
-     '    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.")) return;',
-     '  if (!(await confirm2("🗑️ حذف حساب «" + name + "» من التطبيق؟\\n\\n"\n'
-     '    + "سيُلغى دخوله إلى التطبيق نهائياً: اسم الدخول والرقم السري والجلسات و«تذكّرني».\\n"\n'
-     '    + "✅ حسابه في البوت يبقى كما هو تماماً — فئته وإيقافه وكل شيء لا يتغير.\\n"\n'
-     '    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.", {danger: true}))) return;'),
-    # 23) ترقية إلى مدير (قرار حساس — زر أحمر)
-    ('  if (S.roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;',
-     '  if (S.roleDlg.role === "admin" && !(await confirm2("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.", {danger: true}))) return;'),
-    # 24) حذف طلب انضمام
-    ('  if (!confirm("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.")) return;',
-     '  if (!(await confirm2("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.", {danger: true}))) return;'),
-    # 25) تعليم طلب التوريد جاهزاً
-    ('  if (action === "complete" && !confirm("تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;',
-     '  if (action === "complete" && !(await confirm2("تعليم الطلب جاهزاً؟ سيصل إشعار للطالب."))) return;'),
-    # 26) مغادرة مجموعة (وحدة المجموعات v83 المحقونة بالرقعة 7 — المرساة حية في المُقدَّم)
-    ('      if (!confirm("مغادرة المجموعة «" + G.g.name + "»؟")) return;',
-     '      if (!(await confirm2("مغادرة المجموعة «" + G.g.name + "»؟"))) return;'),
-    # 27) حذف مجموعة نهائياً (إجراء مدمّر — زر أحمر)
-    ('      if (!confirm("حذف المجموعة نهائياً مع كل رسائلها؟")) return;',
-     '      if (!(await confirm2("حذف المجموعة نهائياً مع كل رسائلها؟", {danger: true}))) return;'),
-    # 28) وحدة الحركة v90 — آخر رقعة بعد شارة الإصدار (المرساة تعيد الظهور بعد كل رقعة تسبقها)
-    ('</body>\n</html>',
-     '<script id="v90ux">\n' + _PWA_V90_JS + '</script>\n</body>\n</html>'),
+    # ════════ v90: السحب من الحافة + التحديث + اللمسات + الحوار المحترم ════════
+    # 16) طبقة CSS للإصدار 90 — قبل طبقة UI2 (مرساة تولّدها الرقعة 8 — الترتيب مهم)
+    ('<style id="ui2css">',
+     '<style id="v90css">' + _PWA_V90_CSS + '</style>\n<style id="ui2css">'),
+    # 17) نواة v90 JS — آخر السكربتات قبل إغلاق الجسم (الدوال عالمية، ونداءاتها لاحقة وقت التشغيل)
+    ('</script>\n</body>',
+     '</script>\n<script id="v90js">\n' + _PWA_V90_JS + '\n</script>\n</body>'),
+    # 18) رقعة «نشط مؤخراً» — فصل الفعليين في شاشة المستخدمين
+    ('<button type="button" class="chip" data-f="kick">🚫 مطرودون <b id="cKick">0</b></button>',
+     '<button type="button" class="chip" data-f="kick">🚫 مطرودون <b id="cKick">0</b></button>\n'
+     '        <button type="button" class="chip" data-f="live">🟢 نشط مؤخراً <b id="cLive">0</b></button>'),
+    # 19) عدّاد الفعليين (آخر 24 ساعة)
+    ('  $("#cKick").textContent = d.counts.kicked;',
+     '  $("#cKick").textContent = d.counts.kicked;\n'
+     '  try {\n'
+     '    $("#cLive").textContent = users.filter((u) => u.active && u.last_seen\n'
+     '      && (Date.now() - new Date(u.last_seen).getTime() < 86400000)).length;\n'
+     '  } catch (e) {}'),
+    # 20) مرشّح «نشط مؤخراً» في منطق الفلترة
+    ('  if (S.usrFilter === "kick") return !u.active;',
+     '  if (S.usrFilter === "live") return u.active && !!u.last_seen\n'
+     '    && (Date.now() - new Date(u.last_seen).getTime() < 86400000);\n'
+     '  if (S.usrFilter === "kick") return !u.active;'),
+    # 21) بطاقة بيانات دخول المدير — أعلى شاشة المستخدمين (تظهر للمدير فقط عبر JS)
+    ('      <div id="usrList"><p class="empty">جارِ التحميل...</p></div>',
+     '      <div class="card v90admin" id="v90adminCard" style="display:none">\n'
+     '        <p class="sect" style="margin:0 0 4px">👑 بيانات دخول المدير</p>\n'
+     '        <div class="v90arow"><span>اسم الدخول</span><b id="v90adminUname" dir="ltr">—</b>\n'
+     '          <button type="button" class="btn mini gray" id="v90adminCopy">📋 نسخ</button></div>\n'
+     '        <button class="btn gold" id="v90adminPass" style="margin-top:10px">🔑 تعيين رقم سر جديد وعرضه</button>\n'
+     '        <p class="hint" style="margin:8px 0 0">نسيان الرقم السري؟ اضغط الزر — يُنشأ رقم جديد ويُعرض مرة واحدة وتبقى مسجلاً.</p>\n'
+     '      </div>\n'
+     '      <div id="usrList"><p class="empty">جارِ التحميل...</p></div>'),
+    # ── v91: أُزيلت رقع صور السلع (22–27) بناءً على قرار يوسف: «خيار اضافة صورة منتج لا نحتاجه»
+    #    الخلفية (/api/products/photo والأعمدة) تبقى ساكنة بلا استخدام — صفر استهلاك Supabase، لا فقدان بيانات.
+    # ── v90: كل confirm() الرمادية ← حوار محترم ملون (8 مواضع) ──
+    # 28)
+    ("!confirm('حذف السلعة «'",
+     "!await v90confirm('حذف السلعة «'"),
+    # 29)
+    ("!confirm('استعادة السلعة «'",
+     "!await v90confirm('استعادة السلعة «'"),
+    # 30)
+    ('!confirm("توليد رقم سر مؤقت',
+     '!await v90confirm("توليد رقم سر مؤقت'),
+    # 31)
+    ('!confirm(active ? "إعادة تنشيط',
+     '!await v90confirm(active ? "إعادة تنشيط'),
+    # 32)
+    ('!confirm("🗑️ حذف حساب',
+     '!await v90confirm("🗑️ حذف حساب'),
+    # 33)
+    ('!confirm("ترقية هذا المستخدم',
+     '!await v90confirm("ترقية هذا المستخدم'),
+    # 34)
+    ('!confirm("حذف طلب الانضمام',
+     '!await v90confirm("حذف طلب الانضمام'),
+    # 35)
+    ('!confirm("تعليم الطلب جاهزاً',
+     '!await v90confirm("تعليم الطلب جاهزاً'),
+    # 36) alert الرقم السري المؤقت ← بطاقة بيانات دخول ملونة بنسخ
+    ('    alert("🔑 الرقم السري المؤقت لـ " + d.username + " هو:\\n\\n" + d.temp_password\n'
+     '          + "\\n\\nأعطه له الآن (شفهياً أو واتساب) — لن يظهر مرة أخرى.\\n"\n'
+     '          + "سيغيّره بنفسه من الإعدادات بعد الدخول.");',
+     '    v90creds(d.username, d.temp_password, "الرقم السري المؤقت للموظف");'),
+    # 37) بعد ضبط كلمة مرور موظف: بطاقة بيانات الدخول بدل toast جامد
+    ('    $("#dlgPass").close(); toast(d.message || "تم الحفظ."); loadUsers();',
+     '    $("#dlgPass").close();\n'
+     '    try {\n'
+     '      if (!S.passDlg.self && np) {\n'
+     '        const __un = (String(d.message || "").split("اسم الدخول: ")[1] || S.passDlg.name || "").trim();\n'
+     '        v90creds(__un, np, "بيانات دخول الموظف");\n'
+     '      } else { toast(d.message || "تم الحفظ."); }\n'
+     '    } catch (e90) { toast(d.message || "تم الحفظ."); }\n'
+     '    loadUsers();'),
+    # ── v91: حارس الرجوع — السحبة من حافة الشاشة/زر الرجوع لا تُغلق التطبيق بعد الآن ──
+    # السبب الحقيقي (تشخيص يوسف: «أجربها من التطبيق يخرج بالكامل»): النظام يترجم السحبة من الحافة
+    # كزر «رجوع»، والتطبيق بلا سجل تنقل فيُغلق بالكامل. العلاج ثلاثي:
+    # (1) تعطيل إيماءات المتصفح الأفقية والسحب-للتحديث النظامية (نسختنا المخصصة تتولى المهمة)
+    # (2) أي «رجوع»: يغلق تأكيد v90 إن كان مفتوحاً، وإلا ينتقل للتاب السابق بلمسة iPhone
+    # (3) في الشاشة الأولى: تنبيه لطيف بدل الخروج — الخروج العمد بسحب أسفل الشاشة للأعلى.
+    # ملاحظة: حوارات النماذج (إضافة/تعديل) وبطاقة بيانات الدخول لا تُغلق بالرجوع — صفر فقدان بيانات.
+    ('</script>\n</body>',
+     '</script>\n'
+     '<script id="v91js">\n'
+     '/* v91 back-guard: السحب من الحافة يتنقل بين الشاشات ولا يغلق التطبيق */\n'
+     '(function () {\n'
+     '"use strict";\n'
+     'try {\n'
+     '  var st = document.createElement("style"); st.id = "v91css";\n'
+     '  st.textContent = "html,body{overscroll-behavior-x:none!important;overscroll-behavior-y:none!important}";\n'
+     '  document.head.appendChild(st);\n'
+     '} catch (e) {}\n'
+     'window.v91tabStep = function (dir) {\n'
+     '  var list = Array.prototype.filter.call(document.querySelectorAll("nav.tabs button"), function (b) { return b.offsetParent !== null; });\n'
+     '  var i = -1, k;\n'
+     '  for (k = 0; k < list.length; k++) if (list[k].classList.contains("on")) { i = k; break; }\n'
+     '  if (i < 0) return false;\n'
+     '  var j = i + dir;\n'
+     '  if (j < 0 || j >= list.length) return false;\n'
+     '  var v = list[j].dataset.v, vv = document.getElementById(v);\n'
+     '  if (!vv) return false;\n'
+     '  try { vv.classList.add(dir > 0 ? "v90slL" : "v90slR"); setTimeout(function () { vv.classList.remove("v90slL", "v90slR"); }, 280); } catch (e) {}\n'
+     '  try { (window.v90vib || function () {})(10); } catch (e) {}\n'
+     '  try { switchView(v); } catch (e) {}\n'
+     '  return true;\n'
+     '};\n'
+     'try {\n'
+     '  var hintAt = 0;\n'
+     '  history.replaceState({ v91g: 0 }, "");\n'
+     '  history.pushState({ v91g: 1 }, "");\n'
+     '  window.addEventListener("popstate", function () {\n'
+     '    try {\n'
+     '      var dlg = document.querySelector(".v90dlg[open]");\n'
+     '      if (dlg && !dlg.querySelector(".v90cred")) {\n'
+     '        var wr = dlg.closest(".v90dlgwrap");\n'
+     '        try { dlg.close(); } catch (e1) {}\n'
+     '        if (wr) wr.remove();\n'
+     '        history.pushState({ v91g: 1 }, "");\n'
+     '        return;\n'
+     '      }\n'
+     '      history.pushState({ v91g: 1 }, "");\n'
+     '      if (!window.v91tabStep(-1)) {\n'
+     '        var now = Date.now();\n'
+     '        if (now - hintAt > 2500) { hintAt = now; toast("أنت في الشاشة الأولى — للخروج اسحب من أسفل الشاشة للأعلى"); }\n'
+     '      }\n'
+     '    } catch (e2) { try { history.pushState({ v91g: 1 }, ""); } catch (e3) {} }\n'
+     '  });\n'
+     '} catch (e) {}\n'
+     '})();\n'
+     '</script>\n'
+     '</body>'),
 )
 
 
@@ -14160,6 +14375,7 @@ def _pwa_api_products(user, q, archived=False, low=False):
                         "qty": r["quantity"], "min": r["minimum_stock"],
                         "location": r.get("location") or "",
                         "price": r.get("selling_price"),
+                        "img": bool(r.get("image_url") or r.get("image")),   # v90: صورة السلعة
                         "unit": _get_unit_ar(r["name"]),
                         "low": (r["quantity"] or 0) <= (r["minimum_stock"] or 0)})
     return {"ok": True, "products": out, "total": total, "limited": external_only, "archived": bool(archived), "low": bool(low)}
@@ -14205,6 +14421,7 @@ def _pwa_api_product_detail(user, product_id):
         "id": p["id"], "name": p["name"], "qty": p["quantity"],
         "min": p["minimum_stock"], "location": p.get("location") or "",
         "price": p.get("selling_price"), "unit": _get_unit_ar(p["name"]),
+        "img": bool(p.get("image_url") or p.get("image")),   # v90: صورة السلعة
         "low": (p["quantity"] or 0) <= (p["minimum_stock"] or 0),
         "archived": bool(p.get("archived")),   # v41: شارة المحذوفة + إتاحة الاستعادة
         "created": p["created_at"].strftime("%Y-%m-%d") if p.get("created_at") else "",
@@ -14439,6 +14656,113 @@ def _pwa_api_product_archive(user, product_id, archived=True):
         return False, None, "فشلت العملية، أعد المحاولة."
     finally:
         release_connection(conn)
+
+
+def _pwa_product_id_by_name(name):
+    """v90: إيجاد معرّف سلعة بالاسم (الأحدث) — لرفع صورتها فور إنشائها."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM products WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s)) "
+                        "AND NOT archived ORDER BY id DESC LIMIT 1", (str(name or ""),))
+            row = cur.fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_product_photo(user, product_id, photo_b64, mime, remove=False):
+    """📷 v90: صورة السلعة — رفع/استبدال/إزالة (مدراء فقط).
+    التخزين بمنطق v89 حرفياً: Supabase Storage إن توفّرت المفاتيح،
+    وإلا بايتات في القاعدة (BYTEA) كالوضع القديم — والرجعة آلية."""
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, "صور السلع للمدراء فقط."
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return False, "سلعة غير صالحة."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM products WHERE id = %s", (product_id,))
+            if not cur.fetchone():
+                return False, "السلعة غير موجودة."
+            if remove:
+                cur.execute("UPDATE products SET image = NULL, image_url = NULL, "
+                            "image_mime = NULL WHERE id = %s", (product_id,))
+                conn.commit()
+                return True, "تمت إزالة صورة السلعة."
+            photo_b64 = str(photo_b64 or "")
+            if "," in photo_b64 and photo_b64.strip().startswith("data:"):
+                photo_b64 = photo_b64.split(",", 1)[1]  # تقبل data URL أو base64 خام
+            try:
+                import base64 as _b64
+                data = _b64.b64decode(photo_b64, validate=False)
+            except Exception:
+                return False, "صورة غير صالحة."
+            if not data:
+                return False, "الصورة فارغة."
+            if len(data) > _PWA_PHOTO_MAX:
+                return False, "الصورة كبيرة جداً (الحد 3 ميغابايت)."
+            mime = str(mime or "image/jpeg").split(";")[0].strip().lower()
+            if mime not in _PWA_PHOTO_MIMES:
+                mime = "image/jpeg"
+            pay, url = _media_store_pack(data, "product_" + str(product_id), mime, "products")
+            cur.execute("UPDATE products SET image = %s, image_url = %s, image_mime = %s "
+                        "WHERE id = %s", (pay, url, mime, product_id))
+        conn.commit()
+        return True, "تم حفظ صورة السلعة ✅"
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] product photo failed: " + str(e))
+        return False, "فشل الحفظ، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_api_product_image(user, product_id):
+    """🖼️ v90: قراءة صورة السلعة — لأي مستخدم مسجّل في التطبيق.
+    يعيد (bytes, mime, None) أو (SURL::رابط, mime, None) أو (None, None, رسالة)."""
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return None, None, "طلب غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT image, image_url, image_mime FROM products WHERE id = %s",
+                        (product_id,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row:
+        return None, None, "السلعة غير موجودة."
+    if not row[0] and not row[1]:
+        return None, None, "لا توجد صورة لهذه السلعة."
+    if row[1] and not row[0]:
+        return _MEDIA_URL_MARK + str(row[1]), (row[2] or "image/jpeg"), None
+    return bytes(row[0]), (row[2] or "image/jpeg"), None
+
+
+def _pwa_api_admin_selfpass(user, password):
+    """🔑 v90: المدير يضبط رقم سر جديداً لحسابه دون الرقم القديم (حالة النسيان فقط).
+    يتطلب جلسة مدير مصادَقة، يُبطل الجلسات القديمة — والمعالج يعيد زرع جلسة
+    هذا الجهاز فوراً كي لا يُسجَّل المدير خروجاً. يُسجَّل في audit_log."""
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, None, "للمدير فقط."
+    pol_ok, pol_msg = _pwa_password_ok(password)
+    if not pol_ok:
+        return False, None, pol_msg
+    try:
+        uname = pwa_set_password(user["id"],
+                                 (user.get("web_username") or user.get("name") or "admin"),
+                                 str(password))
+    except Exception as e:
+        logging.error("[PWA] admin selfpass failed: " + str(e))
+        return False, None, "فشل الحفظ، أعد المحاولة."
+    return True, uname, None
 
 
 def _pwa_api_pending(user):
@@ -16473,6 +16797,12 @@ async def pwa_products_create_handler(request):
     await _pwa_run(_audit_log, "product_create", user,
                    details="اسم: " + str(body.get("name", ""))[:150],
                    ip=request.remote or "؟")
+    # v90: معرّف السلعة الجديدة — كي يرفع المدير صورتها فوراً من نفس الحوار
+    npid = None
+    try:
+        npid = await _pwa_run(_pwa_product_id_by_name, str(body.get("name", "")))
+    except Exception:
+        npid = None
     # (v30) إشعار الجميع بسلعة جديدة — جرس التطبيق + تلغرام
     try:
         _nqty = int(body.get("quantity", 0) or 0)
@@ -16484,7 +16814,7 @@ async def pwa_products_create_handler(request):
             "new_item", "🆕 سلعة جديدة!", _nbody, str(user.get("name") or ""), "web"))
     except Exception:
         pass
-    return _pwa_jr({"ok": True, "message": msg})
+    return _pwa_jr({"ok": True, "message": msg, "id": npid})
 
 
 async def pwa_products_edit_handler(request):
@@ -19131,6 +19461,136 @@ async def pwa_receipt_thumb_handler(request):
                         headers={"Cache-Control": "no-store"})
 
 
+async def pwa_product_photo_handler(request):
+    """📷 v90: رفع/استبدال/إزالة صورة سلعة (مدراء فقط)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "صور السلع للمدراء فقط.")
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    remove = bool(body.get("remove", False))
+    ok, msg = await _pwa_run(_pwa_api_product_photo, user, body.get("id"),
+                             body.get("photo"), body.get("mime"), remove)
+    if not ok:
+        return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "product_photo_remove" if remove else "product_photo",
+                   user, details="سلعة #" + str(body.get("id")), ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_product_image_handler(request):
+    """🖼️ v90: صورة السلعة — لأي مستخدم مسجّل. رابط Supabase → توجيه 302،
+    وإلا بايتات من القاعدة كنمط وصّل التوريد حرفياً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        pid = int(request.match_info["pid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data, mime, err2 = await _pwa_run(_pwa_api_product_image, user, pid)
+    if err2:
+        return _pwa_err(404, err2)
+    if isinstance(data, str) and data.startswith(_MEDIA_URL_MARK):
+        return web.HTTPFound(data[len(_MEDIA_URL_MARK):])
+    return web.Response(body=data, content_type=(mime or "image/jpeg"),
+                        headers={"Cache-Control": "no-store"})
+
+
+async def pwa_admin_selfpass_handler(request):
+    """🔑 v90: المدير يضبط رقم سر جديداً لحسابه دون الرقم القديم (حالة النسيان).
+    تُبطل الجلسات القديمة ويُزرع كوكي جلسة جديدة فوراً — بقاء المدير مسجلاً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "للمدير فقط.")
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, uname, emsg = await _pwa_run(_pwa_api_admin_selfpass, user,
+                                     str(body.get("password") or ""))
+    if not ok:
+        return _pwa_err(400, emsg)
+    token = await _pwa_run(_pwa_create_session, user["id"])
+    await _pwa_run(_audit_log, "admin_selfpass", user, ip=request.remote or "؟")
+    resp = _pwa_jr({"ok": True, "message": "تم ضبط الرقم السري الجديد ✅", "username": uname})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
+async def pwa_product_photo_handler(request):
+    """📷 v90: رفع/استبدال/إزالة صورة سلعة (مدراء فقط)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "صور السلع للمدراء فقط.")
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    remove = bool(body.get("remove", False))
+    ok, msg = await _pwa_run(_pwa_api_product_photo, user, body.get("id"),
+                             body.get("photo"), body.get("mime"), remove)
+    if not ok:
+        return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "product_photo_remove" if remove else "product_photo",
+                   user, details="سلعة #" + str(body.get("id")), ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_product_image_handler(request):
+    """🖼️ v90: صورة السلعة — لأي مستخدم مسجّل. رابط Supabase → توجيه 302،
+    وإلا بايتات من القاعدة كنمط وصّل التوريد حرفياً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        pid = int(request.match_info["pid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data, mime, err2 = await _pwa_run(_pwa_api_product_image, user, pid)
+    if err2:
+        return _pwa_err(404, err2)
+    if isinstance(data, str) and data.startswith(_MEDIA_URL_MARK):
+        return web.HTTPFound(data[len(_MEDIA_URL_MARK):])
+    return web.Response(body=data, content_type=(mime or "image/jpeg"),
+                        headers={"Cache-Control": "no-store"})
+
+
+async def pwa_admin_selfpass_handler(request):
+    """🔑 v90: المدير يضبط رقم سر جديداً لحسابه دون الرقم القديم (حالة النسيان).
+    تُبطل الجلسات القديمة ويُزرع كوكي جلسة جديدة فوراً — بقاء المدير مسجلاً."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "للمدير فقط.")
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, uname, emsg = await _pwa_run(_pwa_api_admin_selfpass, user,
+                                     str(body.get("password") or ""))
+    if not ok:
+        return _pwa_err(400, emsg)
+    token = await _pwa_run(_pwa_create_session, user["id"])
+    await _pwa_run(_audit_log, "admin_selfpass", user, ip=request.remote or "؟")
+    resp = _pwa_jr({"ok": True, "message": "تم ضبط الرقم السري الجديد ✅", "username": uname})
+    secure_cookie = bool(os.getenv("RENDER_EXTERNAL_URL", "")) or request.secure
+    resp.set_cookie(PWA_COOKIE, token, max_age=PWA_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure_cookie, path="/")
+    return resp
+
+
 def register_pwa_routes(app):
     """تركيب مسارات PWA على خادم aiohttp الموجود (webhook أو polling+health).
     آمنة إضافياً بالكامل: لا تمس مسارات البوت ولا جداوله."""
@@ -19185,6 +19645,9 @@ def register_pwa_routes(app):
     app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
     app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
     app.router.add_post("/api/products/create", pwa_products_create_handler)
+    app.router.add_post("/api/products/photo", pwa_product_photo_handler)      # v90: صورة السلعة (رفع/إزالة)
+    app.router.add_get("/api/product/{pid}/image", pwa_product_image_handler)  # v90: قراءة صورة السلعة
+    app.router.add_post("/api/admin/selfpass", pwa_admin_selfpass_handler)     # v90: رقم سر جديد للمدير (نسيان)
     app.router.add_post("/api/products/edit", pwa_products_edit_handler)        # v41: تعديل سلعة
     app.router.add_post("/api/products/archive", pwa_products_archive_handler)  # v41: حذف/استعادة ناعمة
     app.router.add_post("/api/profile", pwa_profile_handler)                    # v41: الاسم + الصورة
@@ -19226,7 +19689,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (54 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (83 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -19236,7 +19699,8 @@ if __name__ == "__main__":
     # v88: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
-                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage + swipe-nav + pull-refresh + confirm2) =====")
+                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
+                 + " + back-guard + edge-swipe + pull-refresh + haptic + confirm2 + users-hq + no-photos) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
