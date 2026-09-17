@@ -10672,7 +10672,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v89"  # v89 = وسائط جديدة على Supabase Storage (توفير حصة Neon) + رجعة فورية للوضع القديم
+PWA_VERSION = "v90"  # v90 = سحب من الحافة بين التابات + سحب للتحديث + حوار تأكيد محترم + لمسات خفيفة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12211,6 +12211,173 @@ _PWA_DESKTOP_CSS = r"""/* ═══ v88.1: عرض سطح المكتب — نفس
 }
 """
 
+# ═══════════ v90: احترافية اللمس ═══════════
+# سحب من الحافة للتنقل بين التابات + سحب للأسفل للتحديث + حوار تأكيد محترم
+# + لمسات خفيفة (اهتزاز + ظهور متدرج) — كلها تُحقن فوق pwa.html وقت التقديم
+# ولا تلمس الملف على القرص أبداً، وتحترم prefers-reduced-motion
+_PWA_V90_CSS = (
+    'html{overscroll-behavior-y:contain}\n'
+    '@keyframes v90inL{from{opacity:0;transform:translateX(-30px)}to{opacity:1;transform:none}}\n'
+    '@keyframes v90inR{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:none}}\n'
+    '.v90inL{animation:v90inL .30s cubic-bezier(.22,.9,.36,1) both}\n'
+    '.v90inR{animation:v90inR .30s cubic-bezier(.22,.9,.36,1) both}\n'
+    '@keyframes v90up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}\n'
+    '.view.on>*{animation:v90up .26s both}\n'
+    '.view.on>*:nth-child(2){animation-delay:.03s}\n'
+    '.view.on>*:nth-child(3){animation-delay:.06s}\n'
+    '.view.on>*:nth-child(4){animation-delay:.09s}\n'
+    '.view.on>*:nth-child(5){animation-delay:.12s}\n'
+    '.view.on>*:nth-child(6){animation-delay:.15s}\n'
+    '.view.on>*:nth-child(n+7){animation-delay:.17s}\n'
+    '#v90ptr{position:fixed;top:0;left:50%;transform:translate(-50%,-70px);z-index:9500;'
+    'background:var(--card);border:1px solid var(--line);border-radius:99px;padding:7px 14px;'
+    'display:flex;align-items:center;gap:7px;box-shadow:var(--shadow);opacity:0;'
+    'transition:transform .18s,opacity .18s;pointer-events:none;font-size:12.5px;color:var(--mut)}\n'
+    '#v90ptr.on{opacity:1}\n'
+    '#v90ptr .pi{display:inline-block;font-size:14px;color:var(--brand);transition:transform .1s}\n'
+    '#v90ptr.go .pi{transform:rotate(180deg)!important}\n'
+    '#v90ptr.busy .pi{animation:v90spin .8s linear infinite}\n'
+    '@keyframes v90spin{to{transform:rotate(360deg)}}\n'
+    'dialog#dlgC2{border:none;border-radius:18px;background:var(--card);color:var(--ink);'
+    'padding:0;max-width:330px;width:86vw;box-shadow:0 18px 60px rgba(0,0,0,.35);'
+    'animation:v90pop .18s cubic-bezier(.2,.9,.35,1.2)}\n'
+    'dialog#dlgC2.c2out{animation:v90popout .14s forwards}\n'
+    '@keyframes v90pop{from{opacity:0;transform:scale(.92) translateY(10px)}to{opacity:1;transform:none}}\n'
+    '@keyframes v90popout{to{opacity:0;transform:scale(.95) translateY(6px)}}\n'
+    'dialog#dlgC2::backdrop{background:rgba(20,16,8,.45)}\n'
+    '.c2b{padding:20px 18px 14px}\n'
+    '.c2m{font-size:14.5px;line-height:1.75;white-space:pre-wrap;max-height:46vh;overflow:auto;margin:0}\n'
+    '.c2a{display:flex;gap:9px;margin-top:16px}\n'
+    '.c2a .btn{flex:1;margin:0}\n'
+    '@media (prefers-reduced-motion: reduce){.v90inL,.v90inR,.view.on>*,#v90ptr,#v90ptr .pi,'
+    'dialog#dlgC2{animation:none!important;transition:none!important}}\n'
+)
+
+_PWA_V90_JS = (
+    '/* ═══ v90: سحب من الحافة + سحب للتحديث + تأكيد محترم + لمسات خفيفة ═══ */\n'
+    '(function(){\n'
+    '"use strict";\n'
+    'var RM=false;try{RM=matchMedia("(prefers-reduced-motion: reduce)").matches}catch(e){}\n'
+    'function hp(ms){try{if(navigator.vibrate&&!RM)navigator.vibrate(ms)}catch(e){}}\n'
+    'function appOn(){var a=document.getElementById("app");'
+    'return !!(a&&a.style.display!=="none"&&getComputedStyle(a).display!=="none")}\n'
+    'function blocked(){if(!appOn())return true;'
+    'try{if(document.querySelector("dialog[open]"))return true}catch(e){}'
+    'var th=document.getElementById("chatThread");'
+    'return !!(th&&th.classList.contains("on"))}\n'
+    'function curView(){var v=document.querySelector(".view.on");return v?v.id:""}\n'
+    '/* ── حوار تأكيد محترم: window.confirm2(msg,opts) → Promise<boolean> ── */\n'
+    'window.confirm2=function(msg,opts){\n'
+    '  return new Promise(function(res){\n'
+    '    opts=opts||{};\n'
+    '    var d=document.getElementById("dlgC2");\n'
+    '    if(!d){res(window.confirm?window.confirm(msg):false);return}\n'
+    '    document.getElementById("c2msg").textContent=String(msg||"هل أنت متأكد؟");\n'
+    '    var ok=document.getElementById("c2ok");\n'
+    '    ok.textContent=opts.okText||"تأكيد";\n'
+    '    ok.className="btn"+(opts.danger?" red":"");\n'
+    '    d.classList.remove("c2out");\n'
+    '    var rv=false;\n'
+    '    ok.onclick=function(){hp(10);rv=true;try{d.close()}catch(e){}};\n'
+    '    document.getElementById("c2no").onclick=function(){try{d.close()}catch(e){}};\n'
+    '    d.oncancel=function(){rv=false};\n'
+    '    d.onclick=function(ev){if(ev.target===d){d.classList.add("c2out");'
+    'setTimeout(function(){try{d.close()}catch(e){}},130)}};\n'
+    '    d.onclose=function(){res(rv)};\n'
+    '    try{d.showModal()}catch(e){res(window.confirm?window.confirm(msg):false)}\n'
+    '    hp(6);\n'
+    '  });\n'
+    '};\n'
+    '/* ── سحب من الحافة فقط: تنقل بين التابات (يمين=التالي، يسار=السابق باتجاه RTL) ── */\n'
+    'var _order=null;\n'
+    'function tabOrder(){if(_order)return _order;_order=[];'
+    'document.querySelectorAll("nav.tabs button[data-v]").forEach(function(b){_order.push(b.dataset.v)});'
+    'return _order}\n'
+    'function go(step){\n'
+    '  var t=tabOrder(),cur=curView(),i=t.indexOf(cur),target;\n'
+    '  if(i<0)target=step>0?t[0]:t[t.length-1];\n'
+    '  else{target=t[i+step];if(!target||target===cur)return}\n'
+    '  hp(7);\n'
+    '  if(!RM){var el=document.getElementById(target);'
+    'if(el){el.classList.remove("v90inL","v90inR");void el.offsetWidth;'
+    'el.classList.add(step>0?"v90inR":"v90inL");'
+    'setTimeout(function(){el.classList.remove("v90inL","v90inR")},340)}}\n'
+    '  try{switchView(target)}catch(e){}\n'
+    '}\n'
+    'var EDGE=26,MINX=58,MAXY=76,sx=0,sy=0,armed=false,scool=0;\n'
+    'document.addEventListener("touchstart",function(e){\n'
+    '  if(armed||Date.now()<scool)return;\n'
+    '  if(blocked())return;\n'
+    '  var t=e.touches[0];if(!t)return;\n'
+    '  var w=window.innerWidth;\n'
+    '  if(t.clientX>EDGE&&t.clientX<w-EDGE)return;\n'
+    '  var tg=e.target;\n'
+    '  if(tg&&tg.closest&&tg.closest("input,textarea,select,button,a,label,dialog,nav.tabs"))return;\n'
+    '  sx=t.clientX;sy=t.clientY;armed=true;\n'
+    '},{passive:true});\n'
+    'document.addEventListener("touchmove",function(e){\n'
+    '  if(!armed)return;\n'
+    '  var t=e.touches[0];if(!t)return;\n'
+    '  var dx=t.clientX-sx,dy=t.clientY-sy;\n'
+    '  if(Math.abs(dy)>MAXY||Math.abs(dy)>Math.abs(dx)+6){armed=false;return}\n'
+    '  var right=sx>window.innerWidth/2;\n'
+    '  if(right&&dx<-MINX){armed=false;scool=Date.now()+380;go(1)}\n'
+    '  else if(!right&&dx>MINX){armed=false;scool=Date.now()+380;go(-1)}\n'
+    '  else if(right&&dx>MINX){armed=false}\n'
+    '  else if(!right&&dx<-MINX){armed=false}\n'
+    '},{passive:true});\n'
+    'document.addEventListener("touchend",function(){armed=false},{passive:true});\n'
+    'document.addEventListener("touchcancel",function(){armed=false},{passive:true});\n'
+    '/* ── سحب للأسفل للتحديث (من أعلى الصفحة فقط، مع دوران ومؤشر انشغال) ── */\n'
+    'var RELOAD={"v-home":"loadHome","v-inv":"loadInventory","v-mov":"loadMovements",'
+    '"v-ord":"loadOrders","v-chat":"chatEnter","v-oil":"loadInvoice","v-users":"loadUsers",'
+    '"v-set":"renderProfile"};\n'
+    'var pEl=null,pArmed=false,pBusy=false,px=0,py=0,pMax=0,pcool=0;\n'
+    'function ptr(){if(!pEl){pEl=document.createElement("div");pEl.id="v90ptr";'
+    'var pi=document.createElement("span");pi.className="pi";pi.textContent="↓";'
+    'var pt=document.createElement("span");pt.className="pt";pt.textContent="اسحب للتحديث";'
+    'pEl.appendChild(pi);pEl.appendChild(pt);document.body.appendChild(pEl)}return pEl}\n'
+    'document.addEventListener("touchstart",function(e){\n'
+    '  if(pBusy||pArmed||Date.now()<pcool)return;\n'
+    '  if(blocked())return;\n'
+    '  if(window.scrollY>2)return;\n'
+    '  var t=e.touches[0];if(!t)return;\n'
+    '  var tg=e.target;\n'
+    '  if(tg&&tg.closest&&tg.closest("input,textarea,select,dialog"))return;\n'
+    '  px=t.clientX;py=t.clientY;pMax=0;pArmed=true;\n'
+    '},{passive:true});\n'
+    'document.addEventListener("touchmove",function(e){\n'
+    '  if(!pArmed)return;\n'
+    '  if(window.scrollY>2){pArmed=false;return}\n'
+    '  var t=e.touches[0];if(!t)return;\n'
+    '  var dy=t.clientY-py,dx=t.clientX-px;\n'
+    '  if(dy<=0||Math.abs(dx)>Math.abs(dy)){pArmed=false;var e0=ptr();'
+    'e0.classList.remove("on","go");return}\n'
+    '  pMax=Math.min(96,dy*0.45);\n'
+    '  var el=ptr();el.classList.add("on");\n'
+    '  el.style.transform="translate(-50%,"+(6+pMax).toFixed(0)+"px)";\n'
+    '  var ar=el.querySelector(".pi");\n'
+    '  if(ar)ar.style.transform="rotate("+Math.min(180,Math.round(pMax*2.2))+"deg)";\n'
+    '  if(pMax>=34){if(!el.classList.contains("go")){el.classList.add("go");hp(9)}}\n'
+    '  else el.classList.remove("go");\n'
+    '},{passive:true});\n'
+    'document.addEventListener("touchend",function(){\n'
+    '  if(!pArmed)return;pArmed=false;\n'
+    '  var el=ptr(),fire=el.classList.contains("go");\n'
+    '  el.classList.remove("on","go","busy");\n'
+    '  el.style.transform="";\n'
+    '  var ar=el.querySelector(".pi");if(ar)ar.style.transform="";\n'
+    '  if(!fire||pBusy)return;\n'
+    '  pBusy=true;pcool=Date.now()+900;hp(12);\n'
+    '  el.classList.add("busy");\n'
+    '  var fn=RELOAD[curView()],p=(fn&&typeof window[fn]==="function")?window[fn]():null,fin=false;\n'
+    '  var done=function(){if(fin)return;fin=true;pBusy=false;el.classList.remove("busy")};\n'
+    '  if(p&&typeof p.finally==="function")p.finally(done);else setTimeout(done,800);\n'
+    '  setTimeout(done,9000);\n'
+    '},{passive:true});\n'
+    '})();\n'
+)
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -12289,6 +12456,56 @@ _PWA_HTML_PATCHES = (
      'font-family:inherit;line-height:1";'
      'document.body.appendChild(c);'
      '}catch(e){}})();</script>\n</body>\n</html>'),
+    # ── v90: احترافية اللمس — سحب من الحافة + سحب للتحديث + تأكيد محترم + لمسات خفيفة ──
+    # 16) طبقة CSS للوحدة — مرساة إغلاق الستايل الأصلي قبل </head> (فريدة بعد كل الرقع)
+    ('</style>\n</head>',
+     '<style id="v90css">' + _PWA_V90_CSS + '</style>\n</head>'),
+    # 17) حوار التأكيد المحترم — يُحقن قبل شريط التابات (مرساة ثابتة واحدة)
+    ('<nav class="tabs">',
+     '<!-- v90: حوار تأكيد محترم بدل confirm() الرمادية -->\n'
+     '<dialog id="dlgC2"><div class="c2b"><p class="c2m" id="c2msg"></p>\n'
+     '<div class="c2a"><button type="button" class="btn gray" id="c2no">إلغاء</button>\n'
+     '<button type="button" class="btn" id="c2ok">تأكيد</button></div></div></dialog>\n'
+     '<nav class="tabs">'),
+    # 18) حذف سلعة (invDelete async أصلاً — لا إعادة هيكلة)
+    ('  if (!confirm(\'حذف السلعة «\' + name + \'»؟\\n\\nستُخفى من المخزون بينما يبقى سجل حركتها\\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».\')) return;',
+     '  if (!(await confirm2(\'حذف السلعة «\' + name + \'»؟\\n\\nستُخفى من المخزون بينما يبقى سجل حركتها\\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».\', {danger: true}))) return;'),
+    # 19) استعادة سلعة (إجراء غير مدمّر — زر تأكيد عادي)
+    ('  if (!confirm(\'استعادة السلعة «\' + name + \'» إلى المخزون؟\')) return;',
+     '  if (!(await confirm2(\'استعادة السلعة «\' + name + \'» إلى المخزون؟\'))) return;'),
+    # 20) توليد رقم سر مؤقت لمستخدم
+    ('  if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;',
+     '  if (!(await confirm2("توليد رقم سر مؤقت لـ «" + uname + "»؟\\nستُبطل جلساته الحالية ويُستبدل رقمه السري."))) return;'),
+    # 21) إيقاف/تنشيط مستخدم — أحمر عند الطرد فقط
+    ('  if (!confirm(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.")) return;',
+     '  if (!(await confirm2(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.", {danger: !active}))) return;'),
+    # 22) حذف حساب التطبيق (الرسالة متعددة الأسطر كما هي — زر أحمر)
+    ('  if (!confirm("🗑️ حذف حساب «" + name + "» من التطبيق؟\\n\\n"\n'
+     '    + "سيُلغى دخوله إلى التطبيق نهائياً: اسم الدخول والرقم السري والجلسات و«تذكّرني».\\n"\n'
+     '    + "✅ حسابه في البوت يبقى كما هو تماماً — فئته وإيقافه وكل شيء لا يتغير.\\n"\n'
+     '    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.")) return;',
+     '  if (!(await confirm2("🗑️ حذف حساب «" + name + "» من التطبيق؟\\n\\n"\n'
+     '    + "سيُلغى دخوله إلى التطبيق نهائياً: اسم الدخول والرقم السري والجلسات و«تذكّرني».\\n"\n'
+     '    + "✅ حسابه في البوت يبقى كما هو تماماً — فئته وإيقافه وكل شيء لا يتغير.\\n"\n'
+     '    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.", {danger: true}))) return;'),
+    # 23) ترقية إلى مدير (قرار حساس — زر أحمر)
+    ('  if (S.roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;',
+     '  if (S.roleDlg.role === "admin" && !(await confirm2("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.", {danger: true}))) return;'),
+    # 24) حذف طلب انضمام
+    ('  if (!confirm("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.")) return;',
+     '  if (!(await confirm2("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.", {danger: true}))) return;'),
+    # 25) تعليم طلب التوريد جاهزاً
+    ('  if (action === "complete" && !confirm("تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;',
+     '  if (action === "complete" && !(await confirm2("تعليم الطلب جاهزاً؟ سيصل إشعار للطالب."))) return;'),
+    # 26) مغادرة مجموعة (وحدة المجموعات v83 المحقونة بالرقعة 7 — المرساة حية في المُقدَّم)
+    ('      if (!confirm("مغادرة المجموعة «" + G.g.name + "»؟")) return;',
+     '      if (!(await confirm2("مغادرة المجموعة «" + G.g.name + "»؟"))) return;'),
+    # 27) حذف مجموعة نهائياً (إجراء مدمّر — زر أحمر)
+    ('      if (!confirm("حذف المجموعة نهائياً مع كل رسائلها؟")) return;',
+     '      if (!(await confirm2("حذف المجموعة نهائياً مع كل رسائلها؟", {danger: true}))) return;'),
+    # 28) وحدة الحركة v90 — آخر رقعة بعد شارة الإصدار (المرساة تعيد الظهور بعد كل رقعة تسبقها)
+    ('</body>\n</html>',
+     '<script id="v90ux">\n' + _PWA_V90_JS + '</script>\n</body>\n</html>'),
 )
 
 
@@ -19019,7 +19236,7 @@ if __name__ == "__main__":
     # v88: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
-                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage) =====")
+                 + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage + swipe-nav + pull-refresh + confirm2) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
