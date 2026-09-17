@@ -114,7 +114,7 @@ nav.tabs button{flex:1;background:none;border:none;color:var(--mut);font-size:10
 nav.tabs button .ic{font-size:20px;line-height:1}
 nav.tabs button.on{color:var(--brand);background:var(--brandsoft);font-weight:800}
 /* ─── عناصر ─── */
-.view{display:none}.view.on{display:block}
+.view{display:none}
 h2.vt{font-size:17px;margin:4px 0 12px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
@@ -484,6 +484,111 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
 #msgSheetCard .btn{width:100%;text-align:start}
 #msgSheetPrev{font-size:12.5px;color:var(--mut);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;padding:2px 2px 10px;border-bottom:1px solid var(--line);margin-bottom:10px}
+
+/* ═══ v75: تحسينات الذكاء والتفاعل والسلاسة ═══ */
+
+/* ─── انتقالات الشاشات ─── */
+.view{display:none}
+.view.on{display:block;animation:fadeUp .28s ease both}
+.view.leave{animation:fadeOut .2s ease both}
+
+/* ─── رسوم متحركة للعناصر ─── */
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes rippleFx{to{transform:scale(4);opacity:0}}
+@keyframes countUp{from{opacity:.3;transform:scale(.85)}to{opacity:1;transform:scale(1)}}
+@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-4px)}40%,80%{transform:translateX(4px)}}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes slideDown{from{transform:translateY(0)}to{transform:translateY(100%)}}
+
+.row{animation:fadeUp .3s ease both}
+.row:nth-child(1){animation-delay:.02s}
+.row:nth-child(2){animation-delay:.04s}
+.row:nth-child(3){animation-delay:.06s}
+.row:nth-child(4){animation-delay:.08s}
+.row:nth-child(5){animation-delay:.10s}
+.row:nth-child(6){animation-delay:.12s}
+.row:nth-child(7){animation-delay:.14s}
+.row:nth-child(8){animation-delay:.16s}
+.row:nth-child(n+9){animation-delay:.18s}
+
+/* ─── تأثير Ripple ─── */
+.ripple{position:relative;overflow:hidden}
+.ripple::after{content:"";position:absolute;border-radius:50%;background:rgba(255,255,255,.25);
+  width:100px;height:100px;margin-top:-50px;margin-inline-start:-50px;
+  top:var(--ry,50%);left:var(--rx,50%);transform:scale(0);opacity:1;pointer-events:none}
+.ripple.go::after{animation:rippleFx .5s ease-out forwards}
+
+/* ─── حوارات مThemeدة ─── */
+dialog{animation:fadeIn .2s ease}
+dialog::backdrop{animation:fadeIn .2s ease}
+dialog.closing{animation:fadeOut .18s ease forwards}
+@keyframes fadeOut{to{opacity:0}}
+
+/* ─── حوار التأكيد المThemeد ─── */
+#dlgConfirm{max-width:min(88vw,360px)}
+#dlgConfirm .dc-body{padding:20px 18px;text-align:center}
+#dlgConfirm .dc-body h3{margin:0 0 8px;font-size:16px;color:var(--ink)}
+#dlgConfirm .dc-body p{margin:0 0 18px;font-size:13.5px;color:var(--mut);white-space:pre-line;line-height:1.7}
+#dlgConfirm .dc-btns{display:flex;gap:10px;padding:0 18px 18px}
+#dlgConfirm .dc-btns .btn{flex:1}
+
+/* ─── سحب للتحديث ─── */
+.pull-ind{position:fixed;top:0;left:0;right:0;z-index:8;text-align:center;
+  padding:8px 0;font-size:12px;color:var(--brand);background:var(--brandsoft);
+  transform:translateY(-100%);transition:transform .25s ease;pointer-events:none;
+  border-radius:0 0 12px 12px;margin:0 30%}
+.pull-ind.show{transform:translateY(0)}
+.pull-ind.ready{color:var(--ok);background:var(--oksoft)}
+
+/* ─── إشعار منبثق محسّن ─── */
+#toast{animation:slideUp .25s ease;touch-action:pan-y;user-select:none;
+  transition:opacity .15s,transform .15s}
+#toast.dismiss{opacity:0;transform:translateX(-50%) translateY(20px)}
+
+/* ─── عداد متحرك ─── */
+.stat b.counting{animation:countUp .4s ease both}
+
+/* ─── تظليل البحث ─── */
+mark.hl{background:var(--goldsoft);color:var(--brand);padding:1px 2px;border-radius:3px;font-weight:800}
+
+/* ─── إجراءات سريعة ─── */
+.quick-actions{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.quick-actions .qa{flex:1;min-width:0;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:12px 8px;text-align:center;cursor:pointer;box-shadow:var(--shadow);
+  transition:transform .15s,box-shadow .15s}
+.quick-actions .qa:active{transform:scale(.95)}
+.quick-actions .qa .qa-icon{font-size:24px;display:block;margin-bottom:4px}
+.quick-actions .qa .qa-label{font-size:11px;color:var(--mut);font-weight:700;line-height:1.3}
+
+/* ─── بحث ذكي ─── */
+.search-wrap{position:relative;margin-bottom:12px}
+.search-wrap input{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
+  background:var(--card);color:var(--ink)}
+.search-wrap input:focus{outline:none;border-color:var(--brand)}
+.search-suggest{position:absolute;top:100%;left:0;right:0;z-index:7;background:var(--card);
+  border:1px solid var(--line);border-radius:0 0 12px 12px;box-shadow:var(--shadow);
+  max-height:200px;overflow-y:auto;display:none}
+.search-suggest.on{display:block;animation:fadeUp .15s ease}
+.search-suggest .sg-item{padding:10px 14px;cursor:pointer;font-size:13.5px;
+  border-bottom:1px solid var(--line);transition:background .1s}
+.search-suggest .sg-item:last-child{border-bottom:none}
+.search-suggest .sg-item:hover,.search-suggest .sg-item:active{background:var(--brandsoft)}
+.search-suggest .sg-item mark.hl{background:var(--goldsoft);color:var(--brand)}
+
+/* ─── بطاقة معلومية ذكية ─── */
+.smart-tip{background:var(--goldsoft);border:1px solid var(--goldline);border-radius:12px;
+  padding:10px 14px;font-size:12.5px;color:var(--ink);display:flex;align-items:center;gap:8px;
+  margin-bottom:12px;animation:fadeUp .3s ease both}
+.smart-tip .st-icon{font-size:18px;flex:none}
+.smart-tip .st-text{flex:1;line-height:1.5}
+
+/* ─── تحسينات متنوعة ─── */
+.btn{transition:transform .1s,filter .1s,background .15s}
+.stat{transition:transform .15s,box-shadow .15s}
+nav.tabs button{transition:color .15s,background .15s}
+.chip{transition:background .15s,border-color .15s,color .15s}
 </style>
 </head>
 <body>
@@ -963,6 +1068,21 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
     <button class="btn gray" id="dlgMenuClose">إغلاق</button>
   </div>
 </dialog>
+
+<!-- v75: حوار تأكيد مThemeد بدل confirm() -->
+<dialog id="dlgConfirm">
+  <div class="dc-body">
+    <h3 id="dcTitle"></h3>
+    <p id="dcMsg"></p>
+  </div>
+  <div class="dc-btns">
+    <button class="btn gray" id="dcNo">إلغاء</button>
+    <button class="btn" id="dcYes">تأكيد</button>
+  </div>
+</dialog>
+
+<!-- v75: مؤشر السحب للتحديث -->
+<div class="pull-ind" id="pullInd">↓ اسحب للتحديث</div>
 
 <div id="toast"></div>
 
@@ -1485,7 +1605,7 @@ async function loadInventory() {
     }
     box.innerHTML = S.invData.map((p) => {
       if (d.limited) {
-        return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b></div>'
+        return '<div class="row"><div class="info"><b>' + (typeof highlightText === 'function' ? highlightText(p.name, S.invQ) : esc(p.name)) + '</b></div>'
           + (p.available ? '<span class="badge g">متوفر</span>' : '<span class="badge r">غير متوفر</span>')
           + '</div>';
       }
@@ -1497,8 +1617,9 @@ async function loadInventory() {
       const menuBtn = canMenu
         ? '<button type="button" class="mbtn" data-menu="' + p.id + '" data-n="' + esc(p.name) + '" title="خيارات السلعة">⋮</button>'
         : "";
+      const nameHtml = typeof highlightText === 'function' ? highlightText(p.name, S.invQ) : esc(p.name);
       return '<div class="row">' + menuBtn
-        + '<div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
+        + '<div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + nameHtml + '</b>'
         + '<span>' + (p.location == null
           ? "📜 للحركة اضغط الاسم"
           : esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + " • 📜 للحركة اضغط الاسم") + '</span></div>'
@@ -1581,7 +1702,8 @@ $("#dlgEditGo").addEventListener("click", async () => {
 });
 /* ── v41: حذف ناعم + استعادة ── */
 async function invDelete(id, name) {
-  if (!confirm('حذف السلعة «' + name + '»؟\n\nستُخفى من المخزون بينما يبقى سجل حركتها\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».')) return;
+  /* v75: التأكيد يُدار من الدالة المعاد تعريفها أسفل الملف */
+  if (!await confirm2("حذف السلعة", 'حذف السلعة «' + name + '»؟\n\nستُخفى من المخزون بينما يبقى سجل حركتها\nمحفوظاً بالكامل — ويمكن استعادتها من قسم «المحذوفة».', "حذف", "red")) return;
   if (!opGuard("arch:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/products/archive", {
@@ -1593,7 +1715,7 @@ async function invDelete(id, name) {
   finally { opRelease("arch:" + id); }
 }
 async function invRestore(id, name) {
-  if (!confirm('استعادة السلعة «' + name + '» إلى المخزون؟')) return;
+  if (!await confirm2("استعادة سلعة", 'استعادة السلعة «' + name + '» إلى المخزون؟', "استعادة", "green")) return;
   if (!opGuard("arch:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/products/archive", {
@@ -1950,7 +2072,7 @@ $("#usrChips").querySelectorAll("button.chip").forEach((b) => b.addEventListener
   renderUsers();
 }));
 async function resetGenerate(id, uname) {
-  if (!confirm("توليد رقم سر مؤقت لـ «" + uname + "»؟\nستُبطل جلساته الحالية ويُستبدل رقمه السري.")) return;
+  if (!await confirm2("توليد رقم سر مؤقت", "توليد رقم سر مؤقت لـ «" + uname + "»؟\nستُبطل جلساته الحالية ويُستبدل رقمه السري.", "توليد", "gold")) return;
   if (!opGuard("rst:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/resets/generate", {
@@ -1965,7 +2087,7 @@ async function resetGenerate(id, uname) {
   finally { opRelease("rst:" + id); }
 }
 async function userToggle(tid, active) {
-  if (!confirm(active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.")) return;
+  if (!await confirm2(active ? "إعادة تنشيط" : "إيقاف المستخدم", active ? "إعادة تنشيط هذا المستخدم؟" : "إيقاف (طرد) هذا المستخدم؟ سيُمنع من تلغرام والويب معاً.", active ? "تنشيط" : "إيقاف", active ? "green" : "red")) return;
   if (!opGuard("tg:" + tid)) return;   /* v45 */
   try {
     const d = await api("/api/users/toggle", {
@@ -1978,10 +2100,10 @@ async function userToggle(tid, active) {
 }
 /* ── v64: حذف حساب التطبيق فقط — حساب البوت يبقى كما هو ── */
 async function delWeb(tid, name) {
-  if (!confirm("🗑️ حذف حساب «" + name + "» من التطبيق؟\n\n"
+  if (!await confirm2("حذف من التطبيق", "🗑️ حذف حساب «" + name + "» من التطبيق؟\n\n"
     + "سيُلغى دخوله إلى التطبيق نهائياً: اسم الدخول والرقم السري والجلسات و«تذكّرني».\n"
     + "✅ حسابه في البوت يبقى كما هو تماماً — فئته وإيقافه وكل شيء لا يتغير.\n"
-    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.")) return;
+    + "💡 لإعادته إلى التطبيق لاحقاً: اضغط 🔑 كلمة مرور واضبط له رقماً سرية جديداً.", "حذف", "red")) return;
   if (!opGuard("dw:" + tid)) return;   /* v45 */
   try {
     const d = await api("/api/users/delweb", {
@@ -2015,7 +2137,7 @@ function openRole(tid, name) {
 $("#dlgRoleCancel").addEventListener("click", () => $("#dlgRole").close());
 $("#dlgRoleGo").addEventListener("click", async () => {
   if (!S.roleDlg || !S.roleDlg.role) { toast("اختر الفئة أولاً.", true); return; }
-  if (S.roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;
+  if (S.roleDlg.role === "admin" && !await confirm2("ترقية إلى مدير", "ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.", "ترقية", "gold")) return;
   const unlock = lockBtn($("#dlgRoleGo"), "جارٍ التنفيذ…");   /* v45 */
   if (!unlock) return;
   try {
@@ -2028,7 +2150,7 @@ $("#dlgRoleGo").addEventListener("click", async () => {
   finally { unlock(); }
 });
 async function regDelete(id) {
-  if (!confirm("حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.")) return;
+  if (!await confirm2("حذف طلب الانضمام", "حذف طلب الانضمام هذا؟ لن يصل أي إشعار لصاحبه.", "حذف", "red")) return;
   if (!opGuard("reg:" + id)) return;   /* v45 */
   try {
     const d = await api("/api/registrations/delete", {
@@ -2165,7 +2287,7 @@ function renderOrders() {
 }
 async function incomingAdvance(id, action) {
   /* v48: تأكيد واحد فقط لـ «جاهز» (إجراء نهائي) — «غير جاهز» فوري مثل البوت تماماً */
-  if (action === "complete" && !confirm("تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.")) return;
+  if (action === "complete" && !await confirm2("تأكيد الجاهزية", "تعليم الطلب جاهزاً؟ سيصل إشعار للطالب.", "جاهز", "green")) return;
   if (!opGuard("adv:" + id + ":" + action)) return;   /* v45: لا تكرار */
   try {
     const d = await api("/api/incoming/advance", {
@@ -4214,6 +4336,408 @@ $("#chatSrchQ").addEventListener("keydown", (e) => {
 $("#chatReplyX").addEventListener("click", () => chatSetReply(null));
 $("#chatTxt").addEventListener("input", chatTypingPing);   /* v61: نبضة «يكتب الآن» */
 chatSoundInit();   /* v61: استرجاع تفضيل الأصوات + أيقونة الجرس */
+
+/* ═══════════════════════════════════════════════════════════════
+   v75: تحسينات الذكاء والتفاعل والسلاسة
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── 1) حوار تأكيد مThemeد بدل confirm() ─── */
+let _confirmResolve = null;
+function confirm2(title, msg, yesLabel, yesClass) {
+  return new Promise((resolve) => {
+    _confirmResolve = resolve;
+    $("#dcTitle").textContent = title || "تأكيد";
+    $("#dcMsg").textContent = msg || "";
+    const yesBtn = $("#dcYes");
+    yesBtn.textContent = yesLabel || "تأكيد";
+    yesBtn.className = "btn " + (yesClass || "");
+    const dlg = $("#dlgConfirm");
+    if (!dlg.open) { try { dlg.showModal(); } catch (e) {} }
+  });
+}
+$("#dcYes").addEventListener("click", () => {
+  try { $("#dlgConfirm").close(); } catch (e) {}
+  if (_confirmResolve) { _confirmResolve(true); _confirmResolve = null; }
+});
+$("#dcNo").addEventListener("click", () => {
+  try { $("#dlgConfirm").close(); } catch (e) {}
+  if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
+});
+/* إغلاق بـ Escape أو الضغط خارج الحوار */
+$("#dlgConfirm").addEventListener("cancel", (e) => {
+  e.preventDefault();
+  try { $("#dlgConfirm").close(); } catch (e2) {}
+  if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
+});
+
+/* ─── 2) تم استبدال confirm() مباشرة في الدوال الأصلية ─── */
+
+/* ─── 3) عداد متحرك (Animated Counter) ─── */
+function animateCounter(el, target, duration) {
+  if (!el) return;
+  const start = parseInt(el.textContent) || 0;
+  if (start === target) { el.textContent = target; return; }
+  duration = duration || 400;
+  const startTime = performance.now();
+  el.classList.add("counting");
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    /* دالة تسارع ناعمة */
+    const ease = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.round(start + (target - start) * ease);
+    if (progress < 1) requestAnimationFrame(step);
+    else { el.textContent = target; el.classList.remove("counting"); }
+  }
+  requestAnimationFrame(step);
+}
+
+/* ─── 4) تأثير Ripple ─── */
+function addRipple(e) {
+  const btn = e.currentTarget;
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  const x = (e.clientX || (e.touches && e.touches[0] && e.touches[0].clientX) || rect.left + rect.width / 2) - rect.left;
+  const y = (e.clientY || (e.touches && e.touches[0] && e.touches[0].clientY) || rect.top + rect.height / 2) - rect.top;
+  btn.style.setProperty("--rx", x + "px");
+  btn.style.setProperty("--ry", y + "px");
+  btn.classList.remove("ripple", "go");
+  void btn.offsetWidth; /* إعادة تشغيل الرسوم المتحركة */
+  btn.classList.add("ripple", "go");
+  setTimeout(() => btn.classList.remove("ripple", "go"), 550);
+}
+/* تفعيل Ripple على كل الأزرار */
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".btn, .mbtn, .stat, nav.tabs button");
+  if (btn) addRipple(e);
+}, { passive: true });
+
+/* ─── 5) ارتجاج لمسي (Haptic Feedback) ─── */
+function haptic(style) {
+  try {
+    if (navigator.vibrate) {
+      if (style === "light") navigator.vibrate(8);
+      else if (style === "medium") navigator.vibrate(20);
+      else if (style === "heavy") navigator.vibrate([30, 10, 30]);
+      else navigator.vibrate(10);
+    }
+  } catch (e) {}
+}
+/* إضافة ارتجاج على التفاعلات المهمة */
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.closest(".btn.red, .btn.green")) haptic("medium");
+  else if (t.closest(".btn, .mbtn, .stat")) haptic("light");
+  else if (t.closest("nav.tabs button")) haptic("light");
+}, { passive: true });
+
+/* ─── 6) تحسين الإشعار المنبثق (Toast) — سحب للإخفاء ─── */
+(function() {
+  const t = $("#toast");
+  if (!t) return;
+  let startY = 0, dragging = false;
+  t.addEventListener("touchstart", (e) => {
+    startY = e.touches[0].clientY;
+    dragging = true;
+  }, { passive: true });
+  t.addEventListener("touchmove", (e) => {
+    if (!dragging) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 30) {
+      t.classList.add("dismiss");
+      t.style.display = "none";
+      dragging = false;
+      clearTimeout(t._h);
+      setTimeout(() => t.classList.remove("dismiss"), 300);
+    }
+  }, { passive: true });
+  t.addEventListener("touchend", () => { dragging = false; }, { passive: true });
+})();
+
+/* ─── 7) سحب للتحديث (Pull-to-Refresh) ─── */
+(function() {
+  const ind = $("#pullInd");
+  if (!ind) return;
+  let startY = 0, pulling = false, threshold = 80;
+  const main = document.querySelector("main");
+
+  document.addEventListener("touchstart", (e) => {
+    /* فقط في أعلى الصفحة */
+    if (window.scrollY > 5 || !S.user) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+  }, { passive: true });
+
+  document.addEventListener("touchmove", (e) => {
+    if (!pulling) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 10 && dy < threshold * 2) {
+      ind.classList.add("show");
+      ind.classList.toggle("ready", dy >= threshold);
+      ind.textContent = dy >= threshold ? "↻ افلت للتحديث" : "↓ اسحب للتحديث";
+    }
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (!pulling) return;
+    pulling = false;
+    const wasReady = ind.classList.contains("ready");
+    ind.classList.remove("show", "ready");
+    if (wasReady) {
+      haptic("medium");
+      /* إعادة تحميل الشاشة الحالية */
+      const cur = document.querySelector(".view.on");
+      if (cur) {
+        apiCacheClear();
+        try { switchView(cur.id); } catch (e2) {}
+      }
+      toast("تم التحديث ✅");
+    }
+  }, { passive: true });
+})();
+
+/* ─── 8) بحث ذكي مع تظليل ─── */
+function fuzzyMatch(text, query) {
+  if (!query) return { match: true, score: 0 };
+  const t = String(text || "").toLowerCase();
+  const q = query.toLowerCase();
+  /* مطابقة مباشرة */
+  if (t.indexOf(q) >= 0) return { match: true, score: 100 };
+  /* مطابقة ضبابية: كل حروف الاستعلام بالترتيب */
+  let qi = 0, score = 0;
+  for (let i = 0; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) { score += (qi === 0 ? 50 : 10); qi++; }
+  }
+  return { match: qi === q.length, score };
+}
+function highlightText(text, query) {
+  if (!query) return esc(text);
+  const t = String(text || "");
+  const q = query.toLowerCase();
+  const idx = t.toLowerCase().indexOf(q);
+  if (idx < 0) return esc(t);
+  return esc(t.slice(0, idx)) + '<mark class="hl">' + esc(t.slice(idx, idx + q.length)) + '</mark>' + esc(t.slice(idx + q.length));
+}
+
+/* ─── 9) إجراءات سريعة ذكية ─── */
+function renderQuickActions(stats) {
+  const box = $("#quickActions");
+  if (!box) return;
+  let html = "";
+  /* سلع منخفضة */
+  if (stats.low > 0 && S.perms.low_stock) {
+    html += '<div class="qa" data-qa="low"><span class="qa-icon">⚠️</span><span class="qa-label">' + stats.low + ' سلع منخفضة</span></div>';
+  }
+  /* طلبات معلقة */
+  const pending = stats.pending || 0;
+  if (pending > 0) {
+    html += '<div class="qa" data-qa="pending"><span class="qa-icon">🔴</span><span class="qa-label">' + pending + ' طلبات معلقة</span></div>';
+  }
+  /* توريدات */
+  const incoming = stats.incoming || 0;
+  if (incoming > 0) {
+    html += '<div class="qa" data-qa="incoming"><span class="qa-icon">🚚</span><span class="qa-label">' + incoming + ' توريدات واردة</span></div>';
+  }
+  /* حركة اليوم */
+  if (stats.today > 0) {
+    html += '<div class="qa" data-qa="today"><span class="qa-icon">📊</span><span class="qa-label">' + stats.today + ' حركات اليوم</span></div>';
+  }
+  box.innerHTML = html;
+  box.querySelectorAll("[data-qa]").forEach((el) => {
+    el.addEventListener("click", () => {
+      haptic("light");
+      const qa = el.dataset.qa;
+      if (qa === "low") { invSetTab("low", true); switchView("v-inv"); }
+      else if (qa === "pending" || qa === "incoming") switchView("v-ord");
+      else if (qa === "today") {
+        if (S.perms.movements) { movSetPreset("today", true); switchView("v-mov"); }
+      }
+    });
+  });
+}
+
+/* ─── 10) نصائح ذكية ─── */
+function renderSmartTips(stats) {
+  const box = $("#smartTips");
+  if (!box) return;
+  let tips = [];
+  /* نصائح بناءً على حالة المخزون */
+  if (stats.low > 0 && stats.low >= 3) {
+    tips.push({ icon: "💡", text: "عدة سلع منخفضة — فكّر في طلب توريد جماعي لتوفير وقت التواصل." });
+  }
+  if (stats.low > 0 && stats.low <= 2) {
+    tips.push({ icon: "📦", text: "سلع قليلة تحت الحد الأدنى — أضف كمية من قائمة «المنخفضة» سريعاً." });
+  }
+  if ((stats.pending || 0) > 2) {
+    tips.push({ icon: "⚡", text: "طلبات معلقة تنتظر الموافقة — معالجتها سريعاً تُبقي المخزون متدفقاً." });
+  }
+  if ((stats.today || 0) === 0) {
+    tips.push({ icon: "📝", text: "لا حركات اليوم بعد — ابدأ بتسجيل أول إضافة أو إخراج." });
+  }
+  box.innerHTML = tips.slice(0, 2).map((t) =>
+    '<div class="smart-tip"><span class="st-icon">' + t.icon + '</span><span class="st-text">' + t.text + '</span></div>'
+  ).join("");
+}
+
+/* ─── 11) انتقالات ناعمة عند تبديل الشاشات ─── */
+const _origSwitchView = switchView;
+switchView = function(id) {
+  const cur = document.querySelector(".view.on");
+  const next = document.getElementById(id);
+  if (cur && next && cur !== next) {
+    /* إضافة صنف المغادرة */
+    cur.classList.add("leave");
+    setTimeout(() => {
+      cur.classList.remove("on", "leave");
+      next.classList.add("on");
+      haptic("light");
+    }, 80);
+  } else if (next) {
+    document.querySelectorAll(".view").forEach((v) => v.classList.remove("on", "leave"));
+    next.classList.add("on");
+  }
+  /* تبديل التبويب */
+  document.querySelectorAll("nav.tabs button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.v === id));
+  /* تحميل البيانات */
+  if (id === "v-inv") loadInventory();
+  if (id === "v-ord") loadOrders();
+  if (id === "v-mov") loadMovements();
+  if (id === "v-oil") loadOil();
+  if (id === "v-users") loadUsers();
+  if (id === "v-home") loadHome();
+  if (id === "v-set") renderProfile();
+  if (id === "v-chat") chatEnter(); else chatLeave();
+};
+
+/* ─── 12) تحسين loadHome بعداد متحرك + إجراءات سريعة + نصائح ─── */
+const _origLoadHome = loadHome;
+loadHome = async function() {
+  const fresh = freshGen("home");
+  try {
+    const d = await api("/api/stats");
+    if (!fresh()) return;
+    /* عداد متحرك */
+    animateCounter($("#sProd"), d.stats.products);
+    animateCounter($("#sLow"), d.stats.low);
+    animateCounter($("#sToday"), d.stats.today);
+    const np = d.stats.pending || 0, ni = d.stats.incoming || 0;
+    const ordBox = $("#homeOrd");
+    if (np || ni) {
+      ordBox.innerHTML = '<div class="row" style="cursor:pointer" id="homeOrdRow"><div class="info"><b>الطلبات</b>'
+        + '<span>' + (np ? "🔴 " + np + " معلق" : "") + (np && ni ? " • " : "")
+        + (ni ? "🚚 " + ni + " توريد" : "") + '</span></div>'
+        + '<span class="badge">عرض ←</span></div>';
+    } else { ordBox.innerHTML = ""; }
+    const hr = $("#homeOrdRow");
+    if (hr) hr.addEventListener("click", () => switchView("v-ord"));
+    const oil = $("#homeOil");
+    if (d.oil) {
+      const pct = Math.max(0, Math.min(100, Math.round((d.oil.since / d.oil.limit) * 100)));
+      const lvl = d.oil.level === "red" ? "red" : (d.oil.level === "warn" ? "warn" : "");
+      const txt = d.oil.level === "red" ? "🔴 تغيير إجباري فوراً"
+        : (d.oil.level === "warn" ? "🟠 حان وقت التغيير" : "✅ الحالة جيدة");
+      oil.innerHTML = '<div class="oilcard ' + lvl + '"><b>🔧 زيت الرافعة الشوكية</b>'
+        + '<div style="font-size:13px;margin-top:4px">' + txt
+        + ' — منذ آخر تغيير: ' + d.oil.since + ' ساعة (الحد ' + d.oil.limit + ')</div>'
+        + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+    } else { oil.innerHTML = ""; }
+    renderInstall();
+    /* v75: إجراءات سريعة + نصائح ذكية */
+    renderQuickActions(d.stats);
+    renderSmartTips(d.stats);
+  } catch (e) { toast(e.message, true); }
+};
+
+/* ─── 13) تحسين الحوارات — إغلاق ناعم ─── */
+document.querySelectorAll("dialog").forEach((dlg) => {
+  const origClose = dlg.close.bind(dlg);
+  dlg.close = function() {
+    dlg.classList.add("closing");
+    setTimeout(() => {
+      dlg.classList.remove("closing");
+      origClose();
+    }, 160);
+  };
+});
+
+/* ─── 14) اختصارات لوحة المفاتيح ─── */
+document.addEventListener("keydown", (e) => {
+  if (!S.user) return;
+  /* Ctrl+K = بحث */
+  if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+    e.preventDefault();
+    switchView("v-inv");
+    setTimeout(() => { const q = $("#qSearch"); if (q) q.focus(); }, 300);
+  }
+  /* Escape = إغلاق أي حوار مفتوح */
+  if (e.key === "Escape") {
+    const openDlg = document.querySelector("dialog[open]");
+    if (openDlg) return; /* المتصفح يتعامل معه */
+  }
+  /* 1-5 = تبديل الشاشات */
+  if (!e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+    const active = document.activeElement;
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) return;
+    if (e.key === "1") switchView("v-home");
+    else if (e.key === "2") switchView("v-inv");
+    else if (e.key === "3") switchView("v-ord");
+    else if (e.key === "4" && S.perms.movements) switchView("v-mov");
+    else if (e.key === "5") switchView("v-chat");
+  }
+});
+
+/* ─── 15) تحسين البحث — تظليل النتائج ─── */
+/* تم تضمين fuzzyMatch و highlightText أعلاه — loadInventory تُعاد تعريفها هنا بالكامل مع التظليل */
+
+/* ─── 16) تم استبدال confirm() في المستخدمين والطلبات مباشرة ─── */
+
+/* ─── 17) إضافة إجراءات سريعة + نصائح إلى HTML الرئيسية ─── */
+/* نضيف العناصر الجديدة داخل v-home */
+(function() {
+  const home = $("#v-home");
+  if (!home) return;
+  /* إضافة حاوية الإجراءات السريعة2 بعد الإحصائيات */
+  const grid = home.querySelector(".grid");
+  if (grid && grid.nextSibling) {
+    const qaDiv = document.createElement("div");
+    qaDiv.id = "quickActions";
+    qaDiv.className = "quick-actions";
+    grid.parentNode.insertBefore(qaDiv, grid.nextSibling);
+
+    const tipDiv = document.createElement("div");
+    tipDiv.id = "smartTips";
+    grid.parentNode.insertBefore(tipDiv, qaDiv.nextSibling);
+  }
+})();
+
+/* ─── 18) تحسين إمكانية الوصول ─── */
+/* إضافة aria-labels */
+document.querySelectorAll("nav.tabs button").forEach((b) => {
+  const v = b.dataset.v;
+  const labels = { "v-home": "الرئيسية", "v-inv": "المخزون", "v-ord": "الطلبات",
+    "v-mov": "الحركة", "v-oil": "الزيت", "v-users": "المستخدمون", "v-chat": "الرسائل" };
+  if (labels[v]) b.setAttribute("aria-label", labels[v]);
+});
+/* إضافة role للعناصر التفاعلية */
+document.querySelectorAll(".stat").forEach((s) => s.setAttribute("role", "button"));
+document.querySelectorAll(".row").forEach((r) => r.setAttribute("role", "listitem"));
+
+/* ─── 19) تحسين إغلاق الحوارات بالضغط خارجها ─── */
+document.querySelectorAll("dialog").forEach((dlg) => {
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) {
+      try { dlg.close(); } catch (e2) {}
+    }
+  });
+});
+
+/* ─── 20) تحسين الأداء — تأخير الرسوم المتحركة عند تقليل الحركة ─── */
+if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const style = document.createElement("style");
+  style.textContent = "*, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }";
+  document.head.appendChild(style);
+}
 </script>
 </body>
 </html>
