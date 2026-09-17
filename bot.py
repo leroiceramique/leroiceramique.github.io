@@ -10681,7 +10681,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 30
-PWA_VERSION = "v91"  # v91 = حارس الرجوع (السحب من الحافة لا يغلق التطبيق — كان يُترجم «رجوع» نظامياً بلا سجل) + إلغاء صور السلع بقرار يوسف + إبقاء سحب الحافة/التحديث/اللمسات/التأكيد المحترم/إدارة المستخدمين
+PWA_VERSION = "v93"  # v93 = «نبض المخزون» في الرئيسية: رسم بياني أسبوعي/شهري لنشاط المخزون (بيع/توريد يومياً بعمودين) + قائمة الأكثر بيعاً بتفاصيل مخفية تُكشف بالضغط على السلعة (الكمية المبيعة/عمليات البيع/المتبقي/آخر بيع + إيراد الفواتير المعتمدة للمدير فقط) — SVG مولّد محلياً بلا أي مكتبة خارجية، والبائع الخارجي/العميل لا يرى البطاقة + ملف الحزمة يُسلَّم باسم bot.py فقط (بدون لاحقة إصدار)
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12331,7 +12331,7 @@ window.v90creds = function (username, pw, title) {
 };
 
 var sw = { sx: 0, sy: 0, side: null, on: false, dx: 0, w: 0, cur: null, cool: 0 };
-var EDGE = 30, SW_TH = 68, SW_CD = 380;
+var SW_TH = 68, SW_CD = 380; /* v92: EDGE أُلغيت — السحب يعمل من أي مكان في الشاشة */
 function visTabs() {
   return Array.prototype.filter.call(document.querySelectorAll("nav.tabs button"),
     function (b) { return b.offsetParent !== null; });
@@ -12340,10 +12340,23 @@ document.addEventListener("touchstart", function (e) {
   if (e.touches.length !== 1 || Date.now() < sw.cool || G.ptr || dlgOpen()) return;
   var t = e.touches[0], el = e.target;
   if (el.closest && el.closest("input,textarea,select,a,button,audio,video,canvas,[contenteditable]")) return;
-  var iw = window.innerWidth, x = t.clientX;
-  if (x > EDGE && x < iw - EDGE) return;
+  /* v92: السحب من أي مكان في الشاشة — لم يعد محصوراً بأطراف 30px
+     (النظام يلتهم إيماءات الأطراف كـ«رجوع» فيفلت التطبيق منها).
+     استثناءات: الأشرطة المثبتة (شريط التابات/الطبقات العائمة/عارض PDF)
+     والحاويات ذات تمرير أفقي خاص حتى لا تُختطف حركاتها. */
+  var x = t.clientX, wlk = el, skip = false;
+  while (wlk && wlk !== document.body) {
+    try {
+      var _cs = getComputedStyle(wlk);
+      if (_cs.position === "fixed") { skip = true; break; }
+      if ((_cs.overflowX === "auto" || _cs.overflowX === "scroll")
+          && wlk.scrollWidth > wlk.clientWidth + 4) { skip = true; break; }
+    } catch (e0) { break; }
+    wlk = wlk.parentElement;
+  }
+  if (skip) return;
   sw.sx = x; sw.sy = t.clientY;
-  sw.side = (x <= EDGE) ? "L" : "R";
+  sw.side = "M";
   sw.on = false; sw.dx = 0; sw.w = 0;
   sw.cur = document.querySelector(".view.on");
 }, { passive: true });
@@ -12370,13 +12383,14 @@ function swEnd() {
     if (Math.abs(sw.w) >= 44 || Math.abs(sw.dx) >= SW_TH) {
       var list = visTabs(), i = -1, k;
       for (k = 0; k < list.length; k++) if (list[k].classList.contains("on")) { i = k; break; }
-      var j = (sw.side === "L" && sw.dx > 0) ? i + 1 : (sw.side === "R" && sw.dx < 0) ? i - 1 : i;
+      /* v92: يمين = التالي (الرئيسية ← … ← المستخدمون)، يسار = الرجوع */
+      var dir = (sw.dx > 0) ? 1 : -1, j = i + dir;
       if (i >= 0 && j >= 0 && j < list.length && j !== i) {
         sw.cool = Date.now() + SW_CD;
         vib(10);
         var v = list[j].dataset.v, vv = document.getElementById(v);
         if (vv) {
-          vv.classList.add(sw.side === "L" ? "v90slL" : "v90slR");
+          vv.classList.add(dir > 0 ? "v90slL" : "v90slR");
           setTimeout(function () { vv.classList.remove("v90slL", "v90slR"); }, 280);
         }
         try { switchView(v); } catch (e) {}
@@ -12511,6 +12525,268 @@ try {
 try { v90adminSync(); } catch (e) {}
 })();'''
 
+# ═══════════ v93: نبض المخزون — طبقة CSS ═══════════
+_PWA_V93_CSS = r'''/* ═══ v93: نبض المخزون — بطاقة الإحصائيات في الرئيسية ═══ */
+.v93card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-top:12px;box-shadow:var(--shadow)}
+.v93head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.v93seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
+.v93seg button{border:0;background:transparent;color:var(--mut);font:inherit;font-size:12px;padding:5px 12px;border-radius:8px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.v93seg button.on{background:var(--brand);color:#fff;font-weight:700}
+.v93sum{display:flex;gap:7px;flex-wrap:wrap;margin:2px 0 6px}
+.v93sum .v93kpi{flex:1;min-width:88px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:7px 8px;text-align:center}
+.v93sum .v93kpi span{display:block;font-size:10.5px;color:var(--mut);margin-bottom:1px}
+.v93sum .v93kpi b{font-size:13.5px;color:var(--ink)}
+.v93svgwrap{margin:2px 0}
+.v93legend{display:flex;gap:14px;justify-content:center;font-size:11.5px;color:var(--mut);margin:4px 0 2px}
+.v93legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-left:4px;vertical-align:-1px}
+.v93legend .l-sold i{background:#e05d4b}
+.v93legend .l-add i{background:#2fa36b}
+.v93tap{min-height:17px;font-size:11.5px;color:var(--mut);text-align:center;margin:2px 0 0}
+.v93top .v93row{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.v93top .v93item:last-child .v93row{border-bottom:0}
+.v93rank{width:26px;height:26px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:800;background:var(--bg);color:var(--mut);flex:none}
+.v93rank.r1{background:linear-gradient(135deg,#ffd76a,#f0a92e);color:#5c3d00}
+.v93rank.r2{background:linear-gradient(135deg,#eceff2,#b9c1cb);color:#3d444d}
+.v93rank.r3{background:linear-gradient(135deg,#f0b98d,#cf7d43);color:#4d2a08}
+.v93main{flex:1;min-width:0}
+.v93nm{font-size:13.5px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v93meta{font-size:11.5px;color:var(--mut);margin-top:1px}
+.v93bar{height:5px;background:var(--bg);border-radius:3px;margin-top:5px;overflow:hidden}
+.v93bar i{display:block;height:100%;background:linear-gradient(90deg,#e05d4b,#f0855f);border-radius:3px;transition:width .4s ease}
+.v93arr{flex:none;color:var(--mut);font-size:12px;transition:transform .22s ease}
+.v93row.open .v93arr{transform:rotate(180deg)}
+.v93det{max-height:0;overflow:hidden;transition:max-height .28s ease}
+.v93det.open{max-height:280px}
+.v93dgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:10px 2px 12px}
+.v93dgrid>div{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:7px 9px}
+.v93dgrid span{display:block;font-size:10.5px;color:var(--mut);margin-bottom:2px}
+.v93dgrid b{font-size:13px;color:var(--ink)}
+.v93empty{text-align:center;color:var(--mut);font-size:12.5px;padding:16px 8px;margin:0}
+/* عناصر SVG */
+.v93gl{stroke:var(--line);stroke-width:1}
+.v93gl.dash{stroke-width:.7;stroke-dasharray:3,3}
+.v93vl{fill:var(--mut);font-size:7.5px}
+.v93lb{fill:var(--mut);font-size:8.5px}
+.v93lb.today{fill:var(--brand);font-weight:700}
+.v93col{fill:transparent;cursor:pointer}
+.v93col.on{fill:var(--brandsoft)}'''
+
+
+# ═══════════ v93: نبض المخزون — نواة JS ═══════════
+_PWA_V93_JS = r'''/* v93: نبض المخزون — بطاقة نشاط المخزون في الرئيسية (SVG مولّد محلياً بلا مكتبات) */
+(function () {
+"use strict";
+var ST = { days: 7, seq: 0 };
+var WD = ["أحد", "إثنين", "ثلاثاء", "أربعاء", "خميس", "جمعة", "سبت"];
+function $(id) { return document.getElementById(id); }
+function vib(ms) { try { (window.v90vib || function () {})(ms); } catch (e) {} }
+function money(n) {
+  n = Number(n || 0);
+  return n.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " د.ج";
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+function rel(t) {
+  if (!t) return "—";
+  var d = new Date(t);
+  if (isNaN(d.getTime())) return "—";
+  var dd = Math.floor((Date.now() - d.getTime()) / 86400000);
+  var hm = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  if (dd <= 0) return "اليوم " + hm;
+  if (dd === 1) return "أمس " + hm;
+  if (dd < 7) return "قبل " + dd + " أيام";
+  return ("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2);
+}
+function allowed() {
+  try { return !!(S.perms && S.perms.activity); } catch (e) { return false; }
+}
+function ensureCard() {
+  if (!allowed()) return null;
+  var home = $("v-home");
+  if (!home) return null;
+  var card = $("v93act");
+  if (card) return card;
+  card = document.createElement("div");
+  card.className = "v93card";
+  card.id = "v93act";
+  card.innerHTML =
+    '<div class="v93head"><p class="sect" style="margin:0">📊 نبض المخزون</p>'
+    + '<div class="v93seg" id="v93seg"><button type="button" class="on" data-d="7">أسبوعي</button>'
+    + '<button type="button" data-d="30">شهري</button></div></div>'
+    + '<div class="v93sum" id="v93sum"></div>'
+    + '<div class="v93svgwrap" id="v93chart"><p class="v93empty">جارِ التحميل...</p></div>'
+    + '<div class="v93legend" id="v93legend" style="display:none">'
+    + '<span class="l-sold"><i></i>بيع</span><span class="l-add"><i></i>توريد</span></div>'
+    + '<div class="v93tap" id="v93tap"></div>'
+    + '<p class="sect" style="margin:12px 0 2px">🏆 الأكثر بيعاً — اضغط على السلعة لتفاصيلها</p>'
+    + '<div class="v93top" id="v93top"><p class="v93empty">جارِ التحميل...</p></div>';
+  var grid = home.querySelector(".grid");
+  if (grid && grid.parentElement) grid.parentElement.insertBefore(card, grid.nextSibling);
+  else home.appendChild(card);
+  var seg = $("v93seg");
+  seg.addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b || +b.dataset.d === ST.days) return;
+    ST.days = +b.dataset.d;
+    vib(8);
+    seg.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
+    load();
+  });
+  return card;
+}
+function renderSum(d) {
+  var t = $("v93sum");
+  if (!t) return;
+  var s = d.totals || {};
+  var per = d.days === 7 ? "الأسبوع" : "الشهر";
+  t.innerHTML =
+    '<div class="v93kpi"><span>🔥 مبيعات ' + per + '</span><b>' + (s.sold || 0) + " وحدة</b></div>"
+    + '<div class="v93kpi"><span>📥 توريد ' + per + '</span><b>' + (s.added || 0) + " وحدة</b></div>"
+    + '<div class="v93kpi"><span>🧾 عمليات البيع</span><b>' + (s.ops || 0) + '</b></div>'
+    + (d.admin ? '<div class="v93kpi"><span>💰 إيراد الفواتير</span><b style="font-size:12.5px">' + money(s.revenue) + '</b></div>' : "");
+}
+function niceMax(m) {
+  if (m <= 5) return 5;
+  var p = Math.pow(10, Math.floor(Math.log(m) / Math.LN10));
+  var c = Math.ceil(m / p);
+  return (c <= 2 ? 2 : (c <= 5 ? 5 : 10)) * p;
+}
+function renderChart(d) {
+  var wrap = $("v93chart"), leg = $("v93legend"), tap = $("v93tap");
+  if (!wrap) return;
+  var labels = (d.series && d.series.labels) || [];
+  var sold = (d.series && d.series.sold) || [];
+  var added = (d.series && d.series.added) || [];
+  var n = labels.length;
+  if (!n) { wrap.innerHTML = '<p class="v93empty">لا توجد بيانات.</p>'; return; }
+  var i, mx = 0;
+  for (i = 0; i < n; i++) { mx = Math.max(mx, sold[i] | 0, added[i] | 0); }
+  if (mx === 0) {
+    wrap.innerHTML = '<p class="v93empty">📉 لا حركة بيع أو توريد في هذه الفترة بعد — ستظهر الإحصائيات مع أول عملية.</p>';
+    if (leg) leg.style.display = "none";
+    if (tap) tap.textContent = "";
+    return;
+  }
+  var W = 340, H = 152, padT = 15, padB = 18, padX = 4;
+  var ch = H - padT - padB;
+  var ymax = niceMax(mx);
+  var gw = (W - padX * 2) / n;
+  var bw = Math.max(2.4, (gw * 0.62) / 2);
+  var s = '<svg viewBox="0 0 ' + W + " " + H + '" style="width:100%;height:auto;display:block">';
+  [0, 0.5, 1].forEach(function (f) {
+    var y = padT + ch * (1 - f);
+    s += '<line class="v93gl' + (f > 0 ? " dash" : "") + '" x1="' + padX + '" y1="' + y + '" x2="' + (W - padX) + '" y2="' + y + '"/>';
+  });
+  var todayIso = "";
+  try { todayIso = new Date().toISOString().slice(0, 10); } catch (e0) {}
+  for (i = 0; i < n; i++) {
+    var cx = padX + gw * i + gw / 2;
+    var sv = sold[i] | 0, av = added[i] | 0;
+    var sh = ymax ? Math.round(ch * sv / ymax) : 0;
+    var ah = ymax ? Math.round(ch * av / ymax) : 0;
+    var x1 = cx - bw - 0.8, x2 = cx + 0.8;
+    if (sh > 0) s += '<rect x="' + x1.toFixed(1) + '" y="' + (padT + ch - sh) + '" width="' + bw.toFixed(1) + '" height="' + sh + '" rx="1.6" fill="#e05d4b"/>';
+    if (ah > 0) s += '<rect x="' + x2.toFixed(1) + '" y="' + (padT + ch - ah) + '" width="' + bw.toFixed(1) + '" height="' + ah + '" rx="1.6" fill="#2fa36b"/>';
+    if (d.days === 7 && sh > 0) s += '<text class="v93vl" x="' + (x1 + bw / 2).toFixed(1) + '" y="' + (padT + ch - sh - 2.5) + '" text-anchor="middle">' + sv + '</text>';
+    if (d.days === 7 && ah > 0) s += '<text class="v93vl" x="' + (x2 + bw / 2).toFixed(1) + '" y="' + (padT + ch - ah - 2.5) + '" text-anchor="middle">' + av + '</text>';
+    var dt = new Date(labels[i] + "T12:00:00");
+    var isToday = labels[i] === todayIso;
+    var lbl = "";
+    if (!isNaN(dt.getTime())) {
+      if (d.days === 7) lbl = WD[dt.getDay()];
+      else if (i % 5 === 0 || isToday) lbl = String(dt.getDate());
+    }
+    if (lbl) s += '<text class="v93lb' + (isToday ? " today" : "") + '" x="' + cx.toFixed(1) + '" y="' + (H - 5) + '" text-anchor="middle">' + lbl + '</text>';
+    s += '<rect class="v93col" data-i="' + i + '" x="' + (padX + gw * i).toFixed(1) + '" y="' + padT + '" width="' + gw.toFixed(1) + '" height="' + ch + '"/>';
+  }
+  s += '</svg>';
+  wrap.innerHTML = s;
+  if (leg) leg.style.display = "";
+  var cols = wrap.querySelectorAll(".v93col");
+  function showCol(idx) {
+    cols.forEach(function (r, k) { r.classList.toggle("on", k === idx); });
+    var dt2 = new Date(labels[idx] + "T12:00:00");
+    var nm = isNaN(dt2.getTime()) ? labels[idx] : (dt2.getDate() + " " + WD[dt2.getDay()]);
+    if (tap) tap.textContent = "📅 " + nm + " — بيع " + (sold[idx] | 0) + " • توريد " + (added[idx] | 0);
+  }
+  cols.forEach(function (r) {
+    r.addEventListener("click", function () { showCol(+r.getAttribute("data-i")); vib(5); });
+  });
+  if (tap) tap.textContent = "";
+}
+function renderTop(d) {
+  var box = $("v93top");
+  if (!box) return;
+  var top = d.top || [];
+  if (!top.length) {
+    box.innerHTML = '<p class="v93empty">لا مبيعات في هذه الفترة بعد — تظهر السلع الأكثر بيعاً هنا مع أول عملية.</p>';
+    return;
+  }
+  var max = top[0].sold || 1;
+  var h = "";
+  top.forEach(function (t, i) {
+    var stockTxt = (t.stock | 0) <= 0
+      ? '<b style="color:var(--bad)">نافد</b>'
+      : "<b>" + t.stock + " وحدة</b>";
+    h += '<div class="v93item" data-i="' + i + '">'
+      + '<div class="v93row"><div class="v93rank r' + (i + 1) + '">' + (i + 1) + '</div>'
+      + '<div class="v93main"><div class="v93nm">' + esc(t.name) + '</div>'
+      + '<div class="v93meta">🔥 ' + t.sold + " مبيعة • " + t.ops + " عملية بيع</div>"
+      + '<div class="v93bar"><i style="width:' + Math.max(7, Math.round((t.sold || 0) / max * 100)) + '%"></i></div></div>'
+      + '<div class="v93arr">▾</div></div>'
+      + '<div class="v93det"><div class="v93dgrid">'
+      + '<div><span>الكمية المبيعة</span><b>' + t.sold + " وحدة</b></div>"
+      + '<div><span>عمليات البيع</span><b>' + t.ops + '</b></div>'
+      + '<div><span>المتبقي بالمخزون</span>' + stockTxt + '</div>'
+      + '<div><span>آخر بيع</span><b>' + rel(t.last) + '</b></div>'
+      + (d.admin ? '<div style="grid-column:1/-1"><span>💰 إيراد الفواتير المعتمدة (الفترة)</span><b style="color:var(--ok)">' + money(t.rev) + '</b></div>' : "")
+      + '</div></div></div>';
+  });
+  box.innerHTML = h;
+  box.querySelectorAll(".v93row").forEach(function (r) {
+    r.addEventListener("click", function () {
+      var item = r.parentElement;
+      var det = item ? item.querySelector(".v93det") : null;
+      if (!det) return;
+      var willOpen = !det.classList.contains("open");
+      box.querySelectorAll(".v93det.open").forEach(function (x) { x.classList.remove("open"); });
+      box.querySelectorAll(".v93row.open").forEach(function (x) { x.classList.remove("open"); });
+      if (willOpen) { det.classList.add("open"); r.classList.add("open"); vib(9); }
+      else vib(5);
+    });
+  });
+}
+function load() {
+  if (!ensureCard()) return;
+  var my = ++ST.seq;
+  var chart = $("v93chart");
+  api("/api/stats/activity?days=" + ST.days).then(function (d) {
+    if (my !== ST.seq || !d) return;
+    if (!d.ok) throw new Error(d.error || "تعذر تحميل الإحصائيات");
+    if (d.hidden) return;
+    renderSum(d);
+    renderChart(d);
+    renderTop(d);
+  }).catch(function (e) {
+    if (my !== ST.seq) return;
+    if (chart) chart.innerHTML = '<p class="v93empty">تعذر تحميل الإحصائيات — اسحب الشاشة لأسفل للتحديث.</p>';
+  });
+}
+try {
+  window.loadHome = (function (orig) {
+    return async function () {
+      var r = await orig.apply(this, arguments);
+      try { load(); } catch (e93) {}
+      return r;
+    };
+  })(window.loadHome);
+} catch (e) {}
+})();'''
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -12589,7 +12865,7 @@ _PWA_HTML_PATCHES = (
      'font-family:inherit;line-height:1";'
      'document.body.appendChild(c);'
      '}catch(e){}})();</script>\n</body>\n</html>'),
-    # ════════ v90: السحب من الحافة + التحديث + اللمسات + الحوار المحترم ════════
+    # ════════ v90/v92: السحب الأفقي الشامل بين التابات + التحديث + اللمسات + الحوار المحترم ════════
     # 16) طبقة CSS للإصدار 90 — قبل طبقة UI2 (مرساة تولّدها الرقعة 8 — الترتيب مهم)
     ('<style id="ui2css">',
      '<style id="v90css">' + _PWA_V90_CSS + '</style>\n<style id="ui2css">'),
@@ -12721,6 +12997,13 @@ _PWA_HTML_PATCHES = (
      '})();\n'
      '</script>\n'
      '</body>'),
+    # ── v93: «نبض المخزون» — لوحة نشاط المخزون في الرئيسية (SVG محلي بلا مكتبات) ──
+    # 38) طبقة CSS قبل v90css (مرساة تولّدها الرقعة 16 — الترتيب مهم)
+    ('<style id="v90css">',
+     '<style id="v93css">' + _PWA_V93_CSS + '</style>\n<style id="v90css">'),
+    # 39) نواة JS على سلسلة المراسي الحية (7→9→17→v91→v93) — تُحقن آخراً وتغلف loadHome
+    ('</script>\n</body>',
+     '</script>\n<script id="v93js">\n' + _PWA_V93_JS + '\n</script>\n</body>'),
 )
 
 
@@ -13497,6 +13780,8 @@ def _pwa_perm_map(role):
         "users": admin,
         # v88: إنشاء الفواتير — للمدراء والبائعين (نفس بوابة فاتورة تلغرام)
         "invoice": admin or role == ROLE_SELLER,
+        # v93: نبض المخزون — الفريق الداخلي فقط (دون البائع الخارجي/العميل: نشاط تجاري داخلي)
+        "activity": admin or role in (ROLE_STOCK, ROLE_SELLER),
     }
 
 
@@ -14339,6 +14624,116 @@ def _pwa_api_stats(user):
         "pending": n_pend, "incoming": n_inc}, "oil": oil}
 
 
+def _pwa_api_activity(user, days=7):
+    """v93: «نبض المخزون» — إحصائيات أسبوعية/شهرية في الواجهة الرئيسية.
+    سلسلة يومية للبيع (remove) والتوريد (add) + قائمة الأكثر بيعاً وتفاصيلها
+    تُكشف بالضغط على السلعة في الواجهة (الكمية المبيعة/عمليات البيع/المتبقي/
+    آخر بيع). الإيراد من الفواتير المعتمدة للمدير فقط — البائع يرى الكميات
+    دون مبالغ، والبائع الخارجي/العميل لا يرى البطاقة إطلاقاً (نشاط تجاري داخلي).
+    استهلاك القاعدة: 2-4 استعلامات مفلترة بنطاق زمني فقط عند فتح الرئيسية
+    أو تحديثها — لا دوريات ولا مؤقتات."""
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = 7
+    days = 30 if days >= 30 else 7
+    perms = _pwa_perm_map(user["role"])
+    admin = perms["admin"]
+    if not perms.get("activity"):
+        # بوابة مزدوجة: الواجهة تخفي البطاقة والخادم لا يحسب شيئاً أصلاً
+        return {"ok": True, "hidden": True, "days": days, "admin": False,
+                "series": {"labels": [], "sold": [], "added": []},
+                "totals": {"sold": 0, "added": 0, "ops": 0}, "top": []}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT CURRENT_DATE")
+            today = cur.fetchone()[0]
+            start = today - datetime.timedelta(days=days - 1)
+            # الاتصال مضبوط على Africa/Algiers — منتصف الليل محلياً (مطابق لباقي التقارير)
+            start_ts = datetime.datetime.combine(start, datetime.time.min)
+            end_ts = datetime.datetime.combine(today + datetime.timedelta(days=1), datetime.time.min)
+            cur.execute(
+                "SELECT date::date AS d, type, SUM(quantity), COUNT(*) "
+                "FROM transactions "
+                "WHERE date >= %s AND date < %s AND type IN ('add', 'remove') "
+                "GROUP BY 1, 2",
+                (start_ts, end_ts))
+            series_raw = cur.fetchall()
+            cur.execute(
+                "SELECT t.product_id, COALESCE(p.name, 'سلعة محذوفة') AS name, "
+                "SUM(t.quantity) AS sold, COUNT(*) AS ops, "
+                "COALESCE(p.quantity, 0) AS stock "
+                "FROM transactions t "
+                "LEFT JOIN products p ON p.id = t.product_id "
+                "WHERE t.date >= %s AND t.date < %s AND t.type = 'remove' "
+                "GROUP BY t.product_id, p.name, p.quantity "
+                "ORDER BY sold DESC, ops DESC LIMIT 5",
+                (start_ts, end_ts))
+            top_rows = cur.fetchall()
+            pids = [r[0] for r in top_rows]
+            rev_map, last_map = {}, {}
+            total_rev = 0.0
+            if admin:
+                cur.execute(
+                    "SELECT COALESCE(SUM(ii.subtotal), 0) "
+                    "FROM invoice_items ii "
+                    "JOIN invoices i ON i.id = ii.invoice_id "
+                    "WHERE i.status = 'approved' "
+                    "AND i.created_at >= %s AND i.created_at < %s",
+                    (start_ts, end_ts))
+                total_rev = float(cur.fetchone()[0] or 0)
+                if pids:
+                    cur.execute(
+                        "SELECT ii.product_id, SUM(ii.subtotal) "
+                        "FROM invoice_items ii "
+                        "JOIN invoices i ON i.id = ii.invoice_id "
+                        "WHERE i.status = 'approved' AND ii.product_id = ANY(%s) "
+                        "AND i.created_at >= %s AND i.created_at < %s "
+                        "GROUP BY 1",
+                        (pids, start_ts, end_ts))
+                    rev_map = {r[0]: float(r[1] or 0) for r in cur.fetchall()}
+            if pids:
+                cur.execute(
+                    "SELECT product_id, MAX(date) FROM transactions "
+                    "WHERE type = 'remove' AND product_id = ANY(%s) "
+                    "GROUP BY 1",
+                    (pids,))
+                last_map = {r[0]: r[1] for r in cur.fetchall()}
+        conn.commit()
+    finally:
+        release_connection(conn)
+    sold_by, add_by, ops_by = {}, {}, {}
+    for d, t, sq, cnt in series_raw:
+        sq = int(sq or 0)
+        if t == "remove":
+            sold_by[d] = sq
+            ops_by[d] = int(cnt or 0)
+        elif t == "add":
+            add_by[d] = sq
+    labels, sold, added = [], [], []
+    for i in range(days):
+        day = start + datetime.timedelta(days=i)
+        labels.append(day.isoformat())
+        sold.append(sold_by.get(day, 0))
+        added.append(add_by.get(day, 0))
+    top = []
+    for pid, name, sold_q, ops, stock in top_rows:
+        last_dt = last_map.get(pid)
+        item = {"id": pid, "name": name, "sold": int(sold_q or 0),
+                "ops": int(ops or 0), "stock": int(stock or 0),
+                "last": (last_dt.isoformat() if last_dt else None)}
+        if admin:
+            item["rev"] = round(rev_map.get(pid, 0.0), 2)
+        top.append(item)
+    totals = {"sold": sum(sold), "added": sum(added), "ops": sum(ops_by.values())}
+    if admin:
+        totals["revenue"] = round(total_rev, 2)
+    return {"ok": True, "hidden": False, "days": days, "admin": admin,
+            "series": {"labels": labels, "sold": sold, "added": added},
+            "totals": totals, "top": top}
+
+
 def _pwa_api_products(user, q, archived=False, low=False):
     role = user["role"]
     external_only = role == ROLE_EXTERNAL
@@ -14459,6 +14854,7 @@ def _pwa_api_qty(user, product_id, qtype, quantity, reason):
                 conn.rollback()   # v41: سلعة محذوفة ناعماً — لا حركة عليها
                 return False, "السلعة محذوفة — اطلب من المدير استعادتها أولاً."
             old_qty = prod["quantity"] or 0
+            deficit_note = ""
             if qtype == "add":
                 new_qty = old_qty + quantity
                 cur.execute("UPDATE products SET quantity = %s WHERE id = %s", (new_qty, product_id))
@@ -14467,15 +14863,23 @@ def _pwa_api_qty(user, product_id, qtype, quantity, reason):
                     "VALUES (%s, 'add', %s, %s, %s)",
                     (product_id, quantity, user["id"], reason or None))
             elif qtype == "remove":
-                if old_qty < quantity:
-                    conn.rollback()
-                    return False, "الكمية المتوفرة (" + str(old_qty) + ") أقل من المطلوب."
+                # v92 تكافؤ مع البوت: البوت يخصم بلا شرط كفاية (db_update_quantity:
+                # «Allow negative inventory — no quantity check») والعجز يُسجَّل طلباً معلقاً.
+                # التطبيق كان يرفض هنا («الكمية المتوفرة أقل من المطلوب») — أُزيل الرفض:
+                # الخصم يمر وإن تجاوز المتاح، والعجز يُسجَّل بحارس v80 داخل نفس المعاملة.
                 new_qty = old_qty - quantity
                 cur.execute("UPDATE products SET quantity = %s WHERE id = %s", (new_qty, product_id))
                 cur.execute(
                     "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
                     "VALUES (%s, 'remove', %s, %s, %s)",
                     (product_id, quantity, user["id"], reason or None))
+                additional_deficit = max(0, -new_qty) - max(0, -old_qty)
+                if additional_deficit > 0:
+                    _ds = sync_product_pending_deficit(product_id, cur, owner_user_id=user["id"])
+                    _made = int((_ds or {}).get("created") or 0)
+                    if _made > 0:
+                        deficit_note = (" — ⚠️ الكمية أصبحت سالبة: تم تسجيل "
+                                        + str(_made) + " وحدة كطلب معلق حتى وصول بضاعة جديدة")
             else:  # reconcile → جرد: ضبط الكمية على قيمة معلومة
                 new_qty = quantity
                 delta = abs(new_qty - old_qty)
@@ -14488,7 +14892,7 @@ def _pwa_api_qty(user, product_id, qtype, quantity, reason):
                          ("جرد: من " + str(old_qty) + " إلى " + str(new_qty) +
                           (" — " + reason if reason else ""))))
         conn.commit()
-        return True, "تمت العملية بنجاح."
+        return True, "تمت العملية بنجاح." + deficit_note
     except Exception as e:
         conn.rollback()
         logging.error("[PWA] qty failed: " + str(e))
@@ -16711,6 +17115,14 @@ async def pwa_stats_handler(request):
     if err:
         return err
     return _pwa_jr(await _pwa_run(_pwa_api_stats, user))
+
+
+async def pwa_activity_handler(request):
+    """v93: نبض المخزون — إحصائيات الرئيسية الأسبوعية/الشهرية."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    return _pwa_jr(await _pwa_run(_pwa_api_activity, user, request.query.get("days", "7")))
 
 
 async def pwa_products_handler(request):
@@ -19625,6 +20037,7 @@ def register_pwa_routes(app):
     app.router.add_post("/api/changepass", pwa_changepass_handler)
     app.router.add_get("/api/me", pwa_me_handler)
     app.router.add_get("/api/stats", pwa_stats_handler)
+    app.router.add_get("/api/stats/activity", pwa_activity_handler)   # v93: نبض المخزون
     app.router.add_get("/api/products", pwa_products_handler)
     app.router.add_post("/api/qty", pwa_qty_handler)
     app.router.add_get("/api/movements", pwa_movements_handler)
@@ -19689,7 +20102,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (83 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (84 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -19700,7 +20113,8 @@ if __name__ == "__main__":
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
-                 + " + back-guard + edge-swipe + pull-refresh + haptic + confirm2 + users-hq + no-photos) =====")
+                 + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
+                 + " + neg-qty + activity-chart) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
