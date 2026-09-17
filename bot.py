@@ -10681,7 +10681,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v94"  # v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v95"  # v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12717,6 +12717,13 @@ function renderChart(d) {
   });
   if (tap) tap.textContent = "";
 }
+function opsPhrase(n) {
+  n = n | 0;
+  if (n === 1) return "عبر عملية بيع واحدة";
+  if (n === 2) return "عبر عمليتي بيع";
+  if (n >= 3 && n <= 10) return "عبر " + n + " عمليات بيع";
+  return "عبر " + n + " عملية بيع";
+}
 function renderTop(d) {
   var box = $("v93top");
   if (!box) return;
@@ -12728,18 +12735,19 @@ function renderTop(d) {
   var max = top[0].sold || 1;
   var h = "";
   top.forEach(function (t, i) {
+    var avg = (t.ops > 0) ? Math.max(1, Math.round((t.sold || 0) / t.ops)) : 0;
     var stockTxt = (t.stock | 0) <= 0
       ? '<b style="color:var(--bad)">نافد</b>'
       : "<b>" + t.stock + " وحدة</b>";
     h += '<div class="v93item" data-i="' + i + '">'
       + '<div class="v93row"><div class="v93rank r' + (i + 1) + '">' + (i + 1) + '</div>'
       + '<div class="v93main"><div class="v93nm">' + esc(t.name) + '</div>'
-      + '<div class="v93meta">🔥 ' + t.sold + " مبيعة • " + t.ops + " عملية بيع</div>"
+      + '<div class="v93meta">🔥 بيع ' + t.sold + " وحدة • " + opsPhrase(t.ops) + "</div>"
       + '<div class="v93bar"><i style="width:' + Math.max(7, Math.round((t.sold || 0) / max * 100)) + '%"></i></div></div>'
       + '<div class="v93arr">▾</div></div>'
       + '<div class="v93det"><div class="v93dgrid">'
-      + '<div><span>الكمية المبيعة</span><b>' + t.sold + " وحدة</b></div>"
-      + '<div><span>عمليات البيع</span><b>' + t.ops + '</b></div>'
+      + '<div><span>إجمالي الكمية المبيعة</span><b>' + t.sold + " وحدة</b></div>"
+      + '<div><span>عدد عمليات البيع</span><b>' + t.ops + '</b><span>بمعدل ' + avg + " وحدة لكل عملية</span></div>"
       + '<div><span>المتبقي بالمخزون</span>' + stockTxt + '</div>'
       + '<div><span>آخر بيع</span><b>' + rel(t.last) + '</b></div>'
       + (d.admin ? '<div style="grid-column:1/-1"><span>💰 إيراد الفواتير المعتمدة (الفترة)</span><b style="color:var(--ok)">' + money(t.rev) + '</b></div>' : "")
@@ -14643,8 +14651,8 @@ def _pwa_api_stats(user):
 def _pwa_api_activity(user, days=7):
     """v93: «نبض المخزون» — إحصائيات أسبوعية/شهرية في الواجهة الرئيسية.
     سلسلة يومية للبيع (remove) والتوريد (add) + قائمة الأكثر بيعاً وتفاصيلها
-    تُكشف بالضغط على السلعة في الواجهة (الكمية المبيعة/عمليات البيع/المتبقي/
-    آخر بيع). الإيراد من الفواتير المعتمدة للمدير فقط — البائع يرى الكميات
+    تُكشف بالضغط على السلعة في الواجهة (إجمالي الكمية المبيعة/عدد عمليات البيع
+    ومعدل الوحدات لكل عملية/المتبقي/آخر بيع). الإيراد من الفواتير المعتمدة للمدير فقط — البائع يرى الكميات
     دون مبالغ، والبائع الخارجي/العميل لا يرى البطاقة إطلاقاً (نشاط تجاري داخلي).
     استهلاك القاعدة: 2-4 استعلامات مفلترة بنطاق زمني فقط عند فتح الرئيسية
     أو تحديثها — لا دوريات ولا مؤقتات."""
@@ -20163,7 +20171,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard) =====")
+                 + " + session-guard + top-wording) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
