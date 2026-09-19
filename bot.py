@@ -10681,7 +10681,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v95"  # v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v96"  # v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12798,6 +12798,11 @@ try {
 _PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
 
 
+_PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات احترافية بأفاتار، وعمود الاسم مضمون العرض */\n.u96card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden}\n.u96card.off{opacity:.7}\n.u96top{display:flex;align-items:center;gap:11px;padding:12px 13px}\n.u96top .badge{flex:none}\n.u96avwrap{position:relative;flex:none;width:48px;height:48px}\n.u96avph{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;background:var(--u96t,#64748b);user-select:none}\n.u96avimg{position:absolute;inset:0;width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card)}\n.u96main{flex:1 1 170px;min-width:0}\n.u96nm{font-weight:800;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}\n.u96nm .conline{color:var(--ok);font-size:11px}\n.u96sub{font-size:11.5px;color:var(--mut);margin-top:3px;line-height:1.8;overflow-wrap:anywhere;word-break:break-word}\n.u96rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;margin-inline-end:6px;white-space:nowrap}\n.u96rk.rk-admin{background:rgba(217,119,6,.15);color:#d97706}\n.u96rk.rk-manager{background:rgba(14,116,144,.14);color:#0e7490}\n.u96rk.rk-stock{background:rgba(77,124,15,.15);color:#4d7c0f}\n.u96rk.rk-seller{background:rgba(185,28,28,.12);color:#dc2626}\n.u96rk.rk-external{background:rgba(124,58,237,.13);color:#7c3aed}\n.u96rk.rk-customer{background:var(--chip);color:var(--mut)}\n.u96acts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px dashed var(--line);background:var(--bg)}\n.u96req{background:var(--card);border:1px solid var(--line);border-inline-start:3px solid var(--brand);border-radius:14px;padding:11px 13px;margin-bottom:8px;box-shadow:var(--shadow)}\n.u96req .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}\n.u96sech{margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)}\n'
+
+_PWA_V96_JS = '/* v96: واجهة المستخدمين الاحترافية — أفاتار + صف أزرار مستقل (لا سحق لعمود الاسم) */\n(function () {\n"use strict";\nvar TINT = { admin: "#d97706", manager: "#0e7490", stock: "#4d7c0f",\n             seller: "#dc2626", external: "#7c3aed", customer: "#64748b" };\nvar RK = { admin: "rk-admin", manager: "rk-manager", stock: "rk-stock",\n           seller: "rk-seller", external: "rk-external", customer: "rk-customer" };\nfunction avHTML(u) {\n  var ch = esc(((u.name || "") + "").trim().charAt(0)) || "؟";\n  var ph = \'<div class="u96avph" style="background:\' + (TINT[u.role] || TINT.customer) + \'">\' + ch + \'</div>\';\n  if (u.has_avatar && u.telegram_id) {\n    return \'<div class="u96avwrap">\' + ph\n      + \'<img class="u96avimg" alt="" loading="lazy" src="/api/user/\' + u.telegram_id + \'/avatar?v=\'\n      + encodeURIComponent(u.avatar_v || "1") + \'" onerror="this.remove()"></div>\';\n  }\n  return \'<div class="u96avwrap">\' + ph + \'</div>\';\n}\nwindow.usrRow = function (u) {\n  const self = u.telegram_id === S.user.telegram_id;\n  const hasTg = !!u.telegram_id;\n  let acts = "";\n  if (!self && hasTg && !u.protected) {\n    acts += \'<button class="btn mini blue" data-role="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🎯 الفئة</button>\';\n    if (u.role !== "admin") {\n      acts += u.active\n        ? \'<button class="btn mini red" data-tg="\' + u.telegram_id + \'" data-to="0">🚫 إيقاف</button>\'\n        : \'<button class="btn mini green" data-tg="\' + u.telegram_id + \'" data-to="1">✅ تنشيط</button>\';\n    }\n  }\n  if (!self && !u.protected && u.web && u.telegram_id) {\n    acts += \'<button class="btn mini red" data-delweb="\' + (u.telegram_id || 0) + \'" data-n="\' + esc(u.name) + \'">🗑️ حذف من التطبيق</button>\';\n  }\n  acts += self\n    ? \'<button class="btn mini gold" data-self="1" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مروري</button>\'\n    : (hasTg ? \'<button class="btn mini gold" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مرور</button>\' : \'\');\n  const sub = [\n    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",\n    u.phone ? "📞 " + esc(u.phone) : "",\n    u.email ? "✉️ " + esc(u.email) : ""\n  ].filter(Boolean).join(" · ");\n  return \'<div class="u96card\' + (u.active ? "" : " off") + \'">\'\n    + \'<div class="u96top">\' + avHTML(u)\n    + \'<div class="u96main"><div class="u96nm">\' + esc(u.name) + usrOnline(u)\n    + (u.protected ? " 🛡" : "") + (self ? " <span class=\\"badge\\">أنت</span>" : "") + \'</div>\'\n    + \'<div class="u96sub"><span class="u96rk \' + (RK[u.role] || RK.customer) + \'">\' + esc(u.role_label) + \'</span>\'\n    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + \'</div></div>\'\n    + (u.active ? "" : \'<span class="badge r">مطرود</span>\')\n    + \'</div>\'\n    + (acts ? \'<div class="u96acts">\' + acts + \'</div>\' : \'\')\n    + \'</div>\';\n};\nwindow.renderUsers = function () {\n  if (!S.usrLast) return;\n  const box = $("#usrList");\n  const d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;\n  const q = (S.usrQ || "").trim().toLowerCase();\n  const users = d.users || [];\n  $("#cAll").textContent = d.counts.all;\n  $("#cWeb").textContent = d.counts.web;\n  $("#cKick").textContent = d.counts.kicked;\n  $("#cStaff").textContent = users.filter((u) => u.active && u.role !== "customer").length;\n  $("#cCust").textContent = users.filter((u) => u.active && u.role === "customer").length;\n  try {\n    $("#cLive").textContent = users.filter((u) => u.active && u.last_seen\n      && (Date.now() - new Date(u.last_seen).getTime() < 86400000)).length;\n  } catch (e) {}\n  let html = "";\n  if (S.usrFilter === "all") {\n    const waiting = regs.filter((w) => !q || [w.name, w.username, w.email, w.phone, w.role_label]\n      .some((v) => (v || "").toString().toLowerCase().indexOf(q) !== -1));\n    if (waiting.length) {\n      html += \'<p class="u96sech">⏳ طلبات انضمام بانتظار الموافقة (\' + waiting.length + \')</p>\';\n      html += waiting.map((w) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(w.name) + \'</div>\'\n        + \'<div class="u96sub">\' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + \'</div>\'\n        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? \'<span class="badge g" style="margin-top:7px">Google</span>\'\n          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? \'<span class="badge b" style="margin-top:7px">🔑 اسم + رقم سر</span>\' : \'<span class="badge b" style="margin-top:7px">رمز: \' + esc(w.code) + \'</span>\'))\n        + \'<div class="acts"><button class="btn mini green" data-appr=\\\'\' + esc(JSON.stringify(w)) + \'\\\'>✅ موافقة</button>\'\n        + \'<button class="btn mini red" data-reg="\' + w.id + \'">🗑 حذف</button></div>\'\n        + \'</div>\').join("");\n    }\n    const rs = resets.filter((r) => !q || (r.username || "").toLowerCase().indexOf(q) !== -1);\n    if (rs.length) {\n      html += \'<p class="u96sech" style="margin-top:12px">🔑 طلبات استعادة كلمة المرور (\' + rs.length + \')</p>\';\n      html += rs.map((r) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(r.username) + \'</div>\'\n        + \'<div class="u96sub">طالب باستعادة رقمه السري\' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + \'</div>\'\n        + \'<div class="acts"><button class="btn mini gold" data-reset="\' + r.id + \'" data-runame="\' + esc(r.username) + \'">🔑 توليد رقم سر مؤقت</button></div>\'\n        + \'</div>\').join("");\n    }\n  }\n  if (S.usrFilter === "kick") {\n    const kick = users.filter((u) => usrFilterHit(u) && usrMatch(u, q))\n      .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n    html += kick.length ? kick.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + \'</p>\';\n  } else {\n    const act = users.filter((u) => usrFilterHit(u) && usrMatch(u, q));\n    act.sort((a, b) => {\n      const sa = a.telegram_id === S.user.telegram_id ? 0 : 1;\n      const sb = b.telegram_id === S.user.telegram_id ? 0 : 1;\n      if (sa !== sb) return sa - sb;\n      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);\n      return (a.name || "").localeCompare(b.name || "", "ar");\n    });\n    html += act.length ? act.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + \'</p>\';\n    if (S.usrFilter === "all") {\n      const kick = users.filter((u) => !u.active && usrMatch(u, q))\n        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n      if (kick.length) {\n        html += \'<button type="button" class="khead\' + (S.usrKickOpen ? " open" : "") + \'" id="usrKickHead">🚫 المطرودون (\' + kick.length + \') <span class="karr">▶</span></button>\'\n          + \'<div id="usrKickList" style="display:\' + (S.usrKickOpen ? "" : "none") + \'">\' + kick.map(usrRow).join("") + \'</div>\';\n      }\n    }\n  }\n  box.innerHTML = html;\n  box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {\n    if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);\n    else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }\n    else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);\n    else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);\n    else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);\n    else if (b.dataset.self) openPass(null, b.dataset.n, true);\n    else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");\n    else openPass(+b.dataset.tg, b.dataset.n, false);\n  }));\n  const kh = box.querySelector("#usrKickHead");\n  if (kh) kh.addEventListener("click", () => { S.usrKickOpen = !S.usrKickOpen; renderUsers(); });\n};\n})();'
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -13028,6 +13033,9 @@ _PWA_HTML_PATCHES = (
     # 43) نواة v94 — سبلاش + استعادة + حارس الجلسة (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<script id="v94js">\n' + _PWA_V94_JS + '\n</script>\n</body>'),
+    # 44) v96: واجهة المستخدمين الاحترافية — CSS + JS (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<style id="v96css">' + _PWA_V96_CSS + '</style>\n<script id="v96js">\n' + _PWA_V96_JS + '\n</script>\n</body>'),
 )
 
 
@@ -15174,6 +15182,54 @@ def _pwa_api_product_image(user, product_id):
     return bytes(row[0]), (row[2] or "image/jpeg"), None
 
 
+def _pwa_api_user_avatar(user, target_tid):
+    """🖼️ v96: الصورة الشخصية — للذات أو لمن له صلاحية إدارة المستخدمين.
+    users.avatar مخزّن data-URL (v41) — يُحلّل إلى bytes مع mime.
+    يعيد (bytes, mime, None) أو (None, None, رسالة)."""
+    try:
+        target_tid = int(target_tid)
+    except (TypeError, ValueError):
+        return None, None, "طلب غير صالح."
+    if target_tid != user.get("telegram_id") and not _pwa_perm_map(user["role"])["users"]:
+        return None, None, "غير مصرح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT avatar FROM users WHERE telegram_id = %s", (target_tid,))
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    if not row or not row[0]:
+        return None, None, "لا توجد صورة."
+    m = _PWA_AVATAR_RE.match(str(row[0]))
+    if not m:
+        return None, None, "صيغة صورة غير مدعومة."
+    try:
+        raw = base64.b64decode(re.sub(r"\s+", "", str(row[0]).split(",", 1)[1]))
+    except Exception:
+        return None, None, "صورة تالفة."
+    mime = m.group(1)
+    mime = "image/jpeg" if mime in ("jpeg", "jpg") else ("image/" + mime)
+    return raw, mime, None
+
+
+async def pwa_user_avatar_handler(request):
+    """🖼️ v96: الصورة الشخصية — جلسة صالحة فقط، كاش يومي خاص (يتجدد عند تغيّر الصورة عبر ?v=)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        tid = int(request.match_info["tid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data, mime, err2 = await _pwa_run(_pwa_api_user_avatar, user, tid)
+    if err2:
+        return _pwa_err(404, err2)
+    return web.Response(body=data, content_type=(mime or "image/jpeg"),
+                        headers={"Cache-Control": "private, max-age=86400"})
+
+
 def _pwa_api_admin_selfpass(user, password):
     """🔑 v90: المدير يضبط رقم سر جديداً لحسابه دون الرقم القديم (حالة النسيان فقط).
     يتطلب جلسة مدير مصادَقة، يُبطل الجلسات القديمة — والمعالج يعيد زرع جلسة
@@ -15852,7 +15908,7 @@ def _pwa_api_users(user):
             cur.execute(
                 "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
                 "u.role, u.active, u.email, u.phone, u.identity_verified, u.last_seen, "
-                "a.username AS web_username "
+                "u.avatar, a.username AS web_username "
                 "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "ORDER BY u.active DESC, u.role, LOWER(COALESCE(u.first_name, u.username, ''))")
             rows = cur.fetchall()
@@ -15869,6 +15925,8 @@ def _pwa_api_users(user):
             "email": r.get("email"), "phone": r.get("phone"),
             "verified": bool(r.get("identity_verified")),
             "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else "",   # v65: «متصل الآن»
+            "has_avatar": bool(r.get("avatar")),           # v96: علم الأفاتار (الصورة نفسها عبر مسار مخزّن)
+            "avatar_v": (r.get("avatar") or "")[-8:],      # v96: بصمة تغيير للكاش — تتغير عند تعديل الصورة
             "protected": bool(_protected_account(r["telegram_id"])),
         })
     counts = {"all": len(out), "kicked": sum(1 for u in out if not u["active"]),
@@ -20116,6 +20174,7 @@ def register_pwa_routes(app):
     app.router.add_post("/api/products/create", pwa_products_create_handler)
     app.router.add_post("/api/products/photo", pwa_product_photo_handler)      # v90: صورة السلعة (رفع/إزالة)
     app.router.add_get("/api/product/{pid}/image", pwa_product_image_handler)  # v90: قراءة صورة السلعة
+    app.router.add_get("/api/user/{tid}/avatar", pwa_user_avatar_handler)      # v96: الصورة الشخصية (كاش يومي)
     app.router.add_post("/api/admin/selfpass", pwa_admin_selfpass_handler)     # v90: رقم سر جديد للمدير (نسيان)
     app.router.add_post("/api/products/edit", pwa_products_edit_handler)        # v41: تعديل سلعة
     app.router.add_post("/api/products/archive", pwa_products_archive_handler)  # v41: حذف/استعادة ناعمة
@@ -20158,7 +20217,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (84 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (85 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -20171,7 +20230,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording) =====")
+                 + " + session-guard + top-wording + users-ui) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
