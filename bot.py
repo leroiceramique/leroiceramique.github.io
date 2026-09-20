@@ -3086,6 +3086,12 @@ STATE_INVOICE_PRODUCT = "waiting_invoice_product"
 STATE_INVOICE_QTY = "waiting_invoice_qty"
 STATE_INVOICE_PRICE = "waiting_invoice_price_m2"
 STATE_INVOICE_AREA = "waiting_invoice_area"
+# v102: محادثة استبدال السلعة المباعة (البوت)
+STATE_SWAP_INV = "waiting_swap_inv"        # رقم الفاتورة
+STATE_SWAP_PROD = "waiting_swap_prod"      # اسم السلعة الجديدة (بحث)
+STATE_SWAP_QTY = "waiting_swap_qty"        # الكمية
+STATE_SWAP_PRICE = "waiting_swap_price"    # السعر
+STATE_SWAP_BOX = "waiting_swap_box"        # مساحة العلبة (m2)
 STATE_OIL_READING = "waiting_oil_reading"
 STATE_OIL_NEW_HOURS = "waiting_oil_new_hours"
 
@@ -3105,6 +3111,7 @@ BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
 BTN_INCOMING = "🚚 طلبات التوريد"
 BTN_INVOICE = "🧾 إنشاء فاتورة"
+BTN_SWAP = "🔄 استبدال سلعة"   # v102: تصحيح فاتورة مقبولة بعملية واحدة
 # Customer buttons
 BTN_CUST_ALERT = "🔔 تنبيه المخزون"
 BTN_CUST_ADD = "➕ إضافة"
@@ -3204,6 +3211,7 @@ ROLE_BTN_PERM_MAP = {
         BTN_CUST_REMOVE:       PERM_REMOVE,
         BTN_ADD_QTY:           PERM_ADD_QTY,
         BTN_INVOICE:           PERM_INVOICE,
+        BTN_SWAP:              PERM_INVOICE,   # v102: الاستبدال بصلاحية الفواتير نفسها
         BTN_CUST_ORDER:        PERM_SUPPLY_ORDER,
         BTN_CUST_ORDER_LEGACY: PERM_SUPPLY_ORDER,
         BTN_CUST_MY_ORDERS:    PERM_MY_ORDERS,
@@ -3714,8 +3722,8 @@ def get_admin_keyboard(user_id=None):
         [BTN_EDIT, BTN_DELETE],
         [users_btn, BTN_BACKUP, BTN_ALERT],
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
-        [BTN_INVOICE, pending_btn, BTN_UPDATE],
-        [BTN_OIL],
+        [BTN_INVOICE, BTN_SWAP, pending_btn],
+        [BTN_OIL, BTN_UPDATE],
         [BTN_PERMS],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -3804,7 +3812,7 @@ def get_seller_main_keyboard(telegram_id=None):
     if perms.get(PERM_ADD_QTY):
         rows.append([BTN_ADD_QTY])
     if perms.get(PERM_INVOICE):
-        rows.append([BTN_INVOICE])
+        rows.append([BTN_INVOICE, BTN_SWAP])
     if perms.get(PERM_SUPPLY_ORDER):
         rows.append([BTN_CUST_ORDER])
     _r2 = []
@@ -7735,7 +7743,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_SWAP, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -7757,7 +7765,9 @@ async def handle_admin_message(update, context):
         elif _gate_role == ROLE_SELLER:
             _allowed = (
                 (text == BTN_INVOICE and _btn_perm_ok(_gate_role, text))
+                or (text == BTN_SWAP and _btn_perm_ok(_gate_role, text))
                 or _gate_state.startswith("waiting_invoice")
+                or _gate_state.startswith("waiting_swap")
                 or text in (BTN_CANCEL, BTN_CUST_CANCEL)
             )
         else:
@@ -7862,6 +7872,20 @@ async def handle_admin_message(update, context):
                 + "\U0001f464 \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646 \u0623\u0648 \u0631\u0642\u0645 \u0647\u0627\u062a\u0641\u0647:",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="invoice_cancel")]
+                ]))
+            return
+        if text == BTN_SWAP:
+            # v102: استبدال سلعة مباعة — محادثة واحدة بدل جولات إرجاع/إخراج
+            _set_state(context, STATE_SWAP_INV)
+            context.user_data.pop("swap_inv", None)
+            context.user_data.pop("swap_item", None)
+            context.user_data.pop("swap_prod", None)
+            await update.message.reply_text(
+                "🔄 استبدال سلعة مباعة" + chr(10) + chr(10)
+                + "الزبون غيّر السلعة عند الاستلام؟ أرسل رقم الفاتورة"
+                + " (مثال: 10) وسأتكفل بالباقي في خطوات قليلة:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]
                 ]))
             return
         if text == BTN_INCOMING or text.startswith(BTN_INCOMING):
@@ -8101,6 +8125,156 @@ async def handle_admin_message(update, context):
         # Subtotal = user-requested area × price/m² (exact, not box-rounded)
         await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, "m2",
                                  extra_info={"requested_area": qty_m2, "box_area": box_area, "num_boxes": num_boxes})
+        return
+
+    # ═══ v102: محادثة استبدال السلعة المباعة (مدراء + بائعون بصلاحية الفواتير) ═══
+    if state == STATE_SWAP_INV:
+        try:
+            inv_no = int(text.strip())
+        except ValueError:
+            await update.message.reply_text(
+                "❌ أرسل رقم الفاتورة فقط (مثال: 10).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        db_user = await asyncio.to_thread(get_user, user.id)
+        ok, res = await asyncio.to_thread(_invoice_swap_fetch, db_user or {"id": None, "role": ROLE_PENDING}, inv_no)
+        if not ok:
+            await update.message.reply_text(
+                "❌ " + res,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        if res["status"] != "approved":
+            await update.message.reply_text(
+                "❌ الاستبدال متاح للفواتير المقبولة فقط (هذه: " + str(res["status"]) + ").",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        items = res.get("items") or []
+        if not items:
+            await update.message.reply_text(
+                "❌ الفاتورة #" + str(inv_no) + " بلا عناصر.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        context.user_data["swap_inv"] = {"id": res["id"], "customer": res["customer_name"],
+                                         "total": res["total_amount"], "items": items}
+        if len(items) == 1:
+            context.user_data["swap_item"] = items[0]
+            context.user_data["state"] = STATE_SWAP_PROD
+            await update.message.reply_text(
+                _swap_item_line(items[0]) + chr(10) + chr(10)
+                + "🔍 أرسل اسم السلعة الجديدة:",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        buttons = [[InlineKeyboardButton(_swap_item_line(it), callback_data="swapitem_" + str(it["id"]))]
+                   for it in items]
+        buttons.append([InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+        await update.message.reply_text(
+            "🧾 فاتورة #" + str(inv_no) + " — " + str(res["customer_name"]) + chr(10) + chr(10)
+            + "أي عنصر تريد استبداله؟",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if state == STATE_SWAP_PROD:
+        product_name = text.strip()
+        if not product_name:
+            await update.message.reply_text(
+                "❌ أرسل اسم السلعة الجديدة.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        results = await asyncio.to_thread(search_products, product_name)
+        results = [p for p in results if p.get("id")]
+        if not results:
+            await update.message.reply_text(
+                "❌ \"" + product_name[:60] + "\" غير موجودة في المخزون — أرسل اسم آخر.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        if len(results) == 1:
+            await _swap_pick_product(update, context, results[0])
+            return
+        context.user_data["swap_results"] = results[:8]
+        buttons = []
+        for p in results[:8]:
+            label = (p["name"] + " [" + str(p.get("quantity") or 0) + "]")[:40]
+            buttons.append([InlineKeyboardButton(label, callback_data="swapsel_" + str(p["id"]))])
+        buttons.append([InlineKeyboardButton("🔍 بحث آخر", callback_data="swapback_prod"),
+                        InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+        await update.message.reply_text(
+            "🔍 " + str(min(len(results), 8)) + " نتائج — اختر السلعة الجديدة:",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if state == STATE_SWAP_QTY:
+        try:
+            qty = float(text.strip().replace(",", "."))
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "❌ أرسل كمية صحيحة (رقم أكبر من صفر).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        prod = context.user_data.get("swap_prod") or {}
+        context.user_data["swap_qty"] = qty
+        ptype = prod.get("ptype") or "m2"
+        price_hint = prod.get("price")
+        if ptype == "pcs":
+            context.user_data["state"] = STATE_SWAP_PRICE
+            await update.message.reply_text(
+                "💰 أرسل سعر القطعة (د.ج) أو اضغط الزر لاستخدام السعر المحفوظ:",
+                reply_markup=InlineKeyboardMarkup([
+                    ([InlineKeyboardButton("💰 السعر المحفوظ (" + _fmt_price(price_hint) + ")", callback_data="swappskip")]
+                     if price_hint is not None else []),
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")],
+                ]))
+            return
+        if ptype == "plant":
+            _set_state(context, "waiting_swap_len")
+            await update.message.reply_text(
+                "📏 اختر طول الشريط (" + str(qty) + " م.ط):",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("0.45 م", callback_data="swaplen_0.45"),
+                     InlineKeyboardButton("0.60 م", callback_data="swaplen_0.60")],
+                    [InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")],
+                ]))
+            return
+        context.user_data["state"] = STATE_SWAP_PRICE
+        await update.message.reply_text(
+            "💰 أرسل سعر المتر المربع (د.ج/m²) أو اضغط الزر لاستخدام السعر المحفوظ:",
+            reply_markup=InlineKeyboardMarkup([
+                ([InlineKeyboardButton("💰 السعر المحفوظ (" + _fmt_price(price_hint) + ")", callback_data="swappskip")]
+                 if price_hint is not None else []),
+                [InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")],
+            ]))
+        return
+
+    if state == "waiting_swap_len":
+        await update.message.reply_text("❌ اختر الطول من الأزرار أعلاه.")
+        return
+
+    if state == STATE_SWAP_PRICE:
+        try:
+            price = float(text.strip().replace(",", "."))
+            if price < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "❌ أرسل سعراً صحيحاً.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        await _swap_after_price(update, context, price)
+        return
+
+    if state == STATE_SWAP_BOX:
+        try:
+            box_area = float(text.strip().replace(",", "."))
+            if box_area <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "❌ أرسل مساحة العلبة صحيحة (مثلاً: 1.44).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]]))
+            return
+        context.user_data["swap_box"] = box_area
+        await _swap_confirm_card(update, context)
         return
 
     if state == STATE_ADD_NAME:
@@ -8948,7 +9122,9 @@ async def route_message(update, context):
         await handle_admin_message(update, context)
     elif _role == "seller" and (
         text == BTN_INVOICE
+        or text == BTN_SWAP
         or str(context.user_data.get("state") or "").startswith("waiting_invoice")
+        or str(context.user_data.get("state") or "").startswith("waiting_swap")
     ):
         # 🛍 البائع: مسار الفواتير فقط عبر مسار الإدارة المشروط
         await handle_admin_message(update, context)
@@ -10472,6 +10648,9 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_invoice_handler, pattern="^inv_plen_"))
     # 🔧 صيانة الرافعة: إدارة الزيت (مدراء فقط) + زر تأكيد العامل
     app.add_handler(CallbackQueryHandler(callback_oil_handler, pattern="^oil_"))
+    # v102: أزرار محادثة استبدال السلعة المباعة
+    app.add_handler(CallbackQueryHandler(callback_swap_handler,
+                                         pattern="^(swapitem_|swapsel_|swaplen_|swappskip|swapbskip|swapyes|swapno|swap_cancel|swapback_prod)"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backup_test", backup_test_command))
     app.add_handler(CommandHandler("testmail", testmail_command))  # v36: اختبار البريد
@@ -10806,7 +10985,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v101"  # v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v102"  # v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -13112,6 +13291,7 @@ function paperHTML(d){
     + '</tbody></table>'
     + '<div class="ivwft">Merci pour votre confiance ! — شكراً لثقتكم</div></div>'
     + '<div class="ivwacts">'
+    + '<button type="button" class="btn soft-g" id="ivwSwap">🔄 استبدال سلعة</button>'
     + '<button type="button" class="btn gold" id="ivwDl">⬇️ تحميل PDF على الجهاز</button></div>';
 }
 function openViewer(id){
@@ -13127,6 +13307,19 @@ function openViewer(id){
     box.innerHTML = paperHTML(d);
     var b3 = box.querySelector("#ivwDl");
     if (b3) b3.addEventListener("click", function(){ if (window.invDlPdf) window.invDlPdf(d.invoice_id, b3); });
+    /* v102: زر استبدال سلعة — لمنشئي الفواتير فقط، ويفتح لوحة الاستبدال
+       (اختيار العنصر إن تعددت ثم السلعة الجديدة من المخزون) ويعيد رسم الفاتورة */
+    var bS = box.querySelector("#ivwSwap");
+    if (bS){
+      if (!(S.perms && S.perms.invoice)) { bS.style.display = "none"; }
+      else bS.addEventListener("click", function(){
+        if (window.invSwapSheet) window.invSwapSheet(d.invoice_id, d.items || [], function(){
+          try { if (window.v90vib) window.v90vib(12); } catch (e5) {}
+          openViewer(d.invoice_id);
+        });
+        else toast("تعذر فتح الاستبدال — حدّث التطبيق من الإعدادات", 1);
+      });
+    }
     /* v100: فحص جهوزية التنزيل فور الفتح (بلا توليد PDF) — ليكون زر التحميل
        متزامناً داخل إيماءة المستخدم ولا تُحجب نافذة تنزيل المتصفح */
     try { if (window.invPreprobe) window.invPreprobe(d.invoice_id); } catch (e4) {}
@@ -13177,6 +13370,237 @@ window.loadInvoice = function(){
   if (origLoadInvoice){ try { origLoadInvoice(); } catch (e1) {} }
   try { tuneScreen(); } catch (e2) {}
 };
+})();'''
+
+
+_PWA_V102_CSS = r'''/* v102: لوحة استبدال السلعة المباعة — نفس هوية التطبيق (RTL كهرماني) */
+#swapOv{position:fixed;inset:0;background:#000c;z-index:10001;display:none;flex-direction:column;align-items:center;justify-content:flex-end}
+.swapSheet{background:#fffdf8;width:100%;max-width:560px;max-height:88vh;overflow-y:auto;border-radius:18px 18px 0 0;padding:14px 14px 20px;box-shadow:0 -8px 30px #0006}
+.swaphd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.swaphd b{flex:1;font-size:15px;color:#7c4a03}
+.swfold{background:#fff7e6;border:1px solid #f0c36d;color:#8a5b00;padding:8px 10px;border-radius:10px;font-size:13px;margin-bottom:10px;line-height:1.7}
+.swItem,.swRow{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eadfce;border-radius:12px;padding:8px 10px;margin-bottom:8px}
+.swItem .info,.swRow .info{flex:1;min-width:0}
+.swItem b,.swRow b{display:block;font-size:14px;color:#3d2c14;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.swItem span,.swRow span{font-size:12px;color:#8a7a5f}
+.swfld{margin:10px 0}
+.swfld label{display:block;font-size:12px;color:#8a7a5f;margin:0 0 4px}
+.swfld input{width:100%;box-sizing:border-box;padding:10px 12px;font-size:15px;border:1px solid #eadfce;border-radius:10px;background:#fff;font-family:inherit}
+.swprev{background:#f3fbf3;border:1px solid #bfe3bf;color:#1d5c1d;border-radius:10px;padding:8px 10px;font-size:13px;line-height:1.8;margin:10px 0}
+.swprev.warn{background:#fff4f2;border-color:#f3b6ab;color:#9c2f1b}
+.swacts{display:flex;gap:8px;margin-top:12px}
+.swacts .btn{flex:1}
+.swEmpty{text-align:center;color:#8a7a5f;padding:14px 0;font-size:13px}'''
+
+_PWA_V102_JS = r'''/* v102: لوحة استبدال السلعة المباعة — يوسف: الزبون يغيّر السلعة عند الاستلام
+   ويُقبل ذلك، لكن إعادة الأصلية للمخزون وخصم الجديدة وتعديل الفاتورة كانت
+   جولات بين البوت والتطبيق. هنا: زر واحد في العارض → السلعة الجديدة → تأكيد
+   → الخادم يرجع الأصلية ويخصم الجديدة ويعدل الفاتورة في معاملة واحدة
+   (نفس نواة زر «🔄 استبدال سلعة» في البوت) ثم تعاد رسم الفاتورة فوراً */
+(function () {
+"use strict";
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+  });
+}
+function money(n){
+  n = Number(n || 0);
+  return n.toLocaleString("fr-FR", {minimumFractionDigits:2, maximumFractionDigits:2}) + " د.ج";
+}
+function unit(pt){ return pt === "pcs" ? "قطعة" : (pt === "plant" ? "م.ط" : "m²"); }
+var S2 = {inv:0, items:[], item:null, prod:null, done:null, seq:0, timer:null, ov:null};
+
+function ensureOv(){
+  if (S2.ov) return S2.ov;
+  var ov = document.createElement("div");
+  ov.id = "swapOv";
+  document.body.appendChild(ov);
+  ov.addEventListener("click", function(e){ if (e.target === ov) close(); });
+  S2.ov = ov;
+  return ov;
+}
+function close(){
+  if (S2.ov){ S2.ov.style.display = "none"; S2.ov.innerHTML = ""; }
+  S2.prod = null; S2.item = null;
+}
+function boxNum(q, ba){
+  q = parseFloat(q); ba = parseFloat(ba);
+  if(!(q > 0) || !(ba > 0)) return 0;
+  return Math.ceil(q / ba);
+}
+/* ── الخطوة 1: اختيار العنصر (تُتخطى تلقائياً لفاتورة بعنصر واحد) ── */
+function openSheet(invId, items, done){
+  S2.inv = Number(invId) || 0;
+  S2.items = items || [];
+  S2.done = done || null;
+  var ov = ensureOv();
+  ov.innerHTML = '<div class="swapSheet">'
+    + '<div class="swaphd"><b>🔄 استبدال سلعة — فاتورة #' + S2.inv + '</b>'
+    + '<button type="button" class="btn mini gray" id="swX">✕</button></div>'
+    + '<div id="swBody"></div></div>';
+  ov.style.display = "flex";
+  ov.querySelector("#swX").addEventListener("click", close);
+  try { if (window.v90vib) window.v90vib(8); } catch (e0) {}
+  if (S2.items.length === 1) { pickItem(S2.items[0]); return; }
+  var b = ov.querySelector("#swBody");
+  b.innerHTML = '<p class="swEmpty">أي عنصر تريد استبداله؟</p>'
+    + S2.items.map(function(it, i){
+        return '<div class="swItem"><div class="info"><b>' + (i + 1) + ". " + esc(it.product_name) + '</b>'
+          + '<span>' + it.quantity + " " + unit(it.ptype || "m2")
+          + (it.num_boxes ? " • " + it.num_boxes + " علب" : "")
+          + " • " + money(it.subtotal) + '</span></div>'
+          + '<button type="button" class="btn mini gold" data-swit="' + i + '">اختيار</button></div>';
+      }).join("");
+  b.querySelectorAll("[data-swit]").forEach(function(btn){
+    btn.addEventListener("click", function(){ pickItem(S2.items[Number(btn.getAttribute("data-swit"))]); });
+  });
+}
+/* ── الخطوة 2: بحث السلعة الجديدة في المخزون ── */
+function pickItem(it){
+  S2.item = it;
+  var ov = S2.ov;
+  var b = ov.querySelector("#swBody");
+  b.innerHTML = '<div class="swfold">❌ <b>المستبدَل:</b> ' + esc(it.product_name)
+    + " — " + it.quantity + " " + unit(it.ptype || "m2")
+    + (it.num_boxes ? " (" + it.num_boxes + " علب)" : "")
+    + " — " + money(it.subtotal) + '</div>'
+    + '<div class="swfld"><label>🔍 اكتب اسم السلعة الجديدة:</label>'
+    + '<input id="swQ" type="text" inputmode="search" placeholder="مثال: بلاط 60x60…" autocomplete="off"></div>'
+    + '<div id="swRes"><p class="swEmpty">ستظهر النتائج هنا…</p></div>';
+  var inp = b.querySelector("#swQ");
+  inp.addEventListener("input", function(){
+    clearTimeout(S2.timer);
+    S2.timer = setTimeout(doSearch, 280);
+  });
+  try { inp.focus(); } catch (e1) {}
+}
+async function doSearch(){
+  var q = (document.getElementById("swQ") || {}).value || "";
+  var my = ++S2.seq;
+  var res = document.getElementById("swRes");
+  if (!res) return;
+  if (!q.trim()){ res.innerHTML = '<p class="swEmpty">ستظهر النتائج هنا…</p>'; return; }
+  try{
+    var d = await api("/api/invoice/products?q=" + encodeURIComponent(q.trim()), {noCache:true});
+    if (my !== S2.seq) return;
+    var list = d.products || [];
+    if (!list.length){ res.innerHTML = '<p class="swEmpty">لا نتائج — أضف السلعة للمخزون أولاً</p>'; return; }
+    res.innerHTML = list.map(function(p){
+      return '<div class="swRow"><div class="info"><b>' + esc(p.name) + '</b>'
+        + '<span>📦 متوفر: ' + (p.qty || 0)
+        + (p.price != null && p.price !== "" ? " • 💰 " + money(p.price) : "")
+        + " • بالـ" + unit(p.ptype || "m2") + '</span></div>'
+        + '<button type="button" class="btn mini gold" data-swp="' + p.id + '">اختيار</button></div>';
+    }).join("");
+    S2.map = {};
+    list.forEach(function(p){ S2.map[p.id] = p; });
+    res.querySelectorAll("[data-swp]").forEach(function(btn){
+      btn.addEventListener("click", function(){ pickProd(S2.map[Number(btn.getAttribute("data-swp"))]); });
+    });
+  }catch(e){
+    if (my === S2.seq) res.innerHTML = '<p class="swEmpty">' + esc(e && e.message || "تعذر البحث") + '</p>';
+  }
+}
+/* ── الخطوة 3: الكمية والسعر + معاينة حية ثم تأكيد ── */
+function pickProd(p){
+  S2.prod = p;
+  var it = S2.item || {};
+  var ov = S2.ov;
+  var b = ov.querySelector("#swBody");
+  var sameType = (p.ptype || "m2") === (it.ptype || "m2");
+  var defQty = sameType && it.quantity ? it.quantity : "";
+  var defPrice = (p.price != null && p.price !== "") ? p.price : (it.unit_price || "");
+  var isM2 = (p.ptype || "m2") === "m2";
+  var isPlant = p.ptype === "plant";
+  b.innerHTML = '<div class="swfold">❌ <b>من:</b> ' + esc(it.product_name)
+    + " — " + it.quantity + " " + unit(it.ptype || "m2") + " (" + money(it.subtotal) + ')'
+    + '<br>✅ <b>إلى:</b> ' + esc(p.name) + " — متوفر: " + (p.qty || 0) + '</div>'
+    + '<div class="swfld"><label>🔢 الكمية (' + unit(p.ptype || "m2") + ')</label>'
+    + '<input id="swQty" type="number" inputmode="decimal" min="0.01" step="any" value="' + defQty + '"></div>'
+    + '<div class="swfld"><label>💰 السعر (د.ج/' + unit(p.ptype || "m2") + ') — فارغ = السعر المحفوظ</label>'
+    + '<input id="swPrice" type="number" inputmode="decimal" min="0" step="any" value="' + defPrice + '"></div>'
+    + (isM2 ? '<div class="swfld"><label>📐 مساحة العلبة (m²)</label>'
+      + '<input id="swBox" type="number" inputmode="decimal" min="0.01" step="any" value="'
+      + (p.box_area || it.box_area || 1.44) + '"></div>' : "")
+    + (isPlant ? '<div class="swfld"><label>📏 طول الشريط (م)</label>'
+      + '<input id="swLen" type="number" inputmode="decimal" min="0.01" step="any" value="0.45"></div>' : "")
+    + '<div class="swprev" id="swPrev"></div>'
+    + '<div class="swacts">'
+    + '<button type="button" class="btn gray" id="swBack">🔙 رجوع</button>'
+    + '<button type="button" class="btn gold" id="swGo">✅ تأكيد الاستبدال</button></div>';
+  ["swQty","swPrice","swBox","swLen"].forEach(function(id){
+    var el = b.querySelector("#" + id);
+    if (el) el.addEventListener("input", preview);
+  });
+  b.querySelector("#swBack").addEventListener("click", function(){ pickItem(it); });
+  b.querySelector("#swGo").addEventListener("click", confirmSwap);
+  preview();
+}
+function calc(){
+  var p = S2.prod || {};
+  var qty = parseFloat((document.getElementById("swQty") || {}).value);
+  var prI = document.getElementById("swPrice");
+  var price = prI && prI.value !== "" ? parseFloat(prI.value) : (p.price != null ? p.price : null);
+  var ba = null, ln = null;
+  if ((p.ptype || "m2") === "m2"){
+    ba = parseFloat((document.getElementById("swBox") || {}).value);
+    if (!(ba > 0)) ba = (p.box_area || 1.44);
+  }
+  if (p.ptype === "plant"){
+    ln = parseFloat((document.getElementById("swLen") || {}).value);
+    if (!(ln > 0)) ln = 0.45;
+  }
+  if (!(qty > 0) || price == null || !(price >= 0)) return null;
+  return {qty: qty, price: price, box_area: ba, length_m: ln,
+          sub: Math.round(qty * price * 100) / 100,
+          boxes: ((p.ptype || "m2") === "m2") ? boxNum(qty, ba) : 0};
+}
+function preview(){
+  var el = document.getElementById("swPrev");
+  if (!el) return;
+  var o = calc();
+  var it = S2.item || {};
+  if (!o){ el.className = "swprev warn"; el.textContent = "أدخل الكمية والسعر أولاً"; return; }
+  var diff = Math.round((o.sub - Number(it.subtotal || 0)) * 100) / 100;
+  var txt = "الجديدة: " + o.qty + " " + unit(S2.prod.ptype || "m2")
+    + (o.boxes ? " (" + o.boxes + " علب)" : "")
+    + " × " + money(o.price) + " = " + money(o.sub)
+    + " — فرق الفاتورة: " + (diff > 0 ? "+" : "") + money(diff);
+  var avail = Number(S2.prod.qty || 0);
+  if (o.boxes > 0){
+    if (o.boxes > avail) el.className = "swprev warn";
+    else el.className = "swprev";
+    txt += " — الصرف: " + o.boxes + " علبة من أصل " + avail;
+    if (o.boxes > avail) txt += " ⚠️ الرصيد لا يكفي (سيُخصم بالسالب ويصححه المخزون)";
+  } else el.className = "swprev";
+  el.textContent = txt;
+}
+async function confirmSwap(){
+  var o = calc();
+  if (!o){ toast("أدخل الكمية والسعر أولاً", 1); return; }
+  var btn = document.getElementById("swGo");
+  var old = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = "⏳ جارٍ الاستبدال…"; }
+  try{
+    var body = {invoice_id: S2.inv, item_id: S2.item.id, product_id: S2.prod.id,
+                qty: o.qty, price: o.price};
+    if (o.box_area) body.box_area = o.box_area;
+    if (o.length_m) body.length_m = o.length_m;
+    var d = await api("/api/invoice/swap", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    close();
+    toast("✅ تم الاستبدال — الفاتورة #" + S2.inv + " والعمليات محفوظة");
+    try { if (window.v90vib) window.v90vib(20); } catch (e2) {}
+    if (S2.done) S2.done();
+  }catch(e){
+    toast(e && e.message ? e.message : "فشل الاستبدال — أعد المحاولة", 1);
+    if (btn){ btn.disabled = false; btn.textContent = old; }
+  }
+}
+window.invSwapSheet = openSheet;
 })();'''
 
 
@@ -13416,6 +13840,9 @@ _PWA_HTML_PATCHES = (
     # 45) v97: جسر الفواتير — عارض أصلي بلا iframe + فتح خارجي + مشاركة (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v97css">' + _PWA_V97_CSS + '</style>\n<script id="v97js">\n' + _PWA_V97_JS + '\n</script>\n</body>'),
+    # 46) v102: استبدال السلعة المباعة — لوحة واحدة في العارض + CSS/JS (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<style id="v102css">' + _PWA_V102_CSS + '</style>\n<script id="v102js">\n' + _PWA_V102_JS + '\n</script>\n</body>'),
 )
 
 
@@ -16395,6 +16822,512 @@ def _pwa_api_oil(user):
     }}
 
 
+# ═══════════════════════════════════════════════════════════
+#  v102: استبدال سلعة مباعة — نواة مشتركة (البوت + التطبيق)
+#  بلاغ يوسف: الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك
+#  تجارياً، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق:
+#  إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) ثم تبقى
+#  الفاتورة تعرض السلعة القديمة. الحل: عملية واحدة ذرّية تفعل الثلاثة.
+# ═══════════════════════════════════════════════════════════
+
+def _invoice_swap_fetch(user, invoice_id):
+    """جلب فاتورة + عناصرها للاستبدال — نفس ملكية العارض (v97):
+    مدير/مدير عام أي فاتورة، وغيرهما فاتورته (منشئاً أو مكلَّفاً).
+    يرجع (True, dict) أو (False, رسالة)."""
+    try:
+        invoice_id = int(invoice_id or 0)
+    except (TypeError, ValueError):
+        return False, "رقم فاتورة غير صالح."
+    if invoice_id <= 0:
+        return False, "رقم فاتورة غير صالح."
+    role = (user or {}).get("role")
+    uid = (user or {}).get("id")
+    if role not in (ROLE_ADMIN, ROLE_MANAGER) and not role_perm_enabled(role, PERM_INVOICE):
+        return False, "الاستبدال لمنشئي الفواتير فقط."
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, customer_name, total_amount, status, created_at, admin_id, worker_id "
+                "FROM invoices WHERE id = %s", (invoice_id,))
+            inv = cur.fetchone()
+            if not inv:
+                return False, "الفاتورة غير موجودة."
+            if (role not in (ROLE_ADMIN, ROLE_MANAGER)
+                    and inv["admin_id"] != uid and inv["worker_id"] != uid):
+                return False, "لا علاقة لك بهذه الفاتورة."
+            cur.execute(
+                "SELECT id, product_id, product_name, quantity, unit_price, subtotal, box_area, num_boxes "
+                "FROM invoice_items WHERE invoice_id = %s ORDER BY id", (invoice_id,))
+            rows = cur.fetchall()
+    finally:
+        release_connection(conn)
+    items = []
+    for r in rows:
+        it = dict(r)
+        it["ptype"] = _invoice_product_type(r["product_name"])
+        it["quantity"] = float(r["quantity"] or 0)
+        it["unit_price"] = float(r["unit_price"] or 0)
+        it["subtotal"] = float(r["subtotal"] or 0)
+        it["num_boxes"] = (int(r["num_boxes"]) if r.get("num_boxes") is not None else None)
+        it["box_area"] = (float(r["box_area"]) if r.get("box_area") is not None else None)
+        items.append(it)
+    inv = dict(inv)
+    inv["total_amount"] = float(inv["total_amount"] or 0)
+    inv["items"] = items
+    return True, inv
+
+
+def _invoice_swap_core(user, invoice_id, item_id, product_id, qty,
+                       price=None, box_area=None, length_m=None):
+    """v102: عملية الاستبدال الذرّية — تستدعى من البوت ومن التطبيق معاً.
+      1) إرجاع كمية السلعة الأصلية للمخزون (قاعدة الإنشاء نفسها: m2 بالكراتين
+         — وفواتير ما قبل v98 بلا كراتين محفوظة تُعاد بناءها من المساحة)
+      2) خصم كمية السلعة الجديدة (عند العجز: تحذير دون رفض — سلوك البوت)
+      3) تعديل عنصر الفاتورة وإعادة حساب الإجمالي — PDF يتجدد من القاعدة
+    مع سجل حركات بسبب «استبدال فاتورة #N» + تعلّم مساحة العلبة (v98).
+    user: قاموس فيه id/role (صف مستخدم البوت أو مستخدم التطبيق).
+    يرجع (True, ملخص) أو (False, رسالة)."""
+    uid = (user or {}).get("id")
+    role = (user or {}).get("role")
+    if role not in (ROLE_ADMIN, ROLE_MANAGER) and not role_perm_enabled(role, PERM_INVOICE):
+        return False, "الاستبدال لمنشئي الفواتير فقط."
+    try:
+        invoice_id = int(invoice_id or 0)
+        item_id = int(item_id or 0)
+        product_id = int(product_id or 0)
+    except (TypeError, ValueError):
+        return False, "معطيات الاستبدال غير صالحة."
+    if invoice_id <= 0 or item_id <= 0:
+        return False, "حدد الفاتورة والعنصر المراد استبداله."
+    if product_id <= 0:
+        return False, "اختر السلعة الجديدة من المخزون أولاً."
+    try:
+        qty = float(qty)
+    except (TypeError, ValueError):
+        return False, "الكمية غير صالحة."
+    if not (0 < qty <= _PWA_INV_MAX_QTY):
+        return False, "كمية غير منطقية (من 0.01 إلى " + str(_PWA_INV_MAX_QTY) + ")."
+    import math as _swap_math
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, customer_name, status, admin_id, worker_id, total_amount "
+                "FROM invoices WHERE id = %s FOR UPDATE", (invoice_id,))
+            inv = cur.fetchone()
+            if not inv:
+                return False, "الفاتورة غير موجودة."
+            if (role not in (ROLE_ADMIN, ROLE_MANAGER)
+                    and inv[3] != uid and inv[4] != uid):
+                return False, "لا علاقة لك بهذه الفاتورة."
+            if inv[2] != "approved":
+                return False, "الاستبدال متاح للفواتير المقبولة فقط."
+            cur.execute(
+                "SELECT id, product_id, product_name, quantity, unit_price, subtotal, "
+                "box_area, num_boxes FROM invoice_items WHERE id = %s AND invoice_id = %s",
+                (item_id, invoice_id))
+            it = cur.fetchone()
+            if not it:
+                return False, "عنصر الفاتورة غير موجود في هذه الفاتورة."
+            cur.execute(
+                "SELECT id, name, selling_price, box_area FROM products "
+                "WHERE id = %s AND NOT archived", (product_id,))
+            pr = cur.fetchone()
+            if not pr:
+                return False, "السلعة الجديدة غير موجودة في المخزون."
+            new_name = pr[1]
+            # السعر: قيمة المستخدم إن أُرسلت، وإلا السعر المحفوظ للسلعة الجديدة،
+            # وإلا سعر العنصر الأصلي (سلعة بلا سعر محفوظ)
+            if price is not None and str(price).strip() != "":
+                try:
+                    price = float(price)
+                except (TypeError, ValueError):
+                    return False, "السعر غير صالح."
+            else:
+                try:
+                    price = float(pr[2]) if pr[2] is not None else float(it[4])
+                except (TypeError, ValueError):
+                    price = float(it[4])
+            if not (0 <= price <= _PWA_INV_MAX_PRICE):
+                return False, "سعر غير منطقي."
+            old_name = it[2]
+            old_qty = float(it[3] or 0)
+            old_sub = float(it[5] or 0)
+            old_ptype = _invoice_product_type(old_name)
+            new_ptype = _invoice_product_type(new_name)
+            # ── بناء العنصر الجديد بنفس قواعد _pwa_invoice_build_items حرفياً ──
+            new_item = {"product_id": product_id, "product_name": new_name,
+                        "ptype": new_ptype, "unit_price": price, "subtotal": 0.0}
+            if new_ptype == "m2":
+                try:
+                    db_box = float(pr[3]) if pr[3] is not None else None
+                except (TypeError, ValueError):
+                    db_box = None
+                try:
+                    box_area = float(box_area)
+                except (TypeError, ValueError):
+                    box_area = 0.0
+                if not (0 < box_area <= 100):
+                    box_area = db_box if (db_box and 0 < db_box <= 100) else 1.44
+                elif db_box is None or abs(box_area - db_box) > 1e-9:
+                    # v98: تعلّم ذاتي — مساحة العلبة المُدخلة تُحفظ بالمنتج
+                    try:
+                        cur.execute("UPDATE products SET box_area = %s WHERE id = %s",
+                                    (box_area, product_id))
+                    except Exception:
+                        pass
+                new_item["qty_m2"] = round(qty, 2)
+                new_item["box_area"] = box_area
+                new_item["num_boxes"] = _swap_math.ceil(qty / box_area)
+                new_item["quantity"] = new_item["qty_m2"]
+                new_item["subtotal"] = new_item["qty_m2"] * price
+            elif new_ptype == "pcs":
+                new_item["quantity"] = max(1, int(qty))
+                new_item["subtotal"] = new_item["quantity"] * price
+            else:  # plant
+                try:
+                    length_m = float(length_m)
+                except (TypeError, ValueError):
+                    length_m = 0.0
+                if not (0 < length_m <= 20):
+                    length_m = 0.45
+                new_item["length_m"] = length_m
+                new_item["qty_m"] = round(qty, 2)
+                new_item["num_pieces"] = _swap_math.ceil(qty / length_m)
+                new_item["quantity"] = new_item["qty_m"]
+                new_item["subtotal"] = new_item["qty_m"] * price
+            reason = "استبدال فاتورة #" + str(invoice_id)
+            # ── 1) إرجاع الأصلية أولاً — يضمن توفر الرصيد عند الاستبدال
+            #      بنفس السلعة بكمية/سعر مختلفين ──
+            restocked = None
+            if it[1]:   # السلع اليدوية بلا معرف لم تُخصم أصلاً — لا إرجاع
+                orig_pid = int(it[1])
+                if old_ptype == "m2":
+                    try:
+                        stock_old = int(it[7]) if it[7] is not None else None
+                    except (TypeError, ValueError):
+                        stock_old = None
+                    if stock_old is None:
+                        try:
+                            ba_old = float(it[6]) if it[6] is not None else 0.0
+                        except (TypeError, ValueError):
+                            ba_old = 0.0
+                        stock_old = (_swap_math.ceil(old_qty / ba_old)
+                                     if ba_old > 0 else max(1, int(round(old_qty))))
+                    stock_old = max(1, int(stock_old))
+                else:
+                    stock_old = max(1, int(round(old_qty)))
+                cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s",
+                            (stock_old, orig_pid))
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                    "VALUES (%s, 'add', %s, %s, %s)",
+                    (orig_pid, stock_old, uid,
+                     (reason + " — إرجاع «" + str(old_name)[:60] + "»")[:200]))
+                restocked = {"product_id": orig_pid, "name": str(old_name), "qty": stock_old}
+            # ── 2) خصم الجديدة (عند العجز: تحذير دون رفض — نفس سلوك الإنشاء) ──
+            stock_new = (int(new_item["num_boxes"]) if new_ptype == "m2"
+                         else max(1, int(round(float(new_item["quantity"])))))
+            cur.execute(
+                "UPDATE products SET quantity = quantity - %s "
+                "WHERE id = %s AND quantity >= %s",
+                (stock_new, product_id, stock_new))
+            stock_warning = False
+            if cur.rowcount == 0:
+                stock_warning = True
+                logging.warning("[SWAP] مخزون غير كافٍ للسلعة #" + str(product_id)
+                                + " (المطلوب " + str(stock_new) + ") — الاستبدال استمر كبوت تلغرام")
+            cur.execute(
+                "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                "VALUES (%s, 'remove', %s, %s, %s)",
+                (product_id, stock_new, uid,
+                 (reason + " — خصم «" + str(new_name)[:60] + "»")[:200]))
+            deducted = {"product_id": product_id, "name": str(new_name), "qty": stock_new}
+            # ── 3) تعديل عنصر الفاتورة + إعادة حساب الإجمالي ──
+            cur.execute(
+                "UPDATE invoice_items SET product_id = %s, product_name = %s, quantity = %s, "
+                "unit_price = %s, subtotal = %s, box_area = %s, num_boxes = %s WHERE id = %s",
+                (product_id, new_name, new_item["quantity"], price,
+                 round(new_item["subtotal"], 2),
+                 (new_item.get("box_area") if new_ptype == "m2" else None),
+                 (new_item.get("num_boxes") if new_ptype == "m2" else None),
+                 item_id))
+            cur.execute(
+                "SELECT COALESCE(SUM(subtotal), 0) FROM invoice_items WHERE invoice_id = %s",
+                (invoice_id,))
+            new_total = round(float(cur.fetchone()[0] or 0), 2)
+            cur.execute("UPDATE invoices SET total_amount = %s WHERE id = %s",
+                        (new_total, invoice_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    _audit_log("invoice_swap", user,
+               "فاتورة #" + str(invoice_id) + ": «" + str(old_name)[:80] + "» ← «"
+               + str(new_name)[:80] + "» (الإجمالي " + ("%.2f" % old_sub) + " ← "
+               + ("%.2f" % new_item["subtotal"]) + ")")
+    return True, {
+        "ok": True, "invoice_id": invoice_id, "customer": inv[1],
+        "old_total": round(float(inv[5] or 0), 2), "total": new_total,
+        "old_item": {"name": str(old_name), "qty": old_qty, "subtotal": old_sub},
+        "new_item": {"name": str(new_name), "ptype": new_ptype,
+                     "qty": new_item["quantity"], "price": price,
+                     "subtotal": round(new_item["subtotal"], 2),
+                     "box_area": new_item.get("box_area"),
+                     "num_boxes": new_item.get("num_boxes"),
+                     "num_pieces": new_item.get("num_pieces")},
+        "restocked": restocked, "deducted": deducted,
+        "stock_warning": stock_warning,
+    }
+
+
+# ── v102: مساعدات محادثة الاستبدال في البوت (مشتركة بين حالات النص والأزرار) ──
+
+def _swap_unit_label(ptype):
+    return {"pcs": "قطعة", "plant": "م.ط", "m2": "m²"}.get(ptype, "m²")
+
+
+def _swap_item_line(it):
+    """سطر عنصر الفاتورة للاستبدال — مختصر لحدود نص زر تلغرام (64 حرفاً)."""
+    pt = it.get("ptype") or _invoice_product_type(it.get("product_name") or "")
+    qty = it.get("quantity")
+    line = "• " + str(it.get("product_name") or "?")[:30] + " — " + str(qty) + " " + _swap_unit_label(pt)
+    if pt == "m2" and it.get("num_boxes"):
+        line += " (" + str(it["num_boxes"]) + " علب)"
+    line += " — " + _fmt_price(it.get("subtotal") or 0) + " د.ج"
+    return line[:60]
+
+
+def _swap_cancel_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]])
+
+
+def _swap_reply_target(update):
+    """هدف الرد الصحيح: في نداءات الأزرار (callback) لا يوجد update.message —
+    الرد يتم عبر رسالة الزر نفسها (callback_query.message) — خطأ اكتشفه
+    اختبار المحادثة قبل الوصول للإنتاج (كان سيقع AttributeError على زر
+    «السعر المحفوظ» و«المساحة المحفوظة» واختيار السلعة)."""
+    q = getattr(update, "callback_query", None)
+    if q is not None and getattr(q, "message", None) is not None:
+        return q.message
+    return getattr(update, "message", None)
+
+
+async def _swap_pick_product(update, context, p):
+    """اختيار السلعة الجديدة (من نتائج البوت) → طلب الكمية."""
+    ud = context.user_data
+    item = ud.get("swap_item") or {}
+    prod = {"id": p["id"], "name": p["name"],
+            "ptype": _invoice_product_type(p.get("name") or ""),
+            "price": (float(p["selling_price"]) if p.get("selling_price") is not None else None),
+            "box_area": (float(p["box_area"]) if p.get("box_area") is not None else None),
+            "quantity": p.get("quantity") or 0}
+    ud["swap_prod"] = prod
+    ud.pop("swap_results", None)
+    ud["state"] = STATE_SWAP_QTY
+    msg = ("📦 الجديدة: " + prod["name"] + " [" + str(prod["quantity"]) + " متاح]"
+           + chr(10) + chr(10) + "🔢 أرسل الكمية (" + _swap_unit_label(prod["ptype"]) + ")")
+    if item.get("ptype") == prod["ptype"] and item.get("quantity"):
+        msg += " — أو أرسل " + str(item["quantity"]) + " (نفس كمية الأصلية)"
+    t = _swap_reply_target(update)
+    if t:
+        await t.reply_text(msg + ":", reply_markup=_swap_cancel_kb())
+
+
+async def _swap_price_done(update, context):
+    """بعد حسم السعر (قيمة أو skip) → مساحة العلبة لـm2 وإلا بطاقة التأكيد."""
+    ud = context.user_data
+    prod = ud.get("swap_prod") or {}
+    t = _swap_reply_target(update)
+    if not t:
+        return
+    if (prod.get("ptype") or "m2") == "m2":
+        ud["state"] = STATE_SWAP_BOX
+        ba = prod.get("box_area")
+        rows = []
+        if ba:
+            rows.append([InlineKeyboardButton("📐 المساحة المحفوظة (" + str(ba) + ")",
+                                              callback_data="swapbskip")])
+        rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+        await t.reply_text(
+            "📐 أرسل مساحة العلبة (m²):", reply_markup=InlineKeyboardMarkup(rows))
+        return
+    await _swap_confirm_card(update, context)
+
+
+async def _swap_after_price(update, context, price):
+    ud = context.user_data
+    ud["swap_price"] = price
+    await _swap_price_done(update, context)
+
+
+async def _swap_confirm_card(update, context):
+    """بطاقة التأكيد قبل التنفيذ — كل التفاصيل واضحة قبل المساس بالمخزون."""
+    ud = context.user_data
+    inv = ud.get("swap_inv") or {}
+    item = ud.get("swap_item") or {}
+    prod = ud.get("swap_prod") or {}
+    qty = ud.get("swap_qty")
+    price = ud.get("swap_price")
+    if price is None:
+        price = prod.get("price")
+    pt = prod.get("ptype") or "m2"
+    new_sub = round(float(qty or 0) * float(price or 0), 2)
+    unit = _swap_unit_label(pt)
+    old_line = "❌ " + _swap_item_line(item)
+    new_line = ("✅ " + str(prod.get("name"))[:30] + " — " + str(qty) + " " + unit
+                + " × " + _fmt_price(price) + " = " + _fmt_price(new_sub) + " د.ج")
+    if pt == "m2":
+        ba = ud.get("swap_box") or prod.get("box_area") or 1.44
+        import math as _cm
+        new_line += chr(10) + "📦 عدد العلب: " + str(_cm.ceil(float(qty) / float(ba)))
+    total_line = ("💰 إجمالي الفاتورة: " + _fmt_price(inv.get("total") or 0)
+                  + " ← " + _fmt_price(float(inv.get("total") or 0) - float(item.get("subtotal") or 0) + new_sub)
+                  + " د.ج")
+    ud["state"] = "waiting_swap_confirm"
+    t = _swap_reply_target(update)
+    if not t:
+        return
+    await t.reply_text(
+        "🔄 تأكيد الاستبدال — فاتورة #" + str(inv.get("id")) + " (" + str(inv.get("customer"))[:30] + ")"
+        + chr(10) + "━━━━━━━━━━━━━━" + chr(10) + old_line + chr(10) + new_line
+        + chr(10) + "━━━━━━━━━━━━━━" + chr(10) + total_line + chr(10) + chr(10)
+        + "الإرجاع والخصم وتعديل الفاتورة يتم معاً بضغطة واحدة:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تأكيد الاستبدال", callback_data="swapyes"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="swapno")],
+        ]))
+
+
+async def callback_swap_handler(update, context):
+    """v102: أزرار محادثة الاستبدال — اختيار العنصر/السلعة، تخطي السعر/المساحة،
+    التأكيد والإلغاء. كل الحساب الثقيل في النواة المشتركة _invoice_swap_core."""
+    q = update.callback_query
+    data = q.data or ""
+    user = update.effective_user
+    ud = context.user_data
+    try:
+        await q.answer()
+    except Exception:
+        pass
+    if data in ("swap_cancel", "swapno"):
+        ud.clear()
+        try:
+            await q.message.reply_text("❌ تم الإلغاء.", reply_markup=get_role_keyboard(user.id))
+        except Exception:
+            pass
+        return
+    if data == "swapback_prod":
+        ud.pop("swap_prod", None)
+        ud.pop("swap_results", None)
+        ud["state"] = STATE_SWAP_PROD
+        await q.message.reply_text("🔍 أرسل اسم السلعة الجديدة:", reply_markup=_swap_cancel_kb())
+        return
+    if data.startswith("swapitem_"):
+        try:
+            iid = int(data.split("_", 1)[1])
+        except (TypeError, ValueError):
+            return
+        inv = ud.get("swap_inv") or {}
+        item = next((it for it in (inv.get("items") or []) if it.get("id") == iid), None)
+        if not item:
+            ud.clear()
+            await q.message.reply_text("⌛ انتهت الجلسة — اضغط «🔄 استبدال سلعة» من جديد.",
+                                       reply_markup=get_role_keyboard(user.id))
+            return
+        ud["swap_item"] = item
+        ud["state"] = STATE_SWAP_PROD
+        await q.message.reply_text(
+            _swap_item_line(item) + chr(10) + chr(10) + "🔍 أرسل اسم السلعة الجديدة:",
+            reply_markup=_swap_cancel_kb())
+        return
+    if data.startswith("swapsel_"):
+        try:
+            pid = int(data.split("_", 1)[1])
+        except (TypeError, ValueError):
+            return
+        p = next((x for x in (ud.get("swap_results") or []) if x.get("id") == pid), None)
+        if not p:
+            await q.message.reply_text("⌛ انتهت صلاحية النتائج — أرسل الاسم من جديد.",
+                                       reply_markup=_swap_cancel_kb())
+            return
+        await _swap_pick_product(update, context, p)
+        return
+    if data.startswith("swaplen_"):
+        try:
+            ud["swap_len"] = float(data.split("_", 1)[1])
+        except (TypeError, ValueError):
+            ud["swap_len"] = 0.45
+        ud["state"] = STATE_SWAP_PRICE
+        prod = ud.get("swap_prod") or {}
+        hint = prod.get("price")
+        rows = []
+        if hint is not None:
+            rows.append([InlineKeyboardButton("💰 السعر المحفوظ (" + _fmt_price(hint) + ")",
+                                              callback_data="swappskip")])
+        rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+        await q.message.reply_text(
+            "💰 أرسل سعر المتر (د.ج/م.ط) أو اضغط الزر لاستخدام السعر المحفوظ:",
+            reply_markup=InlineKeyboardMarkup(rows))
+        return
+    if data == "swappskip":
+        ud["swap_price"] = None
+        await _swap_price_done(update, context)
+        return
+    if data == "swapbskip":
+        ud["swap_box"] = None
+        await _swap_confirm_card(update, context)
+        return
+    if data == "swapyes":
+        inv = ud.get("swap_inv")
+        item = ud.get("swap_item")
+        prod = ud.get("swap_prod")
+        if not (inv and item and prod and ud.get("swap_qty")):
+            ud.clear()
+            await q.message.reply_text("⌛ انتهت الجلسة — اضغط «🔄 استبدال سلعة» من جديد.",
+                                       reply_markup=get_role_keyboard(user.id))
+            return
+        db_user = await asyncio.to_thread(get_user, user.id)
+        try:
+            ok, res = await asyncio.to_thread(
+                _invoice_swap_core, db_user or {"id": None, "role": ROLE_PENDING},
+                inv["id"], item["id"], prod["id"], ud.get("swap_qty"),
+                ud.get("swap_price"), ud.get("swap_box"), ud.get("swap_len"))
+        except Exception as e:
+            ok, res = False, "فشل الاتصال بالقاعدة — أعد المحاولة. (" + str(e)[:80] + ")"
+        ud.clear()
+        if not ok:
+            await q.message.reply_text("❌ " + str(res), reply_markup=get_role_keyboard(user.id))
+            return
+        ni = res.get("new_item") or {}
+        rs = res.get("restocked")
+        de = res.get("deducted") or {}
+        unit = _swap_unit_label(ni.get("ptype") or "m2")
+        msg = ("✅ تم الاستبدال في الفاتورة #" + str(res.get("invoice_id")) + chr(10)
+               + "━━━━━━━━━━━━━━" + chr(10))
+        if rs:
+            rs_unit = "علب" if _invoice_product_type(rs["name"]) == "m2" else ""
+            msg += ("↩️ رجعت «" + rs["name"] + "» للمخزون (+" + str(rs["qty"])
+                    + (rs_unit if rs_unit else "") + ")" + chr(10))
+        msg += ("✅ خُصمت «" + de.get("name", "") + "» (" + str(ni.get("qty")) + " " + unit)
+        if ni.get("num_boxes"):
+            msg += " = " + str(ni["num_boxes"]) + " علب"
+        msg += ")" + chr(10)
+        msg += ("💰 الإجمالي: " + _fmt_price(res.get("old_total")) + " ← "
+                + _fmt_price(res.get("total")) + " د.ج" + chr(10))
+        if res.get("stock_warning"):
+            msg += (chr(10) + "⚠️ رصيد المخزون للسلعة الجديدة لا يكفي — صحّح الرصيد"
+                    + chr(10) + "بزر «➕ إضافة كمية» إن كان الرصيد الفعلي موجداً." + chr(10))
+        msg += (chr(10) + "📄 PDF الفاتورة يتجدد تلقائياً عند تحميله — المرة القادمة"
+                + " ستعرض السلعة الجديدة والإجمالي الجديد.")
+        await q.message.reply_text(msg, reply_markup=get_role_keyboard(user.id))
+        return
+    # أي بيانات أخرى — تجاهل صامت (معالجات أخرى مسؤولة عنها)
+
+
 # ═════ v88: الفواتير من التطبيق — نفس مسار فاتورة تلغرام حرفياً ═════
 #  (نفس الجداول، نفس الخصم من المخزون، نفس إشعار العامل، نفس PDF)
 #  الزبون ← السلع (بحث) ← السلة ← العامل ← إنشاء → PDF جاهز للتحميل.
@@ -16787,6 +17720,32 @@ def _pwa_api_invoice_get(user, invoice_id):
         "by_me": (inv["admin_id"] == user["id"]),                    # v97: من إنشائي
         "assigned_to_me": (inv["worker_id"] == user["id"] and inv["admin_id"] != user["id"]),  # v97
     }
+
+
+def _pwa_api_invoice_swap(user, payload):
+    """v102: استبدال سلعة مباعة من التطبيق — غلاف رقيق فوق النواة المشتركة
+    _invoice_swap_core (نفس الوظيفة التي يستعملها زر البوت «🔄 استبدال سلعة»).
+    صلاحية منشئي الفواتير + ملكية الفاتورة تُفحص داخل النواة."""
+    if not isinstance(payload, dict):
+        payload = {}
+    qty = payload.get("qty")
+    try:
+        qty = float(qty)
+    except (TypeError, ValueError):
+        return False, "الكمية غير صالحة."
+    price = payload.get("price")
+    if price is not None and str(price).strip() == "":
+        price = None
+    if price is not None:
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return False, "السعر غير صالح."
+    return _invoice_swap_core(
+        user,
+        payload.get("invoice_id"), payload.get("item_id"), payload.get("product_id"),
+        qty, price,
+        payload.get("box_area"), payload.get("length_m"))
 
 
 def _pwa_api_users(user):
@@ -18682,6 +19641,25 @@ async def pwa_invoice_pdf_handler(request):
     return web.Response(
         body=body, content_type="application/pdf",
         headers={"Content-Disposition": disp + '; filename="' + fname + '"'})
+
+
+async def pwa_invoice_swap_handler(request):
+    """v102: استبدال سلعة مباعة — POST JSON {invoice_id, item_id, product_id,
+    qty, price?, box_area?, length_m?} — نفس النواة التي يستعملها البوت."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    result = await _pwa_run(_pwa_api_invoice_swap, user, body)
+    if result is None:
+        return _pwa_err(403, "الاستبدال لمنشئي الفواتير فقط.")
+    ok, payload = result
+    if not ok:
+        return _pwa_err(400, payload)
+    return _pwa_jr(payload)
 
 
 async def pwa_users_handler(request):
@@ -21117,6 +22095,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/invoice/list", pwa_invoice_list_handler)
     app.router.add_get("/api/invoice/get", pwa_invoice_get_handler)       # v97: JSON للعارض الأصلي
     app.router.add_get("/api/invoice/pdf", pwa_invoice_pdf_handler)
+    app.router.add_post("/api/invoice/swap", pwa_invoice_swap_handler)   # v102: استبدال سلعة مباعة
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
@@ -21167,7 +22146,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (86 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (87 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -21180,7 +22159,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
