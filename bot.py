@@ -3092,6 +3092,11 @@ STATE_SWAP_PROD = "waiting_swap_prod"      # اسم السلعة الجديدة 
 STATE_SWAP_QTY = "waiting_swap_qty"        # الكمية
 STATE_SWAP_PRICE = "waiting_swap_price"    # السعر
 STATE_SWAP_BOX = "waiting_swap_box"        # مساحة العلبة (m2)
+# v103: الاستبدال العام (بدون فاتورة) — مخزون فقط
+STATE_SWAPG_RET_SEL = "waiting_swapg_ret_sel"   # بحث السلعة المُرجَعة
+STATE_SWAPG_RET_QTY = "waiting_swapg_ret_qty"   # كميتها
+STATE_SWAPG_NEW_SEL = "waiting_swapg_new_sel"   # بحث السلعة البديلة
+STATE_SWAPG_NEW_QTY = "waiting_swapg_new_qty"   # كميتها
 STATE_OIL_READING = "waiting_oil_reading"
 STATE_OIL_NEW_HOURS = "waiting_oil_new_hours"
 
@@ -3153,7 +3158,7 @@ ROLE_PICK_ORDER = (ROLE_SELLER, ROLE_STOCK, ROLE_MANAGER, ROLE_EXTERNAL)
 
 # أزرار لوحة الإدارة المسموحة لعامل المخزون (تُفحص في بوابة الفئات)
 STOCK_ADMIN_BTNS = (BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT,
-                    BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_PENDING_ADMIN)
+                    BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_PENDING_ADMIN, BTN_SWAP)
 STOCK_ADMIN_PREFIXES = (BTN_PENDING_ADMIN,)
 
 
@@ -3225,6 +3230,7 @@ ROLE_BTN_PERM_MAP = {
         BTN_MOVEMENTS:     PERM_MOVEMENTS,
         BTN_LOW_STOCK:     PERM_LOW_STOCK,
         BTN_PENDING_ADMIN: PERM_PENDING,
+        BTN_SWAP:          PERM_REMOVE,   # v103: الاستبدال العام (النواة تفحص الصلاحيتين معاً)
     },
     ROLE_EXTERNAL: {
         BTN_SEARCH: PERM_SEARCH,
@@ -3781,6 +3787,9 @@ def get_stock_keyboard():
         _r2.append(BTN_EDIT)
     if _r2:
         rows.append(_r2)
+    # v103: الاستبدال العام — يظهر مع تفعيل الصلاحيتين معاً (إضافة كمية + إخراج)
+    if perms.get(PERM_ADD_QTY) and perms.get(PERM_REMOVE):
+        rows.append([BTN_SWAP])
     _r3 = []
     if perms.get(PERM_MOVEMENTS):
         _r3.append(BTN_MOVEMENTS)
@@ -7875,18 +7884,25 @@ async def handle_admin_message(update, context):
                 ]))
             return
         if text == BTN_SWAP:
-            # v102: استبدال سلعة مباعة — محادثة واحدة بدل جولات إرجاع/إخراج
-            _set_state(context, STATE_SWAP_INV)
-            context.user_data.pop("swap_inv", None)
-            context.user_data.pop("swap_item", None)
-            context.user_data.pop("swap_prod", None)
+            # v103: اختيار النمط — مرتبط بفاتورة (v102) أو مخزون فقط (عام — طلب يوسف)
+            _sw_role = await asyncio.to_thread(_get_role, user.id)
+            _sw_rows = []
+            if _sw_role in (ROLE_ADMIN, ROLE_MANAGER) or role_perm_enabled(_sw_role, PERM_INVOICE):
+                _sw_rows.append([InlineKeyboardButton(
+                    "🧾 مرتبط بفاتورة — تصحيح فاتورة مقبولة",
+                    callback_data="swapmode_inv")])
+            if _sw_role in (ROLE_ADMIN, ROLE_MANAGER, ROLE_STOCK):
+                _sw_rows.append([InlineKeyboardButton(
+                    "📦 مخزون فقط — بلا فاتورة",
+                    callback_data="swapmode_gen")])
+            _sw_rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+            for _sw_k in ("swap_inv", "swap_item", "swap_prod", "swapg_ret", "swapg_new"):
+                context.user_data.pop(_sw_k, None)
+            _set_state(context, "waiting_swap_mode")
             await update.message.reply_text(
-                "🔄 استبدال سلعة مباعة" + chr(10) + chr(10)
-                + "الزبون غيّر السلعة عند الاستلام؟ أرسل رقم الفاتورة"
-                + " (مثال: 10) وسأتكفل بالباقي في خطوات قليلة:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")]
-                ]))
+                "🔄 استبدال سلعة" + chr(10) + chr(10)
+                + "اختر نوع الاستبدال:",
+                reply_markup=InlineKeyboardMarkup(_sw_rows))
             return
         if text == BTN_INCOMING or text.startswith(BTN_INCOMING):
             await _show_admin_incoming_orders(update, context)
@@ -8275,6 +8291,90 @@ async def handle_admin_message(update, context):
             return
         context.user_data["swap_box"] = box_area
         await _swap_confirm_card(update, context)
+        return
+
+    # ═══ v103: محادثة الاستبدال العام (مخزون فقط — بلا فاتورة) ═══
+    if state == STATE_SWAPG_RET_SEL:
+        results = await asyncio.to_thread(search_products, text.strip())
+        results = [p for p in results if p.get("id")]
+        if not results:
+            await update.message.reply_text(
+                "❌ \"" + text.strip()[:60] + "\" غير موجودة — أرسل اسم آخر:",
+                reply_markup=_swap_cancel_kb())
+            return
+        if len(results) == 1:
+            await _swapg_pick_ret(update, context, results[0])
+            return
+        context.user_data["swapg_results"] = results[:8]
+        _swg_btns = []
+        for p in results[:8]:
+            _swg_label = (str(p["name"]) + " [" + str(p.get("quantity") or 0) + "]")[:40]
+            _swg_btns.append([InlineKeyboardButton(_swg_label,
+                             callback_data="swapgret_" + str(p["id"]))])
+        _swg_btns.append([InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+        await update.message.reply_text(
+            "🔍 " + str(min(len(results), 8)) + " نتائج — اختر السلعة المُرجَعة:",
+            reply_markup=InlineKeyboardMarkup(_swg_btns))
+        return
+
+    if state == STATE_SWAPG_RET_QTY:
+        _swg_qty = parse_crt_input(text)
+        if _swg_qty is None:
+            await update.message.reply_text(
+                "❌ أرسل عدداً صحيحاً (مثال: 5 أو 5crt).",
+                reply_markup=_swap_cancel_kb())
+            return
+        _swg_ret = context.user_data.get("swapg_ret") or {}
+        _swg_ret["qty"] = _swg_qty
+        context.user_data["swapg_ret"] = _swg_ret
+        _set_state(context, STATE_SWAPG_NEW_SEL)
+        await update.message.reply_text(
+            "✅ مسجّل: ↩️ " + str(_swg_ret.get("name", ""))[:40] + " (+" + str(_swg_qty) + ")"
+            + chr(10) + chr(10) + "3/4 🔍 أرسل اسم السلعة البديلة:",
+            reply_markup=_swap_cancel_kb())
+        return
+
+    if state == STATE_SWAPG_NEW_SEL:
+        results = await asyncio.to_thread(search_products, text.strip())
+        results = [p for p in results if p.get("id")]
+        if not results:
+            await update.message.reply_text(
+                "❌ \"" + text.strip()[:60] + "\" غير موجودة — أرسل اسم آخر:",
+                reply_markup=_swap_cancel_kb())
+            return
+        _swg_ret2 = context.user_data.get("swapg_ret") or {}
+        if len(results) == 1 and _swg_ret2.get("id") \
+                and int(_swg_ret2["id"]) == int(results[0]["id"]):
+            await update.message.reply_text(
+                "❌ هذه هي السلعة المُرجَعة نفسها — أرسل اسم السلعة البديلة:",
+                reply_markup=_swap_cancel_kb())
+            return
+        if len(results) == 1:
+            await _swapg_pick_new(update, context, results[0])
+            return
+        context.user_data["swapg_results"] = results[:8]
+        _swg_btns2 = []
+        for p in results[:8]:
+            _swg_label2 = (str(p["name"]) + " [" + str(p.get("quantity") or 0) + "]")[:40]
+            _swg_btns2.append([InlineKeyboardButton(_swg_label2,
+                              callback_data="swapgnew_" + str(p["id"]))])
+        _swg_btns2.append([InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")])
+        await update.message.reply_text(
+            "🔍 " + str(min(len(results), 8)) + " نتائج — اختر السلعة البديلة:",
+            reply_markup=InlineKeyboardMarkup(_swg_btns2))
+        return
+
+    if state == STATE_SWAPG_NEW_QTY:
+        _swg_qty2 = parse_crt_input(text)
+        if _swg_qty2 is None:
+            await update.message.reply_text(
+                "❌ أرسل عدداً صحيحاً (مثال: 5 أو 5crt).",
+                reply_markup=_swap_cancel_kb())
+            return
+        _swg_new = context.user_data.get("swapg_new") or {}
+        _swg_new["qty"] = _swg_qty2
+        context.user_data["swapg_new"] = _swg_new
+        await _swapg_confirm_card(update, context)
         return
 
     if state == STATE_ADD_NAME:
@@ -10651,6 +10751,9 @@ def build_application():
     # v102: أزرار محادثة استبدال السلعة المباعة
     app.add_handler(CallbackQueryHandler(callback_swap_handler,
                                          pattern="^(swapitem_|swapsel_|swaplen_|swappskip|swapbskip|swapyes|swapno|swap_cancel|swapback_prod)"))
+    # v103: أزرار الاستبدال العام (بلا فاتورة) — أنماط منفصلة عن v102 بلا تقاطع
+    app.add_handler(CallbackQueryHandler(callback_swapg_handler,
+                                         pattern="^(swapmode_|swapgret_|swapgnew_|swapg_go)"))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("backup_test", backup_test_command))
     app.add_handler(CommandHandler("testmail", testmail_command))  # v36: اختبار البريد
@@ -10985,7 +11088,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v102"  # v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v103"  # v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12567,7 +12670,9 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     }
   });
   window.loadInvoice = loadInvoice;
-  renderCart();
+  /* v103: استدعاء renderCart كان يرمي «$ is not defined» عند الإقلاع ($ تُعرّف لاحقاً
+     في النواة) فيتوقف تهيئة سلة الفاتورة صامتاً — خطأ صفحة قديم من أيام v84 */
+  try { renderCart(); } catch (_e84) {}
 })();"""
 
 
@@ -13603,6 +13708,208 @@ async function confirmSwap(){
 window.invSwapSheet = openSheet;
 })();'''
 
+_PWA_V103_CSS = r'''/* v103: الاستبدال العام — نفس هوية لوحة v102 (الطبقات عالمية، الطبقة هنا للغلاف فقط) */
+#swapgOv{position:fixed;inset:0;background:#000c;z-index:10001;display:none;flex-direction:column;align-items:center;justify-content:flex-end}'''
+
+_PWA_V103_JS = r'''/* v103: الاستبدال العام — بلا فاتورة: زر في رأس شاشة المخزون يفتح لوحة من
+   أربع خطوات بنفس هوية لوحة v102 (السلعة المُرجَعة ← كميتها ← السلعة البديلة ←
+   كميتها وتأكيد) — يوسف: «بصفة عامة وليس خيار إنشاء الفواتير فقط». التنفيذ
+   عبر /api/swap/general فوق النواة الذرّية execute_general_swap */
+(function () {
+"use strict";
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+  });
+}
+var G = {ret:null, nw:null, ov:null, busy:false};
+function unitAr(n){
+  n = String(n || "").trim().toLowerCase();
+  return (n.indexOf("motif") === 0 || n.indexOf("plante") === 0
+          || n.indexOf("120/60") === 0 || n.indexOf("120x60") === 0
+          || n.indexOf("120×60") === 0) ? "قطعة" : "كرتون";
+}
+function ensureOv(){
+  if (G.ov) return G.ov;
+  var ov = document.createElement("div");
+  ov.id = "swapgOv";
+  document.body.appendChild(ov);
+  ov.addEventListener("click", function(e){ if (e.target === ov) close(); });
+  G.ov = ov;
+  return ov;
+}
+function close(){
+  if (G.ov){ G.ov.style.display = "none"; G.ov.innerHTML = ""; }
+  G.ret = null; G.nw = null; G.busy = false;
+}
+function head(t){
+  return '<div class="swaphd"><b>' + t + '</b>'
+    + '<button type="button" class="btn mini gray" id="swgX">✕</button></div>';
+}
+function searchBox(ph, idQ, idRes){
+  return '<div class="swfld"><label>🔍 اكتب اسم السلعة:</label>'
+    + '<input id="' + idQ + '" type="text" inputmode="search" placeholder="' + ph + '" autocomplete="off"></div>'
+    + '<div id="' + idRes + '"><p class="swEmpty">ستظهر النتائج هنا…</p></div>';
+}
+function wireSearch(idQ, idRes, onPick){
+  var inp = document.getElementById(idQ);
+  var res = document.getElementById(idRes);
+  var t = null, seq = 0;
+  inp.addEventListener("input", function(){ clearTimeout(t); t = setTimeout(doSearch, 280); });
+  async function doSearch(){
+    var my = ++seq;
+    try{
+      var d = await api("/api/swap/products?q=" + encodeURIComponent(inp.value.trim()), {noCache:true});
+      if (my !== seq) return;
+      var list = (d.products || []).filter(function(p){
+        return !G.ret || String(p.id) !== String(G.ret.id);
+      });
+      if (!list.length){
+        res.innerHTML = '<p class="swEmpty">' + (inp.value.trim() ? "لا نتائج" : "ستظهر النتائج هنا…") + '</p>';
+        return;
+      }
+      res.innerHTML = list.map(function(p){
+        return '<div class="swItem"><div class="info"><b>' + esc(p.name) + '</b>'
+          + '<span>📦 ' + (p.qty || 0) + " " + unitAr(p.name) + '</span></div>'
+          + '<button type="button" class="btn mini gold" data-sgpid="' + p.id + '">اختيار</button></div>';
+      }).join("");
+      res.querySelectorAll("[data-sgpid]").forEach(function(b){
+        b.addEventListener("click", function(){
+          var p = null;
+          list.forEach(function(x){ if (String(x.id) === b.getAttribute("data-sgpid")) p = x; });
+          if (p) onPick(p);
+        });
+      });
+    }catch(e){ if (my === seq) res.innerHTML = '<p class="swEmpty">' + esc(e && e.message ? e.message : "خطأ") + '</p>'; }
+  }
+}
+function bindClose(){
+  document.getElementById("swgX").addEventListener("click", close);
+}
+function step1(){
+  G.ret = null; G.nw = null; G.busy = false;
+  var ov = ensureOv();
+  ov.innerHTML = '<div class="swapSheet">' + head("🔄 استبدال — 1/4 السلعة المُرجَعة")
+    + '<div class="swfold">↩️ السلعة التي أخذها الزبون أصلاً وسترجع للمخزون</div>'
+    + searchBox("مثال: بلاط 60x60…", "swgQ1", "swgRes1") + '</div>';
+  ov.style.display = "flex";
+  bindClose();
+  try { if (window.v90vib) window.v90vib(8); } catch (e0) {}
+  wireSearch("swgQ1", "swgRes1", function(p){ G.ret = p; step2(); });
+}
+function step2(){
+  var ov = G.ov;
+  ov.innerHTML = '<div class="swapSheet">' + head("🔄 استبدال — 2/4 كمية المُرجَعة")
+    + '<div class="swfold">↩️ <b>' + esc(G.ret.name) + '</b> — المتاح حالياً: ' + (G.ret.qty || 0) + " " + unitAr(G.ret.name) + '</div>'
+    + '<div class="swfld"><label>🔢 كم ' + unitAr(G.ret.name) + ' ترجع للمخزون؟</label>'
+    + '<input id="swgRQ" type="number" min="1" step="1" inputmode="numeric"></div>'
+    + '<button type="button" class="btn gold" id="swgNext" style="width:100%;margin-top:8px">التالي ➜</button></div>';
+  bindClose();
+  var inp = document.getElementById("swgRQ");
+  try { inp.focus(); } catch (e1) {}
+  document.getElementById("swgNext").addEventListener("click", function(){
+    var v = parseInt(inp.value, 10);
+    if (!(v > 0)) { toast("أرسل عدداً صحيحاً أكبر من صفر", 1); return; }
+    G.ret.qty = v;
+    step3();
+  });
+}
+function step3(){
+  var ov = G.ov;
+  ov.innerHTML = '<div class="swapSheet">' + head("🔄 استبدال — 3/4 السلعة البديلة")
+    + '<div class="swfold">✅ مسجّل: ↩️ ' + esc(G.ret.name) + " (+" + G.ret.qty + ")</div>"
+    + searchBox("مثال: بلاط 80x80…", "swgQ2", "swgRes2") + '</div>';
+  bindClose();
+  wireSearch("swgQ2", "swgRes2", function(p){ G.nw = p; step4(); });
+}
+function step4(){
+  var ov = G.ov;
+  ov.innerHTML = '<div class="swapSheet">' + head("🔄 استبدال — 4/4 الكمية والتأكيد")
+    + '<div class="swfold">✅ مسجّل: ↩️ ' + esc(G.ret.name) + " (+" + G.ret.qty + ")</div>"
+    + '<div class="swfold">🚚 <b>' + esc(G.nw.name) + '</b> — المتاح: ' + (G.nw.qty || 0) + " " + unitAr(G.nw.name) + '</div>'
+    + '<div class="swfld"><label>🔢 كم ' + unitAr(G.nw.name) + ' تُخرج للزبون؟</label>'
+    + '<input id="swgNQ" type="number" min="1" step="1" inputmode="numeric"></div>'
+    + '<div id="swgSum" style="display:none" class="swfold"></div>'
+    + '<button type="button" class="btn gold" id="swgGo" style="width:100%;margin-top:8px">✅ تنفيذ الاستبدال</button></div>';
+  bindClose();
+  var inp = document.getElementById("swgNQ");
+  var go = document.getElementById("swgGo");
+  function sync(){
+    var v = parseInt(inp.value, 10);
+    if (v > 0){
+      G.nw.qty = v;
+      var s = document.getElementById("swgSum");
+      s.style.display = "";
+      s.innerHTML = "↩️ «" + esc(G.ret.name) + "» +" + G.ret.qty
+        + " ← 🚚 «" + esc(G.nw.name) + "» -" + G.nw.qty + " — دفعة واحدة";
+    }
+  }
+  inp.addEventListener("input", sync);
+  try { inp.focus(); } catch (e2) {}
+  go.addEventListener("click", submit);
+  async function submit(){
+    sync();
+    var nq = parseInt(inp.value, 10);
+    if (!(nq > 0)) { toast("أرسل عدداً صحيحاً أكبر من صفر", 1); return; }
+    if (G.busy) return;
+    G.busy = true;
+    var old = go.textContent;
+    go.disabled = true; go.textContent = "جارٍ التنفيذ…";
+    try{
+      var d = await api("/api/swap/general", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ret_id: G.ret.id, ret_qty: G.ret.qty,
+                              new_id: G.nw.id, new_qty: nq})
+      });
+      done(d);
+    }catch(e){
+      toast(e && e.message ? e.message : "فشل الاستبدال — أعد المحاولة", 1);
+      go.disabled = false; go.textContent = old; G.busy = false;
+    }
+  }
+}
+function done(res){
+  var ov = G.ov;
+  var r = res.ret || {}, n = res.new || {};
+  ov.innerHTML = '<div class="swapSheet">' + head("✅ تم الاستبدال")
+    + '<div class="swfold">↩️ رجعت <b>' + esc(r.name) + '</b> — الرصيد الآن: ' + (r.quantity || 0) + " " + unitAr(r.name) + '</div>'
+    + '<div class="swfold">🚚 خرجت <b>' + esc(n.name) + '</b> — الرصيد الآن: ' + (n.quantity || 0) + " " + unitAr(n.name) + '</div>'
+    + (res.stock_warning ? '<div class="swfold">⚠️ رصيد البديلة كان لا يكفي — صحّحه من شاشة المخزون إن كان الفعلي موجوداً</div>' : '')
+    + '<div class="swfold">📋 الحركتان مسجلتان في سجل الحركة بسبب «استبدال مخزون»</div>'
+    + '<button type="button" class="btn gold" id="swgOK" style="width:100%;margin-top:8px">تم</button></div>';
+  document.getElementById("swgOK").addEventListener("click", close);
+  try { if (window.v90vib) window.v90vib(20); } catch (e3) {}
+  try { if (typeof window.loadInventory === "function") window.loadInventory(); } catch (e4) {}
+}
+function ensureBtn(){
+  var hd = document.querySelector("#v-inv .invhead");
+  if (!hd || document.getElementById("btnSwapGen")) return;
+  var b = document.createElement("button");
+  b.type = "button"; b.id = "btnSwapGen"; b.className = "btn mini gray";
+  b.textContent = "🔄 استبدال"; b.style.display = "none";
+  b.addEventListener("click", function(){
+    try {
+      if (!(S.perms && S.perms.swapg)) { toast("الاستبدال غير متاح لفئتك", 1); return; }
+    } catch (e5) {}
+    step1();
+  });
+  var anchor = hd.querySelector("#btnAddProd");
+  if (anchor) hd.insertBefore(b, anchor);
+  else hd.appendChild(b);
+}
+function syncVis(){
+  var b = document.getElementById("btnSwapGen");
+  if (!b) { ensureBtn(); b = document.getElementById("btnSwapGen"); if (!b) return; }
+  var on = false;
+  try { on = !!(S.perms && S.perms.swapg); } catch (e6) {}
+  b.style.display = on ? "" : "none";
+}
+ensureBtn();
+syncVis();
+setInterval(syncVis, 1500);
+window.swapgSheet = step1;
+})();'''
+
 
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
@@ -13843,6 +14150,9 @@ _PWA_HTML_PATCHES = (
     # 46) v102: استبدال السلعة المباعة — لوحة واحدة في العارض + CSS/JS (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v102css">' + _PWA_V102_CSS + '</style>\n<script id="v102js">\n' + _PWA_V102_JS + '\n</script>\n</body>'),
+    # 47) v103: الاستبدال العام — زر في رأس المخزون + لوحة بلا فاتورة (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<style id="v103css">' + _PWA_V103_CSS + '</style>\n<script id="v103js">\n' + _PWA_V103_JS + '\n</script>\n</body>'),
 )
 
 
@@ -15082,6 +15392,10 @@ def _pwa_perm_map(role):
         "invoice_view": admin or role in (ROLE_STOCK, ROLE_SELLER),
         # v93: نبض المخزون — الفريق الداخلي فقط (دون البائع الخارجي/العميل: نشاط تجاري داخلي)
         "activity": admin or role in (ROLE_STOCK, ROLE_SELLER),
+        # v103: الاستبدال العام (بلا فاتورة) — مدير/مدير عام/عامل مخزون بالصلاحيتين
+        "swapg": admin or (role == ROLE_STOCK
+                           and role_perm_enabled(role, PERM_ADD_QTY)
+                           and role_perm_enabled(role, PERM_REMOVE)),
     }
 
 
@@ -17084,6 +17398,89 @@ def _invoice_swap_core(user, invoice_id, item_id, product_id, qty,
     }
 
 
+def execute_general_swap(user, ret_pid, ret_qty, new_pid, new_qty):
+    """v103: الاستبدال العام (بلا فاتورة) — معاملة ذرّية واحدة على مستوى المخزون:
+    إرجاع السلعة الأصلية للمخزون + خصم السلعة البديلة منها، بحركتين بسبب
+    «استبدال مخزون» وسطر تدقيق واحد. عند عجز رصيد البديلة: تحذير دون رفض
+    (نفس سلوك _invoice_swap_core). تُرجع (True, ملخص) أو (False, رسالة).
+    الكميات أعداد صحيحة (كرتون/قطعة) كما في إضافة/إخراج البوت."""
+    uid = (user or {}).get("id")
+    role = (user or {}).get("role")
+    if role not in (ROLE_ADMIN, ROLE_MANAGER, ROLE_STOCK):
+        return False, "الاستبدال العام للمدراء وعامل المخزون فقط."
+    if role == ROLE_STOCK and not (role_perm_enabled(role, PERM_ADD_QTY)
+                                   and role_perm_enabled(role, PERM_REMOVE)):
+        return False, "الاستبدال يحتاج تفعيل صلاحيتي الإضافة والإخراج لفئة عامل المخزون."
+    try:
+        ret_pid = int(ret_pid or 0)
+        new_pid = int(new_pid or 0)
+        ret_qty = int(ret_qty or 0)
+        new_qty = int(new_qty or 0)
+    except (TypeError, ValueError):
+        return False, "معطيات الاستبدال غير صالحة."
+    if ret_pid <= 0 or new_pid <= 0:
+        return False, "حدد السلعتين أولاً."
+    if ret_pid == new_pid:
+        return False, "اختر سلعتين مختلفتين — لا معنى للاستبدال من نفس السلعة."
+    if ret_qty <= 0 or new_qty <= 0:
+        return False, "الكميتان يجب أن تكونا أكبر من صفر."
+    if ret_qty > _PWA_INV_MAX_QTY or new_qty > _PWA_INV_MAX_QTY:
+        return False, "كمية أكبر من الحد المسموح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            lock_a, lock_b = ((ret_pid, new_pid) if ret_pid < new_pid
+                              else (new_pid, ret_pid))
+            cur.execute(
+                "SELECT id, name, quantity FROM products WHERE id IN (%s, %s) FOR UPDATE",
+                (lock_a, lock_b))
+            rows = {r[0]: r for r in cur.fetchall()}
+            if ret_pid not in rows or new_pid not in rows:
+                conn.rollback()
+                return False, "إحدى السلعتين غير موجودة في المخزون."
+            ret_name = str(rows[ret_pid][1])
+            new_name = str(rows[new_pid][1])
+            cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s",
+                        (ret_qty, ret_pid))
+            cur.execute("UPDATE products SET quantity = quantity - %s "
+                        "WHERE id = %s AND quantity >= %s",
+                        (new_qty, new_pid, new_qty))
+            stock_warning = (cur.rowcount == 0)
+            if stock_warning:
+                logging.warning("[SWAP-G] رصيد غير كافٍ للسلعة #" + str(new_pid)
+                                + " (المطلوب " + str(new_qty) + ") — الاستبدال استمر بتحذير")
+            cur.execute(
+                "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                "VALUES (%s, 'add', %s, %s, %s)",
+                (ret_pid, ret_qty, uid,
+                 ("استبدال مخزون — إرجاع «" + ret_name[:60] + "»")[:200]))
+            cur.execute(
+                "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                "VALUES (%s, 'remove', %s, %s, %s)",
+                (new_pid, new_qty, uid,
+                 ("استبدال مخزون — خصم «" + new_name[:60] + "»")[:200]))
+            cur.execute("SELECT id, quantity FROM products WHERE id IN (%s, %s)",
+                        (lock_a, lock_b))
+            qmap = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    _audit_log("swap_general", user,
+               "«" + ret_name[:60] + "» +" + str(ret_qty) + " ↔ «"
+               + new_name[:60] + "» -" + str(new_qty))
+    return True, {
+        "ok": True,
+        "ret": {"id": ret_pid, "name": ret_name, "qty": ret_qty,
+                "quantity": qmap.get(ret_pid, 0)},
+        "new": {"id": new_pid, "name": new_name, "qty": new_qty,
+                "quantity": qmap.get(new_pid, 0)},
+        "stock_warning": stock_warning,
+    }
+
+
 # ── v102: مساعدات محادثة الاستبدال في البوت (مشتركة بين حالات النص والأزرار) ──
 
 def _swap_unit_label(ptype):
@@ -17326,6 +17723,163 @@ async def callback_swap_handler(update, context):
         await q.message.reply_text(msg, reply_markup=get_role_keyboard(user.id))
         return
     # أي بيانات أخرى — تجاهل صامت (معالجات أخرى مسؤولة عنها)
+
+
+# ── v103: مساعدات ومعالج أزرار الاستبدال العام (بلا فاتورة) ──
+
+async def _swapg_pick_ret(update, context, p):
+    """اختيار السلعة المُرجَعة → طلب كميتها."""
+    ud = context.user_data
+    ud["swapg_ret"] = {"id": p["id"], "name": p["name"]}
+    ud.pop("swapg_results", None)
+    ud["state"] = STATE_SWAPG_RET_QTY
+    t = _swap_reply_target(update)
+    if t:
+        await t.reply_text(
+            "↩️ تُرجَع: " + str(p["name"])[:40] + " ["
+            + str(p.get("quantity") or 0) + " حالياً]" + chr(10) + chr(10)
+            + "2/4 🔢 أرسل العدد المُرجَع (" + _get_unit_ar(p.get("name") or "") + "):",
+            reply_markup=_swap_cancel_kb())
+
+
+async def _swapg_pick_new(update, context, p):
+    """اختيار السلعة البديلة (مختلفة عن المُرجَعة) → طلب كميتها."""
+    ud = context.user_data
+    ret = ud.get("swapg_ret") or {}
+    if ret.get("id") is not None and int(ret["id"]) == int(p["id"]):
+        t = _swap_reply_target(update)
+        if t:
+            await t.reply_text("❌ هذه هي السلعة المُرجَعة نفسها — أرسل اسم السلعة البديلة:",
+                               reply_markup=_swap_cancel_kb())
+        return
+    ud["swapg_new"] = {"id": p["id"], "name": p["name"]}
+    ud.pop("swapg_results", None)
+    ud["state"] = STATE_SWAPG_NEW_QTY
+    t = _swap_reply_target(update)
+    if t:
+        await t.reply_text(
+            "🚚 تُخرَج: " + str(p["name"])[:40] + " ["
+            + str(p.get("quantity") or 0) + " متاح]" + chr(10) + chr(10)
+            + "4/4 🔢 أرسل العدد المأخوذ (" + _get_unit_ar(p.get("name") or "") + "):",
+            reply_markup=_swap_cancel_kb())
+
+
+async def _swapg_confirm_card(update, context):
+    """بطاقة تأكيد الاستبدال العام — كل التفاصيل قبل المساس بالمخزون."""
+    ud = context.user_data
+    ret = ud.get("swapg_ret") or {}
+    new = ud.get("swapg_new") or {}
+    ud["state"] = "waiting_swapg_confirm"
+    t = _swap_reply_target(update)
+    if not t:
+        return
+    await t.reply_text(
+        "🔄 تأكيد الاستبدال (مخزون فقط — بلا فاتورة)" + chr(10)
+        + "━━━━━━━━━━━━━━" + chr(10)
+        + "↩️ ترجع «" + str(ret.get("name", "?"))[:30] + "» للمخزون (+"
+        + str(ret.get("qty", "?")) + ")" + chr(10)
+        + "🚚 تخرج «" + str(new.get("name", "?"))[:30] + "» من المخزون (-"
+        + str(new.get("qty", "?")) + ")" + chr(10)
+        + "━━━━━━━━━━━━━━" + chr(10)
+        + "العملية كاملة تتم دفعة واحدة:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تنفيذ الاستبدال", callback_data="swapg_go"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="swap_cancel")],
+        ]))
+
+
+async def callback_swapg_handler(update, context):
+    """v103: أزرار الاستبدال العام — اختيار النمط (فاتورة/مخزون)، اختيار السلع،
+    والتنفيذ. swap_cancel/swapyes وغيرها يبقى في callback_swap_handler (v102)."""
+    q = update.callback_query
+    data = q.data or ""
+    user = update.effective_user
+    ud = context.user_data
+    try:
+        await q.answer()
+    except Exception:
+        pass
+    if data == "swapmode_inv":
+        # النمط المربوط بفاتورة — نفس محادثة v102 من رقم الفاتورة
+        ud.pop("swapg_ret", None)
+        ud.pop("swapg_new", None)
+        _set_state(context, STATE_SWAP_INV)
+        await q.message.reply_text(
+            "🔄 استبدال سلعة مباعة" + chr(10) + chr(10)
+            + "الزبون غيّر السلعة عند الاستلام؟ أرسل رقم الفاتورة (مثال: 10):",
+            reply_markup=_swap_cancel_kb())
+        return
+    if data == "swapmode_gen":
+        ud.pop("swap_inv", None)
+        ud.pop("swap_item", None)
+        ud.pop("swap_prod", None)
+        _set_state(context, STATE_SWAPG_RET_SEL)
+        await q.message.reply_text(
+            "📦 استبدال مخزون — بلا فاتورة" + chr(10) + chr(10)
+            + "1/4 🔍 أرسل اسم السلعة المُرجَعة (التي أخذها الزبون أصلاً):",
+            reply_markup=_swap_cancel_kb())
+        return
+    if data.startswith("swapgret_"):
+        try:
+            pid = int(data.split("_", 1)[1])
+        except (TypeError, ValueError):
+            return
+        p = next((x for x in (ud.get("swapg_results") or [])
+                  if x.get("id") == pid), None)
+        if not p:
+            await q.message.reply_text("⌛ انتهت صلاحية النتائج — أرسل الاسم من جديد.",
+                                       reply_markup=_swap_cancel_kb())
+            return
+        await _swapg_pick_ret(update, context, p)
+        return
+    if data.startswith("swapgnew_"):
+        try:
+            pid = int(data.split("_", 1)[1])
+        except (TypeError, ValueError):
+            return
+        p = next((x for x in (ud.get("swapg_results") or [])
+                  if x.get("id") == pid), None)
+        if not p:
+            await q.message.reply_text("⌛ انتهت صلاحية النتائج — أرسل الاسم من جديد.",
+                                       reply_markup=_swap_cancel_kb())
+            return
+        await _swapg_pick_new(update, context, p)
+        return
+    if data == "swapg_go":
+        ret = ud.get("swapg_ret") or {}
+        new = ud.get("swapg_new") or {}
+        if not (ret.get("id") and new.get("id")
+                and ret.get("qty") and new.get("qty")):
+            ud.clear()
+            await q.message.reply_text(
+                "⌛ انتهت الجلسة — اضغط «🔄 استبدال سلعة» من جديد.",
+                reply_markup=get_role_keyboard(user.id))
+            return
+        db_user = await asyncio.to_thread(get_user, user.id)
+        try:
+            ok, res = await asyncio.to_thread(
+                execute_general_swap, db_user or {"id": None, "role": ROLE_PENDING},
+                ret["id"], ret["qty"], new["id"], new["qty"])
+        except Exception as e:
+            ok, res = False, "فشل الاتصال بالقاعدة — أعد المحاولة. (" + str(e)[:80] + ")"
+        ud.clear()
+        if not ok:
+            await q.message.reply_text("❌ " + str(res), reply_markup=get_role_keyboard(user.id))
+            return
+        r_, n_ = res.get("ret") or {}, res.get("new") or {}
+        msg = ("✅ تم الاستبدال" + chr(10) + "━━━━━━━━━━━━━━" + chr(10)
+               + "↩️ رجعت «" + str(r_.get("name", ""))[:40] + "» للمخزون — الرصيد الآن: "
+               + str(r_.get("quantity", 0)) + " " + _get_unit_ar(r_.get("name", "")) + chr(10)
+               + "🚚 خرجت «" + str(n_.get("name", ""))[:40] + "» — الرصيد الآن: "
+               + str(n_.get("quantity", 0)) + " " + _get_unit_ar(n_.get("name", "")) + chr(10))
+        if res.get("stock_warning"):
+            msg += (chr(10) + "⚠️ رصيد «" + str(n_.get("name", ""))[:30]
+                    + "» كان لا يكفي — سُجّل الاستبدال، وصحّح الرصيد بزر "
+                    + "«➕ إضافة كمية» إن كان الفعلي موجوداً." + chr(10))
+        msg += chr(10) + "📋 الحركتان مسجلتان في سجل الحركة بسبب «استبدال مخزون»."
+        await q.message.reply_text(msg, reply_markup=get_role_keyboard(user.id))
+        return
+    # أي بيانات أخرى — تجاهل صامت
 
 
 # ═════ v88: الفواتير من التطبيق — نفس مسار فاتورة تلغرام حرفياً ═════
@@ -17746,6 +18300,49 @@ def _pwa_api_invoice_swap(user, payload):
         payload.get("invoice_id"), payload.get("item_id"), payload.get("product_id"),
         qty, price,
         payload.get("box_area"), payload.get("length_m"))
+
+
+def _pwa_swap_products(user, q):
+    """v103: بحث سلع للاستبدال العام — نفس استعلام بحث الفواتير بصلاحية swapg."""
+    if not _pwa_perm_map(user["role"])["swapg"]:
+        return None
+    q = str(q or "").strip()[:80]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if q:
+                cur.execute(
+                    "SELECT id, name, quantity, selling_price FROM products "
+                    "WHERE NOT archived AND name ILIKE %s "
+                    "ORDER BY LOWER(name) LIMIT 25",
+                    ("%" + q + "%",))
+            else:
+                cur.execute(
+                    "SELECT id, name, quantity, selling_price FROM products "
+                    "WHERE NOT archived ORDER BY LOWER(name) LIMIT 25")
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        release_connection(conn)
+    out = [{"id": r["id"], "name": r["name"], "qty": r["quantity"],
+            "price": r.get("selling_price")} for r in rows]
+    return {"ok": True, "products": out}
+
+
+def _pwa_api_swap_general(user, payload):
+    """v103: الاستبدال العام من التطبيق — غلاف رقيق فوق execute_general_swap."""
+    if not _pwa_perm_map(user["role"])["swapg"]:
+        return None
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        ret_pid = int(payload.get("ret_id") or 0)
+        new_pid = int(payload.get("new_id") or 0)
+        ret_qty = int(payload.get("ret_qty") or 0)
+        new_qty = int(payload.get("new_qty") or 0)
+    except (TypeError, ValueError):
+        return False, "معطيات الاستبدال غير صالحة."
+    return execute_general_swap(user, ret_pid, ret_qty, new_pid, new_qty)
 
 
 def _pwa_api_users(user):
@@ -19656,6 +20253,35 @@ async def pwa_invoice_swap_handler(request):
     result = await _pwa_run(_pwa_api_invoice_swap, user, body)
     if result is None:
         return _pwa_err(403, "الاستبدال لمنشئي الفواتير فقط.")
+    ok, payload = result
+    if not ok:
+        return _pwa_err(400, payload)
+    return _pwa_jr(payload)
+
+
+async def pwa_swap_products_handler(request):
+    """v103: بحث سلع للاستبدال العام — GET ?q=."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_swap_products, user, request.query.get("q", ""))
+    if data is None:
+        return _pwa_err(403, "الاستبدال العام للمدراء وعامل المخزون فقط.")
+    return _pwa_jr(data)
+
+
+async def pwa_swap_general_handler(request):
+    """v103: استبدال عام بلا فاتورة — POST JSON {ret_id, ret_qty, new_id, new_qty}."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    result = await _pwa_run(_pwa_api_swap_general, user, body)
+    if result is None:
+        return _pwa_err(403, "الاستبدال العام للمدراء وعامل المخزون فقط.")
     ok, payload = result
     if not ok:
         return _pwa_err(400, payload)
@@ -22096,6 +22722,8 @@ def register_pwa_routes(app):
     app.router.add_get("/api/invoice/get", pwa_invoice_get_handler)       # v97: JSON للعارض الأصلي
     app.router.add_get("/api/invoice/pdf", pwa_invoice_pdf_handler)
     app.router.add_post("/api/invoice/swap", pwa_invoice_swap_handler)   # v102: استبدال سلعة مباعة
+    app.router.add_get("/api/swap/products", pwa_swap_products_handler)  # v103: بحث سلع للاستبدال العام
+    app.router.add_post("/api/swap/general", pwa_swap_general_handler)   # v103: استبدال عام بلا فاتورة
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
@@ -22146,7 +22774,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (87 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (89 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -22159,7 +22787,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
