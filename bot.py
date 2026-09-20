@@ -1070,6 +1070,16 @@ def init_db(conn=None):
                     ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS web_photo_url TEXT;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                -- Migration (v98): كراتين الفاتورة — مساحة العلبة لكل منتج + أعمدة
+                -- الكراتين في عناصر الفاتورة (كانت تُحسب عند الإنشاء ثم تُرمى قبل الحفظ
+                -- — لذا لا تظهر في العارض ولا في PDF المُعاد توليده). أعمدة جديدة
+                -- فقط بـ IF NOT EXISTS — صفر لمس لأي بيانات موجودة.
+                DO $$ BEGIN
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS box_area NUMERIC(8,3);
+                    ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS box_area NUMERIC(8,3);
+                    ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS num_boxes NUMERIC(9,2);
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration (v90): صورة لكل سلعة — نفس معمارية v89 بالضبط:
                 -- رابط Supabase Storage إن توفّرت المفاتيح، وإلا بايتات في القاعدة كالوضع القديم.
                 -- أعمدة جديدة فقط — صفر لمس لأي بيانات موجودة.
@@ -4379,6 +4389,36 @@ def _get_unit_ar(product_name):
     """Return Arabic unit label."""
     return "قطعة" if _is_pcs_product(product_name) else "كرتون"
 
+def _boxes_exact_label(qty_m2, box_area):
+    """v98: العرض الدقيق لعدد العلب — «50» إن كان صحيحاً و«50.5» إن كان كسرياً
+    (طلب يوسف: تقريب الناتج أو عرضه كمفهوم دقيق). يرجع "" عند غياب المدخلات."""
+    try:
+        ba = float(box_area) if box_area is not None else 0.0
+        q = float(qty_m2) if qty_m2 is not None else 0.0
+    except (TypeError, ValueError):
+        return ""
+    if ba <= 0 or q <= 0:
+        return ""
+    raw = q / ba
+    if abs(raw - round(raw)) < 0.05:
+        return str(int(round(raw)))
+    return ("%.1f" % raw).rstrip("0").rstrip(".")
+
+def _boxes_item_cell(num_boxes, exact_label):
+    """v98: خلية عدد العلب للـPDF/العارض — العدد المسحوب (صحيح) مع الدقيق
+    الكسري بين قوسين عند اختلافهما (مثال: 5 (≈ 4.2))."""
+    if num_boxes is None or num_boxes == "":
+        return "", ""
+    try:
+        nb = int(float(num_boxes))
+    except (TypeError, ValueError):
+        return "", ""
+    main = str(nb)
+    sub = ""
+    if exact_label and exact_label != main:
+        sub = "≈ " + exact_label
+    return main, sub
+
 async def _show_product_detail(update, context, product):
     p = product
     # 🎯 بوابة الفئات: الخارجي يرى التوفر فقط دون كميات أو أزرار،
@@ -6866,7 +6906,12 @@ async def _invoice_show_review(update_or_query, context, from_callback=False):
         msg += str(i) + ". " + item["product_name"] + chr(10)
         pt = item.get("ptype", "m2")
         if pt == "m2":
-            msg += "   📐 " + str(item.get("qty_m2", "")) + " m² → " + str(item["quantity"]) + " علبة" + chr(10)
+            _nb = item.get("num_boxes")
+            _ex = _boxes_exact_label(item.get("qty_m2", item.get("quantity")), item.get("box_area"))
+            _box_txt = str(_nb) if _nb is not None else "؟"
+            if _ex and _ex != _box_txt:
+                _box_txt += " (≈" + _ex + ")"
+            msg += "   📐 " + str(item.get("qty_m2", "")) + " m² → " + _box_txt + " علبة" + chr(10)
             msg += "   💰 " + _fmt_price(item["unit_price"]) + " د.ج/m² × " + str(round(item.get("qty_m2", 0), 2)) + " m² = " + _fmt_price(item["subtotal"]) + " د.ج" + chr(10)
         elif pt == "pcs":
             msg += "   📦 " + str(item["quantity"]) + " قطعة" + chr(10)
@@ -7030,19 +7075,30 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
         elements.append(Spacer(1, 5*mm))
 
         # Items table - dynamic columns based on product types
+        # v98: عمود Cartons (علب) + صف مجموع الكراتين — طلب يوسف
         header = [
             Paragraph("Produit", body_style),
             Paragraph("Quantité", body_style),
+            Paragraph("Cartons", body_style),
             Paragraph("Prix", body_style),
             Paragraph("Total (DA)", body_style),
         ]
         table_data = [header]
         for item in items:
             pt = item.get("ptype", "m2")
+            crt_main, crt_sub = "", ""
+            if pt == "m2":
+                crt_main, crt_sub = _boxes_item_cell(
+                    item.get("num_boxes"),
+                    _boxes_exact_label(item.get("qty_m2", item.get("quantity")), item.get("box_area")))
+            crt_txt = crt_main if crt_main else "—"
+            if crt_sub:
+                crt_txt += '<br/><font size="7" color="#78716c">' + crt_sub + "</font>"
             if pt == "pcs":
                 table_data.append([
                     Paragraph(item["product_name"], body_style),
                     Paragraph(str(item["quantity"]) + " pcs", body_style),
+                    Paragraph(crt_txt, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/pcs", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
@@ -7054,27 +7110,43 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
                 table_data.append([
                     Paragraph(item["product_name"], body_style),
                     Paragraph(qty_txt, body_style),
+                    Paragraph(crt_txt, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
             else:
                 qty_display = str(round(item.get("qty_m2", item["quantity"]), 2)) + " m²"
-                crt_info = item.get("num_boxes") and item.get("num_boxes") != item.get("qty_m2")
-                if crt_info:
-                    qty_display += " (" + str(item["num_boxes"]) + " crt)"
                 table_data.append([
                     Paragraph(item["product_name"], body_style),
                     Paragraph(qty_display, body_style),
+                    Paragraph(crt_txt, body_style),
                     Paragraph("{:,.2f}".format(item["unit_price"]) + " DA/m²", body_style),
                     Paragraph("{:,.2f}".format(item["subtotal"]), body_style),
                 ])
 
+        # v98: مجموع الكراتين (علب كاملة للسحب) — يُعرض فقط إن وُجدت كراتين
+        total_boxes = 0
+        for item in items:
+            if item.get("ptype", "m2") == "m2" and item.get("num_boxes") is not None:
+                try:
+                    total_boxes += int(float(item["num_boxes"]))
+                except (TypeError, ValueError):
+                    pass
+        if total_boxes:
+            table_data.append([
+                # v98: PDF فرنسي بالكامل (reportlab لا يشكّل العربية) — بلا نص عربي هنا
+                Paragraph("Total Cartons", body_style),
+                "", "", "",
+                Paragraph(str(total_boxes), body_style),
+            ])
+        span_idx = len(table_data) - 1 if total_boxes else -1
+
         table_data.append([
-            Paragraph("TOTAL", body_style), "", "",
+            Paragraph("TOTAL", body_style), "", "", "",
             Paragraph("{:,.2f}".format(total), body_style),
         ])
 
-        items_table = Table(table_data, colWidths=[55*mm, 35*mm, 35*mm, 30*mm])
+        items_table = Table(table_data, colWidths=[50*mm, 30*mm, 22*mm, 35*mm, 28*mm])
         items_table.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("ALIGN", (0, 0), (0, -1), "LEFT"),
@@ -7087,6 +7159,13 @@ def _generate_invoice_pdf(invoice_id, customer_name, items, total, worker_name=N
             ("LINEBELOW", (0, -1), (-1, -1), 2, colors.Color(0.60, 0.31, 0.17)),
             ("BACKGROUND", (0, -1), (-1, -1), colors.white),
         ]))
+        if total_boxes and span_idx >= 0:
+            # v98: تمييز صف مجموع الكراتين فوق TOTAL
+            items_table.setStyle(TableStyle([
+                ("SPAN", (0, span_idx), (3, span_idx)),
+                ("BACKGROUND", (0, span_idx), (-1, span_idx), colors.Color(0.98, 0.96, 0.93)),
+                ("ALIGN", (4, span_idx), (4, span_idx), "CENTER"),
+            ]))
         elements.append(items_table)
         elements.append(Spacer(1, 10*mm))
         elements.append(Paragraph("Merci pour votre confiance !", small_style))
@@ -7144,10 +7223,12 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             for item in items:
                 # For m2 products, quantity is the area (m²); use num_boxes for stock deduction
                 stock_qty = item.get("num_boxes", item["quantity"]) if item.get("ptype") == "m2" else item["quantity"]
+                # v98: حفظ الكراتين مع العنصر (كانت تُحسب ثم تُرمى)
                 cur.execute(
-                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (invoice_id, item["product_id"], item["product_name"], item["quantity"], item["unit_price"], item["subtotal"])
+                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal, box_area, num_boxes) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (invoice_id, item["product_id"], item["product_name"], item["quantity"], item["unit_price"], item["subtotal"],
+                     item.get("box_area"), item.get("num_boxes"))
                 )
                 # Deduct from stock if product exists in DB
                 if item["product_id"]:
@@ -7228,7 +7309,13 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
             elif pt == "plant":
                 worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m", item["quantity"])) + " م.ط" + chr(10)
             else:
-                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m2", "")) + "m² → " + str(item["quantity"]) + " علبة" + chr(10)
+                # v98: عدد العلب الصحيح (كان يعرض المتر المربع باسم «علبة»)
+                _nb = item.get("num_boxes")
+                _ex = _boxes_exact_label(item.get("qty_m2", item.get("quantity")), item.get("box_area"))
+                _box_txt = str(_nb) if _nb is not None else "؟"
+                if _ex and _ex != _box_txt:
+                    _box_txt += " (≈" + _ex + ")"
+                worker_msg += str(i) + ". " + item["product_name"] + " — " + str(item.get("qty_m2", "")) + "m² → " + _box_txt + " علبة" + chr(10)
         worker_msg += "━" * 15 + chr(10)
         worker_msg += "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10) + chr(10)
         worker_msg += "⚙️ يرجى تجهيز البضاعة فوراً"
@@ -7995,6 +8082,22 @@ async def handle_admin_message(update, context):
         import math
         raw_boxes = qty_m2 / box_area
         num_boxes = math.ceil(raw_boxes)
+        # v98: حفظ مساحة العلبة في بيانات المنتج — الفواتير القادمة من التطبيق
+        # أو البوت تجلبها تلقائياً دون إعادة إدخال (فشل الحفظ لا يكسر المسار)
+        if product_id:
+            try:
+                _bc = get_connection()
+                try:
+                    with _bc.cursor() as _bcur:
+                        _bcur.execute(
+                            "UPDATE products SET box_area = %s WHERE id = %s "
+                            "AND (box_area IS NULL OR box_area <> %s)",
+                            (box_area, product_id, box_area))
+                    _bc.commit()
+                finally:
+                    release_connection(_bc)
+            except Exception as _be:
+                logging.warning("[INVOICE] box_area save failed for #%s: %s", product_id, _be)
         # Subtotal = user-requested area × price/m² (exact, not box-rounded)
         await _invoice_add_item(update, context, product_id, product_name, qty_m2, price_m2, "m2",
                                  extra_info={"requested_area": qty_m2, "box_area": box_area, "num_boxes": num_boxes})
@@ -10703,7 +10806,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v97"  # v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v98"  # v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12053,7 +12156,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       : (p.ptype === "plant" ? "الطول بالمتر (م.ط)" : "المساحة (m²)");
     $("#invQty").value = "";
     $("#invPrice").value = (p.price != null && p.price !== "") ? p.price : "";
-    var memo = INV.boxMemo[pid] || 1.44;
+    var memo = p.box_area || INV.boxMemo[pid] || 1.44;   /* v98: المساحة المحفوظة للمنتج أولاً */
     $("#invBoxWrap").style.display = (p.ptype === "m2") ? "" : "none";
     $("#invBox").value = memo;
     $("#invLenWrap").style.display = (p.ptype === "plant") ? "" : "none";
@@ -12085,13 +12188,23 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     }
     return o;
   }
+  /* v98: العرض الدقيق لعدد العلب — «50» أو «50.5» كما طلب يوسف */
+  function boxExact(q, ba){
+    q = parseFloat(q); ba = parseFloat(ba);
+    if(!(q > 0) || !(ba > 0)) return "";
+    var raw = q / ba;
+    var r = Math.round(raw);
+    if(Math.abs(raw - r) < 0.05) return String(r);
+    return (Math.round(raw * 10) / 10).toFixed(1).replace(/\.?0+$/, "");
+  }
   function showPreview(){
     var o = calcPreview();
     var el = $("#invPreview");
     if(!o){ el.textContent = ""; return; }
     var sub = o.qty * o.price;
     var extra = "";
-    if(o.ptype === "m2") extra = " &#8592; " + o.boxes + " علبة";
+    if(o.ptype === "m2"){ extra = " &#8592; " + o.boxes + " علبة";
+      var _bx = boxExact(o.qty, o.box_area); if(_bx && _bx !== String(o.boxes)) extra += " (≈" + _bx + ")"; }
     if(o.ptype === "plant") extra = " &#8592; " + o.pieces + " قطعة";
     el.innerHTML = "&#128208; " + o.qty + " " + unitLabel(o.ptype) + extra
       + " &#215; " + money(o.price) + " = " + money(sub);
@@ -12122,7 +12235,8 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     }
     box.innerHTML = INV.cart.map(function(i, ix){
       var det = i.qty + " " + unitLabel(i.ptype);
-      if(i.ptype === "m2") det += " &#8592; " + i.boxes + " علبة";
+      if(i.ptype === "m2"){ det += " &#8592; " + i.boxes + " علبة";
+        var _bx2 = boxExact(i.qty, i.box_area); if(_bx2 && _bx2 !== String(i.boxes)) det += " (≈" + _bx2 + ")"; }
       if(i.ptype === "plant") det += " &#8592; " + i.pieces + " قطعة";
       return '<div class="invRow">'
         + '<div class="info"><b>' + esc(i.name) + '</b>'
@@ -12849,6 +12963,7 @@ html[data-theme="dark"] .invTag{background:rgba(96,165,250,.16);color:#93c5fd}
 #ivwOv .ivwitems td{padding:8px 6px;border-bottom:1px solid #f0ece7;text-align:center;color:#1c1917}
 #ivwOv .ivwitems td.nm{text-align:right;font-weight:700;word-break:break-word}
 #ivwOv .ivwitems tr.tot td{background:#fdf6f0;font-weight:800;border-bottom:none;color:#9a5b2d;font-size:13.5px}
+#ivwOv .ivwsmall{display:block;font-size:9.5px;color:#8a8580;font-weight:600;margin-top:1px}
 #ivwOv .ivwft{padding:10px 16px 14px;text-align:center;font-size:11px;color:#78716c}
 #ivwOv .ivwacts{display:flex;gap:8px;max-width:560px;margin:10px auto 0}
 #ivwOv .ivwacts .btn{flex:1;padding:11px 6px;font-size:13px;margin:0}
@@ -12867,6 +12982,15 @@ function h(s){
 function money(n){
   n = Number(n || 0);
   return n.toLocaleString("fr-FR", {minimumFractionDigits:2, maximumFractionDigits:2}) + " د.ج";
+}
+/* v98: العرض الدقيق لعدد العلب — «50» أو «50.5» كما طلب يوسف */
+function boxExact(q, ba){
+  q = parseFloat(q); ba = parseFloat(ba);
+  if(!(q > 0) || !(ba > 0)) return "";
+  var raw = q / ba;
+  var r = Math.round(raw);
+  if(Math.abs(raw - r) < 0.05) return String(r);
+  return (Math.round(raw * 10) / 10).toFixed(1).replace(/\.?0+$/, "");
 }
 function qtyText(it){
   var pt = it.ptype || "m2";
@@ -12927,9 +13051,25 @@ function ensureOv(){
 }
 function paperHTML(d){
   var items = d.items || [];
+  /* v98: خلية علب لكل عنصر — m2 فقط، والقديم (قبل v98) بلا قيم يعرض — */
+  function boxCell(it){
+    if((it.ptype || "m2") !== "m2" || it.num_boxes == null) return "&#8212;";
+    var out = String(it.num_boxes);
+    if(it.boxes_exact && it.boxes_exact !== String(it.num_boxes))
+      out += '<span class="ivwsmall">&#8776; ' + h(it.boxes_exact) + '</span>';
+    return out;
+  }
+  var totBoxes = 0, anyBoxes = false;
+  items.forEach(function(it){
+    if((it.ptype || "m2") === "m2" && it.num_boxes != null){
+      var nb = parseInt(it.num_boxes, 10);
+      if(!isNaN(nb)){ totBoxes += nb; anyBoxes = true; }
+    }
+  });
   var rows = items.map(function(it, i){
     return '<tr><td class="nm">' + (i + 1) + ". " + h(it.product_name) + '</td>'
       + '<td>' + h(qtyText(it)) + '</td>'
+      + '<td>' + boxCell(it) + '</td>'
       + '<td>' + money(it.unit_price) + upLabel(it.ptype) + '</td>'
       + '<td>' + money(it.subtotal) + '</td></tr>';
   }).join("");
@@ -12945,10 +13085,11 @@ function paperHTML(d){
     + '<div><span>الزبون</span><b>' + h(d.customer || "") + '</b></div>'
     + '<div><span>العامل</span><b>' + h(d.worker_name || "—") + '</b></div>'
     + '</div>'
-    + '<table class="ivwitems"><thead><tr><th style="text-align:right">المنتج</th><th>الكمية</th>'
+    + '<table class="ivwitems"><thead><tr><th style="text-align:right">المنتج</th><th>الكمية</th><th>علب</th>'
     + '<th>السعر</th><th>الإجمالي</th></tr></thead><tbody>'
     + rows
-    + '<tr class="tot"><td colspan="3">الإجمالي</td><td>' + money(d.total) + '</td></tr>'
+    + (anyBoxes ? '<tr class="tot"><td colspan="4">إجمالي الكراتين (علب كاملة للتحميل)</td><td>' + totBoxes + '</td></tr>' : "")
+    + '<tr class="tot"><td colspan="4">الإجمالي</td><td>' + money(d.total) + '</td></tr>'
     + '</tbody></table>'
     + '<div class="ivwft">Merci pour votre confiance ! — شكراً لثقتكم</div></div>'
     + '<div class="ivwacts">'
@@ -15796,13 +15937,13 @@ def _pwa_api_invoice_products(user, q):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if q:
                 cur.execute(
-                    "SELECT id, name, quantity, selling_price FROM products "
+                    "SELECT id, name, quantity, selling_price, box_area FROM products "
                     "WHERE NOT archived AND name ILIKE %s "
                     "ORDER BY LOWER(name) LIMIT 25",
                     ("%" + q + "%",))
             else:
                 cur.execute(
-                    "SELECT id, name, quantity, selling_price FROM products "
+                    "SELECT id, name, quantity, selling_price, box_area FROM products "
                     "WHERE NOT archived ORDER BY LOWER(name) LIMIT 25")
             rows = cur.fetchall()
         conn.commit()
@@ -15810,10 +15951,16 @@ def _pwa_api_invoice_products(user, q):
         release_connection(conn)
     out = []
     for r in rows:
+        _ba = r.get("box_area")
+        try:
+            _ba = float(_ba) if _ba is not None else None
+        except (TypeError, ValueError):
+            _ba = None
         out.append({
             "id": r["id"], "name": r["name"],
             "qty": r["quantity"], "price": r.get("selling_price"),
             "ptype": _invoice_product_type(r["name"]),
+            "box_area": _ba,   # v98: المساحة المحفوظة للمنتج (null = غير محفوظة بعد)
         })
     return {"ok": True, "products": out}
 
@@ -15858,10 +16005,10 @@ def _pwa_invoice_build_items(items_raw, cur):
     pname = {}
     if pids:
         cur.execute(
-            "SELECT id, name, selling_price FROM products WHERE id = ANY(%s)",
+            "SELECT id, name, selling_price, box_area FROM products WHERE id = ANY(%s)",
             (pids,))
         for r in cur.fetchall():
-            pname[r[0]] = (r[1], r[2])
+            pname[r[0]] = (r[1], r[2], r[3])
     items = []
     for it in items_raw:
         try:
@@ -15871,7 +16018,7 @@ def _pwa_invoice_build_items(items_raw, cur):
         if pid > 0:
             if pid not in pname:
                 return None, "السلعة #" + str(pid) + " لم تعد موجودة في المخزون."
-            name, _db_price = pname[pid]
+            name, _db_price, _db_box = pname[pid]   # v98: المساحة المحفوظة مع الاسم والسعر
         else:
             name = str(it.get("name") or "").strip()[:160]
             if not name:
@@ -15889,12 +16036,32 @@ def _pwa_invoice_build_items(items_raw, cur):
         item = {"product_id": pid or None, "product_name": name, "ptype": ptype,
                 "unit_price": price, "subtotal": 0.0}
         if ptype == "m2":
+            db_box = None
+            if pid > 0:
+                try:
+                    db_box = float(pname[pid][2]) if pname[pid][2] is not None else None
+                except (TypeError, ValueError):
+                    db_box = None
             try:
                 box_area = float(it.get("box_area"))
             except (TypeError, ValueError):
                 box_area = 0.0
             if not (0 < box_area <= 100):
-                box_area = 1.44
+                # v98: تسلسل المصادر — قيمة العميل ثم المساحة المحفوظة للمنتج
+                # (من فاتورة سابقة) ثم 1.44 افتراضياً
+                box_area = db_box if (db_box and 0 < db_box <= 100) else 1.44
+            elif pid > 0 and (db_box is None or abs(box_area - db_box) > 1e-9):
+                # v98: تعلّم ذاتي — مساحة العلبة المُدخلة تُحفظ في بيانات المنتج
+                # لتُستخدم تلقائياً في الفواتير القادمة (نفس المعاملة — إن فشلت
+                # الفاتورة يتراجع التعلم معها، لا تعارض)
+                try:
+                    cur.execute(
+                        "UPDATE products SET box_area = %s WHERE id = %s",
+                        (box_area, pid))
+                    if cur.rowcount:
+                        logging.info("[INVOICE] box_area learned for product #%s: %s", pid, box_area)
+                except Exception:
+                    pass
             item["qty_m2"] = round(qty, 2)
             item["box_area"] = box_area
             item["num_boxes"] = _inv_math.ceil(qty / box_area)
@@ -15950,11 +16117,14 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
                 (customer, wrow[0], user["id"], total))
             invoice_id = cur.fetchone()[0]
             for item in items:
+                # v98: الكراتين تُحفظ مع العنصر — كانا تُحسب ثم تُرمى فلا تظهر
+                # في العارض ولا في PDF المُعاد توليده
                 cur.execute(
-                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, unit_price, subtotal, box_area, num_boxes) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (invoice_id, item["product_id"], item["product_name"],
-                     item["quantity"], item["unit_price"], item["subtotal"]))
+                     item["quantity"], item["unit_price"], item["subtotal"],
+                     item.get("box_area"), item.get("num_boxes")))
                 if item["product_id"]:
                     # نفس سلوك البوت: خصم بشرط الكفاية — عند العجز تحذير دون رفض
                     stock_qty = (item.get("num_boxes", item["quantity"])
@@ -16109,7 +16279,7 @@ def _pwa_api_invoice_get(user, invoice_id):
                     and inv["admin_id"] != user["id"] and inv["worker_id"] != user["id"]):
                 return False, "لا علاقة لك بهذه الفاتورة."
             cur.execute(
-                "SELECT product_id, product_name, quantity, unit_price, subtotal "
+                "SELECT product_id, product_name, quantity, unit_price, subtotal, box_area, num_boxes "
                 "FROM invoice_items WHERE invoice_id = %s ORDER BY id",
                 (invoice_id,))
             rows = cur.fetchall()
@@ -16120,6 +16290,16 @@ def _pwa_api_invoice_get(user, invoice_id):
     for r in rows:
         it = dict(r)
         it["ptype"] = _invoice_product_type(r["product_name"])
+        if it["ptype"] == "m2" and it.get("box_area") is not None:
+            # v98: بيانات الكراتين من القاعدة (الفواتير قبل v98 بلا قيم — العارض يعرض —)
+            try:
+                it["box_area"] = float(it["box_area"])
+                it["num_boxes"] = int(float(it["num_boxes"])) if it.get("num_boxes") is not None else None
+            except (TypeError, ValueError):
+                it["box_area"] = None
+                it["num_boxes"] = None
+        it["boxes_exact"] = (_boxes_exact_label(it.get("quantity"), it.get("box_area"))
+                             if (it["ptype"] == "m2" and it.get("num_boxes") is not None and it.get("box_area")) else "")
         items.append(it)
     return True, {
         "ok": True, "invoice_id": inv["id"], "customer": inv["customer_name"],
@@ -20511,7 +20691,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
