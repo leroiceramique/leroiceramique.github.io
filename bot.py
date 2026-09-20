@@ -10806,7 +10806,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v99"  # v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v100"  # v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -11983,37 +11983,60 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     return pt === "pcs" ? "قطعة" : (pt === "plant" ? "م.ط" : "m²");
   }
 
-  // ── v99: تحميل PDF يعمل فعلاً على الجهاز — بلاغ يوسف: زر التحميل لا ينزل على
-  // الهاتف (blob:a.download يفشل صامتاً في نافذة standalone/وبفيو أندرويد).
-  // الحل: على الهاتف المثبّت (standalone) تنقّل مباشر إلى /api/invoice/pdf —
-  // الخادم يرجع Content-Disposition: attachment فيتولّى مدير تنزيل أندرويد
-  // الملف (إشعار + مجلد التنزيلات). وعلى الحاسوب نفس مسار fetch+blob السليم.
-  // وكلا المسارين يسبقه فحص probe خفيف (بلا توليد PDF) لرسالة خطأ حقيقية.
+  // ── v100: تحميل PDF يصل فعلاً إلى ملف على الجهاز — بلاغ يوسف بعد v99:
+  // «تحميل الفاتورة رقم 10 كمثال لكن الملف المحمل لا يوجد في الجهاز».
+  // التشخيص: (1) السِوِس ووركر كان يعترض /api/invoice/pdf ويمرّر ملف التنزيل
+  // عبر أنبوبه فتفشل في نافذة التطبيق — أصبح مستثنى نهائياً (المتصفح الأصلي
+  // يتكفل به). (2) blob:a.download يُتجاهل صامتاً على الهاتف. (3) الفحص المسبق
+  // داخل النقرة (await) كان يُفقد إيماءة المستخدم فتُحجب النوافذ الجديدة.
+  // الحل: عارض الفاتورة يفحص الجهوزية (probe بلا توليد PDF) فور فتحه ويحفظ
+  // النتيجة — فتبقى نقرة «تحميل» متزامنة داخل الإيماءة: على الهاتف فتح تبويب
+  // متصفح لمسار attachment (مدير تنزيل النظام: إشعار + مجلد التنزيلات — مسار
+  // المتصفح الأصلي الأضمن)، وعلى الحاسوب fetch+blob كما كان.
+  var INVPROBE = {};   // invoice_id → true (جاهزة) أو نص رسالة الخطأ
+
+  function isPhone(){
+    try{
+      if (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean")
+        return navigator.userAgentData.mobile;
+    }catch(e0){}
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+  }
+
+  async function invPreprobe(id){
+    try{
+      var pr = await fetch("/api/invoice/pdf?id=" + id + "&probe=1", {credentials:"same-origin"});
+      if(pr.ok){ INVPROBE[id] = true; return; }
+      var pm = "تعذر التحميل (" + pr.status + ")";
+      try{ var pj = await pr.json(); if(pj && pj.error) pm = pj.error; }catch(pe){}
+      INVPROBE[id] = pm;
+    }catch(e0){ delete INVPROBE[id]; }   // شبكة متعثرة — يُعاد الفحص عند النقرة
+  }
+  window.invPreprobe = invPreprobe;   // العارض يستدعيها فور فتح أي فاتورة
+
   async function dlPdf(id, btn){
     var t = btn ? btn.textContent : "";
     if(btn){ btn.disabled = true; btn.textContent = "\u23F3 جارٍ..."; }
-    var url = null;
-    var standalone = false;
     try{
-      standalone = (!!(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches))
-        || window.navigator.standalone === true;
-    }catch(e0){}
-    try{
-      // v99: فحص جهوزية (صلاحية/وجود الفاتورة) دون توليد PDF — رسالة خطأ حقيقية
-      var pr = await fetch("/api/invoice/pdf?id=" + id + "&probe=1", {credentials:"same-origin"});
-      if(!pr.ok){
-        var pm = "تعذر التحميل (" + pr.status + ")";
-        try{ var pj = await pr.json(); if(pj && pj.error) pm = pj.error; }catch(pe){}
-        throw new Error(pm);
+      var known = INVPROBE[id];
+      if (known && known !== true) throw new Error(known);   // خطأ معروف مسبقاً
+      if (!known){
+        await invPreprobe(id);        // لم يُفحص بعد (نقرة سريعة جداً)
+        known = INVPROBE[id];
+        if (known && known !== true) throw new Error(known);
       }
-      if(standalone){
-        // الهاتف: مدير تنزيل النظام يستلم الملف من ترويسة attachment مباشرة
-        toast("\u23F3 بدأ التحميل — تجده في إشعارات الجهاز ومجلد التنزيلات");
-        try{ window.location.href = "/api/invoice/pdf?id=" + id; }catch(e1){}
+      var url = "/api/invoice/pdf?id=" + id;
+      if (isPhone()){
+        // الهاتف: تبويب متصفح أصلي يستلم الملف بترويسة attachment —
+        // مدير تنزيل النظام يحفظه في مجلد التنزيلات وينبّه بالإشعار.
+        var w = null;
+        try { w = window.open(url, "_blank"); } catch(e1){}
+        if (!w) { try { window.location.href = url; } catch(e2){} }
+        toast("\u23F3 بدأ التحميل — الملف في مجلد التنزيلات وإشعارات الجهاز");
         return;
       }
       // الحاسوب: fetch ثم تنزيل مباشر مع رسالة خطأ ظاهرة عند أي فشل
-      var r = await fetch("/api/invoice/pdf?id=" + id, {credentials:"same-origin"});
+      var r = await fetch(url, {credentials:"same-origin"});
       if(!r.ok){
         var m = "تعذر التحميل (" + r.status + ")";
         try{ var j = await r.json(); if(j && j.error) m = j.error; }catch(e){}
@@ -12021,21 +12044,21 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       }
       var b = await r.blob();
       if(!b || b.size < 100) throw new Error("ملف PDF فارغ — أعد المحاولة");
-      url = URL.createObjectURL(b);
+      var u2 = URL.createObjectURL(b);
       try{
         var a = document.createElement("a");
-        a.href = url; a.download = "facture_" + id + ".pdf";
+        a.href = u2; a.download = "facture_" + id + ".pdf";
         document.body.appendChild(a); a.click(); a.remove();
         toast("\u2705 تم تحميل الفاتورة #" + id);
       }catch(dlErr){
         // بعض بيئات سطح المكتب تمنع تنزيل blob — نعرضه بدل الصمت
-        location.href = url;
+        location.href = u2;
       }
+      setTimeout(function(){ try{ URL.revokeObjectURL(u2); }catch(e){} }, 60000);
     }catch(err){
       toast(err && err.message ? err.message : "فشل تحميل PDF", 1);
     }finally{
       if(btn){ btn.disabled = false; btn.textContent = t; }
-      if(url) setTimeout(function(){ try{ URL.revokeObjectURL(url); }catch(e){} }, 60000);
     }
   }
   window.invDlPdf = dlPdf;
@@ -13104,6 +13127,9 @@ function openViewer(id){
     box.innerHTML = paperHTML(d);
     var b3 = box.querySelector("#ivwDl");
     if (b3) b3.addEventListener("click", function(){ if (window.invDlPdf) window.invDlPdf(d.invoice_id, b3); });
+    /* v100: فحص جهوزية التنزيل فور الفتح (بلا توليد PDF) — ليكون زر التحميل
+       متزامناً داخل إيماءة المستخدم ولا تُحجب نافذة تنزيل المتصفح */
+    try { if (window.invPreprobe) window.invPreprobe(d.invoice_id); } catch (e4) {}
   }).catch(function(e){
     load.style.display = "none";
     box.innerHTML = '<div class="ivwload">' + h(e && e.message || "تعذر تحميل الفاتورة") + '</div>';
@@ -18570,6 +18596,12 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET") return;
+  /* v100: تنزيل فاتورة PDF لا يمر عبر السِوِس ووركر إطلاقاً — نسلّم الطلب
+     للمتصفح الأصلي (return بلا respondWith) فيتولى مدير التنزيل الملف من
+     ترويسة Content-Disposition: attachment عبر أنبوبه المضمون (إشعار +
+     مجلد التنزيلات). مرور التنزيل عبر أنبوب الـSW كان يفسدها صامتاً في
+     نافذة التطبيق standalone — بلاغ يوسف: «الملف المحمل لا يوجد في الجهاز». */
+  if (url.pathname === "/api/invoice/pdf") return;
   if (url.pathname.startsWith("/api/")) {
     e.respondWith(fetch(e.request).catch(() =>
       new Response(JSON.stringify({ok: false, error: "لا يوجد اتصال — أعد المحاولة عند رجوع الشبكة."}),
@@ -20689,7 +20721,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
