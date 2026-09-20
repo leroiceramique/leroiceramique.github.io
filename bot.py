@@ -7179,6 +7179,7 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
     )
 
     # Send PDF to admin
+    worker_pdf_sent = False
     if pdf_path:
         try:
             with open(pdf_path, "rb") as f:
@@ -7190,9 +7191,28 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
                     + "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10)
                     + "👷 العامل: " + worker_name
                 )
-            os.remove(pdf_path)
         except Exception as e:
             logging.error("[INVOICE] PDF send failed: " + str(e))
+        # v97: العامل يستلم نسخة PDF أيضاً — لا نصاً فقط
+        if worker_tid and str(worker_tid) != str(update.effective_chat.id):
+            try:
+                with open(pdf_path, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=worker_tid,
+                        document=f,
+                        filename="invoice_" + str(invoice_id) + ".pdf",
+                        caption="🧾 فاتورة #" + str(invoice_id) + " — كُلِّفتَ بتجهيزها" + chr(10)
+                        + "👤 الزبون: " + customer + chr(10)
+                        + "💰 الإجمالي: " + _fmt_price(total) + " د.ج" + chr(10)
+                        + "⚙️ يرجى تجهيز البضاعة فوراً"
+                    )
+                worker_pdf_sent = True
+            except Exception as we:
+                logging.error("[INVOICE] Worker PDF send failed: " + str(we))
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
 
     # Notify worker
     worker_notified = False
@@ -7228,6 +7248,8 @@ async def _invoice_finalize(update, context, worker_id, worker_tid, worker_name)
         result_msg += "📎 تم إرسال الفاتورة PDF" + chr(10)
     if worker_notified:
         result_msg += "📨 تم إشعار العامل" + chr(10)
+    if worker_pdf_sent:
+        result_msg += "📎 نسخة PDF وصلت للعامل" + chr(10)
     result_msg += "✅ تم الخصم من المخزون"
     await _send(result_msg, get_admin_keyboard())
 
@@ -10681,7 +10703,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v96"  # v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v97"  # v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -11925,8 +11947,9 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   function invRow(v){
     var st = (v.status && v.status !== "approved")
       ? ' <span class="invSt">' + esc(v.status) + '</span>' : "";
+    var tg = v.assigned ? ' <span class="invTag">&#128295; مكلّف بها</span>' : "";
     return '<div class="invRec">'
-      + '<div class="info"><b>#' + v.id + ' &#8212; ' + esc(v.customer) + st + '</b>'
+      + '<div class="info"><b>#' + v.id + ' &#8212; ' + esc(v.customer) + st + tg + '</b>'
       + '<span>' + esc(v.at) + (v.worker ? ' • &#128104; ' + esc(v.worker) : '')
       + ' • &#128176; ' + money(v.total) + '</span></div>'
       + '<button type="button" class="btn mini soft-g" data-invpdf="' + v.id + '">&#11015;&#65039; PDF</button>'
@@ -12119,7 +12142,8 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     sc.innerHTML = '<div class="big">&#9989; فاتورة #' + d.invoice_id + ' أُنشئت بنجاح</div>'
       + '<div class="invMini">&#128100; ' + esc(d.customer)
       + '<br>&#128176; ' + money(d.total)
-      + '<br>&#128104; ' + esc(d.worker_name) + ' (أُشعر في تلغرام)'
+      + '<br>&#128104; ' + esc(d.worker_name) + (d.worker_notified ? ' (أُشعر في تلغرام)' : '')
+      + (d.worker_pdf ? '<br>&#128206; وصل العامل نسخة PDF في البوت' : '')
       + '<br>&#128206; وصلتك نسخة PDF في البوت أيضاً</div>'
       + '<div class="acts">'
       + '<button type="button" class="btn green" data-invpdf="' + d.invoice_id + '">&#11015;&#65039; تحميل PDF</button>'
@@ -12194,7 +12218,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     var p = ev.target.closest ? ev.target.closest("[data-invpdf]") : null;
     if(p){ ev.preventDefault(); dlPdf(p.getAttribute("data-invpdf"), p); return; }
     var w = ev.target.closest ? ev.target.closest("[data-invview]") : null;
-    if(w){ ev.preventDefault(); showPdf(w.getAttribute("data-invview")); return; }
+    if(w){ ev.preventDefault(); (window.invShowPdf || showPdf)(w.getAttribute("data-invview")); return; }
     if(ev.target && ev.target.id === "invArchMore") loadArch(false);
   });
   document.addEventListener("input", function(ev){
@@ -12803,6 +12827,200 @@ _PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات اح�
 _PWA_V96_JS = '/* v96: واجهة المستخدمين الاحترافية — أفاتار + صف أزرار مستقل (لا سحق لعمود الاسم) */\n(function () {\n"use strict";\nvar TINT = { admin: "#d97706", manager: "#0e7490", stock: "#4d7c0f",\n             seller: "#dc2626", external: "#7c3aed", customer: "#64748b" };\nvar RK = { admin: "rk-admin", manager: "rk-manager", stock: "rk-stock",\n           seller: "rk-seller", external: "rk-external", customer: "rk-customer" };\nfunction avHTML(u) {\n  var ch = esc(((u.name || "") + "").trim().charAt(0)) || "؟";\n  var ph = \'<div class="u96avph" style="background:\' + (TINT[u.role] || TINT.customer) + \'">\' + ch + \'</div>\';\n  if (u.has_avatar && u.telegram_id) {\n    return \'<div class="u96avwrap">\' + ph\n      + \'<img class="u96avimg" alt="" loading="lazy" src="/api/user/\' + u.telegram_id + \'/avatar?v=\'\n      + encodeURIComponent(u.avatar_v || "1") + \'" onerror="this.remove()"></div>\';\n  }\n  return \'<div class="u96avwrap">\' + ph + \'</div>\';\n}\nwindow.usrRow = function (u) {\n  const self = u.telegram_id === S.user.telegram_id;\n  const hasTg = !!u.telegram_id;\n  let acts = "";\n  if (!self && hasTg && !u.protected) {\n    acts += \'<button class="btn mini blue" data-role="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🎯 الفئة</button>\';\n    if (u.role !== "admin") {\n      acts += u.active\n        ? \'<button class="btn mini red" data-tg="\' + u.telegram_id + \'" data-to="0">🚫 إيقاف</button>\'\n        : \'<button class="btn mini green" data-tg="\' + u.telegram_id + \'" data-to="1">✅ تنشيط</button>\';\n    }\n  }\n  if (!self && !u.protected && u.web && u.telegram_id) {\n    acts += \'<button class="btn mini red" data-delweb="\' + (u.telegram_id || 0) + \'" data-n="\' + esc(u.name) + \'">🗑️ حذف من التطبيق</button>\';\n  }\n  acts += self\n    ? \'<button class="btn mini gold" data-self="1" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مروري</button>\'\n    : (hasTg ? \'<button class="btn mini gold" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مرور</button>\' : \'\');\n  const sub = [\n    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",\n    u.phone ? "📞 " + esc(u.phone) : "",\n    u.email ? "✉️ " + esc(u.email) : ""\n  ].filter(Boolean).join(" · ");\n  return \'<div class="u96card\' + (u.active ? "" : " off") + \'">\'\n    + \'<div class="u96top">\' + avHTML(u)\n    + \'<div class="u96main"><div class="u96nm">\' + esc(u.name) + usrOnline(u)\n    + (u.protected ? " 🛡" : "") + (self ? " <span class=\\"badge\\">أنت</span>" : "") + \'</div>\'\n    + \'<div class="u96sub"><span class="u96rk \' + (RK[u.role] || RK.customer) + \'">\' + esc(u.role_label) + \'</span>\'\n    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + \'</div></div>\'\n    + (u.active ? "" : \'<span class="badge r">مطرود</span>\')\n    + \'</div>\'\n    + (acts ? \'<div class="u96acts">\' + acts + \'</div>\' : \'\')\n    + \'</div>\';\n};\nwindow.renderUsers = function () {\n  if (!S.usrLast) return;\n  const box = $("#usrList");\n  const d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;\n  const q = (S.usrQ || "").trim().toLowerCase();\n  const users = d.users || [];\n  $("#cAll").textContent = d.counts.all;\n  $("#cWeb").textContent = d.counts.web;\n  $("#cKick").textContent = d.counts.kicked;\n  $("#cStaff").textContent = users.filter((u) => u.active && u.role !== "customer").length;\n  $("#cCust").textContent = users.filter((u) => u.active && u.role === "customer").length;\n  try {\n    $("#cLive").textContent = users.filter((u) => u.active && u.last_seen\n      && (Date.now() - new Date(u.last_seen).getTime() < 86400000)).length;\n  } catch (e) {}\n  let html = "";\n  if (S.usrFilter === "all") {\n    const waiting = regs.filter((w) => !q || [w.name, w.username, w.email, w.phone, w.role_label]\n      .some((v) => (v || "").toString().toLowerCase().indexOf(q) !== -1));\n    if (waiting.length) {\n      html += \'<p class="u96sech">⏳ طلبات انضمام بانتظار الموافقة (\' + waiting.length + \')</p>\';\n      html += waiting.map((w) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(w.name) + \'</div>\'\n        + \'<div class="u96sub">\' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + \'</div>\'\n        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? \'<span class="badge g" style="margin-top:7px">Google</span>\'\n          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? \'<span class="badge b" style="margin-top:7px">🔑 اسم + رقم سر</span>\' : \'<span class="badge b" style="margin-top:7px">رمز: \' + esc(w.code) + \'</span>\'))\n        + \'<div class="acts"><button class="btn mini green" data-appr=\\\'\' + esc(JSON.stringify(w)) + \'\\\'>✅ موافقة</button>\'\n        + \'<button class="btn mini red" data-reg="\' + w.id + \'">🗑 حذف</button></div>\'\n        + \'</div>\').join("");\n    }\n    const rs = resets.filter((r) => !q || (r.username || "").toLowerCase().indexOf(q) !== -1);\n    if (rs.length) {\n      html += \'<p class="u96sech" style="margin-top:12px">🔑 طلبات استعادة كلمة المرور (\' + rs.length + \')</p>\';\n      html += rs.map((r) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(r.username) + \'</div>\'\n        + \'<div class="u96sub">طالب باستعادة رقمه السري\' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + \'</div>\'\n        + \'<div class="acts"><button class="btn mini gold" data-reset="\' + r.id + \'" data-runame="\' + esc(r.username) + \'">🔑 توليد رقم سر مؤقت</button></div>\'\n        + \'</div>\').join("");\n    }\n  }\n  if (S.usrFilter === "kick") {\n    const kick = users.filter((u) => usrFilterHit(u) && usrMatch(u, q))\n      .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n    html += kick.length ? kick.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + \'</p>\';\n  } else {\n    const act = users.filter((u) => usrFilterHit(u) && usrMatch(u, q));\n    act.sort((a, b) => {\n      const sa = a.telegram_id === S.user.telegram_id ? 0 : 1;\n      const sb = b.telegram_id === S.user.telegram_id ? 0 : 1;\n      if (sa !== sb) return sa - sb;\n      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);\n      return (a.name || "").localeCompare(b.name || "", "ar");\n    });\n    html += act.length ? act.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + \'</p>\';\n    if (S.usrFilter === "all") {\n      const kick = users.filter((u) => !u.active && usrMatch(u, q))\n        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n      if (kick.length) {\n        html += \'<button type="button" class="khead\' + (S.usrKickOpen ? " open" : "") + \'" id="usrKickHead">🚫 المطرودون (\' + kick.length + \') <span class="karr">▶</span></button>\'\n          + \'<div id="usrKickList" style="display:\' + (S.usrKickOpen ? "" : "none") + \'">\' + kick.map(usrRow).join("") + \'</div>\';\n      }\n    }\n  }\n  box.innerHTML = html;\n  box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {\n    if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);\n    else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }\n    else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);\n    else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);\n    else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);\n    else if (b.dataset.self) openPass(null, b.dataset.n, true);\n    else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");\n    else openPass(+b.dataset.tg, b.dataset.n, false);\n  }));\n  const kh = box.querySelector("#usrKickHead");\n  if (kh) kh.addEventListener("click", () => { S.usrKickOpen = !S.usrKickOpen; renderUsers(); });\n};\n})();'
 
 
+_PWA_V97_CSS = r'''/* v97: جسر الفواتير — عارض أصلي HTML/CSS (أندرويد لا يعرض PDF داخل iframe) + فتح خارجي + مشاركة */
+.invTag{display:inline-block;padding:1.5px 8px;border-radius:99px;font-size:10px;font-weight:800;background:#e8f0fe;color:#1d4ed8;margin-inline-start:5px;vertical-align:middle;white-space:nowrap}
+html[data-theme="dark"] .invTag{background:rgba(96,165,250,.16);color:#93c5fd}
+#ivwOv{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;background:rgba(24,15,8,.86)}
+#ivwOv .ivwbar{display:flex;gap:8px;padding:9px 10px;align-items:center;background:#1c1c1e;box-shadow:0 2px 12px rgba(0,0,0,.45);flex:0 0 auto}
+#ivwOv .ivwbar b{color:#fff;flex:1;font-size:14px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ivwOv .ivwbody{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px 10px 22px;-webkit-overflow-scrolling:touch}
+#ivwOv .ivwload{text-align:center;color:#fde8d7;padding:28px 0;font-size:14px}
+#ivwOv .ivwpaper{background:#fff;color:#1c1917;border-radius:14px;max-width:560px;margin:0 auto;overflow:hidden;box-shadow:0 14px 40px rgba(0,0,0,.38)}
+#ivwOv .ivwhd{padding:16px 16px 12px;text-align:center;border-bottom:2px solid #9a5b2d;background:linear-gradient(180deg,#fdf6f0,#fff)}
+#ivwOv .ivwhd img{width:46px;height:46px;border-radius:50%;object-fit:cover;border:2px solid #e7d8c7;margin-bottom:6px}
+#ivwOv .ivwhd h3{margin:2px 0 1px;font-size:17px;color:#9a5b2d;letter-spacing:.4px}
+#ivwOv .ivwhd p{margin:0;font-size:11.5px;color:#78716c}
+#ivwOv .ivwmeta{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;padding:12px 16px;font-size:12.5px;border-bottom:1px dashed #e7e5e4}
+#ivwOv .ivwmeta div{display:flex;gap:6px;min-width:0}
+#ivwOv .ivwmeta span{color:#78716c;flex:0 0 auto}
+#ivwOv .ivwmeta b{color:#1c1917;word-break:break-word}
+#ivwOv .ivwitems{width:100%;border-collapse:collapse;font-size:12.5px}
+#ivwOv .ivwitems th{background:#9a5b2d;color:#fff;padding:8px 6px;font-size:11.5px;font-weight:800;text-align:center}
+#ivwOv .ivwitems td{padding:8px 6px;border-bottom:1px solid #f0ece7;text-align:center;color:#1c1917}
+#ivwOv .ivwitems td.nm{text-align:right;font-weight:700;word-break:break-word}
+#ivwOv .ivwitems tr.tot td{background:#fdf6f0;font-weight:800;border-bottom:none;color:#9a5b2d;font-size:13.5px}
+#ivwOv .ivwft{padding:10px 16px 14px;text-align:center;font-size:11px;color:#78716c}
+#ivwOv .ivwacts{display:flex;gap:8px;max-width:560px;margin:10px auto 0}
+#ivwOv .ivwacts .btn{flex:1;padding:11px 6px;font-size:13px;margin:0}
+@media (max-width:420px){#ivwOv .ivwmeta{grid-template-columns:1fr}}'''
+
+
+_PWA_V97_JS = r'''/* v97: جسر الفواتير — عارض أصلي بلا iframe (أندرويد لا يعرض PDF داخله)
+   + فتح PDF خارجياً + مشاركة الملف عبر لوحة النظام + بطاقة «كُلِّفتَ بها» */
+(function () {
+"use strict";
+function h(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+  });
+}
+function money(n){
+  n = Number(n || 0);
+  return n.toLocaleString("fr-FR", {minimumFractionDigits:2, maximumFractionDigits:2}) + " د.ج";
+}
+function qtyText(it){
+  var pt = it.ptype || "m2";
+  if (pt === "pcs") return it.quantity + " قطعة";
+  if (pt === "plant") return it.quantity + " م.ط";
+  return it.quantity + " m²";
+}
+function upLabel(pt){
+  return pt === "pcs" ? " د.ج/قطعة" : (pt === "plant" ? " د.ج/م" : " د.ج/m²");
+}
+
+/* فتح PDF خارجياً: متصفح النظام يعرضه بمشاهده الأصلي (الكوكي يمر — نفس الأصل) */
+function openExternal(id){
+  var url = "/api/invoice/pdf?id=" + id + "&disp=inline";
+  var w = null;
+  try { w = window.open(url, "_blank"); } catch (e) {}
+  if (!w) { try { window.location.href = url; } catch (e2) {} }
+}
+
+/* مشاركة الملف الفعلي عبر لوحة المشاركة (واتساب/طباعة/حفظ) مع سقوط آمن */
+function sharePdf(id, btn){
+  var t = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = "⏳ جارٍ…"; }
+  var done = function(){ if (btn){ btn.disabled = false; btn.textContent = t; } };
+  fetch("/api/invoice/pdf?id=" + id, {credentials:"same-origin"}).then(function(r){
+    if (!r.ok) throw new Error("تعذر تجهيز الملف (" + r.status + ")");
+    return r.blob();
+  }).then(function(b){
+    if (!b || b.size < 100) throw new Error("ملف PDF فارغ — أعد المحاولة");
+    var f = new File([b], "facture_" + id + ".pdf", {type:"application/pdf"});
+    if (navigator.canShare && navigator.canShare({files:[f]})){
+      return navigator.share({files:[f], title:"فاتورة #" + id}).catch(function(er){
+        if (er && er.name === "AbortError") return;
+        openExternal(id);
+      });
+    }
+    openExternal(id);
+  }).catch(function(e){
+    if (e && e.name === "AbortError"){ done(); return; }
+    if (window.toast) toast((e && e.message) || "تعذرت المشاركة", 1);
+  }).then(done, done);
+}
+
+/* العارض الأصلي: HTML/CSS يعرض على كل الأجهزة — بلا iframe ولا محرك PDF */
+var ov = null;
+function ensureOv(){
+  if (ov) return ov;
+  ov = document.createElement("div");
+  ov.id = "ivwOv";
+  ov.innerHTML = '<div class="ivwbar">'
+    + '<b id="ivwT"></b>'
+    + '<button type="button" class="btn mini gray" id="ivwX">✕ إغلاق</button></div>'
+    + '<div class="ivwbody"><div class="ivwload" id="ivwLoad">⏳ جارِ التحميل…</div>'
+    + '<div id="ivwContent"></div></div>';
+  document.body.appendChild(ov);
+  ov.querySelector("#ivwX").addEventListener("click", function(){ ov.style.display = "none"; });
+  return ov;
+}
+function paperHTML(d){
+  var items = d.items || [];
+  var rows = items.map(function(it, i){
+    return '<tr><td class="nm">' + (i + 1) + ". " + h(it.product_name) + '</td>'
+      + '<td>' + h(qtyText(it)) + '</td>'
+      + '<td>' + money(it.unit_price) + upLabel(it.ptype) + '</td>'
+      + '<td>' + money(it.subtotal) + '</td></tr>';
+  }).join("");
+  var st = (d.status && d.status !== "approved") ? '<span class="ivwtag">' + h(d.status) + '</span>' : "";
+  var who = d.assigned_to_me ? '<span class="ivwtag">🛠 كُلِّفتَ بها</span>'
+          : (d.by_me ? '<span class="ivwtag">✍ من إنشائي</span>' : "");
+  return '<div class="ivwpaper">'
+    + '<div class="ivwhd"><img src="/icon.png" alt=""><h3>LE ROI DE LA CÉRAMIQUE</h3>'
+    + '<p>Facture de Vente — فاتورة بيع</p></div>'
+    + '<div class="ivwmeta">'
+    + '<div><span>الرقم</span><b>#' + d.invoice_id + " " + st + who + '</b></div>'
+    + '<div><span>التاريخ</span><b>' + h(d.at || "") + '</b></div>'
+    + '<div><span>الزبون</span><b>' + h(d.customer || "") + '</b></div>'
+    + '<div><span>العامل</span><b>' + h(d.worker_name || "—") + '</b></div>'
+    + '</div>'
+    + '<table class="ivwitems"><thead><tr><th style="text-align:right">المنتج</th><th>الكمية</th>'
+    + '<th>السعر</th><th>الإجمالي</th></tr></thead><tbody>'
+    + rows
+    + '<tr class="tot"><td colspan="3">الإجمالي</td><td>' + money(d.total) + '</td></tr>'
+    + '</tbody></table>'
+    + '<div class="ivwft">Merci pour votre confiance ! — شكراً لثقتكم</div></div>'
+    + '<div class="ivwacts">'
+    + '<button type="button" class="btn gold" id="ivwOpen">📤 فتح PDF خارجياً</button>'
+    + '<button type="button" class="btn soft-g" id="ivwShare">🔗 مشاركة</button>'
+    + '<button type="button" class="btn gray" id="ivwDl">⬇️ تحميل</button></div>';
+}
+function openViewer(id){
+  var o = ensureOv();
+  o.style.display = "flex";
+  o.querySelector("#ivwT").textContent = "🧾 فاتورة #" + id;
+  var load = o.querySelector("#ivwLoad"), box = o.querySelector("#ivwContent");
+  load.style.display = ""; box.innerHTML = "";
+  o.querySelector(".ivwbody").scrollTop = 0;
+  try { if (window.v90vib) window.v90vib(8); } catch (e0) {}
+  api("/api/invoice/get?id=" + id, {noCache:true}).then(function(d){
+    load.style.display = "none";
+    box.innerHTML = paperHTML(d);
+    var b1 = box.querySelector("#ivwOpen"), b2 = box.querySelector("#ivwShare"), b3 = box.querySelector("#ivwDl");
+    if (b1) b1.addEventListener("click", function(){ openExternal(d.invoice_id); });
+    if (b2) b2.addEventListener("click", function(){ sharePdf(d.invoice_id, b2); });
+    if (b3) b3.addEventListener("click", function(){ if (window.invDlPdf) window.invDlPdf(d.invoice_id, b3); });
+  }).catch(function(e){
+    load.style.display = "none";
+    box.innerHTML = '<div class="ivwload">' + h(e && e.message || "تعذر تحميل الفاتورة") + '</div>';
+  });
+}
+window.invShowPdf = openViewer;   /* v97: يطغى على عارض iframe القديم — المستمع يمر عبر invShowPdf */
+
+/* شاشة الفواتير: بطاقة «كُلِّفتَ بها» + تخفٍّ ذكي لأدوات الإنشاء عمّن لا صلاحية له */
+function counterCard(){
+  var sec = document.querySelector("#v-oil");
+  if (!sec) return;
+  var card = document.getElementById("v97cnt");
+  api("/api/invoice/list?limit=20", {noCache:true}).then(function(d){
+    var asg = (d.invoices || []).filter(function(v){ return v.assigned; });
+    if (!asg.length){ if (card && card.parentNode) card.parentNode.removeChild(card); return; }
+    var anchor = document.getElementById("invMain") || sec.querySelector(".invCard");
+    if (!card && anchor){
+      card = document.createElement("div");
+      card.id = "v97cnt";
+      card.className = "card invCard";
+      anchor.parentNode.insertBefore(card, anchor);
+    }
+    if (!card) return;
+    card.innerHTML = '<div class="invTitle">🛠 فواتير كُلِّفتَ بها <span class="cnt">(' + asg.length + ')</span></div>'
+      + asg.slice(0, 3).map(function(v){
+          return '<div class="invRec"><div class="info"><b>#' + v.id + ' — ' + h(v.customer) + '</b>'
+            + '<span>' + h(v.at) + " • " + money(v.total) + '</span></div>'
+            + '<button type="button" class="btn mini soft-g" data-invview="' + v.id + '">👁</button></div>';
+        }).join("")
+      + (asg.length > 3 ? '<p class="empty">والباقي في السجل أدناه…</p>' : "");
+  }).catch(function(){});
+}
+function tuneScreen(){
+  var canCreate = !!(S.perms && (S.perms.invoice || S.perms.oil));
+  var hasView = !!(S.perms && (S.perms.invoice_view || canCreate));
+  if (!hasView) return;
+  var ttl = document.querySelector("#v-oil .vt");
+  if (ttl) ttl.textContent = canCreate ? "إنشاء فاتورة" : "الفواتير المكلَّف بها";
+  var m = document.getElementById("invMain");
+  if (m) m.style.display = canCreate ? "" : "none";
+  counterCard();
+}
+var origLoadInvoice = window.loadInvoice;
+window.loadInvoice = function(){
+  if (origLoadInvoice){ try { origLoadInvoice(); } catch (e1) {} }
+  try { tuneScreen(); } catch (e2) {}
+};
+})();'''
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -12861,7 +13079,7 @@ _PWA_HTML_PATCHES = (
      + '</section>'),
     # 12) بوابة ظهور التاب: صلاحية الفواتير (مدير/بائع) مع احتياط القديمة
     ('$("#tabOil").style.display = S.perms.oil ? "" : "none";',
-     '$("#tabOil").style.display = (S.perms.invoice || S.perms.oil) ? "" : "none";'),
+     '$("#tabOil").style.display = (S.perms.invoice || S.perms.oil || S.perms.invoice_view) ? "" : "none";'),
     # 13) فتح الشاشة يحمّل الفاتورة بدل الزيت
     ('if (id === "v-oil") loadOil();',
      'if (id === "v-oil") loadInvoice();'),
@@ -13036,6 +13254,9 @@ _PWA_HTML_PATCHES = (
     # 44) v96: واجهة المستخدمين الاحترافية — CSS + JS (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v96css">' + _PWA_V96_CSS + '</style>\n<script id="v96js">\n' + _PWA_V96_JS + '\n</script>\n</body>'),
+    # 45) v97: جسر الفواتير — عارض أصلي بلا iframe + فتح خارجي + مشاركة (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<style id="v97css">' + _PWA_V97_CSS + '</style>\n<script id="v97js">\n' + _PWA_V97_JS + '\n</script>\n</body>'),
 )
 
 
@@ -13812,6 +14033,8 @@ def _pwa_perm_map(role):
         "users": admin,
         # v88: إنشاء الفواتير — للمدراء والبائعين (نفس بوابة فاتورة تلغرام)
         "invoice": admin or role == ROLE_SELLER,
+        # v97: رؤية الفواتير (ما أنشأه المستخدم أو كُلِّف بتجهيزه) — التخزين يشاهد دون إنشاء
+        "invoice_view": admin or role in (ROLE_STOCK, ROLE_SELLER),
         # v93: نبض المخزون — الفريق الداخلي فقط (دون البائع الخارجي/العميل: نشاط تجاري داخلي)
         "activity": admin or role in (ROLE_STOCK, ROLE_SELLER),
     }
@@ -15764,8 +15987,9 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
 
 
 def _pwa_api_invoice_recent(user, limit=8):
-    """آخر الفواتير (لإعادة تحميل PDF أو مراجعة سريعة) — البائع يرى فواتيره فقط."""
-    if not _pwa_perm_map(user["role"])["invoice"]:
+    """آخر الفواتير (لإعادة تحميل PDF أو مراجعة سريعة).
+    v97: البائع/التخزين يرى فواتيره المنشأة وفواتيره المكلَّف بها معاً."""
+    if not _pwa_perm_map(user["role"])["invoice_view"]:
         return None
     limit = max(1, min(int(limit or 8), 20))
     conn = get_connection()
@@ -15773,12 +15997,12 @@ def _pwa_api_invoice_recent(user, limit=8):
         with conn.cursor() as cur:
             where = ""
             params = []
-            if user["role"] == ROLE_SELLER:
-                where = " WHERE v.admin_id = %s"
-                params.append(user["id"])
+            if user["role"] not in (ROLE_ADMIN, ROLE_MANAGER):
+                where = " WHERE (v.admin_id = %s OR v.worker_id = %s)"
+                params.extend([user["id"], user["id"]])
             cur.execute(
                 "SELECT v.id, v.customer_name, v.total_amount, v.status, v.created_at, "
-                "COALESCE(u.first_name, u.username, '') FROM invoices v "
+                "COALESCE(u.first_name, u.username, ''), v.worker_id, v.admin_id FROM invoices v "
                 "LEFT JOIN users u ON u.id = v.worker_id" + where +
                 " ORDER BY v.id DESC LIMIT " + str(limit),
                 params)
@@ -15793,6 +16017,8 @@ def _pwa_api_invoice_recent(user, limit=8):
             "status": r[3],
             "at": r[4].strftime("%Y/%m/%d %H:%M") if r[4] else "",
             "worker": r[5] or "",
+            "assigned": (r[6] == user["id"] and r[7] != user["id"]),   # v97: كُلِّفتَ بتجهيزها
+            "by_me": (r[7] == user["id"]),                             # v97: من إنشائي
         })
     return {"ok": True, "invoices": out}
 
@@ -15800,8 +16026,8 @@ def _pwa_api_invoice_recent(user, limit=8):
 def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
     """v88.1: سجل الفواتير الكامل — بحث بالزبون أو رقم الفاتورة + ترقيم بالمؤشر
     (before = آخر معرف ظهر) للوصول إلى أي فاتورة سابقة وتحميل PDF منها.
-    البائع يرى فواتيره فقط."""
-    if not _pwa_perm_map(user["role"])["invoice"]:
+    v97: البائع/التخزين يرى فواتيره المنشأة وفواتيره المكلَّف بها معاً."""
+    if not _pwa_perm_map(user["role"])["invoice_view"]:
         return None
     try:
         limit = max(1, min(int(limit or 15), 30))
@@ -15817,9 +16043,9 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
         with conn.cursor() as cur:
             where = []
             params = []
-            if user["role"] == ROLE_SELLER:
-                where.append("v.admin_id = %s")
-                params.append(user["id"])
+            if user["role"] not in (ROLE_ADMIN, ROLE_MANAGER):
+                where.append("(v.admin_id = %s OR v.worker_id = %s)")
+                params.extend([user["id"], user["id"]])
             if q:
                 cond = "v.customer_name ILIKE %s"
                 params.append("%" + q + "%")
@@ -15833,7 +16059,7 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
             wsql = (" WHERE " + " AND ".join(where)) if where else ""
             cur.execute(
                 "SELECT v.id, v.customer_name, v.total_amount, v.status, v.created_at, "
-                "COALESCE(u.first_name, u.username, '') FROM invoices v "
+                "COALESCE(u.first_name, u.username, ''), v.worker_id, v.admin_id FROM invoices v "
                 "LEFT JOIN users u ON u.id = v.worker_id" + wsql +
                 " ORDER BY v.id DESC LIMIT " + str(limit + 1),
                 params)
@@ -15851,13 +16077,15 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
             "status": r[3],
             "at": r[4].strftime("%Y/%m/%d %H:%M") if r[4] else "",
             "worker": r[5] or "",
+            "assigned": (r[6] == user["id"] and r[7] != user["id"]),   # v97: كُلِّفتَ بتجهيزها
+            "by_me": (r[7] == user["id"]),                             # v97: من إنشائي
         })
     return {"ok": True, "invoices": out, "has_more": has_more}
 
 
 def _pwa_api_invoice_get(user, invoice_id):
-    """جلب فاتورة مع عناصرها — للمدير أي فاتورة، وللبائع فواتيره فقط."""
-    if not _pwa_perm_map(user["role"])["invoice"]:
+    """جلب فاتورة مع عناصرها — للمدير أي فاتورة، وللبائع/التخزين ما أنشأه أو كُلِّف به (v97)."""
+    if not _pwa_perm_map(user["role"])["invoice_view"]:
         return None
     try:
         invoice_id = int(invoice_id or 0)
@@ -15870,14 +16098,16 @@ def _pwa_api_invoice_get(user, invoice_id):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT v.id, v.customer_name, v.total_amount, v.status, v.created_at, v.admin_id, "
-                "COALESCE(u.first_name, u.username, '') AS worker_name "
+                "v.worker_id, COALESCE(u.first_name, u.username, '') AS worker_name "
                 "FROM invoices v LEFT JOIN users u ON u.id = v.worker_id WHERE v.id = %s",
                 (invoice_id,))
             inv = cur.fetchone()
             if not inv:
                 return False, "الفاتورة غير موجودة."
-            if user["role"] == ROLE_SELLER and inv["admin_id"] != user["id"]:
-                return False, "هذه الفاتورة ليس من إنشائك."
+            # v97: ملكية موسَّعة — منشئ الفاتورة أو العامل المكلَّف بتجهيزها
+            if (user["role"] not in (ROLE_ADMIN, ROLE_MANAGER)
+                    and inv["admin_id"] != user["id"] and inv["worker_id"] != user["id"]):
+                return False, "لا علاقة لك بهذه الفاتورة."
             cur.execute(
                 "SELECT product_id, product_name, quantity, unit_price, subtotal "
                 "FROM invoice_items WHERE invoice_id = %s ORDER BY id",
@@ -15896,6 +16126,9 @@ def _pwa_api_invoice_get(user, invoice_id):
         "total": float(inv["total_amount"] or 0), "status": inv["status"],
         "at": inv["created_at"].strftime("%Y/%m/%d %H:%M") if inv["created_at"] else "",
         "worker_name": inv["worker_name"], "items": items,
+        "worker_id": inv["worker_id"],                              # v97
+        "by_me": (inv["admin_id"] == user["id"]),                    # v97: من إنشائي
+        "assigned_to_me": (inv["worker_id"] == user["id"] and inv["admin_id"] != user["id"]),  # v97
     }
 
 
@@ -17639,18 +17872,40 @@ async def pwa_invoice_create_handler(request):
         worker_msg += ("━" * 15 + chr(10) + "💰 الإجمالي: "
                        + _fmt_price(r["total"]) + " د.ج" + chr(10) + chr(10)
                        + "⚙️ يرجى تجهيز البضاعة فوراً")
+        worker_notified = False
         try:
             if r.get("worker_tid"):
                 await bot.send_message(chat_id=int(r["worker_tid"]), text=worker_msg)
+                worker_notified = True
         except Exception as w_err:
             logging.warning("[INVOICE-PWA] worker notify failed: " + str(w_err))
-        # PDF للمنشئ — نفس تجربة فاتورة تلغرام
+        # v97: توليد PDF مرة واحدة وإرساله للعامل والمنشئ — الفاتورة تصل للمستخدم فعلياً
+        worker_pdf = False
+        creator_pdf = False
+        pdf_path = None
         try:
+            pdf_path = await asyncio.to_thread(
+                _generate_invoice_pdf, r["invoice_id"], r["customer"],
+                r["items"], r["total"], r["worker_name"])
+        except Exception as gen_err:
+            logging.warning("[INVOICE-PWA] PDF generation failed: " + str(gen_err))
+        if pdf_path:
+            if r.get("worker_tid") and r.get("worker_tid") != r.get("creator_tid"):
+                try:
+                    with open(pdf_path, "rb") as f:
+                        await bot.send_document(
+                            chat_id=int(r["worker_tid"]), document=f,
+                            filename="invoice_" + str(r["invoice_id"]) + ".pdf",
+                            caption=("🧾 فاتورة #" + str(r["invoice_id"]) + " — كُلِّفتَ بتجهيزها"
+                                     + chr(10) + "👤 الزبون: " + r["customer"]
+                                     + chr(10) + "💰 الإجمالي: " + _fmt_price(r["total"]) + " د.ج"
+                                     + chr(10) + "⚙️ يرجى تجهيز البضاعة فوراً"
+                                     + chr(10) + "📱 من التطبيق"))
+                    worker_pdf = True
+                except Exception as wp_err:
+                    logging.warning("[INVOICE-PWA] worker PDF send failed: " + str(wp_err))
             if r.get("creator_tid"):
-                pdf_path = await asyncio.to_thread(
-                    _generate_invoice_pdf, r["invoice_id"], r["customer"],
-                    r["items"], r["total"], r["worker_name"])
-                if pdf_path:
+                try:
                     with open(pdf_path, "rb") as f:
                         await bot.send_document(
                             chat_id=int(r["creator_tid"]), document=f,
@@ -17659,9 +17914,16 @@ async def pwa_invoice_create_handler(request):
                                      + chr(10) + "💰 الإجمالي: " + _fmt_price(r["total"]) + " د.ج"
                                      + chr(10) + "👷 العامل: " + r["worker_name"]
                                      + chr(10) + "📱 من التطبيق"))
-                    os.remove(pdf_path)
-        except Exception as pdf_err:
-            logging.warning("[INVOICE-PWA] PDF send failed: " + str(pdf_err))
+                    creator_pdf = True
+                except Exception as pdf_err:
+                    logging.warning("[INVOICE-PWA] PDF send failed: " + str(pdf_err))
+            try:
+                os.remove(pdf_path)
+            except Exception:
+                pass
+        r["worker_notified"] = worker_notified
+        r["worker_pdf"] = worker_pdf
+        r["creator_pdf"] = creator_pdf
     await _pwa_run(_audit_log, "invoice_create", user,
                    details="فاتورة #" + str(r["invoice_id"]) + " — " + r["customer"]
                            + " — " + _fmt_price(r["total"]) + " د.ج — العامل: " + r["worker_name"],
@@ -17701,6 +17963,24 @@ async def pwa_invoice_list_handler(request):
     if data is None:
         return _pwa_err(403, "الفواتير للمدراء والبائعين فقط.")
     return _pwa_jr(data)
+
+
+async def pwa_invoice_get_handler(request):
+    """v97: بيانات الفاتورة JSON للعارض الأصلي داخل التطبيق (بلا iframe)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        inv_id = int(request.query.get("id", "0"))
+    except ValueError:
+        return _pwa_err(400, "رقم فاتورة غير صالح.")
+    data = await _pwa_run(_pwa_api_invoice_get, user, inv_id)
+    if data is None:
+        return _pwa_err(403, "لا تملك صلاحية عرض الفواتير.")
+    ok, inv = data
+    if not ok:
+        return _pwa_err(404, inv)
+    return _pwa_jr(inv)
 
 
 async def pwa_invoice_pdf_handler(request):
@@ -20166,6 +20446,7 @@ def register_pwa_routes(app):
     app.router.add_post("/api/invoice/create", pwa_invoice_create_handler)
     app.router.add_get("/api/invoice/recent", pwa_invoice_recent_handler)
     app.router.add_get("/api/invoice/list", pwa_invoice_list_handler)
+    app.router.add_get("/api/invoice/get", pwa_invoice_get_handler)       # v97: JSON للعارض الأصلي
     app.router.add_get("/api/invoice/pdf", pwa_invoice_pdf_handler)
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
@@ -20217,7 +20498,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (85 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (86 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -20230,7 +20511,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
