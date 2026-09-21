@@ -11088,7 +11088,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v103"  # v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v105"  # v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -13911,6 +13911,197 @@ window.swapgSheet = step1;
 })();'''
 
 
+_PWA_V104_JS = r'''/* v104: زر 🎤 داخل تطبيق أندرويد (UA فيه LeRoiStock) يعود لمحرك التسجيل
+   الداخلي ضغط-مطول مثل واتساب (v55-v60 كامل: سلم 3 محاولات + إيقاظ المحرك
+   الصوتي + MediaRecorder) — لأن جسر Capacitor لا يعالج capture الصوتي فيُسقطه
+   إلى منتقي ملفات (بلاغ يوسف). في المتصفح/الويب: مسار v62 (مسجّل النظام) كما هو.
+   أول ضغطة داخل التطبيق تُظهر حوار إذن أندرويد الأصلي ثم يعمل الميكروفون للأبد. */
+(function () {
+"use strict";
+if (navigator.userAgent.indexOf("LeRoiStock") < 0) return;
+var mic = document.getElementById("chatMic");
+if (!mic) return;
+/* استنساخ الزر يحذف كل المستمعين القديمين — أبرزهم معالج v62 الذي
+   يفتح منتقي الملفات (السلوك الذي بلّغه يوسف) */
+var fresh = mic.cloneNode(true);
+mic.parentNode.replaceChild(fresh, mic);
+mic = fresh;
+mic.title = "اضغط مطولاً وتكلم ثم أفلت للإرسال";
+mic.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+mic.addEventListener("pointerdown", function (e) {
+  e.preventDefault();
+  try { chatRecStart(); } catch (e1) {}
+});
+mic.addEventListener("pointerup", function (e) {
+  e.preventDefault();
+  try { chatRecHoldEnd(true); } catch (e2) {}
+});
+mic.addEventListener("pointercancel", function (e) {
+  try { chatRecAbort(); } catch (e3) {}
+});
+/* تمييز مرئي فوري: شارة الإصدار تحمل «تطبيق أندرويد» داخل التطبيق فقط */
+function markChip() {
+  var c = document.getElementById("verChip");
+  if (c && c.textContent.indexOf("تطبيق أندرويد") < 0)
+    c.textContent = c.textContent + " • تطبيق أندرويد";
+}
+markChip();
+setTimeout(markChip, 900);
+})();'''
+
+_PWA_V105_CSS = r'''/* ═══ v105: سكن أندرويد أصيل — يُفعَّل داخل تطبيق APK فقط (html[data-apk]) ═══
+   الهيدر يصير شريط تطبيق بعمق وظل، وشريط التنقل يأخذ مؤشر M3 الحبّي حول
+   الأيقونة النشطة، والأزرار تحصل على ريبِل حقيقي من نقطة الإصبع.
+   في المتصفح/الويب: السمة لا تُضبط أصلًا فلا تسري أي قاعدة من هذه الطبقة. */
+html[data-apk="1"] header{
+  padding:14px 16px;border-bottom:none;
+  box-shadow:0 3px 16px rgba(61,43,28,.30)}
+html[data-apk="1"][data-theme="dark"] header{
+  background:linear-gradient(135deg,#191210,#241a12)}
+html[data-apk="1"] header .t b{font-size:16px;letter-spacing:.2px}
+html[data-apk="1"] header img{width:38px;height:38px;border-radius:11px}
+html[data-apk="1"] nav.tabs{
+  border-top:none;padding:8px 4px calc(8px + env(safe-area-inset-bottom));
+  box-shadow:0 -6px 24px rgba(61,43,28,.16)}
+html[data-apk="1"] nav.tabs button{
+  background:transparent;padding:4px 2px 5px;border-radius:16px;
+  transition:transform .12s ease;
+  /* ثابتة منذ الإقلاع — بلا أي تغيير تخطيطي عند اللمس (درس الفحص الحي:
+     إضافة overflow عند الضغط تصفّر الحد الأدنى لعنصر flex فتنزلق
+     الأزرار تحت الإصبع فتصيب النقرة جارَها) */
+  min-width:0;overflow:hidden}
+html[data-apk="1"] nav.tabs button .ic{
+  padding:3px 10px;border-radius:999px;
+  transition:background .16s ease,opacity .16s ease}
+html[data-apk="1"] nav.tabs button.on{background:transparent}
+html[data-apk="1"] nav.tabs button.on .ic{background:var(--brandsoft)}
+html[data-apk="1"] nav.tabs button:not(.on) .ic{opacity:.8}
+html[data-apk="1"] nav.tabs button:active{transform:scale(.96)}
+@media (max-width:370px){html[data-apk="1"] nav.tabs button .ic{padding:3px 6px}}
+/* اللمس: ريبِل — العنصر يأخذ .__rip من JS عند أول ضغطة.
+   min-width:0 مقصودة: تبطل قلب الحد الأدنى لعناصر flex عند إضافة
+   الكلاس فلا يتحرك أي شيء تحت الإصبع لحظة الريبِل */
+html[data-apk="1"] .__rip{position:relative;overflow:hidden;min-width:0}
+html[data-apk="1"] .__rip > i.__ripel{
+  position:absolute;border-radius:50%;background:currentColor;opacity:.16;
+  transform:scale(0);animation:__ripan .5s ease-out forwards;pointer-events:none}
+@keyframes __ripan{to{transform:scale(2.4);opacity:0}}
+@media (prefers-reduced-motion:reduce){html[data-apk="1"] .__rip>i.__ripel{display:none}}
+/* شريط انقطاع الاتصال — يظهر فقط عند offline داخل التطبيق */
+html[data-apk="1"] .__netbar{
+  position:fixed;top:0;left:0;right:0;z-index:99999;cursor:pointer;
+  background:linear-gradient(135deg,#8f2626,#b03030);color:#fff;
+  padding:9px 12px;font-size:13px;font-weight:700;text-align:center;
+  box-shadow:0 2px 12px rgba(0,0,0,.35)}
+/* المحتوى والشارة يتكيّفان مع الشريط السفلي الأطول */
+html[data-apk="1"] main{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
+html[data-apk="1"] #verChip{bottom:calc(78px + env(safe-area-inset-bottom))}'''
+
+_PWA_V105_JS = r'''/* v105: طبقة «أندرويد أصيل» داخل التطبيق فقط (UA فيه LeRoiStock).
+   في المتصفح/الويب: يعود مبكرًا قبل ضبط السمة أو ربط أي مستمع — صفر مساس. */
+(function () {
+"use strict";
+if (navigator.userAgent.indexOf("LeRoiStock") < 0) return;
+var D = document.documentElement;
+D.setAttribute("data-apk", "1");
+
+/* مستمع آمن الخيارات (WebView قديم يرمي مع {passive:true}) */
+function on(el, ev, fn) {
+  try { el.addEventListener(ev, fn, { passive: true }); }
+  catch (_e) { el.addEventListener(ev, fn); }
+}
+
+/* اهتزاز خفيف — إحساس اللمس الأصيل */
+function h(p) { try { if (navigator.vibrate) navigator.vibrate(p); } catch (_e) {} }
+
+/* شريط انقطاع الاتصال: يظهر عند offline والضغط عليه يعيد المحاولة */
+var netbar = null;
+function showNet() {
+  if (!netbar) {
+    netbar = document.createElement("div");
+    netbar.className = "__netbar";
+    netbar.textContent = "⚠ لا يوجد اتصال بالإنترنت — اضغط هنا لإعادة المحاولة";
+    netbar.addEventListener("click", function () { try { location.reload(); } catch (_e) {} });
+    (document.body || D).appendChild(netbar);
+  }
+}
+function hideNet() {
+  if (netbar && netbar.parentNode) netbar.parentNode.removeChild(netbar);
+  netbar = null;
+}
+window.addEventListener("offline", showNet);
+window.addEventListener("online", function () { hideNet(); h(8); });
+if (navigator.onLine === false) showNet();
+
+/* محرك الريبِل: تفويض واحد على document — يعمل مع العناصر الجديدة تلقائيًا */
+var REDUCE = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+on(document, "pointerdown", function (e) {
+  if (REDUCE) return;
+  var t = e.target && e.target.closest ? e.target.closest("button, .chip") : null;
+  if (!t || t.disabled) return;
+  var r = t.getBoundingClientRect();
+  if (r.width < 4 || r.height < 4) return;
+  var d = Math.max(r.width, r.height) * 1.1;
+  var el = document.createElement("i");
+  el.className = "__ripel";
+  el.style.width = d + "px";
+  el.style.height = d + "px";
+  el.style.left = ((e.clientX || r.left + r.width / 2) - r.left - d / 2) + "px";
+  el.style.top = ((e.clientY || r.top + r.height / 2) - r.top - d / 2) + "px";
+  t.classList.add("__rip");
+  t.appendChild(el);
+  el.addEventListener("animationend", function () {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  });
+});
+
+/* اهتزاز خفيف عند تبديل التابات */
+document.addEventListener("click", function (e) {
+  var b = e.target && e.target.closest ? e.target.closest("nav.tabs button") : null;
+  if (b) h(8);
+}, true);
+
+/* المايك: اهتزاز بداية/إلغاء + إبقاء الشاشة مضاءة أثناء التسجيل (Wake Lock) */
+try {
+  var _cs = window.chatRecStart, _ce = window.chatRecHoldEnd, _ca = window.chatRecAbort;
+  var lock = null;
+  function grabLock() {
+    try {
+      if (navigator.wakeLock && navigator.wakeLock.request)
+        navigator.wakeLock.request("screen").then(function (l) { lock = l; }).catch(function () {});
+    } catch (_e) {}
+  }
+  function dropLock() {
+    try { if (lock && lock.release) lock.release(); } catch (_e) {}
+    lock = null;
+  }
+  if (typeof _cs === "function") window.chatRecStart = function () { h(14); grabLock(); return _cs.apply(this, arguments); };
+  if (typeof _ce === "function") window.chatRecHoldEnd = function () { dropLock(); return _ce.apply(this, arguments); };
+  if (typeof _ca === "function") window.chatRecAbort = function () { dropLock(); h(6); return _ca.apply(this, arguments); };
+} catch (_e) {}
+
+/* قفز مباشرة إلى تاب عبر الهاش (#v-inv / #v-chat / …) — تمهيد لاختصارات الأيقونة.
+   لا قفز قبل إقلاع الجلسة: تسلسل الدخول يعيد التاب للرئيسية فيتجاوز القفزة */
+(function () {
+  var tries = 0;
+  function jump() {
+    var m = (location.hash || "").match(/^#(v-[a-z]+)$/);
+    if (!m) return true;
+    var app = document.getElementById("app");
+    if (!app || app.style.display !== "flex") return false;
+    var b = document.querySelector('nav.tabs button[data-v="' + m[1] + '"]');
+    if (!b || b.style.display === "none") return false;
+    if (b.classList.contains("on")) return true;
+    b.click();
+    h(8);
+    return true;
+  }
+  if (!jump()) {
+    var iv = setInterval(function () { if (jump() || ++tries > 12) clearInterval(iv); }, 700);
+  }
+})();
+})();'''
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -14153,6 +14344,12 @@ _PWA_HTML_PATCHES = (
     # 47) v103: الاستبدال العام — زر في رأس المخزون + لوحة بلا فاتورة (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v103css">' + _PWA_V103_CSS + '</style>\n<script id="v103js">\n' + _PWA_V103_JS + '\n</script>\n</body>'),
+    # 48) v104: المايك داخل التطبيق — إعادة ربط زر 🎤 على محرك v55-v60 عند اكتشاف UA التطبيق (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<script id="v104js">\n' + _PWA_V104_JS + '\n</script>\n</body>'),
+    # 49) v105: سكن أندرويد أصيل داخل التطبيق فقط — CSS ثم JS (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<style id="v105css">' + _PWA_V105_CSS + '</style>\n<script id="v105js">\n' + _PWA_V105_JS + '\n</script>\n</body>'),
 )
 
 
@@ -22787,7 +22984,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general + app-mic + native-ui) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
