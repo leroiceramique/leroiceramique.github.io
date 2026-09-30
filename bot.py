@@ -915,6 +915,14 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     PRIMARY KEY (role, perm)
 );
 
+CREATE TABLE IF NOT EXISTS user_permissions (
+    telegram_id BIGINT      NOT NULL,
+    perm        VARCHAR(60) NOT NULL,
+    state       SMALLINT    NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (telegram_id, perm)
+);
+
 CREATE TABLE IF NOT EXISTS invoices (
     id              SERIAL PRIMARY KEY,
     customer_name   VARCHAR(500) NOT NULL,
@@ -3232,6 +3240,7 @@ PERM_EDIT_PRODUCT = "edit_product"  # ✏️ تعديل سلعة
 PERM_LOW_STOCK    = "low_stock"     # 📊 المخزون المنخفض
 PERM_PENDING      = "pending"       # 🔴 الطلبات المعلقة
 PERM_EXPENSES     = "expenses"      # 💰 المصروفات (v106)
+PERM_USERS        = "users"         # ⚙️ نظام المستخدمين (v107 — تُمنح لكل مستخدم على حدة)
 
 PERM_LABELS = {
     PERM_SEARCH:       "🔍 البحث",
@@ -3246,6 +3255,7 @@ PERM_LABELS = {
     PERM_LOW_STOCK:    "📊 المخزون المنخفض",
     PERM_PENDING:      "🔴 الطلبات المعلقة",
     PERM_EXPENSES:     "💰 المصروفات",
+    PERM_USERS:        "⚙️ نظام المستخدمين",
 }
 
 # الصلاحيات القابلة للإدارة لكل فئة (= الافتراضي المفعّل عند أول تشغيل)
@@ -3361,7 +3371,168 @@ def set_role_perm(role, perm, enabled):
     _ROLE_PERM_CACHE.clear()
 
 
-def _btn_perm_ok(role, text):
+# ═══════════════════════════════════════════════════════════
+#  🎛️ v107: صلاحيات لكل مستخدم على حدة — PER-USER PERMISSIONS
+#  طبقة فوق صلاحيات الفئات: الإدارة تختار لكل مستخدم ماذا يرى
+#  وفيما يتحكم حتى لو كانت فئته «مدير نظام» (باستثناء الحسابات
+#  المحمية ADMIN_IDS/OWNER_IDS فهي كاملة دائماً لا تُمس).
+#  في القاعدة: state = 1 مفعّلة دائماً / 0 موقفة دائماً / وغياب
+#  الصف = يتبع فئته (السلوك الحالي حرفياً — صفر كسر للبقية).
+#  الإدارة من لوحة المستخدمين في البوت (زر 🎛️ صلاحياته) ومن
+#  التطبيق (بطاقة المستخدم → 🎛️ صلاحياته) — المنصتان على النواة نفسها.
+# ═══════════════════════════════════════════════════════════
+_USER_PERM_CACHE = {}
+_USER_PERM_TTL = 30.0
+
+
+def _load_user_perm_states(telegram_id):
+    """يقرأ تجاوزات مستخدم من القاعدة — None عند أي فشل (فيتبع الفئة)."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT perm, state FROM user_permissions WHERE telegram_id = %s",
+                            (telegram_id,))
+                rows = cur.fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            return None
+        finally:
+            release_connection(conn)
+    except Exception:
+        return None
+    return {r[0]: int(r[1]) for r in rows if r[0] in PERM_LABELS}
+
+
+def get_user_perm_states(telegram_id):
+    """تجاوزات المستخدم الصريحة فقط (غياب الصف = تتبع الفئة). كاش 30 ثانية."""
+    if telegram_id is None:
+        return {}
+    now = time.monotonic()
+    _hit = _USER_PERM_CACHE.get(telegram_id)
+    if _hit and _hit[0] > now:
+        return _hit[1]
+    states = _load_user_perm_states(telegram_id) or {}
+    _USER_PERM_CACHE[telegram_id] = (now + _USER_PERM_TTL, states)
+    return states
+
+
+def set_user_perm_state(telegram_id, perm, state):
+    """ضبط تجاوز صلاحية مستخدم: 1 مفعّلة / 0 موقفة / None حذف التجاوز (تتبع الفئة)."""
+    if perm not in PERM_LABELS:
+        raise ValueError("صلاحية غير معروفة: " + str(perm))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if state is None:
+                cur.execute("DELETE FROM user_permissions WHERE telegram_id = %s AND perm = %s",
+                            (telegram_id, perm))
+            else:
+                cur.execute(
+                    "INSERT INTO user_permissions (telegram_id, perm, state, updated_at) "
+                    "VALUES (%s, %s, %s, NOW()) "
+                    "ON CONFLICT (telegram_id, perm) DO UPDATE "
+                    "SET state = EXCLUDED.state, updated_at = NOW()",
+                    (telegram_id, perm, 1 if state else 0))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    _USER_PERM_CACHE.pop(telegram_id, None)
+
+
+def clear_user_perms(telegram_id):
+    """إعادة ضبط كل تجاوزات مستخدم — يعود لتتبع فئته بالكامل. يعيد عدد الصفوف."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_permissions WHERE telegram_id = %s", (telegram_id,))
+            _n = cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    _USER_PERM_CACHE.pop(telegram_id, None)
+    return _n
+
+
+def user_perm_enabled(telegram_id, role, perm):
+    """الحكم الفعلي النهائي لأي صلاحية في المنصتين (v107):
+    الحسابات المحمية → كل شيء دائماً؛ التجاوز الصريح للمستخدم → هو الحاكم؛
+    وإلا يتبع الفئة (المدير/مدير البوت كامل، والبقية من مصفوفة فئتهم)."""
+    if perm not in PERM_LABELS:
+        return False
+    if telegram_id is not None and _protected_account(telegram_id):
+        return True
+    _st = get_user_perm_states(telegram_id).get(perm)
+    if _st is not None:
+        return bool(_st)
+    return role_perm_enabled(role, perm)
+
+
+def _can_manage_users(telegram_id):
+    """⚙️ بوابة نظام المستخدمين: الإداريون بالفئة أو من أُعطيه صلاحية المستخدمين."""
+    if telegram_id is None:
+        return False
+    if is_admin(telegram_id):
+        return True
+    try:
+        _u = get_user(telegram_id)
+        _role = (_u or {}).get("role") or ROLE_PENDING
+    except Exception:
+        return False
+    return user_perm_enabled(telegram_id, _role, PERM_USERS)
+
+
+# ترتيب مصفوفة الصلاحيات المعروضة لكل مستخدم (13 صلاحية)
+UPERM_MATRIX = (PERM_SEARCH, PERM_ADD_QTY, PERM_REMOVE, PERM_INVOICE,
+                PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS,
+                PERM_ADD_PRODUCT, PERM_EDIT_PRODUCT, PERM_LOW_STOCK,
+                PERM_PENDING, PERM_EXPENSES, PERM_USERS)
+
+# خريطة أزرار لوحة الإدارة النصية → الصلاحية الحاكمة (لإخفاء الوحدات الموقوفة)
+_ADMIN_BTN_PERM_MAP = {
+    BTN_ADD:           PERM_ADD_PRODUCT,
+    BTN_ADD_QTY:       PERM_ADD_QTY,
+    BTN_REMOVE_QTY:    PERM_REMOVE,
+    BTN_EDIT:          PERM_EDIT_PRODUCT,
+    BTN_DELETE:        PERM_EDIT_PRODUCT,
+    BTN_USERS:         PERM_USERS,
+    BTN_LOW_STOCK:     PERM_LOW_STOCK,
+    BTN_MOVEMENTS:     PERM_MOVEMENTS,
+    BTN_INCOMING:      PERM_SUPPLY_ORDER,
+    BTN_INVOICE:       PERM_INVOICE,
+    BTN_SWAP:          PERM_INVOICE,
+    BTN_PENDING_ADMIN: PERM_PENDING,
+}
+
+
+def _admin_btn_allowed(user_id, label):
+    """هل يُعرض هذا الزر الإداري على هذا المستخدم (v107)؟
+    الحسابات المحمية ومن لا تجاوزات له: كل شيء كما كان (مسار سريع بلا قاعدة)."""
+    if user_id is None or _protected_account(user_id):
+        return True
+    try:
+        _role = _get_role(user_id)
+    except Exception:
+        return True
+    if _role not in (ROLE_ADMIN, ROLE_MANAGER):
+        return True   # الفئات الأخرى لها بواباتها الخاصة في مكانها
+    if not get_user_perm_states(user_id):
+        return True   # لا تجاوزات صريحة → سلوك المدير الكامل كما هو
+    _base = str(label).split(" (")[0].strip()
+    _perm = _ADMIN_BTN_PERM_MAP.get(_base)
+    if _perm is None:
+        return True   # أزرار بلا وحدة مرتبطة (نسخ احتياطي/تنبيه/تحديث/صلاحيات الفئات)
+    return user_perm_enabled(user_id, _role, _perm)
+
+
+def _btn_perm_ok(role, text, uid=None):
     """هل يُسمح لهذه الفئة بهذا الزر (نصاً)؟ يُستخدم في بوابات الفئات.
     دلالة قائمة السماح الصارمة لكل فئة (ROLE_BTN_PERM_MAP): أزرار لوحتها
     تُحكم بصلاحياتها، أي زر معروف خارج خريطة فئتها = مرفوض لها،
@@ -3378,7 +3549,9 @@ def _btn_perm_ok(role, text):
             _perm = PERM_PENDING
     if _perm is None:
         return False  # زر معروف خارج لوحة الفئة → مرفوض
-    return role_perm_enabled(role, _perm)
+    # v107: التجاوز الصريح للمستخدم هو الحاكم قبل مصفوفة الفئة
+    return (user_perm_enabled(uid, role, _perm) if uid is not None
+            else role_perm_enabled(role, _perm))
 
 
 def _perms_roles_keyboard():
@@ -3456,6 +3629,107 @@ async def callback_perms_handler(update, context):
         except Exception:
             pass
         return
+
+
+def _uperm_state_mark(state):
+    return "✅" if state == 1 else ("❌" if state == 0 else "↔️")
+
+
+def _uperm_target_label(tu, tid):
+    if tu:
+        return (tu.get("first_name")
+                or ("@" + tu["username"] if tu.get("username") else str(tid)))
+    return str(tid)
+
+
+def _uperm_panel_text(tu, tid):
+    rl = ROLE_LABELS.get((tu or {}).get("role"), (tu or {}).get("role") or "؟")
+    return ("🎛️ صلاحيات خاصة: " + _uperm_target_label(tu, tid) + chr(10)
+            + "الفئة: " + rl + chr(10) + chr(10)
+            + "↔️ يتبع فئته • ✅ مفعّلة دائماً • ❌ موقفة دائماً" + chr(10)
+            + "اضغط أي صلاحية لتبديل حالتها — التغيير يسري في البوت فوراً "
+              "وفي التطبيق خلال دقيقة كحد أقصى.")
+
+
+def _uperm_panel_keyboard(tid):
+    """🎛️ لوحة صلاحيات مستخدم محدد: ↔️ يتبع فئته / ✅ مفعّلة دائماً / ❌ موقفة."""
+    states = get_user_perm_states(tid)
+    rows = []
+    for _p in UPERM_MATRIX:
+        _st = states.get(_p)
+        rows.append([InlineKeyboardButton(
+            _uperm_state_mark(_st) + " " + PERM_LABELS.get(_p, _p),
+            callback_data="upt_" + str(tid) + "_" + _p)])
+    rows.append([
+        InlineKeyboardButton("↩️ إعادة ضبط", callback_data="upr_" + str(tid)),
+        InlineKeyboardButton("✅ إغلاق", callback_data="upx_" + str(tid)),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def callback_uperm_handler(update, context):
+    """🎛️ v107: مصفوفة صلاحيات مستخدم محدد — من لوحة المستخدمين.
+    uperm_<tid> فتح • upt_<tid>_<perm> تبديل (↔️→✅→❌→↔️) •
+    upr_<tid> إعادة ضبط • upx_<tid> إغلاق."""
+    query = update.callback_query
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا القسم لإدارة المستخدمين فقط.", show_alert=True)
+        return
+    data = query.data or ""
+    try:
+        if data.startswith("upt_"):
+            tid_s, _, perm = data[len("upt_"):].partition("_")
+            tid = int(tid_s)
+            if perm not in UPERM_MATRIX:
+                await query.answer("❌ صلاحية غير معروفة.", show_alert=True)
+                return
+            if _protected_account(tid):
+                await query.answer("🔒 حساب محمي — صلاحياته كاملة دائماً.", show_alert=True)
+                return
+            if tid == query.from_user.id:
+                await query.answer("❌ لا يمكنك تعديل صلاحياتك بنفسك.", show_alert=True)
+                return
+            _st = get_user_perm_states(tid).get(perm)
+            _new = 1 if _st is None else (0 if _st == 1 else None)
+            set_user_perm_state(tid, perm, _new)
+            await query.answer("✅ مفعّلة دائماً" if _new == 1 else
+                               ("⛔ موقفة دائماً" if _new == 0 else "↔️ عادت لتتبع الفئة"))
+        elif data.startswith("upr_"):
+            tid = int(data[len("upr_"):])
+            if _protected_account(tid):
+                await query.answer("🔒 حساب محمي.", show_alert=True)
+                return
+            clear_user_perms(tid)
+            await query.answer("↩️ عادت كل صلاحياته لتتبع الفئة")
+        elif data.startswith("uperm_"):
+            tid = int(data[len("uperm_"):])
+            if _protected_account(tid):
+                await query.answer("🛡 حساب محمي — صلاحياته كاملة دائماً.", show_alert=True)
+                return
+            await query.answer()
+        elif data.startswith("upx_"):
+            _KB_ROLE_UID.set(query.from_user.id)
+            await query.answer()
+            try:
+                await query.edit_message_text("✅ تم إغلاق لوحة الصلاحيات.")
+            except Exception:
+                pass
+            return
+        else:
+            return
+    except ValueError:
+        await query.answer("❌ طلب غير صالح.", show_alert=True)
+        return
+    try:
+        tu = get_user(tid)
+    except Exception:
+        tu = None
+    try:
+        await query.edit_message_text(
+            _uperm_panel_text(tu, tid),
+            reply_markup=_uperm_panel_keyboard(tid))
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3782,6 +4056,15 @@ def get_admin_keyboard(user_id=None):
         [BTN_OIL, BTN_UPDATE],
         [BTN_PERMS],
     ]
+    # v107: صلاحيات لكل مستخدم — الوحدات الموقوفة تختفي من لوحة المدير المقيد
+    try:
+        if user_id is not None and not _protected_account(user_id) \
+                and _get_role(user_id) in (ROLE_ADMIN, ROLE_MANAGER) \
+                and get_user_perm_states(user_id):
+            rows = [[_b for _b in _r if _admin_btn_allowed(user_id, _b)] for _r in rows]
+            rows = [_r for _r in rows if _r]
+    except Exception:
+        pass
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -3818,10 +4101,14 @@ def _get_role(telegram_id):
         return ROLE_PENDING
 
 
-def get_stock_keyboard():
+def get_stock_keyboard(user_id=None):
     """📦 لوحة عامل المخزون — تُبنى ديناميكياً من صلاحيات الفئة المفعّلة
-    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً — ومنذ v107 تُطبَّق
+    أولاً تجاوزات المستخدم الصريحة إن وُجدت)."""
     perms = get_role_perms(ROLE_STOCK)
+    if user_id is not None:
+        for _pk in tuple(perms):
+            perms[_pk] = user_perm_enabled(user_id, ROLE_STOCK, _pk)
     rows = []
     _r1 = []
     if perms.get(PERM_REMOVE):
@@ -3858,8 +4145,12 @@ def get_stock_keyboard():
 
 def get_seller_main_keyboard(telegram_id=None):
     """🛍 لوحة البائع — تُبنى ديناميكياً من صلاحيات الفئة المفعّلة
-    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً — ومنذ v107 تُطبَّق
+    أولاً تجاوزات المستخدم الصريحة إن وُجدت)."""
     perms = get_role_perms(ROLE_SELLER)
+    if telegram_id is not None:
+        for _pk in tuple(perms):
+            perms[_pk] = user_perm_enabled(telegram_id, ROLE_SELLER, _pk)
     rows = []
     _r1 = []
     if perms.get(PERM_SEARCH):
@@ -3885,11 +4176,12 @@ def get_seller_main_keyboard(telegram_id=None):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-def get_external_keyboard():
+def get_external_keyboard(user_id=None):
     """🌍 لوحة البائع الخارجي — زر البحث يظهر حسب صلاحية الفئة
-    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً — ومنذ v107 تُطبَّق
+    أولاً تجاوزات المستخدم الصريحة إن وُجدت)."""
     rows = []
-    if role_perm_enabled(ROLE_EXTERNAL, PERM_SEARCH):
+    if user_perm_enabled(user_id, ROLE_EXTERNAL, PERM_SEARCH):
         rows.append([BTN_SEARCH])
     rows.append([BTN_CUST_CANCEL])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -3901,12 +4193,23 @@ def get_role_keyboard(telegram_id=None):
     if role in (ROLE_ADMIN, ROLE_MANAGER):
         return get_admin_keyboard(telegram_id)
     if role == ROLE_STOCK:
-        return get_stock_keyboard()
-    if role == ROLE_SELLER:
-        return get_seller_main_keyboard(telegram_id)
-    if role == ROLE_EXTERNAL:
-        return get_external_keyboard()
-    return get_customer_keyboard(telegram_id)
+        kb = get_stock_keyboard(telegram_id)
+    elif role == ROLE_SELLER:
+        kb = get_seller_main_keyboard(telegram_id)
+    elif role == ROLE_EXTERNAL:
+        kb = get_external_keyboard(telegram_id)
+    else:
+        return get_customer_keyboard(telegram_id)
+    # v107: من أُعطيه صلاحية نظام المستخدمين يرى زر المستخدمين على لوحته
+    try:
+        if telegram_id and get_user_perm_states(telegram_id).get(PERM_USERS) == 1:
+            _rws = [list(_r) for _r in getattr(kb, "keyboard", [])]
+            if _rws and all(getattr(_b, "text", _b) != BTN_USERS
+                            for _r in _rws for _b in _r):
+                kb = ReplyKeyboardMarkup([[BTN_USERS]] + _rws, resize_keyboard=True)
+    except Exception:
+        pass
+    return kb
 
 
 def _role_picker_keyboard(prefix="pickrole"):
@@ -4491,7 +4794,11 @@ async def _show_product_detail(update, context, product):
     # 🎯 بوابة الفئات: الخارجي يرى التوفر فقط دون كميات أو أزرار،
     # والبائع يرى الكمية مع الإضافة والإخراج والسجل (نفس صلاحيات البيع).
     try:
-        _det_role = _get_role(update.effective_user.id)
+        _det_uid = update.effective_user.id
+    except Exception:
+        _det_uid = None
+    try:
+        _det_role = _get_role(_det_uid) if _det_uid is not None else ROLE_CUSTOMER
     except Exception:
         _det_role = ROLE_CUSTOMER
     pid = str(p["id"])
@@ -4510,6 +4817,9 @@ async def _show_product_detail(update, context, product):
     # 🔐 أزرار البطاقة تُبنى حسب صلاحيات الفئة (الإداريون والعميل: كما هو)
     if _det_role == ROLE_SELLER:
         _perms = get_role_perms(ROLE_SELLER)
+        if _det_uid is not None:
+            for _pk in tuple(_perms):
+                _perms[_pk] = user_perm_enabled(_det_uid, ROLE_SELLER, _pk)
         buttons = []
         _row = []
         if _perms.get(PERM_ADD_QTY):
@@ -4530,6 +4840,9 @@ async def _show_product_detail(update, context, product):
         return
     if _det_role == ROLE_STOCK:
         _perms = get_role_perms(ROLE_STOCK)
+        if _det_uid is not None:
+            for _pk in tuple(_perms):
+                _perms[_pk] = user_perm_enabled(_det_uid, ROLE_STOCK, _pk)
         buttons = []
         _row = []
         if _perms.get(PERM_ADD_QTY):
@@ -5014,7 +5327,7 @@ async def callback_product_action_handler(update, context):
         _pact_need = {"add": PERM_ADD_QTY, "rem": PERM_REMOVE, "log": PERM_MOVEMENTS}.get(
             query.data.split("_", 2)[1] if "_" in query.data else ""
         )
-        if _pact_need and not role_perm_enabled(_pact_role, _pact_need):
+        if _pact_need and not user_perm_enabled(query.from_user.id, _pact_role, _pact_need):
             await query.answer("❌ هذا الإجراء موقف لفئتك — راجع المدير.", show_alert=True)
             return
     _KB_ROLE_UID.set(query.from_user.id)
@@ -5389,8 +5702,8 @@ async def callback_approval_handler(update, context):
     """Handle approve/reject for pending users."""
     query = update.callback_query
     # ── AUTH GUARD ── يجب أن يكون المستدعي مديراً قبل أي شيء، وإلا يُرفض الطلب.
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         logging.warning(
             "[USERS] Unauthorized approve/reject attempt by "
             + str(query.from_user.id) + " on data=" + str(query.data)
@@ -5586,8 +5899,8 @@ async def callback_users_ask_handler(update, context):
     """خطوة تأكيد صريحة قبل أي ترقية/إزالة: تعرض بطاقة تضم
     اسم الهدف ومعرّفه والدور المطلوب، ثم زر تنفيذ وزر إلغاء."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer()
 
@@ -5662,8 +5975,8 @@ async def callback_users_ask_handler(update, context):
 async def callback_users_cancel_handler(update, context):
     """إلغاء أي عملية قيد التأكيد والعودة للوحة المستخدمين."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer("تم الإلغاء.")
     try:
@@ -5693,8 +6006,8 @@ async def callback_merge_list_handler(update, context):
     بادئةً) ليختار المدير الحساب الذي سيُدمج في الحساب الناجي (الذي فتحت لوحته).
     يحل أي تكرار لم يلحقه الدمج التلقائي (حسابان فعليان في تلجرام بنفس الاسم)."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     tid_str = query.data.replace("askmerge_", "", 1)
     if not tid_str.isdigit():
@@ -5761,8 +6074,8 @@ async def callback_merge_list_handler(update, context):
 async def callback_merge_confirm_handler(update, context):
     """v53: بطاقة تأكيد صريحة قبل تنفيذ الدمج."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     parts = query.data.split("_")
     if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
@@ -5809,8 +6122,8 @@ async def callback_merge_go_handler(update, context):
     """v53: تنفيذ الدمج بعد التأكيد — نقل السجلات ثم إيقاف الحساب المكرر."""
     query = update.callback_query
     caller_id = query.from_user.id
-    if not is_admin(caller_id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(caller_id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         logging.warning(
             "[MERGE] Unauthorized merge attempt by " + str(caller_id)
             + " data=" + str(query.data))
@@ -5858,8 +6171,8 @@ async def callback_promote_handler(update, context):
     query = update.callback_query
     # ── AUTH GUARD ── منع أي شخص غير مصرح له بتغيير الأدوار.
     caller_id = query.from_user.id
-    if not is_admin(caller_id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(caller_id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         logging.warning(
             "[USERS] Unauthorized role change attempt by "
             + str(caller_id) + " on data=" + str(query.data)
@@ -5959,8 +6272,8 @@ async def callback_kick_handler(update, context):
     والحسابات المحمية (ADMIN_IDS/OWNER_IDS) مستثناة من الطرد."""
     query = update.callback_query
     caller_id = query.from_user.id
-    if not is_admin(caller_id):
-        await query.answer("❌ هذا الإجراء للمدراء فقط.", show_alert=True)
+    if not _can_manage_users(caller_id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         logging.warning(
             "[USERS] Unauthorized kick attempt by "
             + str(caller_id) + " on data=" + str(query.data)
@@ -6750,6 +7063,15 @@ def _build_users_panel():
                 InlineKeyboardButton("🚫 طرد", callback_data="askkick_" + str(tid)),
             ])
             action_rows += 1
+        # v107: زر صلاحياته الخاصة — لكل مستخدم غير محمي (ماذا يرى وفيما يتحكم)
+        if action_rows < _MAX_PANEL_ROWS:
+            buttons.append([
+                InlineKeyboardButton(
+                    "🎛️ صلاحياته: " + label,
+                    callback_data="uperm_" + str(tid),
+                ),
+            ])
+            action_rows += 1
         # v53: زر الدمج — فقط لمن يشارك اسمه مع حساب آخر (المكرر مثل Mostafa)
         if tid and name_dup.get(_norm_name_key(_merge_display_name(u)), 0) > 1 \
                 and action_rows < _MAX_PANEL_ROWS:
@@ -6783,8 +7105,8 @@ async def _send_users_panel(update, context):
 
 
 async def users_command(update, context):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ للمديرين فقط.")
+    if not _can_manage_users(update.effective_user.id):
+        await update.message.reply_text("❌ هذا القسم لإدارة المستخدمين فقط.")
         return
     await _send_users_panel(update, context)
 
@@ -6792,8 +7114,8 @@ async def users_command(update, context):
 async def callback_users_refresh_handler(update, context):
     """زر التحديث: يعيد رسم اللوحة بأحدث البيانات."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer("🔄 تم التحديث")
     try:
@@ -6805,8 +7127,8 @@ async def callback_users_refresh_handler(update, context):
 async def callback_users_close_handler(update, context):
     """زر الإغلاق: يجفف الرسالة ويزيل كل الأزرار."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer()
     await _safe_edit(query, "🔒 أُغلقت لوحة المستخدمين.")
@@ -6816,8 +7138,8 @@ async def callback_role_menu_handler(update, context):
     """🎯 قائمة تغيير فئة مستخدم من لوحة المستخدمين
     (بديل شامل للترقية/الإزالة: كل الفئات في قائمة واحدة)."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer()
     parts = query.data.split("_", 1)
@@ -6852,8 +7174,8 @@ async def callback_role_menu_handler(update, context):
 async def callback_role_set_handler(update, context):
     """تنفيذ تغيير الفئة بعد الاختيار من القائمة + إشعار المستخدم."""
     query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer()
     parts = query.data.split("_")  # setrole_<role>_<tid>
@@ -7817,20 +8139,22 @@ async def handle_admin_message(update, context):
         if _gate_role == ROLE_STOCK:
             _allowed = (
                 not is_admin_btn
-                or (text in STOCK_ADMIN_BTNS and _btn_perm_ok(_gate_role, text))
-                or any(text.startswith(p) and _btn_perm_ok(_gate_role, text)
+                or (text in STOCK_ADMIN_BTNS and _btn_perm_ok(_gate_role, text, user.id))
+                or any(text.startswith(p) and _btn_perm_ok(_gate_role, text, user.id)
                        for p in STOCK_ADMIN_PREFIXES)
             )
         elif _gate_role == ROLE_SELLER:
             _allowed = (
-                (text == BTN_INVOICE and _btn_perm_ok(_gate_role, text))
-                or (text == BTN_SWAP and _btn_perm_ok(_gate_role, text))
+                (text == BTN_INVOICE and _btn_perm_ok(_gate_role, text, user.id))
+                or (text == BTN_SWAP and _btn_perm_ok(_gate_role, text, user.id))
                 or _gate_state.startswith("waiting_invoice")
                 or _gate_state.startswith("waiting_swap")
                 or text in (BTN_CANCEL, BTN_CUST_CANCEL)
             )
         else:
-            _allowed = False
+            # v107: من أُعطيه صلاحية نظام المستخدمين يمر بزر المستخدمين فقط
+            _allowed = (is_admin_btn and _can_manage_users(user.id)
+                        and text.split(" (")[0].strip() == BTN_USERS)
         if text in (BTN_CANCEL, BTN_CUST_CANCEL) and _allowed:
             context.user_data.clear()
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_role_keyboard(user.id))
@@ -7851,6 +8175,12 @@ async def handle_admin_message(update, context):
     # ═══════════════════════════════════════════════════════════
     if is_admin_btn:
         context.user_data.clear()
+        # v107: صلاحيات لكل مستخدم — حتى الإداري المقيد يمر فقط بما سمحت له الإدارة
+        if not _admin_btn_allowed(user.id, text):
+            await update.message.reply_text(
+                "⛔ هذه الوحدة موقفة لحسابك من قبل الإدارة.",
+                reply_markup=get_admin_keyboard(user.id))
+            return
         if text == BTN_PERMS:
             _KB_ROLE_UID.set(user.id)
             await update.message.reply_text(
@@ -7937,7 +8267,7 @@ async def handle_admin_message(update, context):
             # v103: اختيار النمط — مرتبط بفاتورة (v102) أو مخزون فقط (عام — طلب يوسف)
             _sw_role = await asyncio.to_thread(_get_role, user.id)
             _sw_rows = []
-            if _sw_role in (ROLE_ADMIN, ROLE_MANAGER) or role_perm_enabled(_sw_role, PERM_INVOICE):
+            if _sw_role in (ROLE_ADMIN, ROLE_MANAGER) or user_perm_enabled(user.id, _sw_role, PERM_INVOICE):
                 _sw_rows.append([InlineKeyboardButton(
                     "🧾 مرتبط بفاتورة — تصحيح فاتورة مقبولة",
                     callback_data="swapmode_inv")])
@@ -8817,11 +9147,11 @@ async def handle_customer_message(update, context):
     if _cust_role == ROLE_EXTERNAL:
         # 🌍 البائع الخارجي: بحث فقط (زر البحث أو إرسال اسم السلعة) + إلغاء
         # 🔐 صلاحية البحث قابلة للإطفاء من لوحة الصلاحيات
-        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text):
+        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text, user.id):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
-                reply_markup=get_external_keyboard(),
+                reply_markup=get_external_keyboard(user.id),
             )
             return
         if text in (BTN_CUST_CANCEL, BTN_CANCEL):
@@ -8846,7 +9176,7 @@ async def handle_customer_message(update, context):
     elif _cust_role == ROLE_SELLER:
         # 🛍 البائع: أزرار فئته تُحكم بالصلاحيات الديناميكية (لوحة 🔐 الصلاحيات)
         # البحث: صلاحية مستقلة قابلة للإطفاء
-        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text):
+        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text, user.id):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
@@ -8862,7 +9192,7 @@ async def handle_customer_message(update, context):
             or text.startswith(BTN_PENDING_ADMIN)
         )
         # زر معروف → يُقبل فقط إن كانت صلاحيته مفعّلة (زر غير مربوط = مسموح)
-        if _known_btn and not _btn_perm_ok(_cust_role, text):
+        if _known_btn and not _btn_perm_ok(_cust_role, text, user.id):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
@@ -8884,7 +9214,7 @@ async def handle_customer_message(update, context):
 
     # 🛍 البائع: إنشاء فاتورة (نفس مسار فاتورة الإدارة) — ولغير البائع رفض صريح
     if text == BTN_INVOICE:
-        if _get_role(user.id) == ROLE_SELLER and role_perm_enabled(ROLE_SELLER, PERM_INVOICE):
+        if _get_role(user.id) == ROLE_SELLER and user_perm_enabled(user.id, ROLE_SELLER, PERM_INVOICE):
             _set_state(context, STATE_INVOICE_CUSTOMER)
             context.user_data["invoice_items"] = []
             await update.message.reply_text(
@@ -10753,6 +11083,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_pwreset_handler, pattern="^pwreset_gen_"))   # v39
     # 🔐 نظام الصلاحيات الديناميكي: لوحة إدارة صلاحيات الفئات من داخل البوت
     app.add_handler(CallbackQueryHandler(callback_perms_handler, pattern="^(permsrole_|permstgl_|permsdone)"))
+    app.add_handler(CallbackQueryHandler(callback_uperm_handler, pattern="^(uperm|upt|upr|upx)_"))   # v107: صلاحيات لكل مستخدم
     # 🚫 بوابة الطرد: أول معالج على كل تحديث — المطرود لا يصلحه شيء (v23)
     app.add_handler(TypeHandler(Update, kicked_gate), group=-2)
     # خطوة التأكيد قبل تغيير أي دور + أدوات لوحة المستخدمين
@@ -11138,7 +11469,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v106"  # v106 = «المصروفات والعلامة خارج المحادثة وقاعدة لا تُسقط الإقلاع»: بلاغان من يوسف — نشر Render فشل: «check constraint users_role_check of relation users is violated by some row» فخرج البوت بـ status 1 وتوقف الجميع، و«خانة المصروفات فاشلة تظهر حاول مرة أخرى ، ايضا لا يمكن كتابة تواريخ من اسبوع ماضي ولا يمكن الضغط على حفظ». ثلاثة إصلاحات جذرية: (1) قيد users_role_check صار ديناميكيًا عبر _apply_role_constraint: اتحاد الأدوار القياسية مع كل القيم الموجودة فعلًا في الجدول (DISTINCT role) داخل SAVEPOINT — فلا يمكن لأي صف قديم بأي دور أن يخالف القيد ولا تُمس أي بيانات، وفشله غير المتوقع يُسجّل ويُتجاوز بدل موت init_db كله (و incoming_orders_status_check و transactions_type_check تحصنتا بنقل الـADD داخل حماية DO block)؛ (2) العلامة + العائمة تخفى داخل المحادثة الفردية/الجماعية: حارس في fabTargetOk على #chatThread.on + مراقب MutationObserver على سمة الكلاس يخفيها فور فتح المحادثة ويعيدها على قائمة الرسائل (خارج المحادثة كما طلب يوسف سابقًا)؛ (3) خيار «💰 مصروفات» في رأس قائمة الرسائل — خارج المحادثات — للفئات المصرّح لها (صلاحية expenses جديدة قابلة للتبديل من لوحة الفئات، مزروعة للبائع وعامل المخزون، وللمدراء دائمًا): مبلغ + سبب اختياري (حتى 300 حرف) + تاريخ ووقت حُرّ type=datetime-local بلا أي min/max — الماضي مسموح دائمًا — وزر «حفظ» لا يُقفل إلا أثناء الإرسال فعليًا (ويعود دائمًا في finally) ويعرض رسالة الخادم الحقيقية لا «حاول مرة أخرى» عمياء، والإدراج دائمًا يخزن spent_at (COALESCE مع NOW()) في جدول expenses جديد (amount > 0 + مرجع للمستخدم) + مسارا /api/expenses/add و /api/expenses/list بإجمالي اليوم والشهر بتوقيت Africa/Algiers وسجل تدقيق expenses_add — والأوقات تعود ISO فيعرضها المتصفح بتوقيت الجهاز. صفر مساس بالجلسات أو الفواتير أو أي مسار قائم || سابقه v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v107"  # v107 = «صلاحيات لكل مستخدم»: طلب يوسف — «كل مستخدم اختار له صلاحية وايضا ماذا يرى وفيما يتحكم» حتى لو فئته «مدير نظام». طبقة جديدة فوق صلاحيات الفئات: جدول user_permissions (تجاوز صريح لكل مستخدم: 1 مفعّلة دائماً / 0 موقفة دائماً / وغياب الصف = يتبع فئته — صفر كسر لمن لا تجاوزات له) ونواة حكم واحدة user_perm_enabled تخدم المنصتين معاً: الحسابات المحمية (ADMIN_IDS/OWNER_IDS) كاملة دائماً لا تُمس، ثم التجاوز الصريح، ثم الفئة. مصفوفة 13 صلاحية (البحث، إضافة/إخراج كمية، الفواتير، طلبات التوريد، طلباتي، الحركة، إضافة/تعديل سلع، المخزون المنخفض، المعلقة، المصروفات، ونظام المستخدمين الجديد PERM_USERS). الإدارة من لوحة المستخدمين في البوت (زر «🎛️ صلاحياته» → تبديل ↔️→✅→❌→↔️ + إعادة ضبط) ومن التطبيق (بطاقة المستخدم → 🎛️ صلاحياته → مصفوفة بثلاث حالات ونقطة حالة «فعّالة الآن» تُحدَّث من الخادم بعد كل حفظ) — عبر مساري GET/POST /api/user/{tid}/perms بسجل تدقيق user_perms. إنفاذ حقيقي لا إخفاء: PWA بواباتها أعيد ربطها كلها على الخريطة الواعية للمستخدم (48 موضعاً)، ووحدات إضافة/تعديل/حذف السلع والطلبات المعلقة وطلبات التوريد صارت صلاحيات وحدات مستقلة بدل بوابة admin العامة، ولوحات تلغرام (الإدارة/عامل المخزون/البائع/الخارجي) تُبنى بتجاوزاته، وأزرار اللوحة الإدارية الموقوفة تختفي ويُرفض إدخالها اليدوي. عائلة إدارة المستخدمين (الموافقة/الفئات/الطرد/الدمج/تسجيلات التطبيق) تُدار الآن ببوابة _can_manage_users فتعمل لمن أُعطيه صلاحية المستخدمين، مع حمايات الملكية السابقة كما هي. تقييد المدراء ممكن الآن؛ منع الذات ومنع الحسابات المحمية في المنصتين؛ التغيير يسري في البوت فوراً (كاش 30ث) وفي التطبيق خلال دقيقة (مزامنة الصلاحيات القائمة). صفر مساس بالجلسات أو الفواتير أو البيانات. || سابقه v106 = «المصروفات والعلامة خارج المحادثة وقاعدة لا تُسقط الإقلاع»: بلاغان من يوسف — نشر Render فشل: «check constraint users_role_check of relation users is violated by some row» فخرج البوت بـ status 1 وتوقف الجميع، و«خانة المصروفات فاشلة تظهر حاول مرة أخرى ، ايضا لا يمكن كتابة تواريخ من اسبوع ماضي ولا يمكن الضغط على حفظ». ثلاثة إصلاحات جذرية: (1) قيد users_role_check صار ديناميكيًا عبر _apply_role_constraint: اتحاد الأدوار القياسية مع كل القيم الموجودة فعلًا في الجدول (DISTINCT role) داخل SAVEPOINT — فلا يمكن لأي صف قديم بأي دور أن يخالف القيد ولا تُمس أي بيانات، وفشله غير المتوقع يُسجّل ويُتجاوز بدل موت init_db كله (و incoming_orders_status_check و transactions_type_check تحصنتا بنقل الـADD داخل حماية DO block)؛ (2) العلامة + العائمة تخفى داخل المحادثة الفردية/الجماعية: حارس في fabTargetOk على #chatThread.on + مراقب MutationObserver على سمة الكلاس يخفيها فور فتح المحادثة ويعيدها على قائمة الرسائل (خارج المحادثة كما طلب يوسف سابقًا)؛ (3) خيار «💰 مصروفات» في رأس قائمة الرسائل — خارج المحادثات — للفئات المصرّح لها (صلاحية expenses جديدة قابلة للتبديل من لوحة الفئات، مزروعة للبائع وعامل المخزون، وللمدراء دائمًا): مبلغ + سبب اختياري (حتى 300 حرف) + تاريخ ووقت حُرّ type=datetime-local بلا أي min/max — الماضي مسموح دائمًا — وزر «حفظ» لا يُقفل إلا أثناء الإرسال فعليًا (ويعود دائمًا في finally) ويعرض رسالة الخادم الحقيقية لا «حاول مرة أخرى» عمياء، والإدراج دائمًا يخزن spent_at (COALESCE مع NOW()) في جدول expenses جديد (amount > 0 + مرجع للمستخدم) + مسارا /api/expenses/add و /api/expenses/list بإجمالي اليوم والشهر بتوقيت Africa/Algiers وسجل تدقيق expenses_add — والأوقات تعود ISO فيعرضها المتصفح بتوقيت الجهاز. صفر مساس بالجلسات أو الفواتير أو أي مسار قائم || سابقه v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -14391,6 +14722,207 @@ setTimeout(ensureBtn, 1200);
 setTimeout(ensureBtn, 3000);
 })();'''
 
+_PWA_V107_CSS = r'''/* ═══ v107: صلاحيات لكل مستخدم — لوحة المصفوفة ثلاثية الحالة ═══ */
+.u107ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99990;
+  display:flex;align-items:center;justify-content:center;padding:14px}
+.u107card{background:var(--card);color:var(--ink);width:min(94vw,440px);
+  max-height:86vh;overflow:auto;border-radius:18px;padding:14px;
+  border:1px solid var(--goldline);box-shadow:0 18px 50px rgba(0,0,0,.30)}
+.u107hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.u107hd b{font-size:15px}
+.u107hd button{border:none;background:transparent;font-size:17px;color:var(--mut);cursor:pointer}
+.u107sub{font-size:12.5px;color:var(--mut);margin-bottom:8px}
+.u107hint{font-size:11.5px;color:var(--mut);background:var(--bg);border-radius:10px;
+  padding:7px 9px;margin-bottom:10px;line-height:1.7}
+.u107row{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 2px;border-bottom:1px dashed var(--goldline)}
+.u107row:last-child{border-bottom:none}
+.u107nm{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
+.u107dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:0 0 auto}
+.u107dot.g{background:#22a06b;box-shadow:0 0 0 3px rgba(34,160,107,.15)}
+.u107dot.x{background:#c2c8d0}
+.u107sg{display:flex;gap:4px}
+.u107seg{border:1px solid var(--goldline);background:var(--bg);border-radius:9px;
+  min-width:34px;height:30px;font-size:13.5px;cursor:pointer;color:var(--ink);opacity:.55}
+.u107seg.on{opacity:1;background:var(--brand);color:#fff;border-color:var(--brand);
+  box-shadow:0 3px 10px rgba(217,166,72,.35)}
+.u107ft{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.u107msg{font-size:12.5px;color:var(--mut)}
+.u107msg.ok{color:#22a06b;font-weight:700}
+.u107msg.err{color:#e05d4b;font-weight:700}'''
+
+_PWA_V107_JS = r'''/* v107: صلاحيات لكل مستخدم — زر 🎛️ على بطاقة المستخدم + لوحة مصفوفة
+   ثلاثية الحالة (↔️ يتبع الفئة / ✅ مفعّلة دائماً / ❌ موقفة دائماً).
+   لا تلاعب بسلسلة v96: تزيين DOM بعد كل رسم + تفويض نقر على المستند. */
+(function () {
+"use strict";
+function q(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+  return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+var cur = null;
+
+function canManage() {
+  try { return !!(typeof S !== "undefined" && S && S.perms && S.perms.users); } catch (e) { return false; }
+}
+
+/* 1) زر 🎛️ يُضاف لبطاقات المستخدمين بعد كل رسم (حيث زر «🎯 الفئة» = غير محمي وغيره) */
+function decorate() {
+  if (!canManage()) return;
+  var box = q("usrList");
+  if (!box) return;
+  var rbs = box.querySelectorAll("button[data-role]");
+  for (var i = 0; i < rbs.length; i++) {
+    var rb = rbs[i];
+    var acts = rb.closest ? rb.closest(".u96acts") : null;
+    if (!acts || acts.querySelector("button[data-u107p]")) continue;
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn mini purple";
+    b.setAttribute("data-u107p", rb.getAttribute("data-role") || "");
+    b.setAttribute("data-n", rb.getAttribute("data-n") || "");
+    b.textContent = "🎛️ صلاحياته";
+    acts.appendChild(b);
+  }
+}
+try {
+  var origRU = window.renderUsers;
+  window.renderUsers = function () {
+    var r = origRU ? origRU.apply(this, arguments) : undefined;
+    try { decorate(); } catch (e) {}
+    return r;
+  };
+} catch (e1) {}
+
+/* 2) النقر يفتح اللوحة — تفويض على المستند فلا نلمس سلسلة توزيع v96 */
+document.addEventListener("click", function (ev) {
+  var t = ev.target;
+  if (!t || !t.closest) return;
+  var b = t.closest("button[data-u107p]");
+  if (!b) return;
+  window.openPerms107(b.getAttribute("data-u107p"), b.getAttribute("data-n") || "");
+});
+
+/* 3) اللوحة */
+function segBtn(state, active) {
+  return '<button type="button" class="u107seg' + (active ? " on" : "") + '" data-s="' + state + '">'
+    + (state === "1" ? "✅" : state === "0" ? "❌" : "↔️") + "</button>";
+}
+function rowHTML(p, lbl, st, eff) {
+  return '<div class="u107row" data-p="' + esc(p) + '">'
+    + '<div class="u107nm"><span class="u107dot ' + (eff ? "g" : "x") + '" title="'
+    + (eff ? "فعّالة الآن" : "موقفة الآن") + '"></span>' + esc(lbl) + "</div>"
+    + '<div class="u107sg">'
+    + segBtn("", st === undefined || st === null)
+    + segBtn("1", st === 1 || st === "1")
+    + segBtn("0", st === 0 || st === "0")
+    + "</div></div>";
+}
+function bindRows() {
+  var ov = q("u107ov");
+  if (!ov) return;
+  ov.querySelectorAll(".u107row button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var row = b.closest(".u107row");
+      sendPerm(row.getAttribute("data-p"),
+               b.getAttribute("data-s") === "1" ? 1 : b.getAttribute("data-s") === "0" ? 0 : null, b);
+    });
+  });
+  var rs = q("u107reset");
+  if (rs) rs.addEventListener("click", function () {
+    if (!window.confirm("إعادة ضبط كل صلاحياته لتتبع فئته؟")) return;
+    sendPerm(null, null, null, true);
+  });
+}
+async function sendPerm(perm, state, btn, reset) {
+  var ov = q("u107ov"), msg = q("u107msg");
+  if (msg) { msg.textContent = "جارٍ الحفظ…"; msg.className = "u107msg"; }
+  if (btn) btn.disabled = true;
+  try {
+    var res = await fetch("/api/user/" + cur.tid + "/perms", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(reset ? { reset: true } : { perm: perm, state: state })
+    });
+    var d = await res.json().catch(function () { return {}; });
+    if (res.status === 200 && d.ok) {
+      if (msg) { msg.textContent = "✅ " + (d.message || "تم الحفظ"); msg.className = "u107msg ok"; }
+      if (d.effective) {
+        ov.querySelectorAll(".u107row").forEach(function (r) {
+          var p = r.getAttribute("data-p");
+          var dot = r.querySelector(".u107dot");
+          if (dot && (p in d.effective)) {
+            dot.className = "u107dot " + (d.effective[p] ? "g" : "x");
+            dot.title = d.effective[p] ? "فعّالة الآن" : "موقفة الآن";
+          }
+        });
+      }
+      if (reset) { await reload(); }
+      else {
+        var rr = ov.querySelector('.u107row[data-p="' + perm + '"]');
+        if (rr) {
+          rr.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+          var sel = state === 1 ? 'button[data-s="1"]' : state === 0 ? 'button[data-s="0"]' : 'button[data-s=""]';
+          var sb = rr.querySelector(sel);
+          if (sb) sb.classList.add("on");
+        }
+      }
+    } else {
+      if (msg) { msg.textContent = (d && d.error) || ("فشل الحفظ (" + res.status + ")"); msg.className = "u107msg err"; }
+    }
+  } catch (e) {
+    if (msg) { msg.textContent = "تعذر الاتصال بالخادم."; msg.className = "u107msg err"; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function reload() {
+  try {
+    var res = await fetch("/api/user/" + cur.tid + "/perms", { credentials: "same-origin" });
+    var d = await res.json().catch(function () { return {}; });
+    if (res.status === 200 && d.ok) paint(d);
+  } catch (e) {}
+}
+function paint(d) {
+  var body = q("u107body");
+  if (!body) return;
+  var tgt = d.target || {};
+  var sub = q("u107sub");
+  if (sub) sub.textContent = (tgt.role_label || "") + (tgt.protected ? " • 🛡 محمي (كامل دائماً)" : "");
+  var h = "";
+  (d.matrix || []).forEach(function (p) {
+    h += rowHTML(p, (d.labels || {})[p] || p, (d.states || {})[p], !!(d.effective || {})[p]);
+  });
+  body.innerHTML = h;
+  bindRows();
+  var msg = q("u107msg");
+  if (msg) { msg.textContent = ""; }
+}
+window.openPerms107 = async function (tid, name) {
+  if (!canManage()) return;
+  cur = { tid: tid, name: name };
+  var old = q("u107ov");
+  if (old) old.remove();
+  var wrap = document.createElement("div");
+  wrap.id = "u107ov";
+  wrap.className = "u107ov";
+  wrap.innerHTML =
+    '<div class="u107card">'
+    + '<div class="u107hd"><b>🎛️ صلاحياته — ' + esc(name) + '</b>'
+    + '<button type="button" id="u107close">✕</button></div>'
+    + '<div class="u107sub" id="u107sub">…</div>'
+    + '<div class="u107hint">↔️ يتبع فئته • ✅ مفعّلة دائماً • ❌ موقفة دائماً — '
+    + "التغيير يسري في البوت فوراً وفي التطبيق خلال دقيقة كحد أقصى.</div>"
+    + '<div id="u107body"><p class="empty">جارِ التحميل…</p></div>'
+    + '<div class="u107ft"><button type="button" class="btn soft-e" id="u107reset">↩️ إعادة ضبط لتتبع الفئة</button>'
+    + '<span class="u107msg" id="u107msg"></span></div>'
+    + "</div>";
+  document.body.appendChild(wrap);
+  q("u107close").addEventListener("click", function () { wrap.remove(); });
+  wrap.addEventListener("click", function (e) { if (e.target === wrap) wrap.remove(); });
+  await reload();
+};
+})();'''
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -14642,6 +15174,44 @@ _PWA_HTML_PATCHES = (
     # 50) v106: المصروفات — زر خارج المحادثات + لوحة حفظ بالتاريخ والوقت (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v106css">' + _PWA_V106_CSS + '</style>\n<script id="v106js">\n' + _PWA_V106_JS + '\n</script>\n</body>'),
+    # ── v107: صلاحيات لكل مستخدم — بوابات العميل على الوحدات الجديدة ثم اللوحة ──
+    # 51a) بوابات applyPerms: زر إضافة السلعة والشريحة بوعي الصلاحيتين المستقلتين
+    ('  $("#btnAddProd").style.display = S.perms.admin ? "" : "none";\n'
+     '  $("#segArch").style.display = S.perms.admin ? "" : "none";',
+     '  $("#btnAddProd").style.display = (S.perms.admin || S.perms.add_product) ? "" : "none";\n'
+     '  $("#segArch").style.display = (S.perms.admin || S.perms.edit_product) ? "" : "none";'),
+    # 51b) قائمة ⋮: تعديل السلعة المحذوفة بالصلاحية المستقلة
+    ('    if (S.perms.admin) h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n  } else {',
+     '    if (S.perms.admin || S.perms.edit_product) h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n  } else {'),
+    # 51c) قائمة ⋮: الجرد يبقى للمدراء، والتعديل/الحذف بالصلاحية المستقلة
+    ('    if (S.perms.admin) {\n'
+     '      h += mk("reconcile", "🧮 جرد وتسوية", "gray");\n'
+     '      h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n'
+     '      h += mk("del", "🗑 حذف (أرشفة)", "red");\n    }',
+     '    if (S.perms.admin) h += mk("reconcile", "🧮 جرد وتسوية", "gray");\n'
+     '    if (S.perms.admin || S.perms.edit_product) {\n'
+     '      h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n'
+     '      h += mk("del", "🗑 حذف (أرشفة)", "red");\n    }'),
+    # 51d) تفاصيل السلعة: أزرار التعديل/الحذف بالصلاحية المستقلة
+    ('    if (S.perms.admin)\n'
+     '      acts += \'<button class="btn mini gold" id="detEdit">✏️ تعديل</button>\';',
+     '    if (S.perms.admin || S.perms.edit_product)\n'
+     '      acts += \'<button class="btn mini gold" id="detEdit">✏️ تعديل</button>\';'),
+    ('    if (S.perms.admin)\n'
+     '      acts += p.archived\n'
+     '        ? \'<button class="btn mini green" id="detRes">♻️ استعادة</button>\'\n'
+     '        : \'<button class="btn mini red" id="detDel">🗑 حذف</button>\';',
+     '    if (S.perms.admin || S.perms.edit_product)\n'
+     '      acts += p.archived\n'
+     '        ? \'<button class="btn mini green" id="detRes">♻️ استعادة</button>\'\n'
+     '        : \'<button class="btn mini red" id="detDel">🗑 حذف</button>\';'),
+    ('    if (S.perms.admin) {\n'
+     '      $("#detEdit").addEventListener("click", () => {',
+     '    if (S.perms.admin || S.perms.edit_product) {\n'
+     '      $("#detEdit").addEventListener("click", () => {'),
+    # 51e) لوحة المصفوفة — آخر سلسلة المراسي الحية
+    ('</script>\n</body>',
+     '</script>\n<style id="v107css">' + _PWA_V107_CSS + '</style>\n<script id="v107js">\n' + _PWA_V107_JS + '\n</script>\n</body>'),
 )
 
 
@@ -15863,30 +16433,50 @@ def _pwa_api_login(username, password):
     return True, (token, user), None
 
 
-def _pwa_perm_map(role):
-    """خريطة صلاحيات الواجهة للفئة — نفس نظام الصلاحيات المشترك."""
+def _pwa_perm_map(user):
+    """خريطة صلاحيات الواجهة (v107) — بوعي المستخدم أولاً ثم فئته:
+    تقبل قاموس جلسة المستخدم (يفضل — يطبق تجاوزاته الصريحة من
+    user_permissions) أو نص الفئة (توافق قديم: سلوك الفئة فقط)."""
+    if isinstance(user, dict):
+        role = user.get("role")
+        uid = user.get("telegram_id")
+    else:
+        role, uid = user, None
     admin = role in (ROLE_ADMIN, ROLE_MANAGER)
+
+    def _p(perm):
+        if uid is None:
+            return True if admin else role_perm_enabled(role, perm)
+        return user_perm_enabled(uid, role, perm)
+
     return {
         "admin": admin,
-        "search": admin or role_perm_enabled(role, PERM_SEARCH),
-        "add_qty": admin or role_perm_enabled(role, PERM_ADD_QTY),
-        "remove": admin or role_perm_enabled(role, PERM_REMOVE),
-        "movements": admin or role_perm_enabled(role, PERM_MOVEMENTS),
-        "low_stock": admin or role_perm_enabled(role, PERM_LOW_STOCK),
+        "search": _p(PERM_SEARCH),
+        "add_qty": _p(PERM_ADD_QTY),
+        "remove": _p(PERM_REMOVE),
+        # v107: وحدات إدارة السلع صارت صلاحيات مستقلة قابلة للمنح لكل مستخدم
+        "add_product": _p(PERM_ADD_PRODUCT),
+        "edit_product": _p(PERM_EDIT_PRODUCT),
+        "movements": _p(PERM_MOVEMENTS),
+        "low_stock": _p(PERM_LOW_STOCK),
         "oil": admin,
-        "users": admin,
-        # v88: إنشاء الفواتير — للمدراء والبائعين (نفس بوابة فاتورة تلغرام)
-        "invoice": admin or role == ROLE_SELLER,
+        # v107: نظام المستخدمين — للمدراء بالفئة أو من أُعطيه الصلاحية
+        "users": _p(PERM_USERS),
+        # v88: إنشاء الفواتير — نفس بوابة فاتورة تلغرام (الفئة ثم التجاوز)
+        "invoice": _p(PERM_INVOICE),
         # v97: رؤية الفواتير (ما أنشأه المستخدم أو كُلِّف بتجهيزه) — التخزين يشاهد دون إنشاء
         "invoice_view": admin or role in (ROLE_STOCK, ROLE_SELLER),
         # v93: نبض المخزون — الفريق الداخلي فقط (دون البائع الخارجي/العميل: نشاط تجاري داخلي)
         "activity": admin or role in (ROLE_STOCK, ROLE_SELLER),
         # v103: الاستبدال العام (بلا فاتورة) — مدير/مدير عام/عامل مخزون بالصلاحيتين
         "swapg": admin or (role == ROLE_STOCK
-                           and role_perm_enabled(role, PERM_ADD_QTY)
-                           and role_perm_enabled(role, PERM_REMOVE)),
-        # v106: المصروفات — للمدراء دائمًا ولكل فئة تُفعَّل لها الصلاحية من لوحة الفئات
-        "expenses": admin or role_perm_enabled(role, PERM_EXPENSES),
+                           and _p(PERM_ADD_QTY)
+                           and _p(PERM_REMOVE)),
+        # v106: المصروفات — للمدراء دائمًا ولكل من تُمنح الصلاحية
+        "expenses": _p(PERM_EXPENSES),
+        # v107: بوابات الوحدات المُعاد ربطها (طلبات التوريد + المعلقة)
+        "supply_order": _p(PERM_SUPPLY_ORDER),
+        "pending": _p(PERM_PENDING),
     }
 
 
@@ -15898,7 +16488,7 @@ def _pwa_api_me(user):
         "display_name": user.get("display_name") or "",
         "avatar": user.get("avatar") or "",          # v41: صورة الحساب الشخصي
         "telegram_id": user.get("telegram_id"),
-    }, "perms": _pwa_perm_map(user["role"])}
+    }, "perms": _pwa_perm_map(user)}
 
 
 # ═══════════ v39: التسجيل بلا بريد — اسم دخول + رقم سر + موافقة الإدارة ═══════════
@@ -16686,7 +17276,7 @@ def _pwa_api_user_role(user, target_tid, role):
 
 
 def _pwa_api_stats(user):
-    perms = _pwa_perm_map(user["role"])
+    perms = _pwa_perm_map(user)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -16742,7 +17332,7 @@ def _pwa_api_activity(user, days=7):
     except (TypeError, ValueError):
         days = 7
     days = 30 if days >= 30 else 7
-    perms = _pwa_perm_map(user["role"])
+    perms = _pwa_perm_map(user)
     admin = perms["admin"]
     if not perms.get("activity"):
         # بوابة مزدوجة: الواجهة تخفي البطاقة والخادم لا يحسب شيئاً أصلاً
@@ -16932,10 +17522,10 @@ def _pwa_api_product_detail(user, product_id):
 def _pwa_api_qty(user, product_id, qtype, quantity, reason):
     role = user["role"]
     if qtype == "add":
-        if not role_perm_enabled(role, PERM_ADD_QTY) and role not in (ROLE_ADMIN, ROLE_MANAGER):
+        if not user_perm_enabled(user.get("telegram_id"), role, PERM_ADD_QTY):
             return False, "ليست لديك صلاحية إضافة الكميات."
     elif qtype == "remove":
-        if not role_perm_enabled(role, PERM_REMOVE) and role not in (ROLE_ADMIN, ROLE_MANAGER):
+        if not user_perm_enabled(user.get("telegram_id"), role, PERM_REMOVE):
             return False, "ليست لديك صلاحية إخراج الكميات."
     elif qtype == "reconcile":
         if role not in (ROLE_ADMIN, ROLE_MANAGER):
@@ -17008,8 +17598,8 @@ def _pwa_api_qty(user, product_id, qtype, quantity, reason):
 
 def _pwa_api_add_product(user, name, qty, min_stock, price, location):
     """＋ إضافة سلعة جديدة (مدراء فقط) — مثل زر «إضافة سلعة» في البوت."""
-    if not _pwa_perm_map(user["role"])["admin"]:
-        return False, "إضافة سلعة للمدراء فقط."
+    if not _pwa_perm_map(user)["add_product"]:
+        return False, "ليست لديك صلاحية إضافة سلع جديدة."
     name = str(name or "").strip()
     if len(name) < 2:
         return False, "أدخل اسم السلعة (حرفان على الأقل)."
@@ -17066,8 +17656,8 @@ def _pwa_api_product_edit(user, product_id, name, location=None, price=None,
                           minimum_stock=None):
     """✏️ v41: تعديل سلعة (مدراء فقط) — الاسم إلزامي، والحقول الأخرى اختيارية
     (None = تبقى كما هي). التعديل لا يمسّ سجل الحركة إطلاقاً."""
-    if not _pwa_perm_map(user["role"])["admin"]:
-        return False, None, "تعديل السلع للمدراء فقط."
+    if not _pwa_perm_map(user)["edit_product"]:
+        return False, None, "ليست لديك صلاحية تعديل السلع."
     try:
         product_id = int(product_id)
     except (TypeError, ValueError):
@@ -17131,8 +17721,8 @@ def _pwa_api_product_edit(user, product_id, name, location=None, price=None,
 def _pwa_api_product_archive(user, product_id, archived=True):
     """🗑 v41: حذف ناعم للسلعة (مدراء فقط) — تُخفى من كل القوائم بينما يبقى
     سجل حركتها كاملاً محفوظاً (قيد RESTRICT محترم)، ويمكن استعادتها لاحقاً."""
-    if not _pwa_perm_map(user["role"])["admin"]:
-        return False, None, "حذف السلع للمدراء فقط."
+    if not _pwa_perm_map(user)["edit_product"]:
+        return False, None, "ليست لديك صلاحية حذف/استعادة السلع."
     try:
         product_id = int(product_id)
     except (TypeError, ValueError):
@@ -17185,8 +17775,8 @@ def _pwa_api_product_photo(user, product_id, photo_b64, mime, remove=False):
     """📷 v90: صورة السلعة — رفع/استبدال/إزالة (مدراء فقط).
     التخزين بمنطق v89 حرفياً: Supabase Storage إن توفّرت المفاتيح،
     وإلا بايتات في القاعدة (BYTEA) كالوضع القديم — والرجعة آلية."""
-    if not _pwa_perm_map(user["role"])["admin"]:
-        return False, "صور السلع للمدراء فقط."
+    if not _pwa_perm_map(user)["edit_product"]:
+        return False, "ليست لديك صلاحية صور السلع."
     try:
         product_id = int(product_id)
     except (TypeError, ValueError):
@@ -17263,7 +17853,7 @@ def _pwa_api_user_avatar(user, target_tid):
         target_tid = int(target_tid)
     except (TypeError, ValueError):
         return None, None, "طلب غير صالح."
-    if target_tid != user.get("telegram_id") and not _pwa_perm_map(user["role"])["users"]:
+    if target_tid != user.get("telegram_id") and not _pwa_perm_map(user)["users"]:
         return None, None, "غير مصرح."
     conn = get_connection()
     try:
@@ -17307,7 +17897,7 @@ def _pwa_api_admin_selfpass(user, password):
     """🔑 v90: المدير يضبط رقم سر جديداً لحسابه دون الرقم القديم (حالة النسيان فقط).
     يتطلب جلسة مدير مصادَقة، يُبطل الجلسات القديمة — والمعالج يعيد زرع جلسة
     هذا الجهاز فوراً كي لا يُسجَّل المدير خروجاً. يُسجَّل في audit_log."""
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return False, None, "للمدير فقط."
     pol_ok, pol_msg = _pwa_password_ok(password)
     if not pol_ok:
@@ -17323,9 +17913,9 @@ def _pwa_api_admin_selfpass(user, password):
 
 
 def _pwa_api_pending(user):
-    """🔴 الطلبات المعلقة (عجز المخزون السالب): المدير يراها كلها
-    والموظف يرى طلباته فقط — نفس فلسفة البوت."""
-    admin = _pwa_perm_map(user["role"])["admin"]
+    """🔴 الطلبات المعلقة (عجز المخزون السالب): المدير (أو صاحب صلاحية
+    المعلقة منذ v107) يراها كلها والموظف يرى طلباته فقط — فلسفة البوت."""
+    admin = _pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["pending"]
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -17350,9 +17940,9 @@ def _pwa_api_pending(user):
 
 
 def _pwa_api_incoming_list(user):
-    """🚚 طلبات التوريد المفتوحة: المدير يراها كلها والموظف يرى طلباته.
-    (v31) تضيف has_photo لزر «تصوير الوصل» و mine لتحديد من يملك الطلب."""
-    admin = _pwa_perm_map(user["role"])["admin"]
+    """🚚 طلبات التوريد المفتوحة: المدير (أو صاحب صلاحية التوريد منذ v107)
+    يراها كلها والموظف يرى طلباته. (v31) تضيف has_photo و mine."""
+    admin = _pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["supply_order"]
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -17385,12 +17975,13 @@ _PWA_PHOTO_MIMES = {"image/jpeg", "image/png", "image/webp"}
 
 def _pwa_receipt_allowed(user, order_row):
     """المدير/المدير العام — أو صاحب الطلب نفسه."""
-    return _pwa_perm_map(user["role"])["admin"] or (order_row and order_row.get("requester_id") == user["id"])
+    return (_pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["supply_order"]
+            or (order_row and order_row.get("requester_id") == user["id"]))
 
 
 def _pwa_api_receipt_upload(user, order_id, photo_b64, mime):
     """📸 رفع/استبدال صورة وصل التوريد من التطبيق (v31)."""
-    admin = _pwa_perm_map(user["role"])["admin"]
+    admin = _pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["supply_order"]
     if not admin and user["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
         return False, "لا يوجد وصول لك حالياً — راجع الإدارة."
     try:
@@ -17500,7 +18091,7 @@ def _pwa_api_incoming_create(user, product_name, quantity):
 
 def _pwa_api_incoming_advance(user, order_id, action):
     """إدارة طلب توريد (مدراء فقط): receive = استُلم من المورد، complete = جاهز."""
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return False, None, "إدارة طلبات التوريد للمدراء فقط."
     if action not in ("receive", "complete"):
         return False, None, "إجراء غير معروف."
@@ -17532,7 +18123,7 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
                        mov_type=None):
     """📋 v41: سجل الحركة بفلاتر كاملة — من تاريخ/إلى تاريخ + سلعة محددة
     + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة."""
-    if not _pwa_perm_map(user["role"])["movements"]:
+    if not _pwa_perm_map(user)["movements"]:
         return None
     limit = max(1, min(int(limit or 300), 500))
     where = ["1=1"]
@@ -17600,7 +18191,7 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
 
 
 def _pwa_api_low(user):
-    if not _pwa_perm_map(user["role"])["low_stock"]:
+    if not _pwa_perm_map(user)["low_stock"]:
         return None
     rows = get_low_stock_products()
     return {"ok": True, "products": [
@@ -17609,7 +18200,7 @@ def _pwa_api_low(user):
 
 
 def _pwa_api_oil(user):
-    if not _pwa_perm_map(user["role"])["oil"]:
+    if not _pwa_perm_map(user)["oil"]:
         return None
     st = oil_ensure_row()
     readings = oil_recent_readings(6)
@@ -17647,7 +18238,7 @@ def _invoice_swap_fetch(user, invoice_id):
         return False, "رقم فاتورة غير صالح."
     role = (user or {}).get("role")
     uid = (user or {}).get("id")
-    if role not in (ROLE_ADMIN, ROLE_MANAGER) and not role_perm_enabled(role, PERM_INVOICE):
+    if not user_perm_enabled((user or {}).get("telegram_id"), role, PERM_INVOICE):
         return False, "الاستبدال لمنشئي الفواتير فقط."
     conn = get_connection()
     try:
@@ -17695,7 +18286,7 @@ def _invoice_swap_core(user, invoice_id, item_id, product_id, qty,
     يرجع (True, ملخص) أو (False, رسالة)."""
     uid = (user or {}).get("id")
     role = (user or {}).get("role")
-    if role not in (ROLE_ADMIN, ROLE_MANAGER) and not role_perm_enabled(role, PERM_INVOICE):
+    if not user_perm_enabled((user or {}).get("telegram_id"), role, PERM_INVOICE):
         return False, "الاستبدال لمنشئي الفواتير فقط."
     try:
         invoice_id = int(invoice_id or 0)
@@ -17899,8 +18490,9 @@ def execute_general_swap(user, ret_pid, ret_qty, new_pid, new_qty):
     role = (user or {}).get("role")
     if role not in (ROLE_ADMIN, ROLE_MANAGER, ROLE_STOCK):
         return False, "الاستبدال العام للمدراء وعامل المخزون فقط."
-    if role == ROLE_STOCK and not (role_perm_enabled(role, PERM_ADD_QTY)
-                                   and role_perm_enabled(role, PERM_REMOVE)):
+    _up_tid = (user or {}).get("telegram_id")
+    if role == ROLE_STOCK and not (user_perm_enabled(_up_tid, role, PERM_ADD_QTY)
+                                   and user_perm_enabled(_up_tid, role, PERM_REMOVE)):
         return False, "الاستبدال يحتاج تفعيل صلاحيتي الإضافة والإخراج لفئة عامل المخزون."
     try:
         ret_pid = int(ret_pid or 0)
@@ -18384,7 +18976,7 @@ _PWA_INV_MAX_PRICE = 10000000.0  # سقف السعر
 
 def _pwa_api_invoice_products(user, q):
     """بحث سلع للفاتورة: الاسم والسعر والكمية والنوع (لعرض الحقل المناسب)."""
-    if not _pwa_perm_map(user["role"])["invoice"]:
+    if not _pwa_perm_map(user)["invoice"]:
         return None
     q = str(q or "").strip()[:80]
     conn = get_connection()
@@ -18422,7 +19014,7 @@ def _pwa_api_invoice_products(user, q):
 
 def _pwa_api_invoice_workers(user):
     """قائمة العمال المتاحين لتجهيز الفاتورة — نفس استعلام فاتورة تلغرام."""
-    if not _pwa_perm_map(user["role"])["invoice"]:
+    if not _pwa_perm_map(user)["invoice"]:
         return None
     conn = get_connection()
     try:
@@ -18545,7 +19137,7 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
     """إنشاء فاتورة من التطبيق — نفس منطق _invoice_finalize بالحرف:
     حفظ + خصم مخزون (تحذير دون رفض عند العجز كما في البوت) + سجل حركات.
     الإشعارات وPDF تجري في المُعالج غير المتزامن بعد نجاح الحفظ."""
-    if not _pwa_perm_map(user["role"])["invoice"]:
+    if not _pwa_perm_map(user)["invoice"]:
         return None
     customer = str(customer or "").strip()[:120]
     if not customer:
@@ -18614,7 +19206,7 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
 def _pwa_api_invoice_recent(user, limit=8):
     """آخر الفواتير (لإعادة تحميل PDF أو مراجعة سريعة).
     v97: البائع/التخزين يرى فواتيره المنشأة وفواتيره المكلَّف بها معاً."""
-    if not _pwa_perm_map(user["role"])["invoice_view"]:
+    if not _pwa_perm_map(user)["invoice_view"]:
         return None
     limit = max(1, min(int(limit or 8), 20))
     conn = get_connection()
@@ -18652,7 +19244,7 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
     """v88.1: سجل الفواتير الكامل — بحث بالزبون أو رقم الفاتورة + ترقيم بالمؤشر
     (before = آخر معرف ظهر) للوصول إلى أي فاتورة سابقة وتحميل PDF منها.
     v97: البائع/التخزين يرى فواتيره المنشأة وفواتيره المكلَّف بها معاً."""
-    if not _pwa_perm_map(user["role"])["invoice_view"]:
+    if not _pwa_perm_map(user)["invoice_view"]:
         return None
     try:
         limit = max(1, min(int(limit or 15), 30))
@@ -18710,7 +19302,7 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
 
 def _pwa_api_invoice_get(user, invoice_id):
     """جلب فاتورة مع عناصرها — للمدير أي فاتورة، وللبائع/التخزين ما أنشأه أو كُلِّف به (v97)."""
-    if not _pwa_perm_map(user["role"])["invoice_view"]:
+    if not _pwa_perm_map(user)["invoice_view"]:
         return None
     try:
         invoice_id = int(invoice_id or 0)
@@ -18795,7 +19387,7 @@ def _pwa_api_invoice_swap(user, payload):
 
 def _pwa_swap_products(user, q):
     """v103: بحث سلع للاستبدال العام — نفس استعلام بحث الفواتير بصلاحية swapg."""
-    if not _pwa_perm_map(user["role"])["swapg"]:
+    if not _pwa_perm_map(user)["swapg"]:
         return None
     q = str(q or "").strip()[:80]
     conn = get_connection()
@@ -18822,7 +19414,7 @@ def _pwa_swap_products(user, q):
 
 def _pwa_api_swap_general(user, payload):
     """v103: الاستبدال العام من التطبيق — غلاف رقيق فوق execute_general_swap."""
-    if not _pwa_perm_map(user["role"])["swapg"]:
+    if not _pwa_perm_map(user)["swapg"]:
         return None
     if not isinstance(payload, dict):
         payload = {}
@@ -18837,7 +19429,7 @@ def _pwa_api_swap_general(user, payload):
 
 
 def _pwa_api_users(user):
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return None
     conn = get_connection()
     try:
@@ -18872,7 +19464,7 @@ def _pwa_api_users(user):
 
 
 def _pwa_api_toggle(user, target_tid, active):
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return None
     if target_tid == user["telegram_id"]:
         return False, "لا يمكنك تنفيذ هذا الإجراء على نفسك."
@@ -18908,7 +19500,7 @@ def _pwa_api_toggle(user, target_tid, active):
 
 
 def _pwa_api_webpass(user, target_tid, password):
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return None
     password = str(password or "")
     pol_ok, pol_msg = _pwa_password_ok(password)
@@ -19310,7 +19902,7 @@ async def pwa_resets_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return _pwa_err(403, "هذه الشاشة للمديرين فقط.")
     resets = await _pwa_run(_pwa_api_resets_list)
     return _pwa_jr({"ok": True, "resets": resets})
@@ -19322,7 +19914,7 @@ async def pwa_reset_generate_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -19345,7 +19937,7 @@ async def pwa_registrations_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return _pwa_err(403, "هذه الشاشة للمديرين فقط.")
     regs = await _pwa_run(_pwa_api_registrations_list, user)
     return _pwa_jr({"ok": True, "registrations": regs})
@@ -19355,7 +19947,7 @@ async def pwa_registration_delete_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -19412,8 +20004,8 @@ async def callback_pwreg_handler(update, context):
     الموافقة تُنشئ الحساب بالبريد والرقم السري المحفوظين وتُشعِر صاحبه بالبريد."""
     query = update.callback_query
     # 🔒 AUTH GUARD — المدير وحده
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer()
     parts = str(query.data or "").split("_")   # pwreg_ok_12_seller / pwreg_del_12
@@ -19476,8 +20068,8 @@ async def callback_pwreset_handler(update, context):
     يولّد رقماً عشوائياً، يحفظه مكان القديم، يبطل جلسات صاحبه، ويعرضه هنا مرة واحدة."""
     query = update.callback_query
     # 🔒 AUTH GUARD — المدير وحده
-    if not is_admin(query.from_user.id):
-        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
+    if not _can_manage_users(query.from_user.id):
+        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
         return
     await query.answer()
     parts = str(query.data or "").split("_")   # pwreset_gen_12
@@ -20062,7 +20654,7 @@ async def pwa_registration_approve_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -20083,7 +20675,7 @@ async def pwa_users_role_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -20111,13 +20703,112 @@ async def pwa_users_role_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
+def _pwa_api_user_perms(user, target_tid):
+    """🎛️ v107: قراءة مصفوفة صلاحيات مستخدم محدد — لمن يملك صلاحية المستخدمين.
+    يعيد dict جاهزاً أو (False, رسالة) أو None لعدم الصلاحية."""
+    if not _pwa_perm_map(user)["users"]:
+        return None
+    if target_tid is None:
+        return False, "طلب غير صالح."
+    tu = get_user(target_tid)
+    if not tu:
+        return False, "المستخدم غير موجود."
+    _states = get_user_perm_states(target_tid)
+    _role = tu.get("role")
+    _label = (tu.get("first_name")
+              or ("@" + tu["username"] if tu.get("username") else str(target_tid)))
+    return {
+        "target": {"telegram_id": target_tid, "name": _label,
+                   "role": _role,
+                   "role_label": ROLE_LABELS.get(_role, _role or "؟"),
+                   "protected": _protected_account(target_tid)},
+        "matrix": list(UPERM_MATRIX),
+        "labels": {p: PERM_LABELS[p] for p in UPERM_MATRIX},
+        "states": {p: _states[p] for p in UPERM_MATRIX if p in _states},
+        "effective": {p: user_perm_enabled(target_tid, _role, p) for p in UPERM_MATRIX},
+    }
+
+
+def _pwa_api_user_perms_set(user, target_tid, perm, state, reset=False):
+    """🎛️ v107: ضبط تجاوز صلاحية لمستخدم (state: 1/0/None) أو إعادة ضبط كاملة."""
+    if not _pwa_perm_map(user)["users"]:
+        return False, "هذا الإجراء لإدارة المستخدمين فقط."
+    if target_tid is None or target_tid == user.get("telegram_id"):
+        return False, "لا يمكنك تعديل صلاحيات حسابك نفسه — استخدم حساب مدير آخر."
+    if _protected_account(target_tid):
+        return False, "🔒 هذا الحساب محمي (المالك/متغيرات البيئة) — صلاحياته كاملة دائماً."
+    if not get_user(target_tid):
+        return False, "المستخدم غير موجود."
+    try:
+        if reset:
+            clear_user_perms(target_tid)
+        else:
+            if perm not in UPERM_MATRIX:
+                return False, "صلاحية غير معروفة."
+            set_user_perm_state(target_tid, perm, state)
+    except Exception as e:
+        return False, "خطأ في الحفظ: " + str(e)
+    return True, "تم الحفظ ✅"
+
+
+async def pwa_user_perms_handler(request):
+    """🎛️ v107: GET /api/user/{tid}/perms — مصفوفة صلاحيات مستخدم."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        tid = int(request.match_info["tid"])
+    except (KeyError, TypeError, ValueError):
+        return _pwa_err(400, "طلب غير صالح.")
+    data = await _pwa_run(_pwa_api_user_perms, user, tid)
+    if data is None:
+        return _pwa_err(403, "هذا القسم لإدارة المستخدمين فقط.")
+    if isinstance(data, tuple):
+        return _pwa_err(400, data[1])
+    return _pwa_jr({"ok": True, **data})
+
+
+async def pwa_user_perms_set_handler(request):
+    """🎛️ v107: POST /api/user/{tid}/perms — {perm, state: 1|0|null} أو {reset: true}."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        tid = int(request.match_info["tid"])
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    reset = bool(body.get("reset"))
+    perm = str(body.get("perm") or "")
+    state = body.get("state")
+    if state is not None and state not in (0, 1, True, False):
+        return _pwa_err(400, "حالة غير صالحة.")
+    ok, msg = await _pwa_run(_pwa_api_user_perms_set, user, tid,
+                             None if reset else perm,
+                             None if reset else (None if state is None else (1 if state else 0)),
+                             reset)
+    await _pwa_run(_audit_log, "user_perms" if ok else "user_perms_fail", user,
+                   details=("إعادة ضبط كاملة" if reset
+                            else perm + " ← " + ("تشغيل" if state == 1 else
+                                                 "إيقاف" if state == 0 else "تتبع الفئة"))
+                           + " — الهدف: " + str(tid),
+                   ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    fresh = await _pwa_run(_pwa_api_user_perms, user, tid)
+    eff = fresh.get("effective") if isinstance(fresh, dict) else {}
+    return _pwa_jr({"ok": True, "message": msg, "effective": eff})
+
+
 def _pwa_guard(user, need):
     """فحص موحّد: جلسة صالحة + نشط + صلاحية مطلوبة. يرجع (user, error_response)."""
     if user is None:
         return None, _pwa_err(401, "انتهت الجلسة — سجّل الدخول من جديد.")
     if not user["active"]:
         return None, _pwa_err(403, KICK_NOTICE)
-    if need and not _pwa_perm_map(user["role"])[need]:
+    if need and not _pwa_perm_map(user)[need]:
         return None, _pwa_err(403, "ليست لديك صلاحية لهذه الشاشة.")
     return user, None
 
@@ -20148,7 +20839,7 @@ async def pwa_products_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["search"]:
+    if not _pwa_perm_map(user)["search"]:
         return _pwa_err(403, "ليست لديك صلاحية البحث.")
     q = (request.query.get("q") or "").strip()[:120]
     show_archived = (request.query.get("archived") in ("1", "true"))
@@ -20214,8 +20905,8 @@ async def pwa_products_create_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
-        return _pwa_err(403, "إضافة سلعة للمدراء فقط.")
+    if not _pwa_perm_map(user)["add_product"]:
+        return _pwa_err(403, "ليست لديك صلاحية إضافة سلع جديدة.")
     try:
         body = await request.json()
     except Exception:
@@ -20253,7 +20944,7 @@ async def pwa_products_edit_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "تعديل السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -20278,7 +20969,7 @@ async def pwa_products_archive_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "حذف السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -20445,7 +21136,7 @@ async def pwa_incoming_advance_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "إدارة طلبات التوريد للمدراء فقط.")
     try:
         body = await request.json()
@@ -20762,7 +21453,7 @@ def _pwa_api_expenses_add(user, body):
     (بلاغ يوسف: لا يمكن كتابة تواريخ من أسبوع ماضٍ)، وغيابه يعني «الآن»
     فيُحفظ التاريخ والوقت دائمًا حقيقةً.
     يعيد (True, صف) أو (False, رسالة حقيقية) أو None لعدم الصلاحية."""
-    if not _pwa_perm_map(user["role"])["expenses"]:
+    if not _pwa_perm_map(user)["expenses"]:
         return None
     raw = body.get("amount")
     if isinstance(raw, str):
@@ -20812,7 +21503,7 @@ def _pwa_api_expenses_add(user, body):
 def _pwa_api_expenses_list(user):
     """v106: آخر 60 مصروفًا + إجمالي اليوم والشهر بتوقيت الجزائر.
     الأوقات تعود ISO بتوقيت UTC والمتصفح يعرضها بتوقيت الجهاز. None لعدم الصلاحية."""
-    if not _pwa_perm_map(user["role"])["expenses"]:
+    if not _pwa_perm_map(user)["expenses"]:
         return None
     conn = get_connection()
     try:
@@ -20944,7 +21635,7 @@ def _pwa_api_delweb(user, target_tid):
     يُلغي: اسم الدخول والرقم السري (pwa_auth) + الجلسات + رموز التذكّر
     + بريد Google المرتبط (يمنع إعادة إنشاء الحساب تلقائياً عبر جوجل).
     يُبقي صف users كاملاً: الفئة والإيقاف وكل بيانات تلغرام كما هي."""
-    if not _pwa_perm_map(user["role"])["users"]:
+    if not _pwa_perm_map(user)["users"]:
         return None
     if target_tid == user["telegram_id"]:
         return False, "لا يمكنك حذف حسابك من التطبيق — استخدم حساب مدير آخر."
@@ -22572,7 +23263,7 @@ def _pwa_api_remember_login(token):
 def _pwa_api_export_movements(user, date_from, date_to, exclude_friday,
                               product_id, mov_type):
     """نفس فلاتر سجل الحركة لكن بلا حدّ — يعيد CSV جاهزاً + عدد العمليات."""
-    if not _pwa_perm_map(user["role"])["movements"]:
+    if not _pwa_perm_map(user)["movements"]:
         return None, "ليست لديك صلاحية سجل الحركة."
     where = ["1=1"]
     params = []
@@ -23165,7 +23856,7 @@ async def pwa_product_photo_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "صور السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -23206,7 +23897,7 @@ async def pwa_admin_selfpass_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "للمدير فقط.")
     try:
         body = await request.json()
@@ -23230,7 +23921,7 @@ async def pwa_product_photo_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "صور السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -23271,7 +23962,7 @@ async def pwa_admin_selfpass_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user["role"])["admin"]:
+    if not _pwa_perm_map(user)["admin"]:
         return _pwa_err(403, "للمدير فقط.")
     try:
         body = await request.json()
@@ -23354,6 +24045,8 @@ def register_pwa_routes(app):
     app.router.add_post("/api/products/photo", pwa_product_photo_handler)      # v90: صورة السلعة (رفع/إزالة)
     app.router.add_get("/api/product/{pid}/image", pwa_product_image_handler)  # v90: قراءة صورة السلعة
     app.router.add_get("/api/user/{tid}/avatar", pwa_user_avatar_handler)      # v96: الصورة الشخصية (كاش يومي)
+    app.router.add_get("/api/user/{tid}/perms", pwa_user_perms_handler)        # v107: مصفوفة صلاحيات مستخدم
+    app.router.add_post("/api/user/{tid}/perms", pwa_user_perms_set_handler)   # v107: ضبط صلاحية/إعادة ضبط
     app.router.add_post("/api/admin/selfpass", pwa_admin_selfpass_handler)     # v90: رقم سر جديد للمدير (نسيان)
     app.router.add_post("/api/products/edit", pwa_products_edit_handler)        # v41: تعديل سلعة
     app.router.add_post("/api/products/archive", pwa_products_archive_handler)  # v41: حذف/استعادة ناعمة
