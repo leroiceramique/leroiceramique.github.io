@@ -1042,6 +1042,136 @@ def _apply_role_constraint(cur):
             pass
 
 
+# ═══════════════════════════════════════════════════════════
+#  v108: حصن الإقلاع — لا يمكن لأي فشل في تهيئة المخطط أن يقتل العملية.
+#  الجذر (لوجا Render الفعليان): users_role_check ثم «column "spent_at"
+#  does not exist» — عبارة سامة واحدة داخل try ينتهي بـ raise = خروج 1.
+#  الطبقات: قاطع عبارة-عبارة واعٍ بـ $$ والسلاسل والتعليقات + SAVEPOINT
+#  عازل لكل عبارة/كتلة (فشلها يُسجَّل ويُتجاوز) + صفر raise في النهاية.
+# ═══════════════════════════════════════════════════════════
+
+from contextlib import contextmanager as _cm108
+
+
+def _split_sql_statements(sql):
+    """v108: يقسم دفعة SQL إلى عبارات منفصلة بأمان تام.
+    أجسام DO $$ ... $$ وأي وسوم $tag$ لا تُقسم من داخلها مهما بلغت الفواصل،
+    والسلاسل '...' (بتهريب '') وتعليقات -- و /* */ كلها محترمة.
+    يعيد قائمة عبارات غير فارغة (التعليقي الخالص يُهمل)."""
+    stmts, buf = [], []
+    i, n = 0, len(sql)
+    in_str = in_line = in_block = False
+    dollar = None
+
+    def _flush():
+        text = "".join(buf).strip()
+        buf.clear()
+        if not text:
+            return
+        bare = re.sub(r"--[^\n]*", "", text)
+        bare = re.sub(r"/\*.*?\*/", "", bare, flags=re.S)
+        if bare.strip():
+            stmts.append(text)
+
+    while i < n:
+        c = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if in_line:
+            buf.append(c)
+            if c == "\n":
+                in_line = False
+            i += 1
+        elif in_block:
+            if c == "*" and nxt == "/":
+                buf.append("*/")
+                i += 2
+                in_block = False
+            else:
+                buf.append(c)
+                i += 1
+        elif in_str:
+            buf.append(c)
+            if c == "'":
+                if nxt == "'":
+                    buf.append("'")
+                    i += 2
+                    continue
+                in_str = False
+            i += 1
+        elif dollar is not None:
+            if sql.startswith(dollar, i):
+                buf.append(dollar)
+                i += len(dollar)
+                dollar = None
+            else:
+                buf.append(c)
+                i += 1
+        elif c == "-" and nxt == "-":
+            in_line = True
+            buf.append("--")
+            i += 2
+        elif c == "/" and nxt == "*":
+            in_block = True
+            buf.append("/*")
+            i += 2
+        elif c == "'":
+            in_str = True
+            buf.append("'")
+            i += 1
+        elif c == "$":
+            _m = re.match(r"\$[A-Za-z0-9_]*\$", sql[i:])
+            if _m:
+                dollar = _m.group(0)
+                buf.append(dollar)
+                i += len(dollar)
+            else:
+                buf.append(c)
+                i += 1
+        elif c == ";":
+            _flush()
+            i += 1
+        else:
+            buf.append(c)
+            i += 1
+    _flush()
+    return stmts
+
+
+@_cm108
+def _safe_sp(cur, label=""):
+    """v108: سياق SAVEPOINT عازل — أي استثناء داخل كتلة with يُسجَّل ويُتراجع
+    عنها وحدها ويستمر التهيئة بعدها. لا يخرج استثناء من السياق أبداً."""
+    cur.execute("SAVEPOINT _v108_guard")
+    try:
+        yield
+        cur.execute("RELEASE SAVEPOINT _v108_guard")
+    except Exception as exc:
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT _v108_guard")
+            cur.execute("RELEASE SAVEPOINT _v108_guard")
+        except Exception:
+            pass
+        try:
+            logging.warning("[DB][v108] تخطّي «" + str(label) + "»: "
+                            + str(exc).split("\n")[0][:300])
+        except Exception:
+            pass
+
+
+def _safe_exec(cur, sql, label="", params=None):
+    """v108: تنفيذ عبارة واحدة داخل SAVEPOINT عازل.
+    True نجحت / False فشلت (بسجل تحذيري) — لا يمكن لأي عبارة أن تُسقط init_db."""
+    try:
+        with _safe_sp(cur, label):
+            if params is not None:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
+        return True
+    except Exception:
+        return False
+
+
 def init_db(conn=None):
     # v85: يقبل اتصالاً جاهزاً — لزرع المخطط أثناء تبديل القواعد مباشرة
     # بلا مرور بـ get_connection (يمنع أي حلقة قفل/فشل تبادلية).
@@ -1050,25 +1180,35 @@ def init_db(conn=None):
         conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(SCHEMA_SQL)
+            # v108: زرع المخطط عبارةً-عبارة بعزل تام — العبارة السامة الوحيدة
+            # (جدول غربي بنفس الاسم، عمود ناقص، قيد قديم...) تُسجَّل وتُتخطى
+            # وتبقى كل العبارات الأخرى حية، فلا يمكن لأي شيء أن يميت التهيئة
+            # كلها كما حدث في انهيارَي نشر Render (role_check ثم spent_at).
+            for _si, _sstmt in enumerate(_split_sql_statements(SCHEMA_SQL), 1):
+                _safe_exec(cur, _sstmt, "SCHEMA#" + str(_si))
             # 🔐 زرع الصلاحيات الافتراضية للفئات (مرة واحدة فقط —
             # ON CONFLICT DO NOTHING يحمي تعديلات المدير اللاحقة)
-            for _seed_role, _seed_perms in ROLE_PERM_CATALOG.items():
-                for _seed_perm in _seed_perms:
-                    cur.execute(
-                        "INSERT INTO role_permissions (role, perm, enabled) VALUES (%s, %s, TRUE) "
-                        "ON CONFLICT (role, perm) DO NOTHING",
-                        (_seed_role, _seed_perm),
-                    )
+            with _safe_sp(cur, "بذور صلاحيات الفئات"):
+                for _seed_role, _seed_perms in ROLE_PERM_CATALOG.items():
+                    for _seed_perm in _seed_perms:
+                        cur.execute(
+                            "INSERT INTO role_permissions (role, perm, enabled) VALUES (%s, %s, TRUE) "
+                            "ON CONFLICT (role, perm) DO NOTHING",
+                            (_seed_role, _seed_perm),
+                        )
             # v20: تنظيف صف صلاحية unshipped من القاعدة (النظام أُزيل)
-            cur.execute("DELETE FROM role_permissions WHERE perm = 'unshipped'")
+            _safe_exec(cur, "DELETE FROM role_permissions WHERE perm = 'unshipped'",
+                       "تنظيف صلاحية unshipped")
             # Migration: add 'pending' role for existing databases
             # v106: كان الـDROP محميًا داخل DO block بينما الـADD عاريًا خارجه —
             # أي صف بأدوار قديمة/خارج القائمة كان يرفع CheckViolation على
             # users_role_check ويُسقط الإقلاع كله (بلاغ نشر Render الفعلي).
-            cur.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending'")
+            _safe_exec(cur, "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending'",
+                       "الدور الافتراضي pending")
             _apply_role_constraint(cur)
-            cur.execute("""
+            # v108: دفعة الترحيلات الكبرى عبارةً-عبارة بنفس العزل — أجسام
+            # DO $$ الداخلية وسلاسل chr() والتعليقات كلها محترمة بالقاطع.
+            for _mi, _mstmt in enumerate(_split_sql_statements("""
                 -- Migration: add can_extract column
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
@@ -1250,32 +1390,40 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             INSERT INTO bot_updates (description) VALUES
             ('🔍 بحث تلقائي: اكتب أي اسم سلعة مباشرة وسيتم البحث تلقائياً' || chr(10) || chr(10) || '⚙️ تحسينات: زيادة سرعة الاستجابة وإصلاح مشكلة الاتصال')
             ON CONFLICT DO NOTHING;
-            """)
+            """), 1):
+                _safe_exec(cur, _mstmt, "MIG#" + str(_mi))
             # Migration: ensure all ADMIN_IDS users always get admin role
             if ADMIN_IDS:
-                cur.execute(
-                    "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
-                    (list(ADMIN_IDS),)
-                )
+                _safe_exec(cur,
+                           "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
+                           "ترقية ADMIN_IDS", (list(ADMIN_IDS),))
             # Migration: نظام الفئات — عمود الفئة المطلوبة + قيد الأدوار الكامل
             # (idempotent: يعمل بأمان على كل إقلاع، ويُصلح قيود القواعد القديمة)
-            cur.execute(
-                "SELECT COUNT(*) FROM information_schema.columns "
-                "WHERE table_name = 'users' AND column_name = 'requested_role'"
-            )
-            if cur.fetchone()[0] == 0:
-                cur.execute("ALTER TABLE users ADD COLUMN requested_role VARCHAR(20)")
-            cur.execute(
-                "SELECT conname FROM pg_constraint "
-                "WHERE conrelid = 'users'::regclass AND contype = 'c' "
-                "AND pg_get_constraintdef(oid) LIKE '%role%'"
-            )
-            for _role_con in cur.fetchall():
-                _conname = str(_role_con[0]).replace('"', '')
-                cur.execute('ALTER TABLE users DROP CONSTRAINT IF EXISTS "' + _conname + '"')
+            # v108: كل ذلك داخل SAVEPOINT معزول — أي مفاجأة لا تُسقط التهيئة.
+            with _safe_sp(cur, "تهيئة requested_role وقيود الأدوار"):
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.columns "
+                    "WHERE table_name = 'users' AND column_name = 'requested_role'"
+                )
+                if cur.fetchone()[0] == 0:
+                    cur.execute("ALTER TABLE users ADD COLUMN requested_role VARCHAR(20)")
+                cur.execute(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'users'::regclass AND contype = 'c' "
+                    "AND pg_get_constraintdef(oid) LIKE '%role%'"
+                )
+                for _role_con in cur.fetchall():
+                    _conname = str(_role_con[0]).replace('"', '')
+                    cur.execute('ALTER TABLE users DROP CONSTRAINT IF EXISTS "' + _conname + '"')
             _apply_role_constraint(cur)   # v106: قيد ديناميكي لا يُسقط الإقلاع أبدًا
-            # v106: جدول المصروفات — سبب اختياري والتاريخ والوقت محفوظان دائمًا
-            cur.execute("""
+            # v106/v108: جدول المصروفات — سبب اختياري والتاريخ والوقت محفوظان دائمًا.
+            # v108 الجذر الحقيقي لانهيار النشر الأخير (UndefinedColumn: spent_at):
+            # قاعدة الإنتاج تحمل جدول expenses غربياً (من مصدر خارجي/قاعدة مشتركة)
+            # بلا أعمدة النظام — CREATE TABLE IF NOT EXISTS لا يضيف أعمدة لجدول
+            # موجود، فالفهرس التالي على spent_at كان يرفع الخطأ ويُسقط init_db
+            # كلها عبر raise. الحل الدائم: زرع معزول + شفاء كل أعمدة النظام
+            # قبل أي فهرس — يعمل على القاعدة الجديدة والغريبة معاً بلا لمس بيانات.
+            _safe_exec(cur, """
                 CREATE TABLE IF NOT EXISTS expenses (
                     id         BIGSERIAL PRIMARY KEY,
                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -1283,29 +1431,48 @@ CREATE TABLE IF NOT EXISTS bot_settings (
                     reason     TEXT,
                     spent_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                CREATE INDEX IF NOT EXISTS idx_expenses_spent ON expenses (spent_at DESC);
-            """)
+                )
+            """, "جدول المصروفات")
+            for _col_sql, _col_lbl in (
+                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS user_id INTEGER", "expenses.user_id"),
+                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS amount NUMERIC(12,2)", "expenses.amount"),
+                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reason TEXT", "expenses.reason"),
+                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS spent_at TIMESTAMPTZ", "expenses.spent_at"),
+                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ", "expenses.created_at"),
+            ):
+                _safe_exec(cur, _col_sql, "شفاء " + _col_lbl)
+            _safe_exec(cur,
+                       "CREATE INDEX IF NOT EXISTS idx_expenses_spent ON expenses (spent_at DESC)",
+                       "فهرس المصروفات الزمني")
+            try:
+                cur.execute("SELECT column_name FROM information_schema.columns "
+                            "WHERE table_name = 'expenses' ORDER BY ordinal_position")
+                logging.info("[DB][v108] أعمدة expenses الفعلية: "
+                             + ", ".join(str(r[0]) for r in cur.fetchall()))
+            except Exception:
+                pass
             # Migration: de-duplicate usernames so the unique index below can be created safely.
             # Keep the newest row's username (max telegram_id row wins; the current holder of the
             # handle on Telegram), older duplicates get NULL and fall back to first_name display.
-            cur.execute("""
-                UPDATE users u
-                SET username = NULL
-                WHERE u.username IS NOT NULL
-                  AND EXISTS (
-                      SELECT 1 FROM users v
-                      WHERE v.username IS NOT NULL
-                        AND LOWER(v.username) = LOWER(u.username)
-                        AND v.telegram_id > u.telegram_id
-                  )
-                  AND u.telegram_id <> COALESCE((
-                      SELECT MAX(v.telegram_id) FROM users v
-                      WHERE v.username IS NOT NULL
-                        AND LOWER(v.username) = LOWER(u.username)
-                  ), u.telegram_id)
-            """)
-            dedup_count = cur.rowcount
+            dedup_count = 0
+            with _safe_sp(cur, "إزالة تكرار أسماء المستخدمين"):
+                cur.execute("""
+                    UPDATE users u
+                    SET username = NULL
+                    WHERE u.username IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM users v
+                          WHERE v.username IS NOT NULL
+                            AND LOWER(v.username) = LOWER(u.username)
+                            AND v.telegram_id > u.telegram_id
+                      )
+                      AND u.telegram_id <> COALESCE((
+                          SELECT MAX(v.telegram_id) FROM users v
+                          WHERE v.username IS NOT NULL
+                            AND LOWER(v.username) = LOWER(u.username)
+                      ), u.telegram_id)
+                """)
+                dedup_count = cur.rowcount
             # Hard guarantee: no two active accounts can ever hold the same username again.
             # Wrapped in a SAVEPOINT so a failure here never aborts the whole schema init.
             try:
@@ -1324,82 +1491,86 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             # then enforce case-insensitive uniqueness going forward.
             # v81 حماية: عمود archived قد لا يكون موجوداً بعد على قاعدة جديدة —
             # إضافة idempotent رخيصة تضمن سلامة الدمج والشفاء أدناه في كل الأحوال.
-            cur.execute(
-                "ALTER TABLE products ADD COLUMN IF NOT EXISTS archived "
-                "BOOLEAN NOT NULL DEFAULT FALSE"
-            )
+            _safe_exec(cur,
+                       "ALTER TABLE products ADD COLUMN IF NOT EXISTS archived "
+                       "BOOLEAN NOT NULL DEFAULT FALSE",
+                       "products.archived")
             # v81: اختيار الباقي من كل مجموعة أسماء مكررة تغيّر جذرياً:
             # قديماً كان الأقدم (أصغر id) يبقى حتى لو كان محذوفاً — فتُحذف السلعة
             # الحية المسجلة حديثاً! ولا كان أي دمج للكميات (تضيع كمية المحذوف)،
             # ولا إعادة ربط للطلبات المعلقة (product_id يُصفَّر بالـ FK).
             # الآن: الحية أولاً ثم الأقدم، مع دمج كميات المكررات في الباقية،
             # وإعادة ربط كل الجداول المرجعية (حتى المعلقات) قبل الحذف.
-            cur.execute(
-                "CREATE TEMP TABLE _dup_keepers ON COMMIT DROP AS "
-                "SELECT DISTINCT ON (LOWER(name)) LOWER(name) AS lname, id AS keep_id "
-                "FROM products "
-                "WHERE LOWER(name) IN (SELECT LOWER(name) FROM products "
-                "GROUP BY LOWER(name) HAVING COUNT(*) > 1) "
-                "ORDER BY LOWER(name), archived ASC, id ASC"
-            )
-            _dup_remap_sql = """
-                UPDATE {table} t SET product_id = k.keep_id
-                FROM _dup_keepers k, products x
-                WHERE t.product_id = x.id
-                  AND LOWER(x.name) = k.lname AND x.id <> k.keep_id
-            """
-            for _t in ("transactions", "extraction_requests", "invoice_items",
-                       "pending_deliveries"):
-                cur.execute(_dup_remap_sql.format(table=_t))
-            if _unshipped_table_exists(cur):
-                cur.execute(_dup_remap_sql.format(table="unshipped_sales"))
-            cur.execute(
-                "UPDATE products p SET quantity = COALESCE(p.quantity, 0) + m.added "
-                "FROM (SELECT k.keep_id, SUM(COALESCE(x.quantity, 0)) AS added "
-                      "FROM _dup_keepers k, products x "
-                      "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id "
-                      "GROUP BY k.keep_id) m "
-                "WHERE p.id = m.keep_id AND m.added <> 0"
-            )
-            cur.execute(
-                "DELETE FROM products WHERE id IN ("
-                "SELECT x.id FROM products x, _dup_keepers k "
-                "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id)"
-            )
-            prod_dupes = cur.rowcount
-            cur.execute("DROP TABLE IF EXISTS _dup_keepers")
-            try:
-                cur.execute("SAVEPOINT products_name_uniq")
+            # v108: الجراحة كلها داخل SAVEPOINT واحد — أي فشل يُتراجع عنها
+            # مجتمعةً ويستمر التهيئة، وصفر تأثير على بقية المخطط.
+            prod_dupes = 0
+            with _safe_sp(cur, "دمج السلع المكررة"):
                 cur.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_uniq "
-                    "ON products (LOWER(name))"
+                    "CREATE TEMP TABLE _dup_keepers ON COMMIT DROP AS "
+                    "SELECT DISTINCT ON (LOWER(name)) LOWER(name) AS lname, id AS keep_id "
+                    "FROM products "
+                    "WHERE LOWER(name) IN (SELECT LOWER(name) FROM products "
+                    "GROUP BY LOWER(name) HAVING COUNT(*) > 1) "
+                    "ORDER BY LOWER(name), archived ASC, id ASC"
                 )
-                cur.execute("RELEASE SAVEPOINT products_name_uniq")
-            except Exception as idx_err:
-                cur.execute("ROLLBACK TO SAVEPOINT products_name_uniq")
-                logging.warning("[DB] product name unique index deferred: " + str(idx_err))
+                _dup_remap_sql = """
+                    UPDATE {table} t SET product_id = k.keep_id
+                    FROM _dup_keepers k, products x
+                    WHERE t.product_id = x.id
+                      AND LOWER(x.name) = k.lname AND x.id <> k.keep_id
+                """
+                for _t in ("transactions", "extraction_requests", "invoice_items",
+                           "pending_deliveries"):
+                    cur.execute(_dup_remap_sql.format(table=_t))
+                if _unshipped_table_exists(cur):
+                    cur.execute(_dup_remap_sql.format(table="unshipped_sales"))
+                cur.execute(
+                    "UPDATE products p SET quantity = COALESCE(p.quantity, 0) + m.added "
+                    "FROM (SELECT k.keep_id, SUM(COALESCE(x.quantity, 0)) AS added "
+                          "FROM _dup_keepers k, products x "
+                          "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id "
+                          "GROUP BY k.keep_id) m "
+                    "WHERE p.id = m.keep_id AND m.added <> 0"
+                )
+                cur.execute(
+                    "DELETE FROM products WHERE id IN ("
+                    "SELECT x.id FROM products x, _dup_keepers k "
+                    "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id)"
+                )
+                prod_dupes = cur.rowcount
+                cur.execute("DROP TABLE IF EXISTS _dup_keepers")
+                try:
+                    cur.execute("SAVEPOINT products_name_uniq")
+                    cur.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_uniq "
+                        "ON products (LOWER(name))"
+                    )
+                    cur.execute("RELEASE SAVEPOINT products_name_uniq")
+                except Exception as idx_err:
+                    cur.execute("ROLLBACK TO SAVEPOINT products_name_uniq")
+                    logging.warning("[DB] product name unique index deferred: " + str(idx_err))
 
             # Migration (legacy DBs): stop accidental data loss on product deletion.
             # - transactions history must NOT vanish with the product.
             # - invoice_items keeps billing rows alive with a detached product reference.
             # Constraint names follow PostgreSQL defaults (table_col_fkey), each guarded
             # in its own DO block so one legacy oddity never breaks initialization.
-            cur.execute("""
+            _safe_exec(cur, """
                 DO $$ BEGIN
                     ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_product_id_fkey;
                     ALTER TABLE transactions
                         ADD CONSTRAINT transactions_product_id_fkey
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;
                 EXCEPTION WHEN OTHERS THEN NULL; END $$;
-            """)
-            cur.execute("""
+            """, "قيد transactions→products")
+            _safe_exec(cur, """
                 DO $$ BEGIN
                     ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_product_id_fkey;
                     ALTER TABLE invoice_items
                         ADD CONSTRAINT invoice_items_product_id_fkey
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
                 EXCEPTION WHEN OTHERS THEN NULL; END $$;
-            """)
+            """, "قيد invoice_items→products")
             # v81: شفاء السلع «المختفية» — أي سلعة محذوفة ما زالت تحمل كمية تعود
             # للحياة تلقائياً عند الإقلاع. الجذر: الكمية كانت تُطعَم صامتة في سلعة
             # محذوفة (تليغرام/الطابور) فتبدو السلعة مسجلة ومختفية من كل القوائم.
@@ -1446,10 +1617,16 @@ CREATE TABLE IF NOT EXISTS bot_settings (
         if prod_dupes:
             print("[DB] Merged " + str(prod_dupes) + " duplicate product(s).")
         print("[DB] Schema initialized successfully.")
+        return True
     except Exception as e:
-        conn.rollback()
-        print("[DB] Schema init failed: " + str(e))
-        raise
+        # v108: لا raise مهما حدث — فشل التهيئة لا يقتل الإقلاع أبداً؛
+        # حلقة الإقلاع الخلفية تعيد المحاولة كل 60ث حتى النجاح.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print("[DB] Schema init failed (الإقلاع مستمر — إعادة محاولة كل 60ث): " + str(e))
+        return False
     finally:
         if owned:
             release_connection(conn)
@@ -11469,7 +11646,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v107"  # v107 = «صلاحيات لكل مستخدم»: طلب يوسف — «كل مستخدم اختار له صلاحية وايضا ماذا يرى وفيما يتحكم» حتى لو فئته «مدير نظام». طبقة جديدة فوق صلاحيات الفئات: جدول user_permissions (تجاوز صريح لكل مستخدم: 1 مفعّلة دائماً / 0 موقفة دائماً / وغياب الصف = يتبع فئته — صفر كسر لمن لا تجاوزات له) ونواة حكم واحدة user_perm_enabled تخدم المنصتين معاً: الحسابات المحمية (ADMIN_IDS/OWNER_IDS) كاملة دائماً لا تُمس، ثم التجاوز الصريح، ثم الفئة. مصفوفة 13 صلاحية (البحث، إضافة/إخراج كمية، الفواتير، طلبات التوريد، طلباتي، الحركة، إضافة/تعديل سلع، المخزون المنخفض، المعلقة، المصروفات، ونظام المستخدمين الجديد PERM_USERS). الإدارة من لوحة المستخدمين في البوت (زر «🎛️ صلاحياته» → تبديل ↔️→✅→❌→↔️ + إعادة ضبط) ومن التطبيق (بطاقة المستخدم → 🎛️ صلاحياته → مصفوفة بثلاث حالات ونقطة حالة «فعّالة الآن» تُحدَّث من الخادم بعد كل حفظ) — عبر مساري GET/POST /api/user/{tid}/perms بسجل تدقيق user_perms. إنفاذ حقيقي لا إخفاء: PWA بواباتها أعيد ربطها كلها على الخريطة الواعية للمستخدم (48 موضعاً)، ووحدات إضافة/تعديل/حذف السلع والطلبات المعلقة وطلبات التوريد صارت صلاحيات وحدات مستقلة بدل بوابة admin العامة، ولوحات تلغرام (الإدارة/عامل المخزون/البائع/الخارجي) تُبنى بتجاوزاته، وأزرار اللوحة الإدارية الموقوفة تختفي ويُرفض إدخالها اليدوي. عائلة إدارة المستخدمين (الموافقة/الفئات/الطرد/الدمج/تسجيلات التطبيق) تُدار الآن ببوابة _can_manage_users فتعمل لمن أُعطيه صلاحية المستخدمين، مع حمايات الملكية السابقة كما هي. تقييد المدراء ممكن الآن؛ منع الذات ومنع الحسابات المحمية في المنصتين؛ التغيير يسري في البوت فوراً (كاش 30ث) وفي التطبيق خلال دقيقة (مزامنة الصلاحيات القائمة). صفر مساس بالجلسات أو الفواتير أو البيانات. || سابقه v106 = «المصروفات والعلامة خارج المحادثة وقاعدة لا تُسقط الإقلاع»: بلاغان من يوسف — نشر Render فشل: «check constraint users_role_check of relation users is violated by some row» فخرج البوت بـ status 1 وتوقف الجميع، و«خانة المصروفات فاشلة تظهر حاول مرة أخرى ، ايضا لا يمكن كتابة تواريخ من اسبوع ماضي ولا يمكن الضغط على حفظ». ثلاثة إصلاحات جذرية: (1) قيد users_role_check صار ديناميكيًا عبر _apply_role_constraint: اتحاد الأدوار القياسية مع كل القيم الموجودة فعلًا في الجدول (DISTINCT role) داخل SAVEPOINT — فلا يمكن لأي صف قديم بأي دور أن يخالف القيد ولا تُمس أي بيانات، وفشله غير المتوقع يُسجّل ويُتجاوز بدل موت init_db كله (و incoming_orders_status_check و transactions_type_check تحصنتا بنقل الـADD داخل حماية DO block)؛ (2) العلامة + العائمة تخفى داخل المحادثة الفردية/الجماعية: حارس في fabTargetOk على #chatThread.on + مراقب MutationObserver على سمة الكلاس يخفيها فور فتح المحادثة ويعيدها على قائمة الرسائل (خارج المحادثة كما طلب يوسف سابقًا)؛ (3) خيار «💰 مصروفات» في رأس قائمة الرسائل — خارج المحادثات — للفئات المصرّح لها (صلاحية expenses جديدة قابلة للتبديل من لوحة الفئات، مزروعة للبائع وعامل المخزون، وللمدراء دائمًا): مبلغ + سبب اختياري (حتى 300 حرف) + تاريخ ووقت حُرّ type=datetime-local بلا أي min/max — الماضي مسموح دائمًا — وزر «حفظ» لا يُقفل إلا أثناء الإرسال فعليًا (ويعود دائمًا في finally) ويعرض رسالة الخادم الحقيقية لا «حاول مرة أخرى» عمياء، والإدراج دائمًا يخزن spent_at (COALESCE مع NOW()) في جدول expenses جديد (amount > 0 + مرجع للمستخدم) + مسارا /api/expenses/add و /api/expenses/list بإجمالي اليوم والشهر بتوقيت Africa/Algiers وسجل تدقيق expenses_add — والأوقات تعود ISO فيعرضها المتصفح بتوقيت الجهاز. صفر مساس بالجلسات أو الفواتير أو أي مسار قائم || سابقه v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v108"  # v108 = «حصن الإقلاع»: نشر Render انهار مرتين متتاليتين عند تهيئة القاعدة وخرج بـ status 1 — أولًا «check constraint users_role_check violated by some row» ثم «column "spent_at" does not exist» — فتوقف البوت والتطبيق معاً. التشخيص البنيوي: init_db كانت تنفذ دفعات SQL ضخمة وترحيلات عارية داخل try واحد ينتهي بـ raise — أي عبارة سامة واحدة (جدول باسم expenses وُجد في قاعدة الإنتاج من مصدر خارجي بلا أعمدة النظام، أو عمود ناقص، أو قيد قديم) تقتل الإقلاع كله. الحل الدائم بخمس طبقات: (1) قاطع _split_sql_statements واعٍ بأجسام DO $$ والوسوم $tag$ والسلاسل والتعليقات يقسم المخطط والترحيلات عبارة-عبارة (2) كل عبارة/كتلة داخل SAVEPOINT عازل (_safe_exec/_safe_sp): فشلها يُسجَّل ويُتراجع عنها وحدها وتكمل ما بعدها (3) صفر raise: فشل التهيئة لا يخرج من init_db ولا من _pwa_init_tables، وحلقة خلفية تعيد المحاولة كل 60ث حتى النجاح والبوت يصعد في الانتظار (4) شفاء جدول المصروفات الغربي: ADD COLUMN IF NOT EXISTS لكل أعمدة النظام (user_id/amount/reason/spent_at/created_at) قبل فهرسه + طباعة أعمدته الفعلية في اللوج (5) بوتستراب المدير محصّن كذلك. صفر مساس بالبيانات أو الجلسات أو أي مسار قائم. || سابقه v107 = «صلاحيات لكل مستخدم»: طلب يوسف — «كل مستخدم اختار له صلاحية وايضا ماذا يرى وفيما يتحكم» حتى لو فئته «مدير نظام». طبقة جديدة فوق صلاحيات الفئات: جدول user_permissions (تجاوز صريح لكل مستخدم: 1 مفعّلة دائماً / 0 موقفة دائماً / وغياب الصف = يتبع فئته — صفر كسر لمن لا تجاوزات له) ونواة حكم واحدة user_perm_enabled تخدم المنصتين معاً: الحسابات المحمية (ADMIN_IDS/OWNER_IDS) كاملة دائماً لا تُمس، ثم التجاوز الصريح، ثم الفئة. مصفوفة 13 صلاحية (البحث، إضافة/إخراج كمية، الفواتير، طلبات التوريد، طلباتي، الحركة، إضافة/تعديل سلع، المخزون المنخفض، المعلقة، المصروفات، ونظام المستخدمين الجديد PERM_USERS). الإدارة من لوحة المستخدمين في البوت (زر «🎛️ صلاحياته» → تبديل ↔️→✅→❌→↔️ + إعادة ضبط) ومن التطبيق (بطاقة المستخدم → 🎛️ صلاحياته → مصفوفة بثلاث حالات ونقطة حالة «فعّالة الآن» تُحدَّث من الخادم بعد كل حفظ) — عبر مساري GET/POST /api/user/{tid}/perms بسجل تدقيق user_perms. إنفاذ حقيقي لا إخفاء: PWA بواباتها أعيد ربطها كلها على الخريطة الواعية للمستخدم (48 موضعاً)، ووحدات إضافة/تعديل/حذف السلع والطلبات المعلقة وطلبات التوريد صارت صلاحيات وحدات مستقلة بدل بوابة admin العامة، ولوحات تلغرام (الإدارة/عامل المخزون/البائع/الخارجي) تُبنى بتجاوزاته، وأزرار اللوحة الإدارية الموقوفة تختفي ويُرفض إدخالها اليدوي. عائلة إدارة المستخدمين (الموافقة/الفئات/الطرد/الدمج/تسجيلات التطبيق) تُدار الآن ببوابة _can_manage_users فتعمل لمن أُعطيه صلاحية المستخدمين، مع حمايات الملكية السابقة كما هي. تقييد المدراء ممكن الآن؛ منع الذات ومنع الحسابات المحمية في المنصتين؛ التغيير يسري في البوت فوراً (كاش 30ث) وفي التطبيق خلال دقيقة (مزامنة الصلاحيات القائمة). صفر مساس بالجلسات أو الفواتير أو البيانات. || سابقه v106 = «المصروفات والعلامة خارج المحادثة وقاعدة لا تُسقط الإقلاع»: بلاغان من يوسف — نشر Render فشل: «check constraint users_role_check of relation users is violated by some row» فخرج البوت بـ status 1 وتوقف الجميع، و«خانة المصروفات فاشلة تظهر حاول مرة أخرى ، ايضا لا يمكن كتابة تواريخ من اسبوع ماضي ولا يمكن الضغط على حفظ». ثلاثة إصلاحات جذرية: (1) قيد users_role_check صار ديناميكيًا عبر _apply_role_constraint: اتحاد الأدوار القياسية مع كل القيم الموجودة فعلًا في الجدول (DISTINCT role) داخل SAVEPOINT — فلا يمكن لأي صف قديم بأي دور أن يخالف القيد ولا تُمس أي بيانات، وفشله غير المتوقع يُسجّل ويُتجاوز بدل موت init_db كله (و incoming_orders_status_check و transactions_type_check تحصنتا بنقل الـADD داخل حماية DO block)؛ (2) العلامة + العائمة تخفى داخل المحادثة الفردية/الجماعية: حارس في fabTargetOk على #chatThread.on + مراقب MutationObserver على سمة الكلاس يخفيها فور فتح المحادثة ويعيدها على قائمة الرسائل (خارج المحادثة كما طلب يوسف سابقًا)؛ (3) خيار «💰 مصروفات» في رأس قائمة الرسائل — خارج المحادثات — للفئات المصرّح لها (صلاحية expenses جديدة قابلة للتبديل من لوحة الفئات، مزروعة للبائع وعامل المخزون، وللمدراء دائمًا): مبلغ + سبب اختياري (حتى 300 حرف) + تاريخ ووقت حُرّ type=datetime-local بلا أي min/max — الماضي مسموح دائمًا — وزر «حفظ» لا يُقفل إلا أثناء الإرسال فعليًا (ويعود دائمًا في finally) ويعرض رسالة الخادم الحقيقية لا «حاول مرة أخرى» عمياء، والإدراج دائمًا يخزن spent_at (COALESCE مع NOW()) في جدول expenses جديد (amount > 0 + مرجع للمستخدم) + مسارا /api/expenses/add و /api/expenses/list بإجمالي اليوم والشهر بتوقيت Africa/Algiers وسجل تدقيق expenses_add — والأوقات تعود ISO فيعرضها المتصفح بتوقيت الجهاز. صفر مساس بالجلسات أو الفواتير أو أي مسار قائم || سابقه v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -15748,14 +15925,28 @@ def _pwa_norm_username(u):
 
 
 def _pwa_init_tables():
-    conn = get_connection()
+    """v108: زرع جداول PWA لا يرفع استثناءً أبداً — عبارةً-عبارة بعزل
+    _safe_exec (نفس حصن init_db) والفشل يُسجَّل فقط؛ حلقة الإقلاع الخلفية
+    تعيد المحاولة حتى النجاح. العائد: True اكتمل / False تأخر."""
+    conn = None
+    try:
+        conn = get_connection()
+    except Exception as e:
+        logging.error("[PWA][v108] لا اتصال لزرع جداول PWA: " + str(e)[:200])
+        return False
     try:
         with conn.cursor() as cur:
-            cur.execute(PWA_SCHEMA_SQL)
+            for _pi, _pstmt in enumerate(_split_sql_statements(PWA_SCHEMA_SQL), 1):
+                _safe_exec(cur, _pstmt, "PWA#" + str(_pi))
         conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+        return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logging.error("[PWA][v108] جداول PWA لم تكتمل: " + str(e)[:200])
+        return False
     finally:
         release_connection(conn)
     # v52: دمج المكرر عند الإقلاع — نفس الشخص من التطبيق ومن تلجرام = حساب واحد
@@ -23984,8 +24175,16 @@ async def pwa_admin_selfpass_handler(request):
 def register_pwa_routes(app):
     """تركيب مسارات PWA على خادم aiohttp الموجود (webhook أو polling+health).
     آمنة إضافياً بالكامل: لا تمس مسارات البوت ولا جداوله."""
-    _pwa_init_tables()
-    pwa_bootstrap_admin()
+    # v108: كلاهما محصّن داخلياً ولا يرفع — الحارس هنا احترازي إضافي فقط:
+    # أي مفاجأة هنا لن تُسقط صعود البوت على المنصتين.
+    try:
+        _pwa_init_tables()
+    except Exception as _pit_err:
+        logging.error("[PWA][v108] جداول PWA مؤجلة: " + str(_pit_err)[:200])
+    try:
+        pwa_bootstrap_admin()
+    except Exception as _pba_err:
+        logging.error("[PWA][v108] bootstrap admin مؤجل: " + str(_pba_err)[:200])
     app.router.add_get("/", pwa_page_handler)
     app.router.add_get("/pwa", pwa_page_handler)
     app.router.add_get("/app", pwa_page_handler)
@@ -24102,7 +24301,7 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general + app-mic + native-ui) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general + app-mic + native-ui + schema-guard) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
@@ -24114,7 +24313,43 @@ if __name__ == "__main__":
     # init_db() calls get_connection() which lazily creates the pool via
     # init_pool(), so an explicit init_pool() here would leak the previous
     # pool's connections.
-    init_db()
+    # v108: تهيئة المخطط لا تُسقط الإقلاع أبداً — فشلها (قاعدة نائمة، جدول
+    # غربي، أي مفاجأة) يعني إعادة محاولة في الخلفية كل 60ث حتى النجاح،
+    # والبوت يصعد ويخدم ما يمكن خدمته في الانتظار.
+    def _v108_boot_schema():
+        """زرع مخطط القاعدة + جداول PWA — True فقط إذا اكتمل كل شيء."""
+        _ok = bool(init_db())
+        try:
+            _pwa_ok = _pwa_init_tables()
+            _ok = _ok and bool(_pwa_ok)
+        except Exception as _pwa_err:
+            logging.error("[PWA][v108] جداول PWA عند الإقلاع: " + str(_pwa_err)[:200])
+            _ok = False
+        return _ok
+
+    _v108_schema_ok = False
+    try:
+        _v108_schema_ok = _v108_boot_schema()
+    except Exception as _v108_boot_err:
+        logging.error("[DB][v108] تهيئة الإقلاع رفعت استثناء: " + str(_v108_boot_err)[:200])
+
+    if not _v108_schema_ok:
+        def _v108_schema_retry():
+            _n = 0
+            while True:
+                time.sleep(60)
+                _n += 1
+                try:
+                    if _v108_boot_schema():
+                        logging.info("[DB][v108] اكتملت تهيئة المخطط بعد "
+                                     + str(_n) + " محاولة(ات) متأخرة.")
+                        return
+                except Exception as _r_err:
+                    logging.error("[DB][v108] إعادة محاولة #" + str(_n) + ": "
+                                  + str(_r_err)[:200])
+
+        threading.Thread(target=_v108_schema_retry, daemon=True,
+                         name="schema-retry-v108").start()
     # v88: تسخين الشعار في الخلفية — بذرة أولى من الرابط إلى القاعدة إن لزم،
     # وإن فشل فالنظام يعمل بلا غلاف بأمان (كل المسارات fallback). لا يحجب الإقلاع.
     threading.Thread(target=_theme_logo_load, daemon=True, name="theme-logo-warm").start()
