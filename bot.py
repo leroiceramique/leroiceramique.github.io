@@ -3184,6 +3184,7 @@ PERM_ADD_PRODUCT  = "add_product"   # 📦 إضافة سلعة
 PERM_EDIT_PRODUCT = "edit_product"  # ✏️ تعديل سلعة
 PERM_LOW_STOCK    = "low_stock"     # 📊 المخزون المنخفض
 PERM_PENDING      = "pending"       # 🔴 الطلبات المعلقة
+PERM_EXPENSES     = "expenses"      # 💸 المصروفات (v106)
 
 PERM_LABELS = {
     PERM_SEARCH:       "🔍 البحث",
@@ -3197,14 +3198,15 @@ PERM_LABELS = {
     PERM_EDIT_PRODUCT: "✏️ تعديل سلعة",
     PERM_LOW_STOCK:    "📊 المخزون المنخفض",
     PERM_PENDING:      "🔴 الطلبات المعلقة",
+    PERM_EXPENSES:     "💸 المصروفات",
 }
 
 # الصلاحيات القابلة للإدارة لكل فئة (= الافتراضي المفعّل عند أول تشغيل)
 ROLE_PERM_CATALOG = {
     ROLE_SELLER: (PERM_SEARCH, PERM_ADD_QTY, PERM_REMOVE, PERM_INVOICE,
-                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS),
+                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS, PERM_EXPENSES),
     ROLE_STOCK:  (PERM_ADD_QTY, PERM_ADD_PRODUCT, PERM_REMOVE, PERM_EDIT_PRODUCT,
-                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING),
+                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING, PERM_EXPENSES),
     ROLE_EXTERNAL: (PERM_SEARCH,),
 }
 
@@ -11088,7 +11090,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v105"  # v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v106"  # v106 = «المصروفات + ＋ خارج المحادثة»: طلب يوسف — (1) إزالة علامة ＋ من داخل المحادثة الفردية/الجماعية: الزر العائم الذكي (UI2) كان يبقى ظاهراً stale داخل المحادثة لأن فتحها يخفي chatHome بلا مرور بـ switchView فلا يُعاد فحص الهدف — الإصلاح: حراسة chatThread.on داخل fabTargetOk + MutationObserver على كلاس #chatThread يزامن الإخفاء/الظهور لحظياً لكل المسارات (فردية/جماعية/زر الرجوع) — فيظهر ＋ على قائمة المحادثات (خارج المحادثة) فقط؛ (2) خيار 💸 المصروفات: مبلغ + سبب اختياري (حتى 300 حرف) يُحفظ دائماً مع التاريخ والتوقيت من الخادم (TIMESTAMPTZ DEFAULT NOW() — لا اعتماد على ساعة هاتف الموظف)، صلاحية جديدة 💸 يديرها المدير من لوحة 🔐 الصلاحيات (مفعّلة للمدراء دائماً، وللبائع/عامل المخزون بمنح الإدارة)، جدول expenses في القاعدة + مسارات /api/expenses/add|list|delete محمية بالصلاحية + audit_log، وزر 💸 في الرئيسية يفتح حواراً واحداً: حفظ فوري + قائمة بأحدث 150 مصروفاً (المبلغ + السبب + التاريخ والتوقيت + اسم المسجّل) + إجماليات اليوم/هذا الشهر/الكل + حذف (صاحبه أو مدير) || سابقه v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -11380,6 +11382,15 @@ DO $$ BEGIN
     ALTER TABLE chat_group_messages ADD CONSTRAINT chat_group_messages_kind_check
         CHECK (kind IN ('text', 'image', 'file', 'audio', 'video'));
 EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- ═══ v106: المصروفات — مبلغ + سبب اختياري + تاريخ وتوقيت من الخادم دائماً ═══
+CREATE TABLE IF NOT EXISTS expenses (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount     NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+    reason     VARCHAR(300),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses (created_at DESC);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -12109,6 +12120,14 @@ _PWA_UI2_JS = r"""/* ═══════════════════�
   document.body.appendChild(fab);
 
   function fabTargetOk() {
+    /* v106: داخل محادثة مفتوحة (فردية أو جماعية) لا زر ＋ إطلاقاً —
+       يظهر فقط على قائمة المحادثات (خارج المحادثة) كما يطلب المستخدم.
+      الجذر التاريخي: فتح المحادثة يخفي chatHome بلا مرور بـ switchView
+      فبقى الزر ظاهراً stale داخل المحادثة. */
+    if (curView === "v-chat") {
+      var th86 = document.getElementById("chatThread");
+      if (th86 && th86.classList.contains("on")) return false;
+    }
     var id = FAB_TARGET[curView];
     if (!id) return false;
     var b = document.getElementById(id);
@@ -12143,6 +12162,17 @@ _PWA_UI2_JS = r"""/* ═══════════════════�
       setTimeout(function () { safe(syncFab); }, 1400);
       return r;
     };
+  });
+  /* v106: متابعة فتح/إغلاق المحادثة لحظياً — الإخفاء فور الإدخال والإظهار
+     فور الرجوع للقائمة، مهما كان المسار (فردية/جماعية/زر الرجوع) —
+     فكلها تغيّر كلاس #chatThread نفسه والملاحظ يلتقطها كلها */
+  safe(function () {
+    var th = document.getElementById("chatThread");
+    if (!th || !window.MutationObserver) return;
+    try {
+      new MutationObserver(function () { safe(syncFab); })
+        .observe(th, { attributes: true, attributeFilter: ["class"] });
+    } catch (e) {}
   });
   safe(syncFab);
 
@@ -14102,6 +14132,173 @@ try {
 })();
 })();'''
 
+# ═══ v106: المصروفات — حوار حفظ/قائمة + زر الرئيسية ═══
+_PWA_V106_CSS = r'''/* 💸 المصروفات v106 — نفس هوية الواجهة بلا أي كسر */
+#dlgExpenses .db{max-height:min(70vh,540px);overflow:auto}
+.exp-totals{background:var(--card,#fff);border:1px solid var(--line,#e7e2d8);border-radius:14px;
+  padding:10px 14px;margin:10px 0 12px;font-size:13.5px;display:flex;gap:14px;flex-wrap:wrap}
+.exp-totals b{color:var(--brand,#5d2c0e)}
+.exp-row{display:flex;align-items:flex-start;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line,#e7e2d8)}
+.exp-row:last-child{border-bottom:none}
+.exp-ico{font-size:17px;line-height:1.4}
+.exp-main{flex:1;min-width:0}
+.exp-main .amt{font-weight:800;font-size:15px;color:var(--tx,#2b2b2b);direction:ltr;unicode-bidi:embed}
+.exp-main .why{font-size:13px;color:var(--tx,#2b2b2b);margin-top:2px;word-break:break-word}
+.exp-main .why.none{color:var(--mut,#98938a);font-style:italic}
+.exp-main .meta{font-size:11.5px;color:var(--mut,#98938a);margin-top:3px;direction:ltr;unicode-bidi:embed;text-align:right}
+.exp-del{border:none;background:rgba(224,93,75,.1);color:#e05d4b;border-radius:9px;
+  padding:6px 8px;font-size:13px;cursor:pointer;flex:none}
+.exp-del:active{transform:scale(.92)}
+#expSave{margin-top:4px}
+#expList{margin-top:12px}
+'''
+
+_PWA_V106_JS = r'''/* ═══ v106: المصروفات — مبلغ + سبب اختياري، والتاريخ والتوقيت من الخادم دائماً ═══
+   زر 💸 في الرئيسية (بالصلاحية) ← حوار: حفظ + قائمة بإجماليات اليوم/الشهر/الكل + حذف */
+(function () {
+  "use strict";
+  var SCOPE_LBL = { today: "اليوم", month: "هذا الشهر", all: "الكل" };
+  var curScope = "today";
+
+  function fmt(n) {
+    try { return Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 }); }
+    catch (e) { return String(n); }
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  /* زر الرئيسية — يظهر بالصلاحية فقط (نفس آلية الأزرار الأخرى) */
+  var host = document.querySelector("#v-home .grid");
+  if (host && !document.getElementById("btnExpenses")) {
+    var row = document.createElement("div");
+    row.id = "expHomeRow";
+    row.style.cssText = "margin-top:12px";
+    row.innerHTML = '<button class="btn" id="btnExpenses" style="display:none;max-width:380px">💸 المصروفات</button>';
+    host.parentNode.insertBefore(row, host.nextSibling);
+    document.getElementById("btnExpenses").addEventListener("click", openExp);
+  }
+
+  /* مزامنة الظهور مع الصلاحيات — أغلفة showApp العالمية */
+  try {
+    var origShowApp = window.showApp;
+    if (typeof origShowApp === "function") {
+      window.showApp = function () {
+        var r = origShowApp.apply(this, arguments);
+        try {
+          var b = document.getElementById("btnExpenses");
+          if (b) b.style.display = (S.perms && S.perms.expenses) ? "" : "none";
+        } catch (e) {}
+        return r;
+      };
+    }
+  } catch (e) {}
+
+  function ensureDlg() {
+    var d = document.getElementById("dlgExpenses");
+    if (d) return d;
+    d = document.createElement("dialog");
+    d.id = "dlgExpenses";
+    d.innerHTML = '<div class="dh">💸 المصروفات</div><div class="db">'
+      + '<div class="exp-totals" id="expTotals">—</div>'
+      + '<div class="chips" id="expScope">'
+      + '<button class="fchip on" data-p="today">🗓 اليوم</button>'
+      + '<button class="fchip" data-p="month">📆 هذا الشهر</button>'
+      + '<button class="fchip" data-p="all">🗂 الكل</button></div>'
+      + '<div class="fld" style="margin-top:10px"><label>المبلغ (DA)</label>'
+      + '<input id="expAmt" type="number" inputmode="decimal" min="1" step="0.01" placeholder="مثال: 1500"></div>'
+      + '<div class="fld"><label>السبب (اختياري)</label>'
+      + '<input id="expReason" maxlength="300" placeholder="مثال: وقود شاحنة — صهريج ماء — إيجار…" autocomplete="off"></div>'
+      + '<button class="btn" id="expSave">💾 حفظ المصروف</button>'
+      + '<div id="expList"><p class="empty">جارِ التحميل...</p></div>'
+      + '<button class="btn gray" id="expX" style="margin-top:10px">إغلاق</button></div>';
+    document.body.appendChild(d);
+    d.querySelector("#expX").addEventListener("click", function () { try { d.close(); } catch (e) {} });
+    d.querySelector("#expScope").addEventListener("click", function (ev) {
+      var b = ev.target.closest(".fchip");
+      if (!b) return;
+      curScope = b.getAttribute("data-p") || "today";
+      d.querySelectorAll("#expScope .fchip").forEach(function (x) { x.classList.toggle("on", x === b); });
+      loadList();
+    });
+    d.querySelector("#expSave").addEventListener("click", saveExp);
+    return d;
+  }
+
+  async function saveExp() {
+    var amt = document.getElementById("expAmt").value.trim();
+    var why = document.getElementById("expReason").value;
+    if (!amt) { toast("أدخل المبلغ أولاً.", true); return; }
+    var btn = document.getElementById("expSave");
+    var old = btn.textContent; btn.disabled = true; btn.textContent = "جارٍ الحفظ…";
+    try {
+      var d = await api("/api/expenses/add", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: amt, reason: why }) });
+      toast("✅ تم حفظ المصروف " + fmt(d.expense.amount) + " DA");
+      document.getElementById("expAmt").value = "";
+      document.getElementById("expReason").value = "";
+      loadList();
+    } catch (e) {
+      toast(e.message, true);
+    } finally { btn.disabled = false; btn.textContent = old; }
+  }
+
+  async function loadList() {
+    var box = document.getElementById("expList");
+    if (!box) return;
+    box.innerHTML = '<p class="empty">جارِ التحميل...</p>';
+    try {
+      var d = await api("/api/expenses/list?scope=" + curScope + "&limit=150", { noCache: true });
+      var items = d.items || [];
+      var isAdmin = S.perms && S.perms.admin;
+      var h = "";
+      items.forEach(function (it) {
+        var mine = !!it.mine;
+        h += '<div class="exp-row"><span class="exp-ico">💸</span><div class="exp-main">'
+          + '<div class="amt">' + esc(fmt(it.amount)) + ' DA</div>'
+          + (it.reason ? '<div class="why">📌 ' + esc(it.reason) + '</div>'
+                       : '<div class="why none">بدون سبب</div>')
+          + '<div class="meta">' + esc(it.created_at || "")
+          + ' • ' + esc(it.user_name || "") + '</div></div>'
+          + ((mine || isAdmin)
+            ? '<button class="exp-del" data-id="' + Number(it.id) + '" title="حذف">🗑</button>'
+            : "")
+          + '</div>';
+      });
+      if (!items.length) h = '<p class="empty">لا مصروفات في ' + esc(SCOPE_LBL[curScope]) + ' بعد.</p>';
+      box.innerHTML = h;
+      box.querySelectorAll(".exp-del").forEach(function (b) {
+        b.addEventListener("click", function () { delExp(b.getAttribute("data-id")); });
+      });
+      var tot = document.getElementById("expTotals");
+      if (tot) tot.innerHTML = '<span>🗓 اليوم: <b>' + esc(fmt(d.today_total)) + ' DA</b></span>'
+        + '<span>' + esc(SCOPE_LBL[d.scope] || "") + ': <b>' + esc(fmt(d.total)) + ' DA</b></span>';
+    } catch (e) {
+      box.innerHTML = '<p class="empty">' + esc(e.message || "تعذر التحميل") + '</p>';
+    }
+  }
+
+  async function delExp(id) {
+    if (!confirm("حذف هذا المصروف نهائياً؟")) return;
+    try {
+      var d = await api("/api/expenses/delete", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: Number(id) }) });
+      toast("✅ " + (d.message || "تم الحذف"));
+      loadList();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function openExp() {
+    var d = ensureDlg();
+    try { d.showModal(); } catch (e) {}
+    loadList();
+  }
+})();'''
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -14350,6 +14547,9 @@ _PWA_HTML_PATCHES = (
     # 49) v105: سكن أندرويد أصيل داخل التطبيق فقط — CSS ثم JS (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v105css">' + _PWA_V105_CSS + '</style>\n<script id="v105js">\n' + _PWA_V105_JS + '\n</script>\n</body>'),
+    # 50) v106: المصروفات — زر الرئيسية + حوار حفظ/قائمة + إصلاح زر ＋ داخل المحادثة (آخر سلسلة المراسي الحية)
+    ('</script>\n</body>',
+     '</script>\n<style id="v106css">' + _PWA_V106_CSS + '</style>\n<script id="v106js">\n' + _PWA_V106_JS + '\n</script>\n</body>'),
 )
 
 
@@ -15593,6 +15793,8 @@ def _pwa_perm_map(role):
         "swapg": admin or (role == ROLE_STOCK
                            and role_perm_enabled(role, PERM_ADD_QTY)
                            and role_perm_enabled(role, PERM_REMOVE)),
+        # v106: المصروفات — المدراء دائماً + من تمنحها الإدارة من الفئات الأخرى
+        "expenses": admin or role_perm_enabled(role, PERM_EXPENSES),
     }
 
 
@@ -20467,6 +20669,177 @@ async def pwa_swap_products_handler(request):
     return _pwa_jr(data)
 
 
+# ═══════════════ v106: المصروفات — مبلغ + سبب اختياري + تاريخ وتوقيت دائماً ═══════════════
+# كل توقيت يأتي من الخادم (TIMESTAMPTZ DEFAULT NOW()) — لا يُطلب من الجهاز أبداً،
+# فلا يهم إن كان تاريخ هاتف الموظف خاطئاً: السجل محفوظ بالتوقيت الصحيح دائماً.
+
+_PWA_EXP_MAX = 1_000_000_000.0          # سقف المبلغ الواحد (مليار وحدة)
+
+
+def _pwa_expense_validate(amount_raw, reason_raw):
+    """يتحقق من المبلغ والسبب — يعيد (amount: float, reason: str|None)
+    أو (None, رسالة خطأ). السبب اختياري ويُنظّف ويُقصّ عند 300 حرف."""
+    try:
+        a = float(str(amount_raw).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None, "المبلغ غير صحيح — أدخل رقماً فقط."
+    if a != a or a in (float("inf"), float("-inf")):
+        return None, "المبلغ غير صحيح."
+    if a <= 0:
+        return None, "المبلغ يجب أن يكون أكبر من صفر."
+    if a > _PWA_EXP_MAX:
+        return None, "المبلغ كبير جداً — الحد " + str(int(_PWA_EXP_MAX)) + "."
+    r = str(reason_raw or "").strip()[:300]
+    return round(a, 2), (r if r else None)
+
+
+def _pwa_api_expenses_add(user, amount_raw, reason_raw):
+    """💾 حفظ مصروف جديد — بالصلاحية فقط، والوقت من الخادم دائماً."""
+    if not _pwa_perm_map(user["role"])["expenses"]:
+        return None
+    amount, reason = _pwa_expense_validate(amount_raw, reason_raw)
+    if amount is None:
+        return False, reason
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO expenses (user_id, amount, reason) VALUES (%s, %s, %s) "
+                "RETURNING id, amount, reason, created_at",
+                (user["id"], amount, reason))
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return True, {"id": row[0], "amount": float(row[1]), "reason": row[2],
+                  "created_at": row[3]}
+
+
+def _pwa_api_expenses_list(user, scope="today", limit=150):
+    """📋 قائمة المصروفات + الإجماليات — اليوم/هذا الشهر/الكل."""
+    if not _pwa_perm_map(user["role"])["expenses"]:
+        return None
+    scope = scope if scope in ("today", "month", "all") else "today"
+    try:
+        limit = max(1, min(int(limit or 150), 300))
+    except (TypeError, ValueError):
+        limit = 150
+    where = {
+        "today": "e.created_at >= date_trunc('day', NOW())",
+        "month": "e.created_at >= date_trunc('month', NOW())",
+        "all":   "TRUE",
+    }[scope]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT e.id, e.amount, e.reason, e.created_at, e.user_id, "
+                "(e.user_id = %s) AS mine, "
+                "COALESCE(u.display_name, u.first_name, u.username, "
+                "'#' || u.telegram_id::text) AS user_name "
+                "FROM expenses e LEFT JOIN users u ON u.id = e.user_id "
+                "WHERE " + where + " ORDER BY e.created_at DESC, e.id DESC LIMIT %s",
+                (user["id"], limit))
+            rows = cur.fetchall()
+            cur.execute("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE " + where.replace("e.", ""))
+            total = float(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COALESCE(SUM(amount), 0) FROM expenses "
+                        "WHERE created_at >= date_trunc('day', NOW())")
+            today_total = float(cur.fetchone()[0] or 0)
+    finally:
+        release_connection(conn)
+    return {"ok": True, "scope": scope, "total": total, "today_total": today_total,
+            "items": [dict(r) for r in rows]}
+
+
+def _pwa_api_expenses_del(user, exp_id):
+    """🗑 حذف مصروف: صاحبه نفسه أو المدراء فقط — مع كشف الحالة للمطالبات."""
+    if not _pwa_perm_map(user["role"])["expenses"]:
+        return None
+    try:
+        exp_id = int(exp_id)
+    except (TypeError, ValueError):
+        return False, "معرّف غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id FROM expenses WHERE id = %s", (exp_id,))
+            row = cur.fetchone()
+            if not row:
+                return False, "المصروف غير موجود — قد يكون حُذف مسبقاً."
+            is_admin = user["role"] in (ROLE_ADMIN, ROLE_MANAGER)
+            if not is_admin and row[0] != user["id"]:
+                return False, "يمكنك حذف مصروفاتك أنت فقط."
+            cur.execute("DELETE FROM expenses WHERE id = %s", (exp_id,))
+        conn.commit()
+        return True, "تم حذف المصروف."
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+async def pwa_expenses_add_handler(request):
+    """v106: POST /api/expenses/add — {amount, reason?}."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    result = await _pwa_run(_pwa_api_expenses_add, user,
+                            body.get("amount"), body.get("reason"))
+    if result is None:
+        return _pwa_err(403, "المصروفات غير مفعّلة لفئتك — اطلبها من الإدارة.")
+    okk, payload = result
+    if not okk:
+        return _pwa_err(400, payload)
+    await _pwa_run(_audit_log, "expense_add", user,
+                   details="مصروف " + str(payload["amount"]) + " DA"
+                           + ((" — سبب: " + payload["reason"]) if payload["reason"] else ""),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "expense": payload})
+
+
+async def pwa_expenses_list_handler(request):
+    """v106: GET /api/expenses/list?scope=today|month|all&limit=N."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    data = await _pwa_run(_pwa_api_expenses_list, user,
+                          request.query.get("scope", "today"),
+                          request.query.get("limit"))
+    if data is None:
+        return _pwa_err(403, "المصروفات غير مفعّلة لفئتك — اطلبها من الإدارة.")
+    return _pwa_jr(data)
+
+
+async def pwa_expenses_delete_handler(request):
+    """v106: POST /api/expenses/delete — {id} (صاحبه أو مدير)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    result = await _pwa_run(_pwa_api_expenses_del, user, body.get("id"))
+    if result is None:
+        return _pwa_err(403, "المصروفات غير مفعّلة لفئتك — اطلبها من الإدارة.")
+    okk, msg = result
+    if not okk:
+        return _pwa_err(400, msg)
+    await _pwa_run(_audit_log, "expense_del", user,
+                   details="حذف مصروف #" + str(body.get("id")),
+                   ip=request.remote or "؟")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
 async def pwa_swap_general_handler(request):
     """v103: استبدال عام بلا فاتورة — POST JSON {ret_id, ret_qty, new_id, new_qty}."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
@@ -22921,6 +23294,9 @@ def register_pwa_routes(app):
     app.router.add_post("/api/invoice/swap", pwa_invoice_swap_handler)   # v102: استبدال سلعة مباعة
     app.router.add_get("/api/swap/products", pwa_swap_products_handler)  # v103: بحث سلع للاستبدال العام
     app.router.add_post("/api/swap/general", pwa_swap_general_handler)   # v103: استبدال عام بلا فاتورة
+    app.router.add_post("/api/expenses/add", pwa_expenses_add_handler)         # v106: حفظ مصروف
+    app.router.add_get("/api/expenses/list", pwa_expenses_list_handler)        # v106: قائمة + إجماليات
+    app.router.add_post("/api/expenses/delete", pwa_expenses_delete_handler)   # v106: حذف (صاحبه أو مدير)
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
@@ -22971,7 +23347,8 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (89 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* ("
+                + str(len(app.router.resources())) + " مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
