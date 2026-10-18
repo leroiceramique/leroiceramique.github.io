@@ -11,6 +11,7 @@ import hashlib
 import threading
 import aiohttp
 from aiohttp import web
+from pwa import PWA_HTML, PWA_MANIFEST, PWA_ICON_SVG, PWA_SW, _get_dashboard_stats
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras
@@ -6920,18 +6921,47 @@ if __name__ == "__main__":
     _init_low_stock_ids()
     tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
+    # ── PWA routes (shared by both webhook & polling modes) ──
+    _bot_username = os.getenv("BOT_USERNAME", "")
+
+    async def pwa_index(request):
+        html_content = PWA_HTML.replace("__BOT_USERNAME__", _bot_username)
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def pwa_manifest(request):
+        return web.Response(text=PWA_MANIFEST, content_type="application/json")
+
+    async def pwa_icon(request):
+        return web.Response(text=PWA_ICON_SVG, content_type="image/svg+xml")
+
+    async def pwa_sw(request):
+        return web.Response(text=PWA_SW, content_type="application/javascript")
+
+    async def pwa_stats(request):
+        stats = await asyncio.to_thread(_get_dashboard_stats, get_connection, release_connection)
+        return web.Response(text=json.dumps(stats, ensure_ascii=False), content_type="application/json")
+
+    async def health(request):
+        qcount = get_offline_queue_count()
+        status = "degraded" if qcount > 0 else "ok"
+        return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
+
+    def _add_pwa_routes(app):
+        """Add PWA + health routes to an aiohttp Application."""
+        app.router.add_get("/", pwa_index)
+        app.router.add_get("/health", health)
+        app.router.add_get("/manifest.json", pwa_manifest)
+        app.router.add_get("/icon.svg", pwa_icon)
+        app.router.add_get("/sw.js", pwa_sw)
+        app.router.add_get("/api/stats", pwa_stats)
+
     if WEBHOOK_URL:
         port = render_port or 10000
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
         webhook_app = web.Application()
-        async def health(request):
-            qcount = get_offline_queue_count()
-            status = "degraded" if qcount > 0 else "ok"
-            return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
-        webhook_app.router.add_get("/health", health)
-        webhook_app.router.add_get("/", health)
+        _add_pwa_routes(webhook_app)
         tg_app.run_webhook(
             webhook_path=webhook_path, url=url, port=port,
             drop_pending_updates=True, webhook_app=webhook_app)
@@ -6939,12 +6969,7 @@ if __name__ == "__main__":
         print("[BOT] Offline retry task started (webhook)")
     elif render_port:
         health_app = web.Application()
-        async def health(request):
-            qcount = get_offline_queue_count()
-            status = "degraded" if qcount > 0 else "ok"
-            return web.Response(text='{"status":"' + status + '","pending_ops":' + str(qcount) + '}', content_type="application/json")
-        health_app.router.add_get("/health", health)
-        health_app.router.add_get("/", health)
+        _add_pwa_routes(health_app)
         async def on_startup(aio_app):
             await tg_app.initialize()
             await tg_app.start()
@@ -6960,7 +6985,7 @@ if __name__ == "__main__":
             print("[BOT] Weekly report scheduler enabled")
             print("[BOT] Offline retry task started")
             print("[BOT] Daily auto-backup enabled (midnight Algeria time)")
-            print("[BOT] Polling + health + keep-alive on port " + str(render_port))
+            print("[BOT] Polling + PWA + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
             await tg_app.updater.stop()
             await tg_app.stop()
