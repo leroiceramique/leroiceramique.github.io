@@ -635,9 +635,17 @@ def init_db():
                     ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
-                ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('admin', 'customer', 'pending'));
-                ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
+                -- Fix any rows with invalid role values before adding constraint
+                UPDATE users SET role = 'pending' WHERE role NOT IN ('admin', 'customer', 'pending');
+                DO $$ BEGIN
+                    ALTER TABLE users ADD CONSTRAINT users_role_check
+                        CHECK (role IN ('admin', 'customer', 'pending'));
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                DO $$ BEGIN
+                    ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: add can_extract column
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
@@ -653,8 +661,12 @@ def init_db():
                     ALTER TABLE incoming_orders DROP CONSTRAINT IF EXISTS incoming_orders_status_check;
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
-                ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_status_check
-                    CHECK (status IN ('pending', 'received', 'completed'));
+                UPDATE incoming_orders SET status = 'pending' WHERE status NOT IN ('pending', 'received', 'completed');
+                DO $$ BEGIN
+                    ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_status_check
+                        CHECK (status IN ('pending', 'received', 'completed'));
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: add photo_file_id column for receipt photos
                 DO $$ BEGIN
                     ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS photo_file_id TEXT;
