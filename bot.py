@@ -32,7 +32,7 @@ from telegram.ext import (
 )
 
 # ═══════════════════════════════════════════════════════════
-#  BRAND THEME — LE ROI DE LA CÉRAMIQUE (v88: الشعار خارج الملف)
+#  BRAND THEME — LE ROI DE LA CÉRAMIQUE (v120: الشعار خارج الملف)
 #  سابقاً كان الشعار مضمّناً base64 داخل bot.py (~570KB تضخم الملف).
 #  الآن: يُحمَّل مرة واحدة من الرابط (بذرة) ويُخزَّن في قاعدة Neon
 #  (جدول app_assets) — القاعدة هي المصدر الدائم بعدها، والرابط لا
@@ -368,9 +368,9 @@ OWNER_IDS: list = [
 if not OWNER_IDS:
     OWNER_IDS = [ADMIN_IDS[0]]
 
-# v113: حُذف RESET_STOCK_PIN نهائياً بطلب يوسف («نعم احذفه») — كان معرّفاً
-# بلا أي استخدام في كل الكود منذ القاعدة الأصلية (مفتاح بلا باب) وتحذير
-# إقلاعه كان يضيع اللوج بملاحظة أمان بلا موضوع.
+# ── Security codes: من الأفضل أن تُضبط عبر متغيرات البيئة في الإنتاج ──
+# القيم الافتراضية محفوظة للتوافق مع النشر الحالي فقط.
+RESET_STOCK_PIN = os.getenv("RESET_STOCK_PIN", "5614")
 
 _previously_low_stock = {}  # {product_id: product_dict}
 
@@ -915,14 +915,6 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     PRIMARY KEY (role, perm)
 );
 
-CREATE TABLE IF NOT EXISTS user_permissions (
-    telegram_id BIGINT      NOT NULL,
-    perm        VARCHAR(60) NOT NULL,
-    state       SMALLINT    NOT NULL DEFAULT 1,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (telegram_id, perm)
-);
-
 CREATE TABLE IF NOT EXISTS invoices (
     id              SERIAL PRIMARY KEY,
     customer_name   VARCHAR(500) NOT NULL,
@@ -1005,173 +997,6 @@ CREATE TABLE IF NOT EXISTS app_assets (
 """
 
 
-def _apply_role_constraint(cur):
-    """v106: قيد دور users الذي لا يُسقط الإقلاع أبدًا.
-    الجذر (بلاغ نشر Render الفعلي): إضافة CHECK (role IN (...)) ثابتة على قاعدة
-    فيها صفوف بأدوار خارج القائمة ترفع CheckViolation وتموت التهيئة كلها
-    (users_role_check violated by some row) فيخرج البوت بـ status 1.
-    الحل: قائمة القيد = الأدوار القياسية + كل القيم الموجودة فعلًا في الجدول
-    (اتحاد ديناميكي) — فلا يمكن لأي صف موجود أن يخالف القيد مهما كانت قيمه،
-    ولا تُمس أي بيانات (الأدوار القديمة تبقى كما هي وتظهر في اللوج).
-    وفوق ذلك: SAVEPOINT يحيط بالعملية وأي فشل غير متوقع يُسجّل ويُتجاوز
-    بدل إسقاط init_db كلها — القيد دفاع إضافي والكود يتحقق من الأدوار أصلًا."""
-    try:
-        cur.execute("SAVEPOINT users_role_check_sp")
-        cur.execute("SELECT DISTINCT role FROM users WHERE role IS NOT NULL")
-        existing = [str(r[0]) for r in cur.fetchall() if r and r[0]]
-        standard = [ROLE_ADMIN, ROLE_MANAGER, ROLE_STOCK, ROLE_SELLER,
-                    ROLE_EXTERNAL, ROLE_CUSTOMER, ROLE_PENDING]
-        all_roles = list(dict.fromkeys(standard + existing))
-        role_sql = ", ".join("'" + r.replace("'", "''") + "'" for r in all_roles)
-        cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
-        cur.execute("ALTER TABLE users ADD CONSTRAINT users_role_check "
-                    "CHECK (role IN (" + role_sql + "))")
-        cur.execute("RELEASE SAVEPOINT users_role_check_sp")
-        extra = [r for r in all_roles if r not in standard]
-        if extra:
-            logging.warning("[DB][v106] users_role_check وسّع ليشمل أدوارًا قديمة موجودة: "
-                            + ", ".join(extra))
-    except Exception as rc_err:
-        try:
-            cur.execute("ROLLBACK TO SAVEPOINT users_role_check_sp")
-        except Exception:
-            pass
-        try:
-            logging.warning("[DB][v106] users_role_check تخطّي والإقلاع مستمر: " + str(rc_err))
-        except Exception:
-            pass
-
-
-# ═══════════════════════════════════════════════════════════
-#  v108: حصن الإقلاع — لا يمكن لأي فشل في تهيئة المخطط أن يقتل العملية.
-#  الجذر (لوجا Render الفعليان): users_role_check ثم «column "spent_at"
-#  does not exist» — عبارة سامة واحدة داخل try ينتهي بـ raise = خروج 1.
-#  الطبقات: قاطع عبارة-عبارة واعٍ بـ $$ والسلاسل والتعليقات + SAVEPOINT
-#  عازل لكل عبارة/كتلة (فشلها يُسجَّل ويُتجاوز) + صفر raise في النهاية.
-# ═══════════════════════════════════════════════════════════
-
-from contextlib import contextmanager as _cm108
-
-
-def _split_sql_statements(sql):
-    """v108: يقسم دفعة SQL إلى عبارات منفصلة بأمان تام.
-    أجسام DO $$ ... $$ وأي وسوم $tag$ لا تُقسم من داخلها مهما بلغت الفواصل،
-    والسلاسل '...' (بتهريب '') وتعليقات -- و /* */ كلها محترمة.
-    يعيد قائمة عبارات غير فارغة (التعليقي الخالص يُهمل)."""
-    stmts, buf = [], []
-    i, n = 0, len(sql)
-    in_str = in_line = in_block = False
-    dollar = None
-
-    def _flush():
-        text = "".join(buf).strip()
-        buf.clear()
-        if not text:
-            return
-        bare = re.sub(r"--[^\n]*", "", text)
-        bare = re.sub(r"/\*.*?\*/", "", bare, flags=re.S)
-        if bare.strip():
-            stmts.append(text)
-
-    while i < n:
-        c = sql[i]
-        nxt = sql[i + 1] if i + 1 < n else ""
-        if in_line:
-            buf.append(c)
-            if c == "\n":
-                in_line = False
-            i += 1
-        elif in_block:
-            if c == "*" and nxt == "/":
-                buf.append("*/")
-                i += 2
-                in_block = False
-            else:
-                buf.append(c)
-                i += 1
-        elif in_str:
-            buf.append(c)
-            if c == "'":
-                if nxt == "'":
-                    buf.append("'")
-                    i += 2
-                    continue
-                in_str = False
-            i += 1
-        elif dollar is not None:
-            if sql.startswith(dollar, i):
-                buf.append(dollar)
-                i += len(dollar)
-                dollar = None
-            else:
-                buf.append(c)
-                i += 1
-        elif c == "-" and nxt == "-":
-            in_line = True
-            buf.append("--")
-            i += 2
-        elif c == "/" and nxt == "*":
-            in_block = True
-            buf.append("/*")
-            i += 2
-        elif c == "'":
-            in_str = True
-            buf.append("'")
-            i += 1
-        elif c == "$":
-            _m = re.match(r"\$[A-Za-z0-9_]*\$", sql[i:])
-            if _m:
-                dollar = _m.group(0)
-                buf.append(dollar)
-                i += len(dollar)
-            else:
-                buf.append(c)
-                i += 1
-        elif c == ";":
-            _flush()
-            i += 1
-        else:
-            buf.append(c)
-            i += 1
-    _flush()
-    return stmts
-
-
-@_cm108
-def _safe_sp(cur, label=""):
-    """v108: سياق SAVEPOINT عازل — أي استثناء داخل كتلة with يُسجَّل ويُتراجع
-    عنها وحدها ويستمر التهيئة بعدها. لا يخرج استثناء من السياق أبداً."""
-    cur.execute("SAVEPOINT _v108_guard")
-    try:
-        yield
-        cur.execute("RELEASE SAVEPOINT _v108_guard")
-    except Exception as exc:
-        try:
-            cur.execute("ROLLBACK TO SAVEPOINT _v108_guard")
-            cur.execute("RELEASE SAVEPOINT _v108_guard")
-        except Exception:
-            pass
-        try:
-            logging.warning("[DB][v108] تخطّي «" + str(label) + "»: "
-                            + str(exc).split("\n")[0][:300])
-        except Exception:
-            pass
-
-
-def _safe_exec(cur, sql, label="", params=None):
-    """v108: تنفيذ عبارة واحدة داخل SAVEPOINT عازل.
-    True نجحت / False فشلت (بسجل تحذيري) — لا يمكن لأي عبارة أن تُسقط init_db."""
-    try:
-        with _safe_sp(cur, label):
-            if params is not None:
-                cur.execute(sql, params)
-            else:
-                cur.execute(sql)
-        return True
-    except Exception:
-        return False
-
-
 def init_db(conn=None):
     # v85: يقبل اتصالاً جاهزاً — لزرع المخطط أثناء تبديل القواعد مباشرة
     # بلا مرور بـ get_connection (يمنع أي حلقة قفل/فشل تبادلية).
@@ -1180,35 +1005,33 @@ def init_db(conn=None):
         conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # v108: زرع المخطط عبارةً-عبارة بعزل تام — العبارة السامة الوحيدة
-            # (جدول غربي بنفس الاسم، عمود ناقص، قيد قديم...) تُسجَّل وتُتخطى
-            # وتبقى كل العبارات الأخرى حية، فلا يمكن لأي شيء أن يميت التهيئة
-            # كلها كما حدث في انهيارَي نشر Render (role_check ثم spent_at).
-            for _si, _sstmt in enumerate(_split_sql_statements(SCHEMA_SQL), 1):
-                _safe_exec(cur, _sstmt, "SCHEMA#" + str(_si))
+            cur.execute(SCHEMA_SQL)
             # 🔐 زرع الصلاحيات الافتراضية للفئات (مرة واحدة فقط —
             # ON CONFLICT DO NOTHING يحمي تعديلات المدير اللاحقة)
-            with _safe_sp(cur, "بذور صلاحيات الفئات"):
-                for _seed_role, _seed_perms in ROLE_PERM_CATALOG.items():
-                    for _seed_perm in _seed_perms:
-                        cur.execute(
-                            "INSERT INTO role_permissions (role, perm, enabled) VALUES (%s, %s, TRUE) "
-                            "ON CONFLICT (role, perm) DO NOTHING",
-                            (_seed_role, _seed_perm),
-                        )
+            for _seed_role, _seed_perms in ROLE_PERM_CATALOG.items():
+                for _seed_perm in _seed_perms:
+                    cur.execute(
+                        "INSERT INTO role_permissions (role, perm, enabled) VALUES (%s, %s, TRUE) "
+                        "ON CONFLICT (role, perm) DO NOTHING",
+                        (_seed_role, _seed_perm),
+                    )
             # v20: تنظيف صف صلاحية unshipped من القاعدة (النظام أُزيل)
-            _safe_exec(cur, "DELETE FROM role_permissions WHERE perm = 'unshipped'",
-                       "تنظيف صلاحية unshipped")
+            cur.execute("DELETE FROM role_permissions WHERE perm = 'unshipped'")
             # Migration: add 'pending' role for existing databases
-            # v106: كان الـDROP محميًا داخل DO block بينما الـADD عاريًا خارجه —
-            # أي صف بأدوار قديمة/خارج القائمة كان يرفع CheckViolation على
-            # users_role_check ويُسقط الإقلاع كله (بلاغ نشر Render الفعلي).
-            _safe_exec(cur, "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending'",
-                       "الدور الافتراضي pending")
-            _apply_role_constraint(cur)
-            # v108: دفعة الترحيلات الكبرى عبارةً-عبارة بنفس العزل — أجسام
-            # DO $$ الداخلية وسلاسل chr() والتعليقات كلها محترمة بالقاطع.
-            for _mi, _mstmt in enumerate(_split_sql_statements("""
+            cur.execute("""\n                DO $$ BEGIN
+                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                UPDATE users SET role = 'pending' WHERE role NOT IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer', 'pending');
+                DO $$ BEGIN
+                    ALTER TABLE users ADD CONSTRAINT users_role_check
+                        CHECK (role IN ('admin', 'manager', 'stock', 'seller', 'external', 'customer', 'pending'));
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+                DO $$ BEGIN
+                    ALTER TABLE users ALTER COLUMN role SET DEFAULT 'pending';
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
                 -- Migration: add can_extract column
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS can_extract BOOLEAN NOT NULL DEFAULT FALSE;
@@ -1225,13 +1048,12 @@ def init_db(conn=None):
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
                 -- Migration: update incoming_orders status to include 'received'
-                -- v106: الـADD انتقل داخل الحماية — صف بحالة خارج القائمة لا يقتل الإقلاع
                 DO $$ BEGIN
                     ALTER TABLE incoming_orders DROP CONSTRAINT IF EXISTS incoming_orders_status_check;
-                    ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_status_check
-                        CHECK (status IN ('pending', 'received', 'completed'));
                 EXCEPTION WHEN OTHERS THEN NULL;
                 END $$;
+                ALTER TABLE incoming_orders ADD CONSTRAINT incoming_orders_status_check
+                    CHECK (status IN ('pending', 'received', 'completed'));
                 -- Migration: add photo_file_id column for receipt photos
                 DO $$ BEGIN
                     ALTER TABLE incoming_orders ADD COLUMN IF NOT EXISTS photo_file_id TEXT;
@@ -1358,13 +1180,12 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
             -- Migration: add 'reconcile' type to transactions
-            -- v106: الـADD انتقل داخل الحماية — صف بنوع قديم لا يقتل الإقلاع
             DO $$ BEGIN
                 ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
-                ALTER TABLE transactions ADD CONSTRAINT transactions_type_check
-                    CHECK (type IN ('add', 'remove', 'reconcile'));
             EXCEPTION WHEN OTHERS THEN NULL;
             END $$;
+            ALTER TABLE transactions ADD CONSTRAINT transactions_type_check
+                CHECK (type IN ('add', 'remove', 'reconcile'));
             -- Migration: create pending_deliveries table
             CREATE TABLE IF NOT EXISTS pending_deliveries (
                 id            SERIAL PRIMARY KEY,
@@ -1390,127 +1211,53 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             INSERT INTO bot_updates (description) VALUES
             ('🔍 بحث تلقائي: اكتب أي اسم سلعة مباشرة وسيتم البحث تلقائياً' || chr(10) || chr(10) || '⚙️ تحسينات: زيادة سرعة الاستجابة وإصلاح مشكلة الاتصال')
             ON CONFLICT DO NOTHING;
-            """), 1):
-                _safe_exec(cur, _mstmt, "MIG#" + str(_mi))
+            """)
             # Migration: ensure all ADMIN_IDS users always get admin role
             if ADMIN_IDS:
-                _safe_exec(cur,
-                           "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
-                           "ترقية ADMIN_IDS", (list(ADMIN_IDS),))
+                cur.execute(
+                    "UPDATE users SET role = 'admin' WHERE telegram_id = ANY(%s) AND role != 'admin'",
+                    (list(ADMIN_IDS),)
+                )
             # Migration: نظام الفئات — عمود الفئة المطلوبة + قيد الأدوار الكامل
             # (idempotent: يعمل بأمان على كل إقلاع، ويُصلح قيود القواعد القديمة)
-            # v108: كل ذلك داخل SAVEPOINT معزول — أي مفاجأة لا تُسقط التهيئة.
-            with _safe_sp(cur, "تهيئة requested_role وقيود الأدوار"):
-                cur.execute(
-                    "SELECT COUNT(*) FROM information_schema.columns "
-                    "WHERE table_name = 'users' AND column_name = 'requested_role'"
-                )
-                if cur.fetchone()[0] == 0:
-                    cur.execute("ALTER TABLE users ADD COLUMN requested_role VARCHAR(20)")
-                cur.execute(
-                    "SELECT conname FROM pg_constraint "
-                    "WHERE conrelid = 'users'::regclass AND contype = 'c' "
-                    "AND pg_get_constraintdef(oid) LIKE '%role%'"
-                )
-                for _role_con in cur.fetchall():
-                    _conname = str(_role_con[0]).replace('"', '')
-                    cur.execute('ALTER TABLE users DROP CONSTRAINT IF EXISTS "' + _conname + '"')
-            _apply_role_constraint(cur)   # v106: قيد ديناميكي لا يُسقط الإقلاع أبدًا
-            # v106/v108: جدول المصروفات — سبب اختياري والتاريخ والوقت محفوظان دائمًا.
-            # v108 الجذر الحقيقي لانهيار النشر الأخير (UndefinedColumn: spent_at):
-            # قاعدة الإنتاج تحمل جدول expenses غربياً (من مصدر خارجي/قاعدة مشتركة)
-            # بلا أعمدة النظام — CREATE TABLE IF NOT EXISTS لا يضيف أعمدة لجدول
-            # موجود، فالفهرس التالي على spent_at كان يرفع الخطأ ويُسقط init_db
-            # كلها عبر raise. الحل الدائم: زرع معزول + شفاء كل أعمدة النظام
-            # قبل أي فهرس — يعمل على القاعدة الجديدة والغريبة معاً بلا لمس بيانات.
-            _safe_exec(cur, """
-                CREATE TABLE IF NOT EXISTS expenses (
-                    id         BIGSERIAL PRIMARY KEY,
-                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-                    amount     NUMERIC(12,2) NOT NULL CHECK (amount > 0),
-                    reason     TEXT,
-                    spent_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """, "جدول المصروفات")
-            for _col_sql, _col_lbl in (
-                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS user_id INTEGER", "expenses.user_id"),
-                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS amount NUMERIC(12,2)", "expenses.amount"),
-                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reason TEXT", "expenses.reason"),
-                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS spent_at TIMESTAMPTZ", "expenses.spent_at"),
-                ("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ", "expenses.created_at"),
-            ):
-                _safe_exec(cur, _col_sql, "شفاء " + _col_lbl)
-            _safe_exec(cur,
-                       "CREATE INDEX IF NOT EXISTS idx_expenses_spent ON expenses (spent_at DESC)",
-                       "فهرس المصروفات الزمني")
-            try:
-                cur.execute("SELECT column_name FROM information_schema.columns "
-                            "WHERE table_name = 'expenses' ORDER BY ordinal_position")
-                logging.info("[DB][v108] أعمدة expenses الفعلية: "
-                             + ", ".join(str(r[0]) for r in cur.fetchall()))
-            except Exception:
-                pass
-            # v110: جدول المصروفات المملوك expenses_v2 — الجدول الغربي القديم
-            # لا يمكن الاعتماد عليه (id بلا افتراضي/قيد NOT NULL زائد/أنواع
-            # مخالفة/CHECK غريبة — كلها تبقى حية حتى بعد شفاء v108) — الزرع
-            # هنا عند الإقلاع، وعند أول طلب عبر _expenses_lazy_ready معاً.
-            try:
-                _expenses_ensure(cur=cur)
-                _expenses_migrate_legacy(conn, commit=False)
-            except Exception as _v110_exp_err:
-                logging.warning("[DB][v110] كتلة المصروفات المملوكة تخطيت بأمان: "
-                                + str(_v110_exp_err)[:200])
-            # v115: جدول مصانع السلع — قائمة يوسّعها مدير البوت والنظام
-            try:
-                _factories_ensure(cur=cur)
-            except Exception as _v115_fac_err:
-                logging.warning("[DB][v115] كتلة المصانع تخطيت بأمان: "
-                                + str(_v115_fac_err)[:200])
-            # v119: جداول عمال الرواتب والسلف — نفس النمط المعزول
-            try:
-                _workers_ensure(cur=cur)
-            except Exception as _v119_wk_err:
-                logging.warning("[DB][v119] كتلة عمال الرواتب تخطيت بأمان: "
-                                + str(_v119_wk_err)[:200])
-            # v117: جدول قياسات السلع — نفس بنية المصانع + قياسات المتجر الافتراضية
-            try:
-                _sizes_ensure(cur=cur)
-                _sizes_seed_if_empty(cur=cur)
-            except Exception as _v117_size_err:
-                logging.warning("[DB][v117] كتلة القياسات تخطيت بأمان: "
-                                + str(_v117_size_err)[:200])
-            # v118: قياسات لكل فئة — plante محصورة بقياساتها + حذف للإدارة.
-            # الزرع مرة واحدة في حياة القاعدة بحارس marker فلا تعود القياسات
-            # التي حذفها المدير عمداً بعد إقلاع جديد.
-            try:
-                _catsizes_ensure(cur=cur)
-                _catsizes_seed_once(cur=cur)
-            except Exception as _v118_cats_err:
-                logging.warning("[DB][v118] كتلة قياسات الفئات تخطيت بأمان: "
-                                + str(_v118_cats_err)[:200])
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_name = 'users' AND column_name = 'requested_role'"
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute("ALTER TABLE users ADD COLUMN requested_role VARCHAR(20)")
+            cur.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'users'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%role%'"
+            )
+            for _role_con in cur.fetchall():
+                _conname = str(_role_con[0]).replace('"', '')
+                cur.execute('ALTER TABLE users DROP CONSTRAINT IF EXISTS "' + _conname + '"')
+            cur.execute(
+                "ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN "
+                "('admin', 'manager', 'stock', 'seller', 'external', 'customer', 'pending'))"
+            )
             # Migration: de-duplicate usernames so the unique index below can be created safely.
             # Keep the newest row's username (max telegram_id row wins; the current holder of the
             # handle on Telegram), older duplicates get NULL and fall back to first_name display.
-            dedup_count = 0
-            with _safe_sp(cur, "إزالة تكرار أسماء المستخدمين"):
-                cur.execute("""
-                    UPDATE users u
-                    SET username = NULL
-                    WHERE u.username IS NOT NULL
-                      AND EXISTS (
-                          SELECT 1 FROM users v
-                          WHERE v.username IS NOT NULL
-                            AND LOWER(v.username) = LOWER(u.username)
-                            AND v.telegram_id > u.telegram_id
-                      )
-                      AND u.telegram_id <> COALESCE((
-                          SELECT MAX(v.telegram_id) FROM users v
-                          WHERE v.username IS NOT NULL
-                            AND LOWER(v.username) = LOWER(u.username)
-                      ), u.telegram_id)
-                """)
-                dedup_count = cur.rowcount
+            cur.execute("""
+                UPDATE users u
+                SET username = NULL
+                WHERE u.username IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM users v
+                      WHERE v.username IS NOT NULL
+                        AND LOWER(v.username) = LOWER(u.username)
+                        AND v.telegram_id > u.telegram_id
+                  )
+                  AND u.telegram_id <> COALESCE((
+                      SELECT MAX(v.telegram_id) FROM users v
+                      WHERE v.username IS NOT NULL
+                        AND LOWER(v.username) = LOWER(u.username)
+                  ), u.telegram_id)
+            """)
+            dedup_count = cur.rowcount
             # Hard guarantee: no two active accounts can ever hold the same username again.
             # Wrapped in a SAVEPOINT so a failure here never aborts the whole schema init.
             try:
@@ -1529,86 +1276,82 @@ CREATE TABLE IF NOT EXISTS bot_settings (
             # then enforce case-insensitive uniqueness going forward.
             # v81 حماية: عمود archived قد لا يكون موجوداً بعد على قاعدة جديدة —
             # إضافة idempotent رخيصة تضمن سلامة الدمج والشفاء أدناه في كل الأحوال.
-            _safe_exec(cur,
-                       "ALTER TABLE products ADD COLUMN IF NOT EXISTS archived "
-                       "BOOLEAN NOT NULL DEFAULT FALSE",
-                       "products.archived")
+            cur.execute(
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS archived "
+                "BOOLEAN NOT NULL DEFAULT FALSE"
+            )
             # v81: اختيار الباقي من كل مجموعة أسماء مكررة تغيّر جذرياً:
             # قديماً كان الأقدم (أصغر id) يبقى حتى لو كان محذوفاً — فتُحذف السلعة
             # الحية المسجلة حديثاً! ولا كان أي دمج للكميات (تضيع كمية المحذوف)،
             # ولا إعادة ربط للطلبات المعلقة (product_id يُصفَّر بالـ FK).
             # الآن: الحية أولاً ثم الأقدم، مع دمج كميات المكررات في الباقية،
             # وإعادة ربط كل الجداول المرجعية (حتى المعلقات) قبل الحذف.
-            # v108: الجراحة كلها داخل SAVEPOINT واحد — أي فشل يُتراجع عنها
-            # مجتمعةً ويستمر التهيئة، وصفر تأثير على بقية المخطط.
-            prod_dupes = 0
-            with _safe_sp(cur, "دمج السلع المكررة"):
+            cur.execute(
+                "CREATE TEMP TABLE _dup_keepers ON COMMIT DROP AS "
+                "SELECT DISTINCT ON (LOWER(name)) LOWER(name) AS lname, id AS keep_id "
+                "FROM products "
+                "WHERE LOWER(name) IN (SELECT LOWER(name) FROM products "
+                "GROUP BY LOWER(name) HAVING COUNT(*) > 1) "
+                "ORDER BY LOWER(name), archived ASC, id ASC"
+            )
+            _dup_remap_sql = """
+                UPDATE {table} t SET product_id = k.keep_id
+                FROM _dup_keepers k, products x
+                WHERE t.product_id = x.id
+                  AND LOWER(x.name) = k.lname AND x.id <> k.keep_id
+            """
+            for _t in ("transactions", "extraction_requests", "invoice_items",
+                       "pending_deliveries"):
+                cur.execute(_dup_remap_sql.format(table=_t))
+            if _unshipped_table_exists(cur):
+                cur.execute(_dup_remap_sql.format(table="unshipped_sales"))
+            cur.execute(
+                "UPDATE products p SET quantity = COALESCE(p.quantity, 0) + m.added "
+                "FROM (SELECT k.keep_id, SUM(COALESCE(x.quantity, 0)) AS added "
+                      "FROM _dup_keepers k, products x "
+                      "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id "
+                      "GROUP BY k.keep_id) m "
+                "WHERE p.id = m.keep_id AND m.added <> 0"
+            )
+            cur.execute(
+                "DELETE FROM products WHERE id IN ("
+                "SELECT x.id FROM products x, _dup_keepers k "
+                "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id)"
+            )
+            prod_dupes = cur.rowcount
+            cur.execute("DROP TABLE IF EXISTS _dup_keepers")
+            try:
+                cur.execute("SAVEPOINT products_name_uniq")
                 cur.execute(
-                    "CREATE TEMP TABLE _dup_keepers ON COMMIT DROP AS "
-                    "SELECT DISTINCT ON (LOWER(name)) LOWER(name) AS lname, id AS keep_id "
-                    "FROM products "
-                    "WHERE LOWER(name) IN (SELECT LOWER(name) FROM products "
-                    "GROUP BY LOWER(name) HAVING COUNT(*) > 1) "
-                    "ORDER BY LOWER(name), archived ASC, id ASC"
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_uniq "
+                    "ON products (LOWER(name))"
                 )
-                _dup_remap_sql = """
-                    UPDATE {table} t SET product_id = k.keep_id
-                    FROM _dup_keepers k, products x
-                    WHERE t.product_id = x.id
-                      AND LOWER(x.name) = k.lname AND x.id <> k.keep_id
-                """
-                for _t in ("transactions", "extraction_requests", "invoice_items",
-                           "pending_deliveries"):
-                    cur.execute(_dup_remap_sql.format(table=_t))
-                if _unshipped_table_exists(cur):
-                    cur.execute(_dup_remap_sql.format(table="unshipped_sales"))
-                cur.execute(
-                    "UPDATE products p SET quantity = COALESCE(p.quantity, 0) + m.added "
-                    "FROM (SELECT k.keep_id, SUM(COALESCE(x.quantity, 0)) AS added "
-                          "FROM _dup_keepers k, products x "
-                          "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id "
-                          "GROUP BY k.keep_id) m "
-                    "WHERE p.id = m.keep_id AND m.added <> 0"
-                )
-                cur.execute(
-                    "DELETE FROM products WHERE id IN ("
-                    "SELECT x.id FROM products x, _dup_keepers k "
-                    "WHERE LOWER(x.name) = k.lname AND x.id <> k.keep_id)"
-                )
-                prod_dupes = cur.rowcount
-                cur.execute("DROP TABLE IF EXISTS _dup_keepers")
-                try:
-                    cur.execute("SAVEPOINT products_name_uniq")
-                    cur.execute(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_uniq "
-                        "ON products (LOWER(name))"
-                    )
-                    cur.execute("RELEASE SAVEPOINT products_name_uniq")
-                except Exception as idx_err:
-                    cur.execute("ROLLBACK TO SAVEPOINT products_name_uniq")
-                    logging.warning("[DB] product name unique index deferred: " + str(idx_err))
+                cur.execute("RELEASE SAVEPOINT products_name_uniq")
+            except Exception as idx_err:
+                cur.execute("ROLLBACK TO SAVEPOINT products_name_uniq")
+                logging.warning("[DB] product name unique index deferred: " + str(idx_err))
 
             # Migration (legacy DBs): stop accidental data loss on product deletion.
             # - transactions history must NOT vanish with the product.
             # - invoice_items keeps billing rows alive with a detached product reference.
             # Constraint names follow PostgreSQL defaults (table_col_fkey), each guarded
             # in its own DO block so one legacy oddity never breaks initialization.
-            _safe_exec(cur, """
+            cur.execute("""
                 DO $$ BEGIN
                     ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_product_id_fkey;
                     ALTER TABLE transactions
                         ADD CONSTRAINT transactions_product_id_fkey
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT;
                 EXCEPTION WHEN OTHERS THEN NULL; END $$;
-            """, "قيد transactions→products")
-            _safe_exec(cur, """
+            """)
+            cur.execute("""
                 DO $$ BEGIN
                     ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_product_id_fkey;
                     ALTER TABLE invoice_items
                         ADD CONSTRAINT invoice_items_product_id_fkey
                         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
                 EXCEPTION WHEN OTHERS THEN NULL; END $$;
-            """, "قيد invoice_items→products")
+            """)
             # v81: شفاء السلع «المختفية» — أي سلعة محذوفة ما زالت تحمل كمية تعود
             # للحياة تلقائياً عند الإقلاع. الجذر: الكمية كانت تُطعَم صامتة في سلعة
             # محذوفة (تليغرام/الطابور) فتبدو السلعة مسجلة ومختفية من كل القوائم.
@@ -1655,16 +1398,10 @@ CREATE TABLE IF NOT EXISTS bot_settings (
         if prod_dupes:
             print("[DB] Merged " + str(prod_dupes) + " duplicate product(s).")
         print("[DB] Schema initialized successfully.")
-        return True
     except Exception as e:
-        # v108: لا raise مهما حدث — فشل التهيئة لا يقتل الإقلاع أبداً؛
-        # حلقة الإقلاع الخلفية تعيد المحاولة كل 60ث حتى النجاح.
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        print("[DB] Schema init failed (الإقلاع مستمر — إعادة محاولة كل 60ث): " + str(e))
-        return False
+        conn.rollback()
+        print("[DB] Schema init failed: " + str(e))
+        raise
     finally:
         if owned:
             release_connection(conn)
@@ -2726,6 +2463,91 @@ def get_all_products():
 #  TRANSACTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
+# ── Expense Functions ──
+
+def add_expense(amount, reason, user_id):
+    """Add a new expense record."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "INSERT INTO expenses (amount, reason, user_id) VALUES (%s, %s, %s) RETURNING id, amount, reason, created_at",
+                (amount, reason, user_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def get_expenses(limit=50, offset=0):
+    """Get expenses ordered by date desc."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT e.id, e.amount, e.reason, e.created_at,
+                       u.username AS operator_name, u.first_name AS operator_fname
+                FROM expenses e
+                LEFT JOIN users u ON u.id = e.user_id
+                ORDER BY e.created_at DESC
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
+            rows = cur.fetchall()
+        conn.commit()
+        return [dict(r) for r in rows]
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def get_expenses_today():
+    """Get today's expenses with total."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT e.id, e.amount, e.reason, e.created_at,
+                       u.username AS operator_name, u.first_name AS operator_fname
+                FROM expenses e
+                LEFT JOIN users u ON u.id = e.user_id
+                WHERE e.created_at >= CURRENT_DATE
+                ORDER BY e.created_at DESC
+            """)
+            rows = cur.fetchall()
+            cur.execute("SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE created_at >= CURRENT_DATE")
+            total = cur.fetchone()[0]
+        conn.commit()
+        return [dict(r) for r in rows], float(total)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
+def delete_expense(expense_id, user_id):
+    """Delete an expense (only by the user who created it or admin)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM expenses WHERE id = %s RETURNING id", (expense_id,))
+            deleted = cur.fetchone() is not None
+        conn.commit()
+        return deleted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def log_transaction(product_id, transaction_type, quantity, user_id, reason=None):
     conn = get_connection()
     try:
@@ -2799,7 +2621,6 @@ def delete_transaction(tx_id, admin_tid):
                     cur.execute(
                         "SELECT id, pending_qty FROM pending_deliveries "
                         "WHERE user_id = %s AND product_id = %s AND pending_qty > 0 "
-                        "AND NOT COALESCE(dismissed, FALSE) "
                         "ORDER BY created_at DESC LIMIT 1",
                         (tx["user_id"], tx["product_id"]),
                     )
@@ -2890,7 +2711,6 @@ def auto_reconcile_product(product_id, added_qty=0, admin_user_id=None):
                 "FROM pending_deliveries pd "
                 "LEFT JOIN users u ON u.id = pd.user_id "
                 "WHERE pd.product_id = %s AND pd.pending_qty > 0 "
-                "AND NOT COALESCE(pd.dismissed, FALSE) "
                 "ORDER BY pd.created_at ASC",
                 (product_id,),
             )
@@ -3167,7 +2987,7 @@ def get_all_pending_deliveries():
                 "FROM pending_deliveries pd "
                 "JOIN products p ON p.id = pd.product_id "
                 "LEFT JOIN users u ON u.id = pd.user_id "
-                "WHERE pd.pending_qty > 0 AND NOT COALESCE(pd.dismissed, FALSE) "
+                "WHERE pd.pending_qty > 0 "
                 "ORDER BY p.name ASC, pd.created_at ASC"
             )
             rows = [dict(r) for r in cur.fetchall()]
@@ -3190,7 +3010,7 @@ def get_user_pending_deliveries(user_db_id):
                 "p.name AS product_name, p.quantity AS product_qty "
                 "FROM pending_deliveries pd "
                 "JOIN products p ON p.id = pd.product_id "
-                "WHERE pd.user_id = %s AND pd.pending_qty > 0 AND NOT COALESCE(pd.dismissed, FALSE) "
+                "WHERE pd.user_id = %s AND pd.pending_qty > 0 "
                 "ORDER BY pd.created_at DESC",
                 (user_db_id,),
             )
@@ -3346,9 +3166,9 @@ STATE_ADMIN_REM_SEL = "waiting_admin_rem_sel"
 STATE_ADD_NAME_MOTIF = "waiting_add_name_motif"
 STATE_ADD_NAME_12060 = "waiting_add_name_12060"
 STATE_ADD_NAME_PLANTE = "waiting_add_name_plante"
-STATE_ADD_FACNEW = "waiting_add_facnew"   # v115: كتابة اسم مصنع جديد (مدراء فقط)
-STATE_ADD_SIZNEW = "waiting_add_siznew"   # v117: كتابة قياس جديد (مدراء فقط)
 STATE_ALERT_MSG = "waiting_alert_msg"
+STATE_EXPENSE_AMOUNT = "waiting_expense_amount"
+STATE_EXPENSE_REASON = "waiting_expense_reason"
 # v83: التنبيه عام + خاص — حالة اختيار النوع وحالة نص التنبيه الخاص
 STATE_ALERT_MODE = "waiting_alert_mode"
 STATE_ALERT_PRIV_MSG = "waiting_alert_priv_msg"
@@ -3388,6 +3208,7 @@ BTN_ALERT = "🔔 تنبيه"
 BTN_UPDATE = "📢 إشعار تحديث"
 BTN_LOW_STOCK = "📊 المخزون المنخفض"
 BTN_MOVEMENTS = "📋 الحركة"
+BTN_EXPENSES = "💰 المصروفات"
 BTN_INCOMING = "🚚 طلبات التوريد"
 BTN_INVOICE = "🧾 إنشاء فاتورة"
 BTN_SWAP = "🔄 استبدال سلعة"   # v102: تصحيح فاتورة مقبولة بعملية واحدة
@@ -3401,6 +3222,7 @@ BTN_CUST_ORDER = "📦 طلب توريد جديد"
 BTN_CUST_ORDER_LEGACY = "📦 طلب توريد"  # توافق لوحات الإصدار السابق
 BTN_CUST_MY_ORDERS = "📋 طلباتي"
 BTN_CUST_PENDING = "⏳ طلباتي المعلقة"
+BTN_CUST_EXPENSES = "💸 مصروفاتي"
 BTN_PENDING_ADMIN = "🔴 الطلبات المعلقة"
 BTN_OIL = "🔧 زيت الرافعة"
 
@@ -3458,8 +3280,6 @@ PERM_ADD_PRODUCT  = "add_product"   # 📦 إضافة سلعة
 PERM_EDIT_PRODUCT = "edit_product"  # ✏️ تعديل سلعة
 PERM_LOW_STOCK    = "low_stock"     # 📊 المخزون المنخفض
 PERM_PENDING      = "pending"       # 🔴 الطلبات المعلقة
-PERM_EXPENSES     = "expenses"      # 💰 المصروفات (v106)
-PERM_USERS        = "users"         # ⚙️ نظام المستخدمين (v107 — تُمنح لكل مستخدم على حدة)
 
 PERM_LABELS = {
     PERM_SEARCH:       "🔍 البحث",
@@ -3473,17 +3293,14 @@ PERM_LABELS = {
     PERM_EDIT_PRODUCT: "✏️ تعديل سلعة",
     PERM_LOW_STOCK:    "📊 المخزون المنخفض",
     PERM_PENDING:      "🔴 الطلبات المعلقة",
-    PERM_EXPENSES:     "💰 المصروفات",
-    PERM_USERS:        "⚙️ نظام المستخدمين",
 }
 
 # الصلاحيات القابلة للإدارة لكل فئة (= الافتراضي المفعّل عند أول تشغيل)
 ROLE_PERM_CATALOG = {
     ROLE_SELLER: (PERM_SEARCH, PERM_ADD_QTY, PERM_REMOVE, PERM_INVOICE,
-                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS,
-                  PERM_EXPENSES),
+                  PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS),
     ROLE_STOCK:  (PERM_ADD_QTY, PERM_ADD_PRODUCT, PERM_REMOVE, PERM_EDIT_PRODUCT,
-                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING, PERM_EXPENSES),
+                  PERM_MOVEMENTS, PERM_LOW_STOCK, PERM_PENDING),
     ROLE_EXTERNAL: (PERM_SEARCH,),
 }
 
@@ -3590,168 +3407,7 @@ def set_role_perm(role, perm, enabled):
     _ROLE_PERM_CACHE.clear()
 
 
-# ═══════════════════════════════════════════════════════════
-#  🎛️ v107: صلاحيات لكل مستخدم على حدة — PER-USER PERMISSIONS
-#  طبقة فوق صلاحيات الفئات: الإدارة تختار لكل مستخدم ماذا يرى
-#  وفيما يتحكم حتى لو كانت فئته «مدير نظام» (باستثناء الحسابات
-#  المحمية ADMIN_IDS/OWNER_IDS فهي كاملة دائماً لا تُمس).
-#  في القاعدة: state = 1 مفعّلة دائماً / 0 موقفة دائماً / وغياب
-#  الصف = يتبع فئته (السلوك الحالي حرفياً — صفر كسر للبقية).
-#  الإدارة من لوحة المستخدمين في البوت (زر 🎛️ صلاحياته) ومن
-#  التطبيق (بطاقة المستخدم → 🎛️ صلاحياته) — المنصتان على النواة نفسها.
-# ═══════════════════════════════════════════════════════════
-_USER_PERM_CACHE = {}
-_USER_PERM_TTL = 30.0
-
-
-def _load_user_perm_states(telegram_id):
-    """يقرأ تجاوزات مستخدم من القاعدة — None عند أي فشل (فيتبع الفئة)."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT perm, state FROM user_permissions WHERE telegram_id = %s",
-                            (telegram_id,))
-                rows = cur.fetchall()
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            return None
-        finally:
-            release_connection(conn)
-    except Exception:
-        return None
-    return {r[0]: int(r[1]) for r in rows if r[0] in PERM_LABELS}
-
-
-def get_user_perm_states(telegram_id):
-    """تجاوزات المستخدم الصريحة فقط (غياب الصف = تتبع الفئة). كاش 30 ثانية."""
-    if telegram_id is None:
-        return {}
-    now = time.monotonic()
-    _hit = _USER_PERM_CACHE.get(telegram_id)
-    if _hit and _hit[0] > now:
-        return _hit[1]
-    states = _load_user_perm_states(telegram_id) or {}
-    _USER_PERM_CACHE[telegram_id] = (now + _USER_PERM_TTL, states)
-    return states
-
-
-def set_user_perm_state(telegram_id, perm, state):
-    """ضبط تجاوز صلاحية مستخدم: 1 مفعّلة / 0 موقفة / None حذف التجاوز (تتبع الفئة)."""
-    if perm not in PERM_LABELS:
-        raise ValueError("صلاحية غير معروفة: " + str(perm))
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            if state is None:
-                cur.execute("DELETE FROM user_permissions WHERE telegram_id = %s AND perm = %s",
-                            (telegram_id, perm))
-            else:
-                cur.execute(
-                    "INSERT INTO user_permissions (telegram_id, perm, state, updated_at) "
-                    "VALUES (%s, %s, %s, NOW()) "
-                    "ON CONFLICT (telegram_id, perm) DO UPDATE "
-                    "SET state = EXCLUDED.state, updated_at = NOW()",
-                    (telegram_id, perm, 1 if state else 0))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-    _USER_PERM_CACHE.pop(telegram_id, None)
-
-
-def clear_user_perms(telegram_id):
-    """إعادة ضبط كل تجاوزات مستخدم — يعود لتتبع فئته بالكامل. يعيد عدد الصفوف."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_permissions WHERE telegram_id = %s", (telegram_id,))
-            _n = cur.rowcount
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-    _USER_PERM_CACHE.pop(telegram_id, None)
-    return _n
-
-
-def user_perm_enabled(telegram_id, role, perm):
-    """الحكم الفعلي النهائي لأي صلاحية في المنصتين (v107):
-    الحسابات المحمية → كل شيء دائماً؛ التجاوز الصريح للمستخدم → هو الحاكم؛
-    وإلا يتبع الفئة (المدير/مدير البوت كامل، والبقية من مصفوفة فئتهم)."""
-    if perm not in PERM_LABELS:
-        return False
-    if telegram_id is not None and _protected_account(telegram_id):
-        return True
-    _st = get_user_perm_states(telegram_id).get(perm)
-    if _st is not None:
-        return bool(_st)
-    return role_perm_enabled(role, perm)
-
-
-def _can_manage_users(telegram_id):
-    """⚙️ بوابة نظام المستخدمين: الإداريون بالفئة أو من أُعطيه صلاحية المستخدمين."""
-    if telegram_id is None:
-        return False
-    if is_admin(telegram_id):
-        return True
-    try:
-        _u = get_user(telegram_id)
-        _role = (_u or {}).get("role") or ROLE_PENDING
-    except Exception:
-        return False
-    return user_perm_enabled(telegram_id, _role, PERM_USERS)
-
-
-# ترتيب مصفوفة الصلاحيات المعروضة لكل مستخدم (13 صلاحية)
-UPERM_MATRIX = (PERM_SEARCH, PERM_ADD_QTY, PERM_REMOVE, PERM_INVOICE,
-                PERM_SUPPLY_ORDER, PERM_MY_ORDERS, PERM_MOVEMENTS,
-                PERM_ADD_PRODUCT, PERM_EDIT_PRODUCT, PERM_LOW_STOCK,
-                PERM_PENDING, PERM_EXPENSES, PERM_USERS)
-
-# خريطة أزرار لوحة الإدارة النصية → الصلاحية الحاكمة (لإخفاء الوحدات الموقوفة)
-_ADMIN_BTN_PERM_MAP = {
-    BTN_ADD:           PERM_ADD_PRODUCT,
-    BTN_ADD_QTY:       PERM_ADD_QTY,
-    BTN_REMOVE_QTY:    PERM_REMOVE,
-    BTN_EDIT:          PERM_EDIT_PRODUCT,
-    BTN_DELETE:        PERM_EDIT_PRODUCT,
-    BTN_USERS:         PERM_USERS,
-    BTN_LOW_STOCK:     PERM_LOW_STOCK,
-    BTN_MOVEMENTS:     PERM_MOVEMENTS,
-    BTN_INCOMING:      PERM_SUPPLY_ORDER,
-    BTN_INVOICE:       PERM_INVOICE,
-    BTN_SWAP:          PERM_INVOICE,
-    BTN_PENDING_ADMIN: PERM_PENDING,
-}
-
-
-def _admin_btn_allowed(user_id, label):
-    """هل يُعرض هذا الزر الإداري على هذا المستخدم (v107)؟
-    الحسابات المحمية ومن لا تجاوزات له: كل شيء كما كان (مسار سريع بلا قاعدة)."""
-    if user_id is None or _protected_account(user_id):
-        return True
-    try:
-        _role = _get_role(user_id)
-    except Exception:
-        return True
-    if _role not in (ROLE_ADMIN, ROLE_MANAGER):
-        return True   # الفئات الأخرى لها بواباتها الخاصة في مكانها
-    if not get_user_perm_states(user_id):
-        return True   # لا تجاوزات صريحة → سلوك المدير الكامل كما هو
-    _base = str(label).split(" (")[0].strip()
-    _perm = _ADMIN_BTN_PERM_MAP.get(_base)
-    if _perm is None:
-        return True   # أزرار بلا وحدة مرتبطة (نسخ احتياطي/تنبيه/تحديث/صلاحيات الفئات)
-    return user_perm_enabled(user_id, _role, _perm)
-
-
-def _btn_perm_ok(role, text, uid=None):
+def _btn_perm_ok(role, text):
     """هل يُسمح لهذه الفئة بهذا الزر (نصاً)؟ يُستخدم في بوابات الفئات.
     دلالة قائمة السماح الصارمة لكل فئة (ROLE_BTN_PERM_MAP): أزرار لوحتها
     تُحكم بصلاحياتها، أي زر معروف خارج خريطة فئتها = مرفوض لها،
@@ -3768,9 +3424,7 @@ def _btn_perm_ok(role, text, uid=None):
             _perm = PERM_PENDING
     if _perm is None:
         return False  # زر معروف خارج لوحة الفئة → مرفوض
-    # v107: التجاوز الصريح للمستخدم هو الحاكم قبل مصفوفة الفئة
-    return (user_perm_enabled(uid, role, _perm) if uid is not None
-            else role_perm_enabled(role, _perm))
+    return role_perm_enabled(role, _perm)
 
 
 def _perms_roles_keyboard():
@@ -3848,107 +3502,6 @@ async def callback_perms_handler(update, context):
         except Exception:
             pass
         return
-
-
-def _uperm_state_mark(state):
-    return "✅" if state == 1 else ("❌" if state == 0 else "↔️")
-
-
-def _uperm_target_label(tu, tid):
-    if tu:
-        return (tu.get("first_name")
-                or ("@" + tu["username"] if tu.get("username") else str(tid)))
-    return str(tid)
-
-
-def _uperm_panel_text(tu, tid):
-    rl = ROLE_LABELS.get((tu or {}).get("role"), (tu or {}).get("role") or "؟")
-    return ("🎛️ صلاحيات خاصة: " + _uperm_target_label(tu, tid) + chr(10)
-            + "الفئة: " + rl + chr(10) + chr(10)
-            + "↔️ يتبع فئته • ✅ مفعّلة دائماً • ❌ موقفة دائماً" + chr(10)
-            + "اضغط أي صلاحية لتبديل حالتها — التغيير يسري في البوت فوراً "
-              "وفي التطبيق خلال دقيقة كحد أقصى.")
-
-
-def _uperm_panel_keyboard(tid):
-    """🎛️ لوحة صلاحيات مستخدم محدد: ↔️ يتبع فئته / ✅ مفعّلة دائماً / ❌ موقفة."""
-    states = get_user_perm_states(tid)
-    rows = []
-    for _p in UPERM_MATRIX:
-        _st = states.get(_p)
-        rows.append([InlineKeyboardButton(
-            _uperm_state_mark(_st) + " " + PERM_LABELS.get(_p, _p),
-            callback_data="upt_" + str(tid) + "_" + _p)])
-    rows.append([
-        InlineKeyboardButton("↩️ إعادة ضبط", callback_data="upr_" + str(tid)),
-        InlineKeyboardButton("✅ إغلاق", callback_data="upx_" + str(tid)),
-    ])
-    return InlineKeyboardMarkup(rows)
-
-
-async def callback_uperm_handler(update, context):
-    """🎛️ v107: مصفوفة صلاحيات مستخدم محدد — من لوحة المستخدمين.
-    uperm_<tid> فتح • upt_<tid>_<perm> تبديل (↔️→✅→❌→↔️) •
-    upr_<tid> إعادة ضبط • upx_<tid> إغلاق."""
-    query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا القسم لإدارة المستخدمين فقط.", show_alert=True)
-        return
-    data = query.data or ""
-    try:
-        if data.startswith("upt_"):
-            tid_s, _, perm = data[len("upt_"):].partition("_")
-            tid = int(tid_s)
-            if perm not in UPERM_MATRIX:
-                await query.answer("❌ صلاحية غير معروفة.", show_alert=True)
-                return
-            if _protected_account(tid):
-                await query.answer("🔒 حساب محمي — صلاحياته كاملة دائماً.", show_alert=True)
-                return
-            if tid == query.from_user.id:
-                await query.answer("❌ لا يمكنك تعديل صلاحياتك بنفسك.", show_alert=True)
-                return
-            _st = get_user_perm_states(tid).get(perm)
-            _new = 1 if _st is None else (0 if _st == 1 else None)
-            set_user_perm_state(tid, perm, _new)
-            await query.answer("✅ مفعّلة دائماً" if _new == 1 else
-                               ("⛔ موقفة دائماً" if _new == 0 else "↔️ عادت لتتبع الفئة"))
-        elif data.startswith("upr_"):
-            tid = int(data[len("upr_"):])
-            if _protected_account(tid):
-                await query.answer("🔒 حساب محمي.", show_alert=True)
-                return
-            clear_user_perms(tid)
-            await query.answer("↩️ عادت كل صلاحياته لتتبع الفئة")
-        elif data.startswith("uperm_"):
-            tid = int(data[len("uperm_"):])
-            if _protected_account(tid):
-                await query.answer("🛡 حساب محمي — صلاحياته كاملة دائماً.", show_alert=True)
-                return
-            await query.answer()
-        elif data.startswith("upx_"):
-            _KB_ROLE_UID.set(query.from_user.id)
-            await query.answer()
-            try:
-                await query.edit_message_text("✅ تم إغلاق لوحة الصلاحيات.")
-            except Exception:
-                pass
-            return
-        else:
-            return
-    except ValueError:
-        await query.answer("❌ طلب غير صالح.", show_alert=True)
-        return
-    try:
-        tu = get_user(tid)
-    except Exception:
-        tu = None
-    try:
-        await query.edit_message_text(
-            _uperm_panel_text(tu, tid),
-            reply_markup=_uperm_panel_keyboard(tid))
-    except Exception:
-        pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -4068,17 +3621,17 @@ async def _broadcast_add_notification(bot, product, qty, actor, reason="truck"):
     try:
         db_insert_notification("add",
             "🚚 وصول بضاعة جديدة" if reason == "truck" else "↩️ إرجاع سلعة من زبون",
-            "📦 " + pname + "\n➕ الكمية: " + str(qty), str(actor or ""), "bot")
+            "📦 " + pname + "\nالكمية: " + str(qty), str(actor or ""), "bot")
     except Exception:
         pass
     if reason == "truck":
         msg = ("🚚 وصول بضاعة جديدة!" + chr(10) + chr(10)
                + "📦 " + pname + chr(10)
-               + "➕ الكمية: " + str(qty))
+               + "الكمية: " + str(qty))
     else:
         msg = ("↩️ إرجاع سلعة من زبون" + chr(10) + chr(10)
                + "📦 " + pname + chr(10)
-               + "➕ الكمية: " + str(qty))
+               + "الكمية: " + str(qty))
     await _broadcast_to_all_users(bot, msg)
 
 
@@ -4251,7 +3804,7 @@ def get_admin_keyboard(user_id=None):
             incoming_count += cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM users WHERE role = 'pending'")
             pending_users_count = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0 AND NOT COALESCE(dismissed, FALSE)")
+            cur.execute("SELECT COUNT(DISTINCT product_id) FROM pending_deliveries WHERE pending_qty > 0")
             pending_deliveries_count = cur.fetchone()[0]
         conn.commit()
     except Exception:
@@ -4267,23 +3820,14 @@ def get_admin_keyboard(user_id=None):
     pending_btn = ("🔴 الطلبات المعلقة (" + str(pending_deliveries_count) + ")") if pending_deliveries_count > 0 else BTN_PENDING_ADMIN
 
     rows = [
-        [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY],
-        [BTN_EDIT, BTN_DELETE],
+        [BTN_EXPENSES, BTN_ADD, BTN_ADD_QTY],
+        [BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE],
         [users_btn, BTN_BACKUP, BTN_ALERT],
         [BTN_LOW_STOCK, BTN_MOVEMENTS, incoming_btn],
         [BTN_INVOICE, BTN_SWAP, pending_btn],
         [BTN_OIL, BTN_UPDATE],
         [BTN_PERMS],
     ]
-    # v107: صلاحيات لكل مستخدم — الوحدات الموقوفة تختفي من لوحة المدير المقيد
-    try:
-        if user_id is not None and not _protected_account(user_id) \
-                and _get_role(user_id) in (ROLE_ADMIN, ROLE_MANAGER) \
-                and get_user_perm_states(user_id):
-            rows = [[_b for _b in _r if _admin_btn_allowed(user_id, _b)] for _r in rows]
-            rows = [_r for _r in rows if _r]
-    except Exception:
-        pass
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -4304,6 +3848,7 @@ def get_customer_keyboard(telegram_id=None):
         [BTN_CUST_MY_ORDERS, BTN_CUST_PENDING],
         [BTN_CUST_ALERT],
         [BTN_CUST_MOVEMENTS],
+        [BTN_CUST_EXPENSES],
         [BTN_CUST_CANCEL],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -4320,14 +3865,10 @@ def _get_role(telegram_id):
         return ROLE_PENDING
 
 
-def get_stock_keyboard(user_id=None):
+def get_stock_keyboard():
     """📦 لوحة عامل المخزون — تُبنى ديناميكياً من صلاحيات الفئة المفعّلة
-    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً — ومنذ v107 تُطبَّق
-    أولاً تجاوزات المستخدم الصريحة إن وُجدت)."""
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
     perms = get_role_perms(ROLE_STOCK)
-    if user_id is not None:
-        for _pk in tuple(perms):
-            perms[_pk] = user_perm_enabled(user_id, ROLE_STOCK, _pk)
     rows = []
     _r1 = []
     if perms.get(PERM_REMOVE):
@@ -4358,18 +3899,16 @@ def get_stock_keyboard(user_id=None):
         _r4.append(BTN_PENDING_ADMIN)
     if _r4:
         rows.append(_r4)
+    # v120: زر مصروفاتي للعامل — يرى مصروفاته الخاصة فقط
+    rows.append([BTN_CUST_EXPENSES])
     rows.append([BTN_CUST_CANCEL])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def get_seller_main_keyboard(telegram_id=None):
     """🛍 لوحة البائع — تُبنى ديناميكياً من صلاحيات الفئة المفعّلة
-    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً — ومنذ v107 تُطبَّق
-    أولاً تجاوزات المستخدم الصريحة إن وُجدت)."""
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
     perms = get_role_perms(ROLE_SELLER)
-    if telegram_id is not None:
-        for _pk in tuple(perms):
-            perms[_pk] = user_perm_enabled(telegram_id, ROLE_SELLER, _pk)
     rows = []
     _r1 = []
     if perms.get(PERM_SEARCH):
@@ -4395,12 +3934,11 @@ def get_seller_main_keyboard(telegram_id=None):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-def get_external_keyboard(user_id=None):
+def get_external_keyboard():
     """🌍 لوحة البائع الخارجي — زر البحث يظهر حسب صلاحية الفئة
-    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً — ومنذ v107 تُطبَّق
-    أولاً تجاوزات المستخدم الصريحة إن وُجدت)."""
+    (نظام الصلاحيات الديناميكي: الإلغاء ظاهر دائماً)."""
     rows = []
-    if user_perm_enabled(user_id, ROLE_EXTERNAL, PERM_SEARCH):
+    if role_perm_enabled(ROLE_EXTERNAL, PERM_SEARCH):
         rows.append([BTN_SEARCH])
     rows.append([BTN_CUST_CANCEL])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -4412,23 +3950,12 @@ def get_role_keyboard(telegram_id=None):
     if role in (ROLE_ADMIN, ROLE_MANAGER):
         return get_admin_keyboard(telegram_id)
     if role == ROLE_STOCK:
-        kb = get_stock_keyboard(telegram_id)
-    elif role == ROLE_SELLER:
-        kb = get_seller_main_keyboard(telegram_id)
-    elif role == ROLE_EXTERNAL:
-        kb = get_external_keyboard(telegram_id)
-    else:
-        return get_customer_keyboard(telegram_id)
-    # v107: من أُعطيه صلاحية نظام المستخدمين يرى زر المستخدمين على لوحته
-    try:
-        if telegram_id and get_user_perm_states(telegram_id).get(PERM_USERS) == 1:
-            _rws = [list(_r) for _r in getattr(kb, "keyboard", [])]
-            if _rws and all(getattr(_b, "text", _b) != BTN_USERS
-                            for _r in _rws for _b in _r):
-                kb = ReplyKeyboardMarkup([[BTN_USERS]] + _rws, resize_keyboard=True)
-    except Exception:
-        pass
-    return kb
+        return get_stock_keyboard()
+    if role == ROLE_SELLER:
+        return get_seller_main_keyboard(telegram_id)
+    if role == ROLE_EXTERNAL:
+        return get_external_keyboard()
+    return get_customer_keyboard(telegram_id)
 
 
 def _role_picker_keyboard(prefix="pickrole"):
@@ -4439,51 +3966,17 @@ def _role_picker_keyboard(prefix="pickrole"):
     return InlineKeyboardMarkup(rows)
 
 
-# ═══ v115: قاعدة الاسم النهائي الموحّدة للمنصتين ═══
-# مثال يوسف: الاسم roma blanc + القياس 120/60 + المصنع techno ceram
-# ← «roma blanc 120/60 techno ceram». 120/60 تُلحق بعد الاسم (القياس)،
-# وmotif/plante تبقيان بادئة الفئة كما في v114، والمصنع يُلحق في النهاية.
-_12060_TOKEN_RE = re.compile(r"(^|\s)(120/60|120x60|120×60)(?=\s|$)", re.IGNORECASE)
-
-
-def compose_product_name(ptype, raw, factory="", size=""):
-    """v115+v117: تركيب الاسم النهائي — الفئة + الاسم + القياس + المصنع بقاعدة واحدة للبوت والتطبيق.
-    لا يكرر البادئة/القياس المكتوب داخل الاسم، ولا يضيف حقلاً فارغاً."""
-    out = " ".join(str(raw or "").split())
-    if not out:
-        return ""
-    low = out.lower()
-    if ptype == "12060":
-        if not _12060_TOKEN_RE.search(low):
-            out = out + " 120/60"
-    elif ptype == "motif":
-        if not low.startswith("motif"):
-            out = "motif " + out
-    elif ptype == "plante":
-        if not low.startswith("plante"):
-            out = "plante " + out
-    size = " ".join(str(size or "").split())
-    # v117: فئة 120/60 قياسها مثبت بالفئة نفسها — وسيط القياس يُتجاهل دفاعياً
-    if size and ptype != "12060" and size.lower() not in out.lower().split():
-        out = out + " " + size
-    fac = " ".join(str(factory or "").split())
-    if fac:
-        out = out + " " + fac
-    return out
-
-
 async def ask_add_name(update, context):
     """Step 1: Ask product type (motif or other)."""
-    # v114: نفس أسماء الفئات حرفياً — فواصل أنظف وترتيب يطابق بطاقات التطبيق وترقيم الخطوة
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎨 موتيف — قطع pcs", callback_data="addtype_motif")],
-        [InlineKeyboardButton("🎨 120/60 — قطع pcs", callback_data="addtype_12060")],
-        [InlineKeyboardButton("🌿 plante — قطع pcs", callback_data="addtype_plante")],
-        [InlineKeyboardButton("📦 باقي السلع — كرتون crt", callback_data="addtype_other")],
+        [InlineKeyboardButton("🎨 موتيف (قطع pcs)", callback_data="addtype_motif")],
+        [InlineKeyboardButton("🎨 120/60 (قطع pcs)", callback_data="addtype_12060")],
+        [InlineKeyboardButton("🌿 plante (قطع pcs)", callback_data="addtype_plante")],
+        [InlineKeyboardButton("📦 باقي السلع (كرتون crt)", callback_data="addtype_other")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="addtype_cancel")],
     ])
     await update.message.reply_text(
-        "📦 إضافة سلعة جديدة\n\n١) اختر فئة السلعة:",
+        "📦 إضافة سلعة جديدة\n\nاختر نوع السلعة:",
         reply_markup=keyboard,
     )
 
@@ -4501,97 +3994,21 @@ async def ask_add_qty(update, context, product_name, is_motif=False):
     )
 
 
-def _addsize_keyboard(sizes, can_new, can_del=False):
-    """v117+v118: لوحة اختيار القياس — بدون أولاً + قائمة الفئة (حتى 30)
-    + 🗑 حذف قياس من هذه الفئة (للإدارة) + ➕ للمدير + إلغاء."""
-    rows = [[InlineKeyboardButton("🚫 بدون قياس", callback_data="addsize_none")]]
-    for _s in (sizes or [])[:30]:
-        rows.append([InlineKeyboardButton("📏 " + _s["name"],
-                                          callback_data="addsize_" + str(_s["id"]))])
-    if can_del and sizes:
-        rows.append([InlineKeyboardButton("🗑 حذف قياس من هذه الفئة",
-                                          callback_data="addsize_del")])
-    if can_new:
-        rows.append([InlineKeyboardButton("➕ إضافة قياس جديد", callback_data="addsize_new")])
-    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="addsize_cancel")])
-    return InlineKeyboardMarkup(rows)
-
-
-async def ask_add_size(update, context, product_name, is_motif, ptype="other"):
-    """v117 Step 3: اختيار القياس (اختياري) — القائمة مشتركة مع التطبيق.
-    فئة 120/60 لا تمر من هنا — قياسها مثبت بالفئة ويُلحق في compose_product_name."""
-    context.user_data["add_name"] = product_name
-    context.user_data["add_is_motif"] = is_motif
-    context.user_data["add_ptype"] = ptype  # v118: الفئة تحدد قائمة قياساتها
-    sizes = await asyncio.to_thread(db_list_cat_sizes, ptype)
-    context.user_data["add_sizemap"] = {str(s["id"]): s["name"] for s in sizes}
-    can_new = _get_role(update.effective_user.id) in (ROLE_ADMIN, ROLE_MANAGER)
-    can_del = can_new  # v118: حذف قياس من الفئة — للإدارة مثل الإضافة
-    note = ""
-    if not sizes:
-        note = ("\n\nالقائمة فارغة حالياً — "
-                + ("أضف قياساً جديداً بالزر الأخير." if can_new
-                   else "اطلب من مدير البوت إضافة القياسات."))
-    await update.message.reply_text(
-        "📏 ٣) اختر القياس (اختياري — يُضاف بعد الاسم):" + note,
-        reply_markup=_addsize_keyboard(sizes, can_new, can_del),
-    )
-
-
-def _addfac_keyboard(factories, can_new):
-    """v115: لوحة اختيار اسم المصنع — بدون أولاً + القائمة (حتى 30) + ➕ للمدير + إلغاء."""
-    rows = [[InlineKeyboardButton("🚫 بدون مصنع", callback_data="addfac_none")]]
-    for _f in (factories or [])[:30]:
-        rows.append([InlineKeyboardButton("🏭 " + _f["name"],
-                                          callback_data="addfac_" + str(_f["id"]))])
-    if can_new:
-        rows.append([InlineKeyboardButton("➕ إضافة مصنع جديد", callback_data="addfac_new")])
-    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="addfac_cancel")])
-    return InlineKeyboardMarkup(rows)
-
-
-async def ask_add_factory(update, context, qty, is_motif=False):
-    """v115 Step 3: اختيار اسم المصنع (اختياري) — القائمة مشتركة مع التطبيق."""
+async def confirm_add_product(update, context, product_name, qty, is_motif=False):
+    """Step 3: Show summary with inline confirm button."""
     context.user_data["add_qty"] = qty
     context.user_data["add_is_motif"] = is_motif
-    facs = await asyncio.to_thread(db_list_factories)
-    context.user_data["add_facmap"] = {str(f["id"]): f["name"] for f in facs}
-    can_new = _get_role(update.effective_user.id) in (ROLE_ADMIN, ROLE_MANAGER)
-    note = ""
-    if not facs:
-        note = ("\n\nالقائمة فارغة حالياً — "
-                + ("أضف مصنعاً جديداً بالزر الأخير." if can_new
-                   else "اطلب من مدير البوت إضافة المصانع."))
-    await update.message.reply_text(
-        "🏭 ٤) اختر اسم المصنع (اختياري — يُضاف في نهاية الاسم):" + note,
-        reply_markup=_addfac_keyboard(facs, can_new),
-    )
-
-def _add_confirm_card(product_name, qty, is_motif=False, factory="", size=""):
-    """v115+v117: بطاقة تأكيد الإضافة — صيغة واحدة لمسار الرسالة ومسارَي المصنع والقياس."""
+    _set_state(context, "waiting_add_confirm")
     unit = "pcs" if is_motif else "crt"
     text = (
         "\U0001f4cb \u062a\u0623\u0643\u064a\u062f \u0625\u0636\u0627\u0641\u0629 \u0633\u0644\u0639\u0629:\n\n"
         "\U0001f4e6 \u0627\u0644\u0627\u0633\u0645: " + product_name + "\n"
         "\U0001f4e6 \u0627\u0644\u0639\u062f\u062f: " + str(qty) + " " + unit
     )
-    if size:
-        text += "\n📏 القياس: " + size
-    if factory:
-        text += "\n🏭 المصنع: " + factory
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ تأكيد", callback_data="add_confirm"),
          InlineKeyboardButton("❌ إلغاء", callback_data="add_cancel")],
     ])
-    return text, keyboard
-
-
-async def confirm_add_product(update, context, product_name, qty, is_motif=False):
-    """Step 3: Show summary with inline confirm button."""
-    context.user_data["add_qty"] = qty
-    context.user_data["add_is_motif"] = is_motif
-    _set_state(context, "waiting_add_confirm")
-    text, keyboard = _add_confirm_card(product_name, qty, is_motif)
     await update.message.reply_text(text, reply_markup=keyboard)
 
 
@@ -4605,7 +4022,7 @@ async def callback_addtype_handler(update, context):
         if data == "addtype_motif":
             _set_state(context, STATE_ADD_NAME_MOTIF)
             await query.edit_message_text(
-                "🎨 موتيف — قطع pcs\n\n٢) أرسل اسم السلعة (بدون الفئة):",
+                "🎨 موتيف (قطع pcs)\n\nأرسل اسم السلعة:",
             )
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
@@ -4614,7 +4031,7 @@ async def callback_addtype_handler(update, context):
             )
         elif data == "addtype_12060":
             _set_state(context, STATE_ADD_NAME_12060)
-            await query.edit_message_text("🎨 120/60 — قطع pcs\n\n٢) أرسل اسم السلعة (بدون الفئة):")
+            await query.edit_message_text("🎨 120/60 (قطع pcs)\n\nأرسل اسم السلعة:")
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 text="🎨 أرسل اسم السلعة (120/60):",
@@ -4622,7 +4039,7 @@ async def callback_addtype_handler(update, context):
             )
         elif data == "addtype_plante":
             _set_state(context, STATE_ADD_NAME_PLANTE)
-            await query.edit_message_text("🌿 plante — قطع pcs\n\n٢) أرسل اسم السلعة (بدون الفئة):")
+            await query.edit_message_text("🌿 plante (قطع pcs)\n\nأرسل اسم السلعة:")
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 text="🌿 أرسل اسم السلعة (plante):",
@@ -4631,7 +4048,7 @@ async def callback_addtype_handler(update, context):
         elif data == "addtype_other":
             _set_state(context, STATE_ADD_NAME)
             await query.edit_message_text(
-                "📦 باقي السلع — كرتون crt\n\n٢) أرسل اسم السلعة:",
+                "📦 باقي السلع (كرتون crt)\n\nأرسل اسم السلعة:",
             )
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
@@ -4690,7 +4107,7 @@ async def callback_add_handler(update, context):
                 except Exception:
                     _actor = ""
                 db_insert_notification("new_item", "🆕 سلعة جديدة!",
-                    "📦 " + pname + "\n➕ الكمية: " + str(qty), _actor, "bot")
+                    "📦 " + pname + "\nالكمية: " + str(qty), _actor, "bot")
             except Exception:
                 pass
             new_msg = ("\U0001f195 \u0633\u0644\u0639\u0629 \u062c\u062f\u064a\u062f\u0629!" + chr(10) + chr(10)
@@ -4706,294 +4123,6 @@ async def callback_add_handler(update, context):
         await query.edit_message_text("\u274c \u062a\u0645 \u0627\u0644\u0625\u0644\u063a\u0627\u0621.")
         user_data.clear()
         await _send_themed(context.bot, query.message.chat_id, "\U0001f4e6 \u0627\u0644\u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629:", reply_markup=get_admin_keyboard())
-
-
-async def _addfac_done(update, context, factory_name):
-    """v115: إلحاق المصنع بالاسم النهائي ثم بطاقة التأكيد (نفس صيغة _add_confirm_card)."""
-    query = update.callback_query
-    user_data = context.user_data
-    name = str(user_data.get("add_name", ""))
-    fname = " ".join(str(factory_name or "").split())
-    if fname:
-        name = (name + " " + fname).strip()
-    user_data["add_name"] = name
-    qty = user_data.get("add_qty", 0)
-    is_motif = user_data.get("add_is_motif", False)
-    _set_state(context, "waiting_add_confirm")
-    text, keyboard = _add_confirm_card(name, qty, is_motif, factory=fname,
-                                       size=str(user_data.get("add_size", "") or ""))
-    try:
-        await query.edit_message_text(text, reply_markup=keyboard)
-    except Exception:
-        try:
-            await context.bot.send_message(chat_id=query.message.chat_id,
-                                           text=text, reply_markup=keyboard)
-        except Exception:
-            pass
-
-
-async def callback_addfac_handler(update, context):
-    """v115: أزرار المصنع في تدفق الإضافة — بدون / قائمة / إضافة جديد (مدير) / إلغاء."""
-    query = update.callback_query
-    _KB_ROLE_UID.set(query.from_user.id)
-    await query.answer()
-    data = query.data or ""
-    user_data = context.user_data
-    if not user_data.get("add_name"):
-        try:
-            await query.edit_message_text("⏰ انتهت هذه العملية — ابدأ من زر إضافة سلعة من جديد.")
-        except Exception:
-            pass
-        return
-    if data == "addfac_cancel":
-        user_data.clear()
-        try:
-            await query.edit_message_text("❌ تم الإلغاء.")
-        except Exception:
-            pass
-        try:
-            await _send_themed(context.bot, query.message.chat_id,
-                               "📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
-        except Exception:
-            pass
-        return
-    if data == "addfac_new":
-        if _get_role(query.from_user.id) not in (ROLE_ADMIN, ROLE_MANAGER):
-            try:
-                await query.answer("إضافة المصانع لمدير البوت فقط.", show_alert=True)
-            except Exception:
-                pass
-            return
-        _set_state(context, STATE_ADD_FACNEW)
-        try:
-            await query.message.reply_text(
-                "🏭 أرسل اسم المصنع الجديد (حرفان على الأقل):",
-                reply_markup=get_input_keyboard())
-        except Exception:
-            pass
-        return
-    if data == "addfac_none":
-        await _addfac_done(update, context, "")
-        return
-    if data.startswith("addfac_"):
-        fid = data[len("addfac_"):]
-        facmap = user_data.get("add_facmap") or {}
-        fname = facmap.get(fid) or ""
-        if not fname and fid.isdigit():
-            fname = await asyncio.to_thread(_factories_name_by_id, int(fid)) or ""
-        if not fname:
-            try:
-                await query.edit_message_text("⚠️ المصنع غير موجود — أعد بدء الإضافة من جديد.")
-            except Exception:
-                pass
-            return
-        await _addfac_done(update, context, fname)
-
-
-async def _addsize_done(update, context, size_name):
-    """v117: إلحاق القياس بالاسم (بلا تكرار إن كتبه المستخدم) ثم سؤال الكمية."""
-    user_data = context.user_data
-    name = str(user_data.get("add_name", ""))
-    sname = " ".join(str(size_name or "").split())
-    if sname and sname.lower() not in name.lower().split():
-        name = (name + " " + sname).strip()
-    user_data["add_name"] = name
-    user_data["add_size"] = sname
-    is_motif = user_data.get("add_is_motif", False)
-    await ask_add_qty(update, context, name, is_motif=is_motif)
-
-
-async def callback_addsize_handler(update, context):
-    """v117: أزرار القياس في تدفق الإضافة — بدون / قائمة / إضافة جديد (مدير) / إلغاء."""
-    query = update.callback_query
-    _KB_ROLE_UID.set(query.from_user.id)
-    await query.answer()
-    data = query.data or ""
-    user_data = context.user_data
-    if not user_data.get("add_name"):
-        try:
-            await query.edit_message_text("⏰ انتهت هذه العملية — ابدأ من زر إضافة سلعة من جديد.")
-        except Exception:
-            pass
-        return
-    if data == "addsize_cancel":
-        user_data.clear()
-        try:
-            await query.edit_message_text("❌ تم الإلغاء.")
-        except Exception:
-            pass
-        try:
-            await _send_themed(context.bot, query.message.chat_id,
-                               "📦 القائمة الرئيسية:", reply_markup=get_admin_keyboard())
-        except Exception:
-            pass
-        return
-    if data == "addsize_new":
-        if _get_role(query.from_user.id) not in (ROLE_ADMIN, ROLE_MANAGER):
-            try:
-                await query.answer("إضافة القياسات لمدير البوت فقط.", show_alert=True)
-            except Exception:
-                pass
-            return
-        _set_state(context, STATE_ADD_SIZNEW)
-        try:
-            await query.message.reply_text(
-                "📏 أرسل القياس الجديد (حرفان على الأقل):",
-                reply_markup=get_input_keyboard())
-        except Exception:
-            pass
-        return
-    if data == "addsize_none":
-        await _addsize_done(update, context, "")
-        return
-    ptype = _catsize_norm_cat(user_data.get("add_ptype"))  # v118: قائمة الفئة
-    if data == "addsize_del":
-        if _get_role(query.from_user.id) not in (ROLE_ADMIN, ROLE_MANAGER):
-            try:
-                await query.answer("حذف القياسات لمدير البوت فقط.", show_alert=True)
-            except Exception:
-                pass
-            return
-        sizes = await asyncio.to_thread(db_list_cat_sizes, ptype)
-        if not sizes:
-            try:
-                await query.answer("لا توجد قياسات في قائمة هذه الفئة.", show_alert=True)
-            except Exception:
-                pass
-            return
-        user_data["add_sizemap"] = {str(s["id"]): s["name"] for s in sizes}
-        try:
-            await query.edit_message_text(
-                "🗑 اختر القياس المراد حذفه من قائمة فئة «"
-                + _CATSIZE_LABELS.get(ptype, ptype) + "»:\n\n"
-                "الحذف من القائمة فقط — السلع المسجلة بهذا القياس لا تتأثر.",
-                reply_markup=_addsize_del_keyboard(sizes))
-        except Exception:
-            pass
-        return
-    if data == "addsize_back":
-        await _addsize_refresh_panel(query, context)
-        return
-    if data.startswith("addsize_"):
-        sid = data[len("addsize_"):]
-        sizemap = user_data.get("add_sizemap") or {}
-        sname = sizemap.get(sid) or ""
-        if not sname and sid.isdigit():
-            sname = await asyncio.to_thread(_catsizes_name_by_id, ptype, int(sid)) or ""
-        if not sname:
-            try:
-                await query.edit_message_text("⚠️ القياس غير موجود — أعد بدء الإضافة من جديد.")
-            except Exception:
-                pass
-            return
-        await _addsize_done(update, context, sname)
-
-
-def _addsize_del_keyboard(sizes):
-    """v118: لوحة حذف قياس من قائمة الفئة — كل قياس بزر 🗑 + رجوع."""
-    rows = []
-    for _s in (sizes or [])[:30]:
-        rows.append([InlineKeyboardButton("🗑 " + _s["name"],
-                                          callback_data="delsize_" + str(_s["id"]))])
-    rows.append([InlineKeyboardButton("← رجوع", callback_data="addsize_back")])
-    return InlineKeyboardMarkup(rows)
-
-
-async def _addsize_refresh_panel(query, context, note=""):
-    """v118: إعادة رسم لوحة اختيار القياس لفئة العملية الحالية."""
-    user_data = context.user_data
-    ptype = _catsize_norm_cat(user_data.get("add_ptype"))
-    sizes = await asyncio.to_thread(db_list_cat_sizes, ptype)
-    user_data["add_sizemap"] = {str(s["id"]): s["name"] for s in sizes}
-    can_new = _get_role(query.from_user.id) in (ROLE_ADMIN, ROLE_MANAGER)
-    try:
-        await query.edit_message_text(
-            "📏 ٣) اختر القياس (اختياري — يُضاف بعد الاسم):" + note,
-            reply_markup=_addsize_keyboard(sizes, can_new, can_new))
-    except Exception:
-        pass
-
-
-async def callback_delsize_handler(update, context):
-    """v118: حذف قياس من قائمة فئة — عرض ← تأكيد ← تنفيذ ← عودة للوحة.
-    الحذف من قائمة الفئة فقط: السلع المسجلة بالقياس لا تتأثر وقياس فئة أخرى
-    بنفس الاسم لا يُمس. لمدير البوت والنظام (admin/manager) فقط."""
-    query = update.callback_query
-    _KB_ROLE_UID.set(query.from_user.id)
-    await query.answer()
-    data = query.data or ""
-    user_data = context.user_data
-    if not user_data.get("add_name"):
-        try:
-            await query.edit_message_text("⏰ انتهت هذه العملية — ابدأ من زر إضافة سلعة من جديد.")
-        except Exception:
-            pass
-        return
-    if _get_role(query.from_user.id) not in (ROLE_ADMIN, ROLE_MANAGER):
-        try:
-            await query.answer("حذف القياسات لمدير البوت فقط.", show_alert=True)
-        except Exception:
-            pass
-        return
-    ptype = _catsize_norm_cat(user_data.get("add_ptype"))
-    cat_lbl = _CATSIZE_LABELS.get(ptype, ptype)
-    if data.startswith("delsizeok_"):
-        sid = data[len("delsizeok_"):]
-        sname = (user_data.get("add_sizemap") or {}).get(sid) or ""
-        if not sname and sid.isdigit():
-            sname = await asyncio.to_thread(_catsizes_name_by_id, ptype, int(sid)) or ""
-        if not sname:
-            try:
-                await query.edit_message_text("⚠️ القياس غير موجود — ربما حُذف مسبقاً.")
-            except Exception:
-                pass
-            return
-        dname, derr = await asyncio.to_thread(db_delete_cat_size, ptype, sname, None,
-                                              query.from_user.id)
-        if derr or not dname:
-            sizes = await asyncio.to_thread(db_list_cat_sizes, ptype)
-            user_data["add_sizemap"] = {str(s["id"]): s["name"] for s in sizes}
-            try:
-                await query.edit_message_text(
-                    "❌ " + (derr or "تعذر حذف القياس."),
-                    reply_markup=_addsize_del_keyboard(sizes))
-            except Exception:
-                pass
-            return
-        try:
-            await asyncio.to_thread(
-                _audit_log, "size_delete",
-                {"id": query.from_user.id, "name": query.from_user.first_name or ""},
-                details="حذف قياس «" + dname + "» من قائمة فئة " + cat_lbl, ip="bot")
-        except Exception:
-            pass
-        await _addsize_refresh_panel(
-            query, context,
-            note="\n\n🗑 حُذف القياس «" + dname + "» من قائمة فئة «" + cat_lbl + "».")
-        return
-    if data.startswith("delsize_"):
-        sid = data[len("delsize_"):]
-        sname = (user_data.get("add_sizemap") or {}).get(sid) or ""
-        if not sname and sid.isdigit():
-            sname = await asyncio.to_thread(_catsizes_name_by_id, ptype, int(sid)) or ""
-        if not sname:
-            try:
-                await query.edit_message_text("⚠️ القياس غير موجود — ربما حُذف مسبقاً.")
-            except Exception:
-                pass
-            return
-        try:
-            await query.edit_message_text(
-                "⚠️ حذف القياس «" + sname + "» من قائمة فئة «" + cat_lbl + "»؟\n\n"
-                "يختفي من خيارات الإضافة في هذه الفئة فقط — السلع المسجلة به لا تتأثر، "
-                "وقياس بنفس الاسم في فئة أخرى لا يُمس.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ نعم احذفه", callback_data="delsizeok_" + sid)],
-                    [InlineKeyboardButton("❌ رجوع", callback_data="addsize_back")],
-                ]))
-        except Exception:
-            pass
-        return
 
 
 async def process_seller_input(update, context, text):
@@ -5411,11 +4540,7 @@ async def _show_product_detail(update, context, product):
     # 🎯 بوابة الفئات: الخارجي يرى التوفر فقط دون كميات أو أزرار،
     # والبائع يرى الكمية مع الإضافة والإخراج والسجل (نفس صلاحيات البيع).
     try:
-        _det_uid = update.effective_user.id
-    except Exception:
-        _det_uid = None
-    try:
-        _det_role = _get_role(_det_uid) if _det_uid is not None else ROLE_CUSTOMER
+        _det_role = _get_role(update.effective_user.id)
     except Exception:
         _det_role = ROLE_CUSTOMER
     pid = str(p["id"])
@@ -5434,9 +4559,6 @@ async def _show_product_detail(update, context, product):
     # 🔐 أزرار البطاقة تُبنى حسب صلاحيات الفئة (الإداريون والعميل: كما هو)
     if _det_role == ROLE_SELLER:
         _perms = get_role_perms(ROLE_SELLER)
-        if _det_uid is not None:
-            for _pk in tuple(_perms):
-                _perms[_pk] = user_perm_enabled(_det_uid, ROLE_SELLER, _pk)
         buttons = []
         _row = []
         if _perms.get(PERM_ADD_QTY):
@@ -5457,9 +4579,6 @@ async def _show_product_detail(update, context, product):
         return
     if _det_role == ROLE_STOCK:
         _perms = get_role_perms(ROLE_STOCK)
-        if _det_uid is not None:
-            for _pk in tuple(_perms):
-                _perms[_pk] = user_perm_enabled(_det_uid, ROLE_STOCK, _pk)
         buttons = []
         _row = []
         if _perms.get(PERM_ADD_QTY):
@@ -5519,8 +4638,8 @@ def _build_movements_text(rows):
             if reason:
                 reason_part = " — " + html.escape(str(reason))
             if r["tx_type"] == "add":
-                # Green for additions
-                line = "🟢 " + prod + " +" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
+                # Green for additions (no + sign)
+                line = "🟢 " + prod + " " + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
             elif r["tx_type"] == "reconcile":
                 # Blue for reconciliation
                 line = "🔵 " + prod + " -" + str(qty) + " " + unit + reason_part + " — " + user_link + " " + time_str
@@ -5554,7 +4673,7 @@ def _fetch_movements_by_date(target_date):
             cur.execute(
                 "SELECT t.type AS tx_type, t.quantity, t.date, t.id AS tx_id, p.name AS product_name, "
                 "u.username AS user_name, u.first_name AS user_fname, u.telegram_id AS user_tid, t.reason, "
-                "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0 AND NOT COALESCE(pd.dismissed, FALSE))) AS has_pending_deficit "
+                "(EXISTS(SELECT 1 FROM pending_deliveries pd WHERE pd.product_id = t.product_id AND pd.pending_qty > 0)) AS has_pending_deficit "
                 "FROM transactions t "
                 "JOIN products p ON p.id = t.product_id "
                 "LEFT JOIN users u ON u.id = t.user_id "
@@ -5596,6 +4715,182 @@ def _fetch_movements_by_range(start_date, end_date):
         raise
     finally:
         release_connection(conn)
+
+
+async def _show_expenses_menu(update, context):
+    """Show expenses menu with today's expenses and add button."""
+    try:
+        expenses, total = get_expenses_today()
+    except Exception as e:
+        logging.error("[EXPENSES] Fetch failed: " + str(e))
+        await update.message.reply_text("❌ حدث خطأ في تحميل المصروفات.", reply_markup=get_admin_keyboard())
+        return
+    lines = ["💰 المصروفات اليوم"]
+    lines.append("")
+    if expenses:
+        for exp in expenses:
+            amt_str = f"{exp['amount']:,.2f}"
+            dt = exp.get("created_at")
+            time_str = dt.strftime("%H:%M") if dt else ""
+            op = exp.get("operator_fname") or exp.get("operator_name") or "مجهول"
+            lines.append("  • " + amt_str + " د.ج — " + exp["reason"] + " | " + op + " " + time_str)
+        lines.append("")
+        lines.append("💵 الإجمالي: " + f"{total:,.2f}" + " د.ج")
+    else:
+        lines.append("  لا توجد مصروفات اليوم.")
+    text = chr(10).join(lines)
+    buttons = [
+        [InlineKeyboardButton("🟢 إضافة مصروف", callback_data="exp_add")],
+        [InlineKeyboardButton("📋 عرض الكل", callback_data="exp_list")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")],
+    ]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def callback_expense_handler(update, context):
+    """Handle expense-related callbacks."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "exp_add":
+        _set_state(context, STATE_EXPENSE_AMOUNT)
+        await query.edit_message_text(
+            "💰 إضافة مصروف" + chr(10) + chr(10)
+            + "أرسل المبلغ (د.ج):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="exp_cancel")]
+            ]),
+        )
+    elif data == "exp_cancel":
+        context.user_data.clear()
+        await query.edit_message_text("❌ تم الإلغاء.")
+    elif data == "exp_list":
+        try:
+            expenses = get_expenses(limit=20, offset=0)
+        except Exception as e:
+            logging.error("[EXPENSES] Fetch failed: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ.")
+            return
+        if not expenses:
+            await query.edit_message_text("💰 لا توجد مصروفات.")
+            return
+        lines = ["💰 سجل المصروفات", ""]
+        for exp in expenses:
+            amt_str = f"{exp['amount']:,.2f}"
+            dt = exp.get("created_at")
+            date_str = dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+            op = exp.get("operator_fname") or exp.get("operator_name") or "مجهول"
+            lines.append("  • " + amt_str + " د.ج — " + exp["reason"] + " | " + op + " " + date_str)
+        text = chr(10).join(lines)
+        buttons = []
+        if len(expenses) == 20:
+            buttons.append([InlineKeyboardButton("⬇️ المزيد", callback_data="exp_more_20")])
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="exp_back")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    elif data.startswith("exp_more_"):
+        offset = int(data.split("_")[2])
+        try:
+            expenses = get_expenses(limit=20, offset=offset)
+        except Exception as e:
+            logging.error("[EXPENSES] Fetch failed: " + str(e))
+            await query.edit_message_text("❌ حدث خطأ.")
+            return
+        if not expenses:
+            await query.edit_message_text("💰 لا توجد مصروفات أخرى.")
+            return
+        lines = ["💰 تابع المصروفات", ""]
+        for exp in expenses:
+            amt_str = f"{exp['amount']:,.2f}"
+            dt = exp.get("created_at")
+            date_str = dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+            op = exp.get("operator_fname") or exp.get("operator_name") or "مجهول"
+            lines.append("  • " + amt_str + " د.ج — " + exp["reason"] + " | " + op + " " + date_str)
+        text = chr(10).join(lines)
+        buttons = []
+        if len(expenses) == 20:
+            buttons.append([InlineKeyboardButton("⬇️ المزيد", callback_data="exp_more_" + str(offset + 20))])
+        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="exp_back")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    elif data == "exp_back":
+        try:
+            expenses, total = get_expenses_today()
+        except Exception:
+            expenses, total = [], 0
+        lines = ["💰 المصروفات اليوم", ""]
+        if expenses:
+            for exp in expenses:
+                amt_str = f"{exp['amount']:,.2f}"
+                dt = exp.get("created_at")
+                time_str = dt.strftime("%H:%M") if dt else ""
+                op = exp.get("operator_fname") or exp.get("operator_name") or "مجهول"
+                lines.append("  • " + amt_str + " د.ج — " + exp["reason"] + " | " + op + " " + time_str)
+            lines.append("")
+            lines.append("💵 الإجمالي: " + f"{total:,.2f}" + " د.ج")
+        else:
+            lines.append("  لا توجد مصروفات اليوم.")
+        text = chr(10).join(lines)
+        buttons = [
+            [InlineKeyboardButton("🟢 إضافة مصروف", callback_data="exp_add")],
+            [InlineKeyboardButton("📋 عرض الكل", callback_data="exp_list")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="admin_done")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def _show_user_expenses(update, context):
+    """Show only the current user's own expenses (for workers/customers)."""
+    user_id = update.effective_user.id
+    try:
+        db_user = get_user(user_id)
+        if not db_user:
+            await update.message.reply_text("❌ لم يتم التعرف عليك.")
+            return
+        conn = get_connection()
+        try:
+            with conn.cursor(psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT e.amount, e.reason, e.created_at"
+                    " FROM expenses e JOIN users u ON e.user_id = u.id"
+                    " WHERE u.telegram_id = %s"
+                    " ORDER BY e.created_at DESC LIMIT 20", (user_id,))
+                expenses = cur.fetchall()
+                cur.execute(
+                    "SELECT COALESCE(SUM(e.amount),0) as total"
+                    " FROM expenses e JOIN users u ON e.user_id = u.id"
+                    " WHERE u.telegram_id = %s"
+                    " AND e.created_at >= CURRENT_DATE", (user_id,))
+                today_total = float(cur.fetchone()["total"])
+            conn.commit()
+        except Exception as ex:
+            conn.rollback()
+            await update.message.reply_text("❌ حدث خطأ في تحميل المصروفات.")
+            return
+        finally:
+            release_connection(conn)
+    except Exception:
+        await update.message.reply_text("❌ حدث خطأ.")
+        return
+    lines = ["💸 مصروفاتي", ""]
+    lines.append("💵 إجمالي اليوم: " + f"{today_total:,.2f}" + " د.ج")
+    lines.append("")
+    if expenses:
+        for exp in expenses:
+            amt_str = f"{exp['amount']:,.2f}"
+            dt = exp.get("created_at")
+            date_str = dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+            reason = exp.get("reason") or ""
+            lines.append("• " + amt_str + " د.ج" + (" — " + reason if reason else ""))
+            lines.append("  " + date_str)
+    else:
+        lines.append("لا توجد مصروفات مسجلة.")
+    text = chr(10).join(lines)
+    # v120: زر إضافة مصروف للعامل/الزبون أيضاً
+    buttons = [
+        [InlineKeyboardButton("🟢 إضافة مصروف", callback_data="exp_add")],
+    ]
+    kb = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text(text, reply_markup=kb)
+
 
 async def _show_all_movements(update, context, admin_view=True):
     """Show date picker for last 7 days - user picks a date to see movements."""
@@ -5678,7 +4973,7 @@ async def callback_mov_product_handler(update, context):
             icon = "\U0001f7e2" if tx["tx_type"] == "add" else "\U0001f534"
             date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
             op = tx.get("operator_name") or "مجهول"
-            sign = "+" if tx["tx_type"] == "add" else "-"
+            sign = "" if tx["tx_type"] == "add" else "-"
             reason = tx.get("reason") or ""
             if reason:
                 reason = " | " + reason
@@ -5944,7 +5239,7 @@ async def callback_product_action_handler(update, context):
         _pact_need = {"add": PERM_ADD_QTY, "rem": PERM_REMOVE, "log": PERM_MOVEMENTS}.get(
             query.data.split("_", 2)[1] if "_" in query.data else ""
         )
-        if _pact_need and not user_perm_enabled(query.from_user.id, _pact_role, _pact_need):
+        if _pact_need and not role_perm_enabled(_pact_role, _pact_need):
             await query.answer("❌ هذا الإجراء موقف لفئتك — راجع المدير.", show_alert=True)
             return
     _KB_ROLE_UID.set(query.from_user.id)
@@ -5983,7 +5278,7 @@ async def callback_product_action_handler(update, context):
                     icon = "🟢" if tx["tx_type"] == "add" else "🔴"
                     date_str = tx["date"].strftime("%Y-%m-%d %H:%M")
                     op = tx.get("operator_name") or "مجهول"
-                    sign = "+" if tx["tx_type"] == "add" else "-"
+                    sign = "" if tx["tx_type"] == "add" else "-"
                     reason = tx.get("reason") or ""
                     if reason:
                         reason = " | " + reason
@@ -6319,8 +5614,8 @@ async def callback_approval_handler(update, context):
     """Handle approve/reject for pending users."""
     query = update.callback_query
     # ── AUTH GUARD ── يجب أن يكون المستدعي مديراً قبل أي شيء، وإلا يُرفض الطلب.
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         logging.warning(
             "[USERS] Unauthorized approve/reject attempt by "
             + str(query.from_user.id) + " on data=" + str(query.data)
@@ -6516,8 +5811,8 @@ async def callback_users_ask_handler(update, context):
     """خطوة تأكيد صريحة قبل أي ترقية/إزالة: تعرض بطاقة تضم
     اسم الهدف ومعرّفه والدور المطلوب، ثم زر تنفيذ وزر إلغاء."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
 
@@ -6592,8 +5887,8 @@ async def callback_users_ask_handler(update, context):
 async def callback_users_cancel_handler(update, context):
     """إلغاء أي عملية قيد التأكيد والعودة للوحة المستخدمين."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer("تم الإلغاء.")
     try:
@@ -6623,8 +5918,8 @@ async def callback_merge_list_handler(update, context):
     بادئةً) ليختار المدير الحساب الذي سيُدمج في الحساب الناجي (الذي فتحت لوحته).
     يحل أي تكرار لم يلحقه الدمج التلقائي (حسابان فعليان في تلجرام بنفس الاسم)."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     tid_str = query.data.replace("askmerge_", "", 1)
     if not tid_str.isdigit():
@@ -6691,8 +5986,8 @@ async def callback_merge_list_handler(update, context):
 async def callback_merge_confirm_handler(update, context):
     """v53: بطاقة تأكيد صريحة قبل تنفيذ الدمج."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     parts = query.data.split("_")
     if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
@@ -6739,8 +6034,8 @@ async def callback_merge_go_handler(update, context):
     """v53: تنفيذ الدمج بعد التأكيد — نقل السجلات ثم إيقاف الحساب المكرر."""
     query = update.callback_query
     caller_id = query.from_user.id
-    if not _can_manage_users(caller_id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         logging.warning(
             "[MERGE] Unauthorized merge attempt by " + str(caller_id)
             + " data=" + str(query.data))
@@ -6788,8 +6083,8 @@ async def callback_promote_handler(update, context):
     query = update.callback_query
     # ── AUTH GUARD ── منع أي شخص غير مصرح له بتغيير الأدوار.
     caller_id = query.from_user.id
-    if not _can_manage_users(caller_id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         logging.warning(
             "[USERS] Unauthorized role change attempt by "
             + str(caller_id) + " on data=" + str(query.data)
@@ -6889,8 +6184,8 @@ async def callback_kick_handler(update, context):
     والحسابات المحمية (ADMIN_IDS/OWNER_IDS) مستثناة من الطرد."""
     query = update.callback_query
     caller_id = query.from_user.id
-    if not _can_manage_users(caller_id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(caller_id):
+        await query.answer("❌ هذا الإجراء للمدراء فقط.", show_alert=True)
         logging.warning(
             "[USERS] Unauthorized kick attempt by "
             + str(caller_id) + " on data=" + str(query.data)
@@ -7680,15 +6975,6 @@ def _build_users_panel():
                 InlineKeyboardButton("🚫 طرد", callback_data="askkick_" + str(tid)),
             ])
             action_rows += 1
-        # v107: زر صلاحياته الخاصة — لكل مستخدم غير محمي (ماذا يرى وفيما يتحكم)
-        if action_rows < _MAX_PANEL_ROWS:
-            buttons.append([
-                InlineKeyboardButton(
-                    "🎛️ صلاحياته: " + label,
-                    callback_data="uperm_" + str(tid),
-                ),
-            ])
-            action_rows += 1
         # v53: زر الدمج — فقط لمن يشارك اسمه مع حساب آخر (المكرر مثل Mostafa)
         if tid and name_dup.get(_norm_name_key(_merge_display_name(u)), 0) > 1 \
                 and action_rows < _MAX_PANEL_ROWS:
@@ -7722,8 +7008,8 @@ async def _send_users_panel(update, context):
 
 
 async def users_command(update, context):
-    if not _can_manage_users(update.effective_user.id):
-        await update.message.reply_text("❌ هذا القسم لإدارة المستخدمين فقط.")
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ للمديرين فقط.")
         return
     await _send_users_panel(update, context)
 
@@ -7731,8 +7017,8 @@ async def users_command(update, context):
 async def callback_users_refresh_handler(update, context):
     """زر التحديث: يعيد رسم اللوحة بأحدث البيانات."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer("🔄 تم التحديث")
     try:
@@ -7744,8 +7030,8 @@ async def callback_users_refresh_handler(update, context):
 async def callback_users_close_handler(update, context):
     """زر الإغلاق: يجفف الرسالة ويزيل كل الأزرار."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
     await _safe_edit(query, "🔒 أُغلقت لوحة المستخدمين.")
@@ -7755,8 +7041,8 @@ async def callback_role_menu_handler(update, context):
     """🎯 قائمة تغيير فئة مستخدم من لوحة المستخدمين
     (بديل شامل للترقية/الإزالة: كل الفئات في قائمة واحدة)."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
     parts = query.data.split("_", 1)
@@ -7791,8 +7077,8 @@ async def callback_role_menu_handler(update, context):
 async def callback_role_set_handler(update, context):
     """تنفيذ تغيير الفئة بعد الاختيار من القائمة + إشعار المستخدم."""
     query = update.callback_query
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
     parts = query.data.split("_")  # setrole_<role>_<tid>
@@ -8741,7 +8027,7 @@ async def handle_admin_message(update, context):
 
     text = update.message.text.strip()
     user = update.effective_user
-    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_INVOICE, BTN_SWAP, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
+    admin_buttons = [BTN_ADD, BTN_ADD_QTY, BTN_REMOVE_QTY, BTN_EDIT, BTN_DELETE, BTN_BACKUP, BTN_ALERT, BTN_UPDATE, BTN_LOW_STOCK, BTN_MOVEMENTS, BTN_EXPENSES, BTN_INVOICE, BTN_SWAP, BTN_PENDING_ADMIN, BTN_PERMS, BTN_OIL]
     # هذه الأزرار ديناميكية (قد تحتوي عدادات)
     dynamic_prefixes = [BTN_USERS, BTN_INCOMING, BTN_PENDING_ADMIN]
     is_admin_btn = text in admin_buttons or any(text.startswith(p) for p in dynamic_prefixes)
@@ -8756,22 +8042,20 @@ async def handle_admin_message(update, context):
         if _gate_role == ROLE_STOCK:
             _allowed = (
                 not is_admin_btn
-                or (text in STOCK_ADMIN_BTNS and _btn_perm_ok(_gate_role, text, user.id))
-                or any(text.startswith(p) and _btn_perm_ok(_gate_role, text, user.id)
+                or (text in STOCK_ADMIN_BTNS and _btn_perm_ok(_gate_role, text))
+                or any(text.startswith(p) and _btn_perm_ok(_gate_role, text)
                        for p in STOCK_ADMIN_PREFIXES)
             )
         elif _gate_role == ROLE_SELLER:
             _allowed = (
-                (text == BTN_INVOICE and _btn_perm_ok(_gate_role, text, user.id))
-                or (text == BTN_SWAP and _btn_perm_ok(_gate_role, text, user.id))
+                (text == BTN_INVOICE and _btn_perm_ok(_gate_role, text))
+                or (text == BTN_SWAP and _btn_perm_ok(_gate_role, text))
                 or _gate_state.startswith("waiting_invoice")
                 or _gate_state.startswith("waiting_swap")
                 or text in (BTN_CANCEL, BTN_CUST_CANCEL)
             )
         else:
-            # v107: من أُعطيه صلاحية نظام المستخدمين يمر بزر المستخدمين فقط
-            _allowed = (is_admin_btn and _can_manage_users(user.id)
-                        and text.split(" (")[0].strip() == BTN_USERS)
+            _allowed = False
         if text in (BTN_CANCEL, BTN_CUST_CANCEL) and _allowed:
             context.user_data.clear()
             await update.message.reply_text("❌ تم الإلغاء.", reply_markup=get_role_keyboard(user.id))
@@ -8792,12 +8076,6 @@ async def handle_admin_message(update, context):
     # ═══════════════════════════════════════════════════════════
     if is_admin_btn:
         context.user_data.clear()
-        # v107: صلاحيات لكل مستخدم — حتى الإداري المقيد يمر فقط بما سمحت له الإدارة
-        if not _admin_btn_allowed(user.id, text):
-            await update.message.reply_text(
-                "⛔ هذه الوحدة موقفة لحسابك من قبل الإدارة.",
-                reply_markup=get_admin_keyboard(user.id))
-            return
         if text == BTN_PERMS:
             _KB_ROLE_UID.set(user.id)
             await update.message.reply_text(
@@ -8870,6 +8148,9 @@ async def handle_admin_message(update, context):
         if text == BTN_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=True)
             return
+        if text == BTN_EXPENSES:
+            await _show_expenses_menu(update, context)
+            return
         if text == BTN_INVOICE:
             _set_state(context, STATE_INVOICE_CUSTOMER)
             context.user_data["invoice_items"] = []
@@ -8884,7 +8165,7 @@ async def handle_admin_message(update, context):
             # v103: اختيار النمط — مرتبط بفاتورة (v102) أو مخزون فقط (عام — طلب يوسف)
             _sw_role = await asyncio.to_thread(_get_role, user.id)
             _sw_rows = []
-            if _sw_role in (ROLE_ADMIN, ROLE_MANAGER) or user_perm_enabled(user.id, _sw_role, PERM_INVOICE):
+            if _sw_role in (ROLE_ADMIN, ROLE_MANAGER) or role_perm_enabled(_sw_role, PERM_INVOICE):
                 _sw_rows.append([InlineKeyboardButton(
                     "🧾 مرتبط بفاتورة — تصحيح فاتورة مقبولة",
                     callback_data="swapmode_inv")])
@@ -9379,24 +8660,24 @@ async def handle_admin_message(update, context):
         if not product_name:
             await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0627\u0633\u0645 \u0627\u0644\u0633\u0644\u0639\u0629.", reply_markup=get_input_keyboard())
             return
-        # v117: باقي السلع تمر بخطوة القياس قبل الكمية
-        await ask_add_size(update, context, product_name, False, "other")
+        await ask_add_qty(update, context, product_name, is_motif=False)
         return
     elif state == STATE_ADD_NAME_MOTIF:
         product_name = text.strip()
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
             return
-        product_name = compose_product_name("motif", product_name)
-        # v117: موتيف تمر بخطوة القياس قبل الكمية
-        await ask_add_size(update, context, product_name, True, "motif")
+        if not product_name.lower().startswith("motif"):
+            product_name = "motif " + product_name
+        await ask_add_qty(update, context, product_name, is_motif=True)
         return
     elif state == STATE_ADD_NAME_12060:
         product_name = text.strip()
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
             return
-        product_name = compose_product_name("12060", product_name)
+        if not product_name.lower().startswith("120/60") and not product_name.lower().startswith("120x60"):
+            product_name = "120/60 " + product_name
         await ask_add_qty(update, context, product_name, is_motif=True)
         return
     elif state == STATE_ADD_NAME_PLANTE:
@@ -9404,83 +8685,18 @@ async def handle_admin_message(update, context):
         if not product_name:
             await update.message.reply_text("❌ أرسل اسم السلعة.", reply_markup=get_input_keyboard())
             return
-        product_name = compose_product_name("plante", product_name)
-        # v117: plante تمر بخطوة القياس قبل الكمية
-        await ask_add_size(update, context, product_name, True, "plante")
+        if not product_name.lower().startswith("plante"):
+            product_name = "plante " + product_name
+        await ask_add_qty(update, context, product_name, is_motif=True)
         return
     elif state == STATE_ADD_QTY:
         qty = parse_crt_input(text)
         if qty is None:
             await update.message.reply_text("\u274c \u0623\u0631\u0633\u0644 \u0639\u062f\u062f \u0627\u0644\u0639\u0644\u0628.\n\u0645\u062b\u0627\u0644: 10 \u0623\u0648 10crt", reply_markup=get_input_keyboard())
             return
+        product_name = context.user_data.get("add_name", "")
         is_motif = context.user_data.get("add_is_motif", False)
-        await ask_add_factory(update, context, qty, is_motif=is_motif)
-        return
-    elif state == STATE_ADD_FACNEW:
-        if _get_role(user.id) not in (ROLE_ADMIN, ROLE_MANAGER):
-            context.user_data.clear()
-            await update.message.reply_text("🚫 إضافة المصانع لمدير البوت فقط.",
-                                            reply_markup=get_admin_keyboard())
-            return
-        _fac_name = " ".join(text.strip().split())
-        if len(_fac_name) < 2:
-            await update.message.reply_text("❌ أرسل اسم المصنع (حرفان على الأقل).",
-                                            reply_markup=get_input_keyboard())
-            return
-        _fac_f, _fac_existed, _fac_err = await asyncio.to_thread(
-            db_add_factory, _fac_name, user.id)
-        if _fac_err or not _fac_f:
-            await update.message.reply_text("❌ " + (_fac_err or "تعذر إضافة المصنع — أعد المحاولة."),
-                                            reply_markup=get_input_keyboard())
-            return
-        try:
-            await asyncio.to_thread(
-                _audit_log, "factory_add",
-                {"id": user.id, "name": user.first_name or ""},
-                details="مصنع: " + _fac_f["name"]
-                        + (" (موجود مسبقاً)" if _fac_existed else ""), ip="bot")
-        except Exception:
-            pass
-        _facs = await asyncio.to_thread(db_list_factories)
-        context.user_data["add_facmap"] = {str(f["id"]): f["name"] for f in _facs}
-        await update.message.reply_text(
-            ("✅ تمت إضافة المصنع: " + _fac_f["name"]) if not _fac_existed
-            else ("ℹ️ المصنع موجود مسبقاً: " + _fac_f["name"]),
-            reply_markup=_addfac_keyboard(_facs, True))
-        return
-    elif state == STATE_ADD_SIZNEW:
-        if _get_role(user.id) not in (ROLE_ADMIN, ROLE_MANAGER):
-            context.user_data.clear()
-            await update.message.reply_text("🚫 إضافة القياسات لمدير البوت فقط.",
-                                            reply_markup=get_admin_keyboard())
-            return
-        _size_name = " ".join(text.strip().split())
-        if len(_size_name) < 2:
-            await update.message.reply_text("❌ أرسل القياس (حرفان على الأقل).",
-                                            reply_markup=get_input_keyboard())
-            return
-        _ptype = _catsize_norm_cat(context.user_data.get("add_ptype"))
-        _size_s, _size_existed, _size_err = await asyncio.to_thread(
-            db_add_cat_size, _ptype, _size_name, user.id)
-        if _size_err or not _size_s:
-            await update.message.reply_text("❌ " + (_size_err or "تعذر إضافة القياس — أعد المحاولة."),
-                                            reply_markup=get_input_keyboard())
-            return
-        try:
-            await asyncio.to_thread(
-                _audit_log, "size_add",
-                {"id": user.id, "name": user.first_name or ""},
-                details="قياس: " + _size_s["name"] + " (فئة: "
-                        + _CATSIZE_LABELS.get(_ptype, _ptype) + ")"
-                        + (" (موجود مسبقاً)" if _size_existed else ""), ip="bot")
-        except Exception:
-            pass
-        _sizes_all = await asyncio.to_thread(db_list_cat_sizes, _ptype)
-        context.user_data["add_sizemap"] = {str(s["id"]): s["name"] for s in _sizes_all}
-        await update.message.reply_text(
-            ("✅ تمت إضافة القياس: " + _size_s["name"]) if not _size_existed
-            else ("ℹ️ القياس موجود مسبقاً: " + _size_s["name"]),
-            reply_markup=_addsize_keyboard(_sizes_all, True, True))
+        await confirm_add_product(update, context, product_name, qty, is_motif=is_motif)
         return
     # ── Custom date range for movements ──
     if state in ("waiting_mov_range_from", "waiting_mov_range_to"):
@@ -9643,6 +8859,55 @@ async def handle_admin_message(update, context):
         await process_search(update, context, text, admin_view=True)
         return
     # (v19) حُذفت حالة waiting_provide_qty — زر «توفير» في لوحة المعلق أصبح
+    # ── Expense input states ──
+    elif state == STATE_EXPENSE_AMOUNT:
+        try:
+            amount = float(text.strip().replace(",", "."))
+            if amount <= 0:
+                await update.message.reply_text("❌ المبلغ يجب أن يكون أكبر من 0.")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ أرسل رقم صحيح للمبلغ (مثلا: 5000).")
+            return
+        context.user_data["expense_amount"] = amount
+        _set_state(context, STATE_EXPENSE_REASON)
+        await update.message.reply_text(
+            "📝 أرسل سبب المصروف:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ إلغاء", callback_data="exp_cancel")]
+            ]),
+        )
+        return
+
+    elif state == STATE_EXPENSE_REASON:
+        reason = text.strip()
+        if not reason:
+            await update.message.reply_text("❌ أرسل سبب المصروف.")
+            return
+        amount = context.user_data.get("expense_amount", 0)
+        db_user = get_user(update.effective_user.id)
+        user_id = db_user["id"] if db_user else None
+        if not user_id:
+            await update.message.reply_text("❌ خطأ في المستخدم.")
+            context.user_data.clear()
+            return
+        try:
+            expense = add_expense(amount, reason, user_id)
+        except Exception as e:
+            logging.error("[EXPENSE] Add failed: " + str(e))
+            context.user_data.clear()
+            await update.message.reply_text("❌ حدث خطأ في حفظ المصروف.", reply_markup=get_admin_keyboard())
+            return
+        context.user_data.clear()
+        amt_str = f"{amount:,.2f}"
+        await update.message.reply_text(
+            "✅ تم تسجيل المصروف" + chr(10) + chr(10)
+            + "💰 المبلغ: " + amt_str + " د.ج" + chr(10)
+            + "📝 السبب: " + reason,
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+
     # إشعاراً مباشراً بلا مطالبة بكتابة كمية؛ الإضافة تتم من «➕ إضافة كمية»
     # والتسوية والإشعار تلقائيان على كل مسارات الإضافة.
     elif state == STATE_ALERT_MSG:
@@ -9820,7 +9085,7 @@ async def handle_customer_message(update, context):
         state = None
 
     # Handle customer buttons (clear state first)
-    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING]
+    cust_buttons = [BTN_CUST_ALERT, BTN_CUST_ADD, BTN_CUST_REMOVE, BTN_CUST_MOVEMENTS, BTN_CUST_CANCEL, BTN_CUST_ORDER, BTN_CUST_MY_ORDERS, BTN_CUST_PENDING, BTN_CUST_EXPENSES]
 
     # ═══════════════════════════════════════════════════════════
     #  🎯 بوابة الفئات لمسار العميل: البائع/الخارجي يمرّان فقط بما تسمح به فئتهما
@@ -9829,11 +9094,11 @@ async def handle_customer_message(update, context):
     if _cust_role == ROLE_EXTERNAL:
         # 🌍 البائع الخارجي: بحث فقط (زر البحث أو إرسال اسم السلعة) + إلغاء
         # 🔐 صلاحية البحث قابلة للإطفاء من لوحة الصلاحيات
-        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text, user.id):
+        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
-                reply_markup=get_external_keyboard(user.id),
+                reply_markup=get_external_keyboard(),
             )
             return
         if text in (BTN_CUST_CANCEL, BTN_CANCEL):
@@ -9858,7 +9123,7 @@ async def handle_customer_message(update, context):
     elif _cust_role == ROLE_SELLER:
         # 🛍 البائع: أزرار فئته تُحكم بالصلاحيات الديناميكية (لوحة 🔐 الصلاحيات)
         # البحث: صلاحية مستقلة قابلة للإطفاء
-        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text, user.id):
+        if text == BTN_SEARCH and not _btn_perm_ok(_cust_role, text):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
@@ -9874,7 +9139,7 @@ async def handle_customer_message(update, context):
             or text.startswith(BTN_PENDING_ADMIN)
         )
         # زر معروف → يُقبل فقط إن كانت صلاحيته مفعّلة (زر غير مربوط = مسموح)
-        if _known_btn and not _btn_perm_ok(_cust_role, text, user.id):
+        if _known_btn and not _btn_perm_ok(_cust_role, text):
             await update.message.reply_text(
                 "❌ هذا الإجراء خارج صلاحيات فئتك ("
                 + ROLE_LABELS.get(_cust_role, _cust_role) + ").",
@@ -9896,7 +9161,7 @@ async def handle_customer_message(update, context):
 
     # 🛍 البائع: إنشاء فاتورة (نفس مسار فاتورة الإدارة) — ولغير البائع رفض صريح
     if text == BTN_INVOICE:
-        if _get_role(user.id) == ROLE_SELLER and user_perm_enabled(user.id, ROLE_SELLER, PERM_INVOICE):
+        if _get_role(user.id) == ROLE_SELLER and role_perm_enabled(ROLE_SELLER, PERM_INVOICE):
             _set_state(context, STATE_INVOICE_CUSTOMER)
             context.user_data["invoice_items"] = []
             await update.message.reply_text(
@@ -9949,6 +9214,10 @@ async def handle_customer_message(update, context):
 
         if text == BTN_CUST_MOVEMENTS:
             await _show_all_movements(update, context, admin_view=False)
+            return
+
+        if text == BTN_CUST_EXPENSES:
+            await _show_user_expenses(update, context)
             return
 
     # ── Custom date range for movements ──
@@ -11754,9 +11023,6 @@ def build_application():
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CallbackQueryHandler(callback_addtype_handler, pattern="^addtype_"))
     app.add_handler(CallbackQueryHandler(callback_add_handler, pattern="^add_(confirm|cancel)$"))
-    app.add_handler(CallbackQueryHandler(callback_addfac_handler, pattern="^addfac_"))   # v115: اختيار/إضافة اسم المصنع
-    app.add_handler(CallbackQueryHandler(callback_addsize_handler, pattern="^addsize_"))  # v117: اختيار/إضافة القياس
-    app.add_handler(CallbackQueryHandler(callback_delsize_handler, pattern="^delsize"))   # v118: حذف قياس من فئة
     app.add_handler(CallbackQueryHandler(callback_approval_handler, pattern="^(approve|reject)_"))
     # 🎯 نظام الفئات: اختيار فئة المستخدم الجديد + التفعيل بالفئة + إدارة الفئات من اللوحة
     app.add_handler(CallbackQueryHandler(callback_pickrole_handler, pattern="^pickrole_"))
@@ -11768,7 +11034,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_pwreset_handler, pattern="^pwreset_gen_"))   # v39
     # 🔐 نظام الصلاحيات الديناميكي: لوحة إدارة صلاحيات الفئات من داخل البوت
     app.add_handler(CallbackQueryHandler(callback_perms_handler, pattern="^(permsrole_|permstgl_|permsdone)"))
-    app.add_handler(CallbackQueryHandler(callback_uperm_handler, pattern="^(uperm|upt|upr|upx)_"))   # v107: صلاحيات لكل مستخدم
     # 🚫 بوابة الطرد: أول معالج على كل تحديث — المطرود لا يصلحه شيء (v23)
     app.add_handler(TypeHandler(Update, kicked_gate), group=-2)
     # خطوة التأكيد قبل تغيير أي دور + أدوات لوحة المستخدمين
@@ -11797,6 +11062,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(callback_provide_handler, pattern="^provide_"))
     app.add_handler(CallbackQueryHandler(callback_product_select_handler, pattern="^psel_"))
     app.add_handler(CallbackQueryHandler(callback_product_action_handler, pattern="^pact_"))
+    app.add_handler(CallbackQueryHandler(callback_expense_handler, pattern="^exp_(add|cancel|list|back)$"))
+    app.add_handler(CallbackQueryHandler(callback_expense_handler, pattern="^exp_more_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_approve_"))
     app.add_handler(CallbackQueryHandler(callback_extract_approve_handler, pattern="^ext_reject_"))
     app.add_handler(CallbackQueryHandler(callback_incoming_order_handler, pattern="^io_ready_"))
@@ -12154,7 +11421,7 @@ import decimal as _pwa_decimal
 
 PWA_COOKIE = "pwa_sess"
 PWA_SESSION_DAYS = 90   # v94: كان 30 — الجلسة ربع سنوي و«تذكّرني» 180 يوماً منطلقاً خلفياً
-PWA_VERSION = "v119"  # v119 = «مصروفات العمال + حذف المعلق والحذف النهائي + البحث الذكي»: طلبات يوسف الخمسة: «الطلبات المعلقة توجد طلبات معلقة من شهرين او اكثر وهنا احتمال ان السلعة تم استبدالها مباشرة دون تحديث البيانات اجعلها قابلة للحذف عند الضغط مرتين / قائمة المصروفات غير انسيابية تبدو كسجل يجمع كل المصروفات سواء يومي او شهري وهذا غير مجدي بل يخص مصروفات العمال من اجرتهم الشهرية قبل استلامها وذلك لتسجيلها في نهاية شهر مع اختلاف تواريخ بداية ونهاية عملهم / واجهة الاكثر بيعا يرجى ازالتها وترك واجهة الشموع البيانية مع استبدالها بخاصة تنفع مكانها / اضف البحث الذكي في خانة البحث عن السلع مثل البوت لانها لا تعمل في التطبيق / عند حذف سلعة تنتقل لقائمة المحذوفة وتبقى هناك كسلعة قابلة للإسترجاع اجعلها قابلة للحذف نهائيا من المحذوفة بعد الضغط مرتين». التنفيذ: (1) الطلبات المعلقة — زر 🗑 داخل كل صف بتأكيد ضغطتين (5 ثوانٍ) لمن هو مصرح له (المدير أو صاحب صلاحية المعلقة أو صاحب الطلب نفسه)، والحذف علامة dismissed لا مسح للسجل — الصف يختفي من كل القوائم في البوت والتطبيق وإحصاءاتها وشرائح has_pending_deficit، ونظام مرآة العجز (v80) لا يعيد إنشاءه لأن مجموعه المحاسبي يبقى يحتسبه غطاءً للعجز المصرّح بأنه لا يدين لأحد، وأعذار auto_reconcile والتراجع عن حذف عملية تتجاهل المُلغى؛ (2) المصروفات صارت «مصروفات العمال» — جدولا workers وsalary_advances بنمط v110 المملوك (زرع عند الإقلاع وأول طلب + SAVEPOINT لكل عبارة + صفر raise): عامل باسم وراتب شهري وتاريخي بداية/نهاية عمل، وتسبيبات تُسجل منه خلال الشهر (مبلغ + ملاحظة + تاريخ ووقت حرّ مثل المصروفات حرفياً)، واللوحة الجديدة: شريط ‹ شهر › + ثلاثية إجماليات (رواتب الشهر / السلف المصروفة / المتبقي للصرف نهاية الشهر) بتوقيت الجزائر + بطاقة لكل عامل بسلفه وتفاصيلها، والتسبيق لأي صاحب صلاحية مصروفات وإدارة العمال للمدراء وحذف التسبيق للمسجّل نفسه أو الإدارة بتأكيد ضغطتين، وبطاقة الرئيسية وزر الرسائل صارا «👥 مصروفات العمال» بسلف الشهر؛ (3) واجهة «🏆 الأكثر بيعاً» أُزيلت من بطاقة نبض المخزون والرسم البياني (الشموع) بقي كما هو، ومكانها قسمة «👥 سلف العمال — هذا الشهر» بثلاثية الإجماليات وفتح اللوحة بضغطة لمن يملك صلاحية المصروفات؛ (4) البحث الذكي في التطبيق — مسارا السلع وفاتورته لم يقعا على ILIKE فقط: عند صفر نتائج حرفية يُستدعى نفس نواة البوت (_normalize_text + _fuzzy_score: تطبيع / و× إلى x + تسامح أخطاء إملائية Levenshtein ≥ 60%) وترتيب بالنقاط، فما يُجدده البوت يجده التطبيق بنفس القدرة حرفياً؛ (5) الحذف النهائي من قائمة المحذوفة — زر «🗑 حذف نهائي» في قائمة ⋮ للسلعة المؤرشفة يفتح بطاقة تحذير تُظهر عدد الحركات المسجلة، وضغطتان على زر التأكيد تنفذان مسحاً حقيقياً داخل معاملة واحدة (صف السلعة + حركاتها + طلباتها المعلقة — والفواتير تبقى بأسطرها بإسناد product_id إلى NULL) بسجل تدقيق product_purge — لا تراجع بعدها. صفر مساس بمنطق الحفظ أو الإجماليات أو طبقات v106-v118. || سابقه v118 = «قياسات لكل فئة وحذفها»: طلب يوسف — «4 فئات اجعل فئة plante محصورة بين قياسات 08/45 ،08/33،08/60 واضف خيار حذف قياس ما من الفئات». التنفيذ في المنصتين معاً: (1) قاعدة البيانات — جدول category_sizes (فئة + قياس) بفهرس تفرد لكل فئة غير حساس لحالة الأحرف، والزرع مرة واحدة في حياة القاعدة بحارس marker في bot_settings (catsizes_seeded_v118) فلا تعود القياسات التي حذفها المدير عمداً بعد إقلاع جديد؛ plante تُزرع بقياساتها المحصورة حرفياً (08/45 و08/33 و08/60) بلا وراثة من القائمة العامة، وموتيف وباقي السلع يبدآن بأسماء القائمة العامة الحالية (أو الافتراضية 120/60 و30/90 و8/45 و25kg) والمدير يشكّل كل قائمة بعد ذلك بحرية، و120/60 قياسها مثبت بالفئة كما هي؛ (2) التطبيق — منتقي القياس يطلب قائمة الفئة المثبتة فقط (/api/sizes?category=…) فلا يرى المضيف قياسات فئة أخرى، وزر 🗑 داخل كل صف للإدارة فقط بحذف بتأكيد ضغطتين (الأولى تحضّر برسالة والثانية خلال ٥ ثوانٍ تحذف) ثم تحديث فوري للقائمة وإفراغ الاختيار إن كان المحذوف مختاراً، وإضافة قياس جديد تُسجَّل في قائمة الفئة نفسها وصندوق الإضافة صار «إضافة قياس جديد إلى قائمة هذه الفئة»؛ (3) الخادم — GET /api/sizes?category وPOST /api/sizes/add {name, category} وPOST /api/sizes/delete {category, name} (للإدارة فقط: فئتا admin/manager) بسجلي تدقيق size_add/size_delete وفئة غريبة تعود آمناً إلى other؛ (4) البوت — لوحة «٣) اختر القياس» تعرض قياسات الفئة نفسها + زر «🗑 حذف قياس من هذه الفئة» للمدير يفتح لوحة حذف (كل قياس بزر 🗑) ← بطاقة تأكيد توضح أن الحذف من القائمة فقط والسلع المسجلة لا تتأثر وقياس فئة أخرى لا يُمس ← تنفيذ بسجل تدقيق يذكر الفئة وعودة للوحة برسالة نجاح، و«➕ إضافة قياس جديد» يسجَّل في فئة العملية الحالية؛ (5) قاعدة الاسم كما هي حرفياً (الاسم + القياس + المصنع بمنع التكرار وفئة 120/60 تتجاوز الخطوة) وصفر مساس بمنطق الحفظ أو الإجماليات أو طبقات v106-v117. || سابقه v117 = «القياس في معالج الإضافة»: طلب يوسف — «اضف القياس عند كتابة اي سلعة جديدة مع الاسم والكمية والمصنع بنفس صيغة كتابة اسم المصنع والخيارات الجديدة». التنفيذ في المنصتين معاً بنفس آلية اسم المصنع (v115) حرفياً: (1) قاعدة الاسم — القياس يُلحق بعد الاسم قبل المصنع مع منع التكرار إن كتبه المستخدم داخل الاسم (First perla 30/90 ثم اختيار 30/90 يبقى First perla 30/90)، وفئة 120/60 قياسها مثبت بالفئة فلا خطوة قياس لها، والبوت والتطبيق ينتجان الاسم نفسه حرفياً (compose_product_name و__wizComposeName)؛ (2) التطبيق: خطوة ٢ من المعالج أضافت حقل «القياس — اضغط للاختيار (اختياري)» بعد اسم السلعة مباشرة (يختفى في فئة 120/60)، والضغط عليه يفتح واجهة اختيار داخل نفس النافذة: 🚫 بدون قياس + قائمة القياسات من الخادم + صندوق «➕ إضافة القياس واختياره» للإدارة فقط، والمعاينة الحية تعرض الاسم النهائي بالقياس قبل الحفظ؛ (3) خادم التطبيق: جدول sizes مملوك بنمط v115 (زرع آمن عند الإقلاع + زرع عند أول طلب + SAVEPOINT لكل عبارة + صفر raise) بفهرس تفرد غير حساس لحالة الأحرف (lower(btrim(name)))، وزرع أحادي لقياسات المتجر الملاحظة (120/60 و30/90 و8/45 و25kg) مرة واحدة فقط إن كان الجدول فارغاً ولا يتكرر أبداً، ومسارا GET /api/sizes وPOST /api/sizes/add (للإدارة فقط: فئتا admin/manager) بسجل تدقيق size_add؛ (4) البوت: بعد الاسم خطوة جديدة «📏 ٣) اختر القياس (اختياري — يُضاف بعد الاسم):» بأزرار القياسات (حتى 30) + 🚫 بدون قياس + ➕ إضافة قياس جديد للمدير فقط (حالة كتابة STATE_ADD_SIZNEW) ثم الكمية ثم «🏭 ٤) اختر اسم المصنع» كما هي، وبطاقة التأكيد تعرض سطر «📏 القياس» — ومصدر القائمة واحد للمنصتين فما يضيفه المدير في البوت يظهر فوراً في التطبيق والعكس؛ (5) PWA_VERSION v117 + بصمة البانر prod-size. صفر مساس بمنطق الحفظ /api/products/create أو الإجماليات أو طبقات v106-v116. || سابقه v116 = «إشعارات بلا أسماء»: طلب يوسف — «قم بإزالة أسماء المستخدمين الذين اضافو سلعة او اسم سلعة جديدة حتى ولو اسمي لا تجعل اسمي يظهر لأي شخص حتى ولو اضفت سلعة جديدة او عدلتها». التشخيص: اسم الفاعل كان يظهر أمام المستخدمين في موضعين فقط: (1) البث التلغرامي عبر notify_everyone يلحق سطر «👤 الاسم • عبر التطبيق 📱» في إشعارات سلعة جديدة ووصول شاحنة وإرجاع وبيع رابح وحسان وحذف واستعادة سلعة؛ (2) جرس التطبيق — /api/notifications كان يعيد حقل actor والواجهة تعرضه في كل صف. التنفيذ بسطرين جوهريين بلا أي رقع HTML: (1) تلغرام — notify_everyone لم يعد يلحق سطر الاسم إطلاقاً فالنص = العنوان والمحتوى فقط، فلا يعرف أحد من أضاف أو من عدّل أي سلعة ولا يظهر اسم يوسف نفسه لأي أحد؛ وبثوث البوت المباشرة (وصول بضاعة / سلعة جديدة / مخزون منخفض) كانت أصلاً بلا أسماء فبقيت كما هي، وتعديل السلعة لا يبث إشعاراً أصلاً (سجل تدقيق داخلي فقط)؛ (2) جرس التطبيق — /api/notifications يُفرغ حقل actor من كل إشعار قبل إرساله للمتصفح فيعرض الصف «من التطبيق/من تلغرام • الوقت» بلا اسم، وسجل القاعدة يحفظ actor داخلياً كما هو لأغراض التدقيق التقني دون أي عرض للمستخدمين؛ طلبات الانضمام واستعادة الرقم السري للمدراء لم تُمس (الأسماء داخل عناوينها وظيفتها إدارية). صفر مساس بمنطق الحفظ أو الإجماليات أو طبقات v106-v115. || سابقه v115 = «اسم المصنع في معالج الإضافة»: طلب يوسف — «اعجبني التحديث لكن نسيت شيئا ، عند الضغط على الفئات ، بخصوص فئة 120/60 فهي صحيحة حبيت عند الضغط عليها واظهار اسم السلعة والكمية يظهر ايضا اسم المصنع ليظهر بعد الانشاء في الاسم الكامل مع السلعة مثلا Roma blanc الاسم 120/60 القياس اسم المصنع بالضغط عليه يظهر خيارات اسماء المصانع والنتيجة roma blanc 120/60 techno ceram كذلك فئة plante اسم سلعة والكمية واسم المصنع كذلك موتيف اسم سلعة والكمية واسم المصنع ايضا باقي السلع تسجل بالاسم والكمية واسم المصنع خيارات اسم المصنع يجب ان تكون قائمة قابلة للاضافة من طرف مدير البوت والنظام». التنفيذ في المنصتين معاً بقاعدة اسم نهائي موحّدة: (1) قاعدة الاسم — قياس 120/60 يُلحق بعد الاسم (roma blanc ← roma blanc 120/60) كما في مثال يوسف حرفياً، وmotif/plante تبقيان بادئة الفئة كما في v114 (plante blanche 30/60)، وباقي السلع بلا بادئة، واسم المصنع يُلحق في نهاية الاسم لكل الفئات إن اختير (roma blanc 120/60 techno ceram) — البوت والتطبيق ينتجان الاسم نفسه حرفياً بدالة موحّدة (compose_product_name و__wizComposeName بذات القواعد والاختصارات 120/60 و120x60 و120×60)؛ (2) التطبيق: خطوة ٢ من المعالج أضافت حقل «اسم المصنع — اضغط للاختيار (اختياري)» بعد الكمية، والضغط عليه يفتح واجهة اختيار داخل نفس النافذة (بلا نوافذ متداخلة): 🚫 بدون مصنع + قائمة المصانع من الخادم + صندوق «➕ إضافة المصنع واختياره» للإدارة فقط، والمعاينة الحية تعرض الاسم النهائي بالمصنع قبل الحفظ، وبدون اختيار يُسجَّل الاسم كما في v114 حرفياً؛ (3) خادم التطبيق: جدول factories مملوك بنمط v110 (زرع آمن عند الإقلاع + زرع عند أول طلب + SAVEPOINT لكل عبارة + صفر raise) بفهرس تفرد غير حساس لحالة الأحرف (lower(btrim(name))) فلا تكرار مهما اختلفت الحروف — التكرار يعيد الموجود ب existed=true بلا خطأ — ومسارا GET /api/factories (القائمة لكل مستخدم نشط مع can_add) وPOST /api/factories/add (للإدارة فقط: فئتا admin/manager) بسجل تدقيق factory_add؛ (4) البوت: بعد الكمية خطوة جديدة «٣) اختر اسم المصنع (اختياري — يُضاف في نهاية الاسم):» بأزرار المصانع (حتى 30) + 🚫 بدون مصنع + ➕ إضافة مصنع جديد للمدير فقط (حالة كتابة STATE_ADD_FACNEW) ثم بطاقة التأكيد تعرض الاسم النهائي وسطر «🏭 المصنع» — ومصدر القائمة واحد للمنصتين فما يضيفه المدير في البوت يظهر فوراً في التطبيق والعكس؛ (5) PWA_VERSION v115 + بصمة البانر prod-factory. صفر مساس بمنطق الحفظ /api/products/create أو الإجماليات أو طبقات v106-v114. || سابقه v114 = «معالج الإضافة بخطوتين»: طلب يوسف — «في التطبيق بعض المستخدمين لا يعرفون كيفية تسجيل السلع الجديدة، حبيت خطوات مرتبة: يضغط علامة اضافة او + فتظهر واجهة محددة مقسمة حسب الفئة (موتيف، plante، 120/60، باقي السلع — الأسماء كما هي دون أي تغيير)؛ المستخدم يختار الفئة فتظهر واجهة جديدة يكتب فيها اسم السلعة والكمية؛ و120/60 ثابتة بلا إعادة كتابة الفئة مع السلعة». التنفيذ في التطبيق والبوت معاً: (1) نافذة «＋ إضافة سلعة» صارت معالجاً من خطوتين — الخطوة ١: أربع بطاقات فئات كبيرة بنفس أسماء البوت وترتيبه ووحداته (موتيف/120-60/plante بالقطع، باقي السلع بالكرتون)؛ الخطوة ٢: شارة «الفئة مثبتة تلقائياً» + خانة اسم السلعة (بدون الفئة) + خانة الكمية بوحدتها الصحيحة + معاينة حية «يُسجَّل باسم: 120/60 loire gris» + حقول الحد الأدنى والسعر والموقع مطوية تحت «خيارات إضافية — اختياري» بقيمها الافتراضية + زر «← تغيير الفئة» وزر إلغاء؛ (2) البادئة تُلحق تلقائياً عند الحفظ كما في النظام كله — المخزن يظل يسجل «120/60 loire gris» فالبحث والتجميع والوحدات لا تتأثر إطلاقاً؛ (3) بعد النجاح تُغلق النافذة وتُميَّز السلعة الجديدة بلون ذهبي نابض في قائمة المخزون مع تمرير سلس إليها (خطاف window.__wizAdded يمرر الاسم النهائي بالبادئة)؛ (4) البوت: شاشة اختيار النوع أعيدت صياغتها بنفس الترتيب والفواصل وترقيم الخطوة (أسماء الفئات كما هي حرفياً — تلغرام لا يدعم الألوان فالتطابق بالنظام والترتيب)؛ (5) PWA_VERSION v114 + بصمة البانر add-wizard. صفر مساس بمنطق الحفظ /api/products/create أو الإجماليات أو طبقات v106-v113. || سابقه v113 = «السجل أولاً والحذف الآمن»: طلب يوسف — «واجهة المصروفات تظهر شاشة انشاء مصروف جديد مع معلومات اضافية وتحته سجل المصروفات دعنا نعكسه مثل نظام الحركة للمخزون بحيث تظهر سجلات المصروفات وعند الضغط عليه تظهر كل حركات مصروفه ويمكن حذفها من طرف مستخدم لديه صلاحية الوصول للنظام مع علامة + جانبية بالاسفل او بالاعلى تفتح واجهة انشاء مصروف جديد» و«نعم احذفه» بشأن RESET_STOCK_PIN. التنفيذ بخمس طبقات: (1) عكس اللوحة — فتح المصروفات يعرض السجل مباشرة (الإجماليان + «💾 السجل المحفوظ — آخر 60 عملية») وكل صف صار قابلاً للفتح بنقرة يعرض تفاصيل العملية كاملة (المبلغ والسبب والتاريخ والوقت ومن سجّلها) بنمط نظام الحركة؛ (2) حذف آمن بطبقتين — زر «🗑 حذف هذه العملية» يظهر داخل التفاصيل فقط لمن يسمح الخادم له (المسجّل نفسه أو فئة المدير/المدير العام) وبضغطتين تحضير-ثم-تأكيد — ونواة الخادم /api/expenses/delete تتحقق من الصلاحية ووجود العملية قبل DELETE داخل معاملة واحدة بشفاء ذاتي وإعادة محاولة واحدة ورسالة PostgreSQL الحقيقية وسجل تدقيق expenses_delete — والخادم هو مصدر الحقيقة في can_delete وليس الواجهة؛ (3) زر ＋ عائم ثابت أسفل زاوية اللوحة يفتح نموذج «مصروف جديد» (حقوله كما هي حرفياً: مبلغ + سبب اختياري + تاريخ ووقت حرّ) مع زر «→ رجوع إلى السجل» وعودة تلقائية للسجل بعد الحفظ مع وميض العملية الجديدة؛ (4) حذف RESET_STOCK_PIN نهائياً — كان معرّفاً بلا أي استخدام في كل الكود منذ القاعدة الأصلية (مفتاح بلا باب) مع تحذير إقلاع مضلل — اختفى المتغير والتحذير من اللوج للأبد؛ (5) PWA_VERSION v113 + بصمة البانر exp-flip + pin-clean. صفر مساس بالحفظ أو الإجماليات أو طبقات v110-v112. || سابقه v112 = «الاسم الصحيح والسجل لا يموت»: بلاغ يوسف — «تعذّر قراءة سجل المصروفات — column u.tg_username does not exist» و«اودي بديت نتقلق ياك عندنا neon tech». التشخيص: جدول users لا يحتوي عمود tg_username أصلاً — الكود في 11 موضعاً آخر يستعمله كاسم مستعار SQL (u.username AS tg_username) بينما سطر واحد في قراءة سجل المصروفات كتبه كعمود حقيقي ففشل الاستعلام. الإصلاح بطبقتين: (1) العمود الصحيح u.username؛ (2) حصن إضافي — أي فشل مستقبلي في join الأسماء مهما كان سببه لا يقتل السجل: rollback نظيف ثم تُقرأ العمليات فوراً بلا أسماء وتظهر بهوية المسجّل الرقمية (#المعرّف) بدل رسالة خطأ. طمأنة Neon: المشكلة ليست من مزود القاعدة إطلاقاً — عيب سطر واحد في الكود أُصلح، و409 Conflict في اللوج عابر أثناء إعادة النشر (مثيلان لحظياً) يختفي وحده. صفر مساس بالحفظ أو الإجماليات أو أي مسار آخر. || سابقه v111 = «بلا أمثلة وحارس ترحيل صحيح»: بلاغ يوسف — «قم بإزالة أمثلة بنزين وكهرباء وماء وغيرها». أُزيلت شرائح الأسباب الجاهزة (بنزين، كهرباء، ماء، إنترنت، إيجار، صيانة) من لوحة المصروفات كاملة — جافاسكربتها وCSSها ورقعة حقنها (رقعة 53) — وصار حقل السبب حراً بلا أي أمثلة مقترحة ولا placeholder يحمل مثالاً («اختياري» فقط) — السبب يبقى اختيارياً ويُحفظ دائماً بالمبلغ والتاريخ والتوقيت ومن سجّله كما هو. وإصلاح جذري من لوج الإنتاج «ترحيل المصروفات تجاهل بأمان: column "v" does not exist»: حارس marker الترحيل كان يستعلم عمود v غير الموجود في bot_settings (SELECT v FROM bot_settings WHERE key = expenses_v2_migrated) فيفشل الفحص ويُتخطى الترحيل عند كل إقلاع — صار SELECT value FROM ... فيتكتمل ترحيل مصروفات الجدول الغربي القديم expenses إلى expenses_v2 مرة واحدة فقط بالحارس الصحيح ولا يتكرر أبداً. صفر مساس بالجلسات أو الفواتير أو البيانات. || سابقه v110 = «حصن المصروفات»: بلاغ يوسف — «خطأ في الخادم — حاول بعد قليل. المصروفات يجب ان تسجل مثلا بنزين تحفظ سجلات البنزين بالمبلغ والتاريخ والتوقيت ايضا الخاصية لا تشتغل ابدا». التشخيص الجذري: قاعدة الإنتاج (Supabase مشتركة) تحمل جدول expenses غريباً من مصدر خارجي — شفاء v108 (ADD COLUMN IF NOT EXISTS) يضيف الأعمدة الناقصة فقط ولا يستطيع إصلاح قيود مجهولة (id بلا افتراضي، NOT NULL زائدة، أنواع مخالفة، CHECK غريبة) — فأي إدراج/قراءة يرفع استثناءً يصل المتصفح 500 HTML والواجهة تعرض «خطأ في الخادم — حاول بعد قليل» العمياء. الحل النهائي بخمس طبقات: (1) جدول مملوك expenses_v2 بكل أعمدة النظام (id BIGSERIAL + user_id + amount>0 + reason + spent_at افتراضي NOW() + created_at) بلا أي FK أو قيود موروثة من أحد؛ (2) زرع وشفاء معزولان (SAVEPOINT لكل عبارة) عند الإقلاع داخل init_db وعند أول طلب (_expenses_lazy_ready بقفل خيطي) معاً؛ (3) ترحيل أحادي أفضل-جهد من الجدول الغربي القديم بحارس marker في bot_settings (expenses_v2_migrated) يمنع التكرار — فشله يُسجل ويُتخطى ولا يمس الإقلاع ولا البيانات؛ (4) حفظ وقراءة بإعادة محاولة ذاتية: أي فشل يولّد شفاءً فورياً وإعادة واحدة، والفشل النهائي يعيد رسالة الخطأ الحقيقية من PostgreSQL (_pg_err_hint) بدل 500 صامت — ومعالجا المصروفات مغلفان بـ try فلا يصل HTML أبداً والواجهة تعرض السبب الحقيقي دائماً؛ (5) شرائح أسباب سريعة في اللوحة (بنزين، كهرباء، ماء، إنترنت، إيجار، صيانة) بنقرة واحدة تملأ خانة السبب — والمصروف يُحفظ دائماً بالمبلغ والتاريخ والتوقيت ومن سجّله. صفر مساس بالجلسات أو الفواتير أو أي مسار قائم. || سابقه v109 = «المصروفات في الأعلى»: بلاغ يوسف — «لم أجد نظام المصروفات واين اجدها بعد تسجيل عملية وحفظها». التشخيص: النظام يعمل كاملاً منذ v106 (حفظ + سجل آخر 60 عملية + إجماليات اليوم والشهر بتوقيت الجزائر) لكن مدخله الوحيد زر «💰 مصروفات» داخل تبويب الرسائل فقط — لا أثر له في الرئيسية ولا في أي تبويب آخر، والسجل المحفوظ لا يُرى إلا داخل اللوحة نفسها فبدا كأنه غير موجود. الحل بثلاث طبقات بلا أي مساس بالخادم أو البيانات: (1) بطاقة «💰 المصروفات» في أعلى الرئيسية — أول شاشة بعد الدخول — لمن يملك صلاحية expenses فقط: تعرض إجمالي اليوم مباشرة من الخادم وتُبنى وتُزال مع كل تطبيق صلاحيات (تغليف applyPerms) وتُحدَّث عند كل دخول للرئيسية (تغليف loadHome بخنقة 60 ثانية)، والضغط عليها يفتح لوحة المصروفات نفسها عبر تعريض window.expensesOpen من نواة v106؛ (2) رأس واضح للسجل داخل اللوحة «💾 السجل المحفوظ — آخر 60 عملية بالتاريخ والوقت ومن سجّلها» مع زر تحديث ↻ ونص فراغ يشرح أن ما يُحفظ يظهر هنا فوراً؛ (3) بعد كل حفظ ناجح تومض العملية الجديدة باللون الذهبي في أعلى السجل وتُمرّر للعرض تلقائياً — فيرى المستخدم أين حفظت عمليته في اللحظة نفسها. || سابقه v108 = «حصن الإقلاع»: نشر Render انهار مرتين متتاليتين عند تهيئة القاعدة وخرج بـ status 1 — أولًا «check constraint users_role_check violated by some row» ثم «column "spent_at" does not exist» — فتوقف البوت والتطبيق معاً. التشخيص البنيوي: init_db كانت تنفذ دفعات SQL ضخمة وترحيلات عارية داخل try واحد ينتهي بـ raise — أي عبارة سامة واحدة (جدول باسم expenses وُجد في قاعدة الإنتاج من مصدر خارجي بلا أعمدة النظام، أو عمود ناقص، أو قيد قديم) تقتل الإقلاع كله. الحل الدائم بخمس طبقات: (1) قاطع _split_sql_statements واعٍ بأجسام DO $$ والوسوم $tag$ والسلاسل والتعليقات يقسم المخطط والترحيلات عبارة-عبارة (2) كل عبارة/كتلة داخل SAVEPOINT عازل (_safe_exec/_safe_sp): فشلها يُسجَّل ويُتراجع عنها وحدها وتكمل ما بعدها (3) صفر raise: فشل التهيئة لا يخرج من init_db ولا من _pwa_init_tables، وحلقة خلفية تعيد المحاولة كل 60ث حتى النجاح والبوت يصعد في الانتظار (4) شفاء جدول المصروفات الغربي: ADD COLUMN IF NOT EXISTS لكل أعمدة النظام (user_id/amount/reason/spent_at/created_at) قبل فهرسه + طباعة أعمدته الفعلية في اللوج (5) بوتستراب المدير محصّن كذلك. صفر مساس بالبيانات أو الجلسات أو أي مسار قائم. || سابقه v107 = «صلاحيات لكل مستخدم»: طلب يوسف — «كل مستخدم اختار له صلاحية وايضا ماذا يرى وفيما يتحكم» حتى لو فئته «مدير نظام». طبقة جديدة فوق صلاحيات الفئات: جدول user_permissions (تجاوز صريح لكل مستخدم: 1 مفعّلة دائماً / 0 موقفة دائماً / وغياب الصف = يتبع فئته — صفر كسر لمن لا تجاوزات له) ونواة حكم واحدة user_perm_enabled تخدم المنصتين معاً: الحسابات المحمية (ADMIN_IDS/OWNER_IDS) كاملة دائماً لا تُمس، ثم التجاوز الصريح، ثم الفئة. مصفوفة 13 صلاحية (البحث، إضافة/إخراج كمية، الفواتير، طلبات التوريد، طلباتي، الحركة، إضافة/تعديل سلع، المخزون المنخفض، المعلقة، المصروفات، ونظام المستخدمين الجديد PERM_USERS). الإدارة من لوحة المستخدمين في البوت (زر «🎛️ صلاحياته» → تبديل ↔️→✅→❌→↔️ + إعادة ضبط) ومن التطبيق (بطاقة المستخدم → 🎛️ صلاحياته → مصفوفة بثلاث حالات ونقطة حالة «فعّالة الآن» تُحدَّث من الخادم بعد كل حفظ) — عبر مساري GET/POST /api/user/{tid}/perms بسجل تدقيق user_perms. إنفاذ حقيقي لا إخفاء: PWA بواباتها أعيد ربطها كلها على الخريطة الواعية للمستخدم (48 موضعاً)، ووحدات إضافة/تعديل/حذف السلع والطلبات المعلقة وطلبات التوريد صارت صلاحيات وحدات مستقلة بدل بوابة admin العامة، ولوحات تلغرام (الإدارة/عامل المخزون/البائع/الخارجي) تُبنى بتجاوزاته، وأزرار اللوحة الإدارية الموقوفة تختفي ويُرفض إدخالها اليدوي. عائلة إدارة المستخدمين (الموافقة/الفئات/الطرد/الدمج/تسجيلات التطبيق) تُدار الآن ببوابة _can_manage_users فتعمل لمن أُعطيه صلاحية المستخدمين، مع حمايات الملكية السابقة كما هي. تقييد المدراء ممكن الآن؛ منع الذات ومنع الحسابات المحمية في المنصتين؛ التغيير يسري في البوت فوراً (كاش 30ث) وفي التطبيق خلال دقيقة (مزامنة الصلاحيات القائمة). صفر مساس بالجلسات أو الفواتير أو البيانات. || سابقه v106 = «المصروفات والعلامة خارج المحادثة وقاعدة لا تُسقط الإقلاع»: بلاغان من يوسف — نشر Render فشل: «check constraint users_role_check of relation users is violated by some row» فخرج البوت بـ status 1 وتوقف الجميع، و«خانة المصروفات فاشلة تظهر حاول مرة أخرى ، ايضا لا يمكن كتابة تواريخ من اسبوع ماضي ولا يمكن الضغط على حفظ». ثلاثة إصلاحات جذرية: (1) قيد users_role_check صار ديناميكيًا عبر _apply_role_constraint: اتحاد الأدوار القياسية مع كل القيم الموجودة فعلًا في الجدول (DISTINCT role) داخل SAVEPOINT — فلا يمكن لأي صف قديم بأي دور أن يخالف القيد ولا تُمس أي بيانات، وفشله غير المتوقع يُسجّل ويُتجاوز بدل موت init_db كله (و incoming_orders_status_check و transactions_type_check تحصنتا بنقل الـADD داخل حماية DO block)؛ (2) العلامة + العائمة تخفى داخل المحادثة الفردية/الجماعية: حارس في fabTargetOk على #chatThread.on + مراقب MutationObserver على سمة الكلاس يخفيها فور فتح المحادثة ويعيدها على قائمة الرسائل (خارج المحادثة كما طلب يوسف سابقًا)؛ (3) خيار «💰 مصروفات» في رأس قائمة الرسائل — خارج المحادثات — للفئات المصرّح لها (صلاحية expenses جديدة قابلة للتبديل من لوحة الفئات، مزروعة للبائع وعامل المخزون، وللمدراء دائمًا): مبلغ + سبب اختياري (حتى 300 حرف) + تاريخ ووقت حُرّ type=datetime-local بلا أي min/max — الماضي مسموح دائمًا — وزر «حفظ» لا يُقفل إلا أثناء الإرسال فعليًا (ويعود دائمًا في finally) ويعرض رسالة الخادم الحقيقية لا «حاول مرة أخرى» عمياء، والإدراج دائمًا يخزن spent_at (COALESCE مع NOW()) في جدول expenses جديد (amount > 0 + مرجع للمستخدم) + مسارا /api/expenses/add و /api/expenses/list بإجمالي اليوم والشهر بتوقيت Africa/Algiers وسجل تدقيق expenses_add — والأوقات تعود ISO فيعرضها المتصفح بتوقيت الجهاز. صفر مساس بالجلسات أو الفواتير أو أي مسار قائم || سابقه v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
+PWA_VERSION = "v105"  # v105 = «التطبيق يشبه التطبيق»: بلاغ يوسف بعد v104 — «مينذاك نحسك تتمسخر بيا ، كيفاه apk طبق الاصل للقديم pwa / كأنه بدائي لا فرق بينهم ،كنت أنتظر تعديلات عملاقة بعدما انتقلنا لapk». التشخيص: واجهة pwa.html أصلًا شبيهة بالتطبيقات (هيدر + تابات سفلية) فبقي المظهر داخل الـAPK متطابقًا مع الويب حرفيًا. الحل: طبقة «أندرويد أصيل» تُفعَّل داخل التطبيق فقط (UA فيه LeRoiStock ← سمة data-apk على html) — رقعة 49: (1) شريط تطبيق أعمق بظل وعنوان أعرض وأيقونة أكبر؛ (2) شريط التنقل السفلي بنمط Material 3: مؤشر حبّي حول الأيقونة النشطة بدل تعبئة الزر كاملًا + ظل رفعل + ضغط مصغّر؛ (3) ريبِل لمسي حقيقي من نقطة الإصبع على الأزرار والشرائح (يحترم prefers-reduced-motion)؛ (4) اهتزاز خفيف عند تبديل التابات وبداية/إلغاء التسجيل (navigator.vibrate)؛ (5) إبقاء الشاشة مضاءة أثناء التسجيل الصوتي (Wake Lock)؛ (6) شريط انقطاع اتصال أحمر عند offline والضغط عليه يعيد المحاولة ويختفي عند العودة؛ (7) قفز مباشر إلى تاب عبر الهاش #v-inv تمهيدًا لاختصارات الأيقونة لاحقًا؛ (8) إزاحة المحتوى وشارة الإصدار لتناسب الشريط الأطول. في المتصفح/الويب/PWA: صفر مساس — السكربت يعود مبكرًا قبل ضبط أي شيء. APK 105 يضيف للصدفة: خلفية WebView كريمية تقتل وميض الأبيض أثناء إيقاظ الخادم + صفحة خطأ محلية بهوية LE ROI عند فشل أول اتصال (server.errorPath) + شريط حالة بني ملكي + خروج بضغط رجوع مزدوج مع توست «اضغط رجوع مرة أخرى للخروج» || سابقه v104 = «المايك يعمل داخل التطبيق»: بلاغ يوسف بعد أول APK — «حتى الجديد عند الضغط على تسجيل صوتي يفتح الملفات الصوتية مباشرة من الجهاز» و«صدقني لا أجد اي فرق يذكر بين التطبيقين». التشخيص من الكود: زر 🎤 منذ v62 يفتح input file accept=audio/* capture (مسجّل النظام)، وجسر Capacitor يعالج capture للصورة/الفيديو فقط فيُسقط الصوت إلى منتقي ملفات الصوت — بالضبط ما رآه يوسف. الحل بثلاث طبقات: (1) APK بناء 104 يضيف appendUserAgent=LeRoiStock/104؛ (2) رقعة 48 تكتشفه داخل الواجهة وتعيد بناء زر 🎤 (cloneNode يقتل مستمع v62) على محرك v55-v60 الداخلي الكامل الموجود أصلاً في pwa.html: ضغط مطول = chatRecStart (getUserMedia بسلم 3 محاولات + إيقاظ المحرك الصوتي) وأفلت = chatRecHoldEnd إرسال وسحب الإصبع إلغاء — أول ضغطة تُظهر حوار إذن أندرويد الأصلي (RECORD_AUDIO مصرّح في المانيفست والجسر يطلبه عبر onPermissionRequest) ثم يعمل الميكروفون للأبد؛ (3) شارة الإصدار تضيف «• تطبيق أندرويد» داخل التطبيق فقط — تمييز مرئي فوري عن الويب. في المتصفح/الويب: مسار v62 كما هو حرفياً بلا أي تغيير || سابقه v103 = «الاستبدال العام — بلا فاتورة»: بلاغ يوسف — «انا اتكلم عن البوت والتطبيق بصفة عامة وليس خيار انشاء الفواتير فقط» — الاستبدال يجب أن يعمل بلا فاتورة أيضاً: (1) البوت: زر «🔄 استبدال سلعة» يعرض اختيار النمط «🧾 مرتبط بفاتورة» (مسار v102 كاملاً) أو «📦 مخزون فقط» — وعامل المخزون يرى المخزون فقط؛ مسار المخزون: بحث السلعة المُرجَعة ← كميتها (كرتون/قطعة) ← بحث البديلة ← كميتها ← بطاقة تأكيد ← تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال» في رأس شاشة المخزون يفتح لوحة من أربع خطوات بنفس هوية v102؛ (3) نواة execute_general_swap معاملة ذرّية واحدة: قفل الصفين FOR UPDATE ← إرجاع الأصلية ← خصم البديلة (عند العجز تحذير دون رفض — نفس سلوك نواة الفواتير) ← حركتان بسبب «استبدال مخزون» ← سجل تدقيق؛ صلاحية المخزون: مدير/مدير عام/عامل مخزون بصلاحيتي الإضافة والإخراج (perm swapg) + مسارا /api/swap/products و /api/swap/general || سابقه v102 = «استبدال السلعة»: بلاغ يوسف — الزبون أحياناً يغيّر السلعة عند وصوله للمخزن ويُقبل ذلك، لكن تصحيح السجلات كان «أخذ وعطاء» بين البوت والتطبيق: إرجاع الأصلية (إرجاع من زبون) ثم خصم الجديدة (إخراج/بيع) وتبقى الفاتورة تعرض القديمة. الحل بنواة واحدة مشتركة في المنصتين معاً كما طلب يوسف صراحة: (1) البوت: زر «🔄 استبدال سلعة» بجانب إنشاء الفاتورة — محادثة قصيرة: رقم الفاتورة ← اختيار العنصر (أزرار) ← بحث السلعة الجديدة ← الكمية (اقتراح نفس كمية الأصلية) ← السعر (زر «السعر المحفوظ») ← مساحة العلبة (زر «المساحة المحفوظة») ← بطاقة تأكيد كاملة (القديمة/الجديدة/فرق الإجمالي) ثم تنفيذ واحد؛ (2) التطبيق: زر «🔄 استبدال سلعة» في عارض الفاتورة يفتح لوحة من ثلاث خطوات بنفس المسار مع معاينة حية وعدد العلب والفرق المالي وتحذير نقص الرصيد ثم إعادة رسم الفاتورة فوراً؛ (3) النواة المشتركة _invoice_swap_core معاملة ذرّية واحدة: قفل الفاتورة FOR UPDATE ← إرجاع كمية الأصلية للمخزون أولاً (قواعد الإنشاء نفسها: m2 بالكراتين مع إعادة بناء كراتين ما قبل v98 من المساحة، واليدوية بلا معرف لا تُرجع لأنها لم تُخصم) ← خصم الجديدة (عند العجز تحذير دون رفض — سلوك البوت نفسه) ← سجل حركات بسبب «استبدال فاتورة #N» ← تعديل عنصر الفاتورة وإعادة حساب الإجمالي ← تعلّم مساحة العلبة (v98) ← سجل تدقيق؛ PDF يتجدد من القاعدة عند كل تحميل فيعرض الجديد تلقائياً بلا خطوة إضافية. الصلاحية: منشئو الفواتير (مدير/مدير عام/بائع بصلاحية الفواتير الديناميكية) + ملكية الفاتورة (منشئاً أو مكلّفاً) كما في العارض. صفر مساس بالجلسات أو أزرار الإرجاع/الإخراج القائمة || سابقه v101 = «التحديث لا يعلق»: أثناء اختبار v100 بمتصفح Chromium حقيقي (نقرة فعلية + SW نشط) اكتُشف عطل جذري صامت خارج مسار التنزيل نفسه: /icon.png بلا شعار في القاعدة كان يرمي 404، والـSW يخزّن /icon.png مسبقاً في SHELL عبر addAll — أي 404 يُسقط تثبيت الـSW كاملاً، فلا يتثبت SW الجديد (حامل استثناء تنزيل الفاتورة) ويبقى الجهاز عالقاً على SW قديم يعترض /api/* عبر respondWith ويفسد التنزيلات صامتاً في نوافذ standalone — تفسير إضافي لحالة «توست نجاح بلا ملف». الحل: _pwa_icon_bytes تعيد أيقونة افتراضية مضمونة 512×512 مضمّنة في bot.py (كهرمانية بموتيف بلاط) عند غياب الشعار — بالشعار تعود هو — فيكون /icon.png دائماً 200 ويكتمل تثبيت/تحديث الـSW حتماً. وأعيد بعدها اختبار المتصفح الحقيقي كاملاً 19/19: حاسوب = نقرة حقيقية تنزّل facture_10.pdf فعلياً على القرص، أندرويد محاكى = window.open يفتح تبويباً أصلياً يستلم 200 + attachment; filename="invoice_10.pdf" بطول مطابق لبايتات المولد والـSW نشط لا يتدخل، standalone كذلك، وبلا جلسة رسالة الخادم الحقيقية بلا توليد ولا نوافذ || سابقه v100 = «الملف يصل للجهاز»: بلاغ يوسف بعد v99 — «تحميل الفاتورة لكن الملف المحمل لا يوجد في الجهاز». تشخيصان جديدان من الكود: (1) السِوِس ووركر كان يعترض GET /api/invoice/pdf ويمرّر ملف التنزيل عبر أنبوب respondWith الخاص به فتُفشل التنزيلات صامتاً في نافذة التطبيق — أصبح مستثنى نهائياً (return بلا respondWith) فيدير المتصفح الأصلي التنزيل من الترويسة مباشرة؛ (2) الفحص المسبق (probe) كان داخل النقرة بعد await فيُفقد إيماءة المستخدم وتُحجب النوافذ — أصبح استباقياً عند فتح العارض (window.invPreprobe) فتبقى النقرة متزامنة؛ (3) مسار الهاتف صار فتح تبويب متصفح أصلي لمسار attachment (window.open ثم سقوط location.href) — مدير تنزيل النظام يستلم الملف حتماً (إشعار + مجلد التنزيلات) بعيداً عن كل طبقات التطبيق، والحاسوب يبقى fetch+blob المجرّب — صفر مساس بالجلسات أو البيانات. || سابقه v99 = «تحميل يشتغل فعلاً»: بلاغ يوسف — أزرار «فتح PDF خارجياً» و«مشاركة» و«تحميل» لا تعمل على الهاتف. التشخيص من الكود: الثلاثة كانت تعتمد مسارات ميتة في نافذة standalone/وبفيو أندرويد (window.open محجوب، ومشاركة الملف تسقط إليه، وتنزيل blob:a.download يُتجاهل صامتاً). الحل: حذف الزرّين الميتين نهائياً + زر تحميل واحد بارز «تحميل PDF على الجهاز» — على الهاتف المثبّت تنقّل مباشر إلى /api/invoice/pdf بترويسة Content-Disposition: attachment فيتولى مدير تنزيل أندرويد الملف (إشعار + مجلد التنزيلات)، وعلى الحاسوب نفس مسار fetch+blob السليم، وكلاهما يسبقه فحص probe=1 خفيف بلا توليد PDF يرجع رسالة الخطأ الحقيقية قبل أي تنقّل — صفر مساس بالجلسات أو البيانات. || سابقه v98 = «كراتين الفاتورة»: عدد العلب لكل صنف m² يظهر أخيراً في كل مكان — كانت تُحسب عند الإنشاء ثم تُرمى (INSERT بلا أعمدة كراتين) فلا تظهر في العارض ولا PDF المُعاد توليده — الحل: عمودا box_area/num_boxes في invoice_items + box_area محفوظة لكل منتج (تعلّم ذاتي من أول فاتورة بدل 1.44 التخميني) + عمود «علب/Cartons» في PDF وعارض التطبيق + صف «إجمالي الكراتين» بجانب الإجمالي المالي + العرض الدقيق الكسري (50 أو 50.5 كما طلب يوسف) مع بقاء ceil للسحب المخزني كما هو + إصلاح مراجعة البوت التي كانت تعرض المتر المربع باسم «علبة» — صفر مساس بالجلسات أو البيانات. || سابقه v97 = «جسر الفواتير»: عارض فاتورة أصلي داخل التطبيق (HTML/CSS بلا iframe — أندرويد لا يعرض PDF داخله) + «فتح PDF خارجياً» بمتصفح النظام + مشاركة الملف عبر لوحة النظام (Web Share) + الفاتورة تصل للمكلَّف به في التطبيق (فلترة admin_id OR worker_id + صلاحية invoice_view + شارة «مكلّف بها» وبطاقة عدّاد) + نسخة PDF للعامل في تلغرام لا نصاً فقط + مسار /api/invoice/get JSON للعارض — صفر مساس بالجلسات أو البيانات. || سابقه v96 = «واجهة المستخدمين الاحترافية»: بطاقات بأفاتار شخصي (placeholder بلون الفئة والحرف الأول عند غيابه) + صف أزرار مستقل يمنع سحق عمود الاسم (سبب «الأسماء العمودية حرف بحرف»: أزرار الإجراءات كانت تلتهم عرض flex) + /api/user/{tid}/avatar بكاش يومي دون تنفخ رد القائمة — صفر مساس بالجلسات أو البيانات. سابقه v95 = «صياغة واضحة للأكثر بيعاً»: «بيع 563 وحدة • عبر 9 عمليات بيع» بجمع عربي صحيح (1 عملية واحدة/2 عمليتي/3-10 عمليات/11+ عملية) + «إجمالي الكمية المبيعة» و«عدد عمليات البيع» مع معدل الوحدات لكل عملية في التفاصيل — بدل «مبيعة» الغامضة. سابقه v94 = «حارس الجلسة»: لا وميض لشاشة الدخول (سبلاش استعادة فوري) + دخول تلقائي صامت عند الإقلاع وعند انتهاء الجلسة + لا مسح لرمز التذكّر على الأخطاء العابرة (يمسح فقط عند رفض قاطع remember_invalid) + دوران مشروط 7 أيام مع نافذة سماح 15 دقيقة + تمديد انزلاقي 180 يوماً + جلسة 90 يوماً + حد 10 أجهزة
 _PWA_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")   # v41: فلاتر التواريخ
 
 # ═══════════ v89: Supabase Storage — الوسائط الجديدة خارج Neon ═══════════
@@ -12369,10 +11636,6 @@ DO $$ BEGIN
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar TEXT;
 EXCEPTION WHEN OTHERS THEN NULL; END $$;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
--- ═══ v119: حذف الطلب المعلق — علامة إلغاء بلا مسح السجل ═══
-DO $$ BEGIN
-    ALTER TABLE pending_deliveries ADD COLUMN IF NOT EXISTS dismissed BOOLEAN NOT NULL DEFAULT FALSE;
-EXCEPTION WHEN OTHERS THEN NULL; END $$;
 -- ═══ v53: وسم الحسابات المدموجة merged_into (الفيديو أسفل بعد إنشاء جدول الرسائل) ═══
 DO $$ BEGIN
     ALTER TABLE users ADD COLUMN IF NOT EXISTS merged_into INTEGER;
@@ -12450,6 +11713,16 @@ DO $$ BEGIN
     ALTER TABLE chat_group_messages ADD CONSTRAINT chat_group_messages_kind_check
         CHECK (kind IN ('text', 'image', 'file', 'audio', 'video'));
 EXCEPTION WHEN OTHERS THEN NULL; END $$;
+
+-- Expenses table
+CREATE TABLE IF NOT EXISTS expenses (
+    id         SERIAL PRIMARY KEY,
+    amount     NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+    reason     VARCHAR(500) NOT NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (created_at DESC);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -13183,11 +12456,6 @@ _PWA_UI2_JS = r"""/* ═══════════════════�
     if (!id) return false;
     var b = document.getElementById(id);
     if (!b || b.disabled) return false;
-    /* v106: العلامة + خارج المحادثة فقط — تخفاء داخل محادثة فردية/جماعية */
-    if (curView === "v-chat") {
-      var th = document.getElementById("chatThread");
-      if (th && th.classList.contains("on")) return false;
-    }
     /* مخفي بالصلاحيات أو القسم الداخلي؟ offsetParent يكشفه بلا قراءة display يدوياً */
     return b.offsetParent !== null;
   }
@@ -13220,16 +12488,6 @@ _PWA_UI2_JS = r"""/* ═══════════════════�
     };
   });
   safe(syncFab);
-
-  /* ── v106: مراقب فتح/إغلاق المحادثة — العلامة + تخفى فورًا داخل المحادثة
-     الفردية/الجماعية وتعود على قائمة الرسائل (خارج المحادثة) بلا انتظار تبديل التاب ── */
-  safe(function () {
-    var th = document.getElementById("chatThread");
-    if (th && typeof MutationObserver === "function") {
-      new MutationObserver(function () { safe(syncFab); })
-        .observe(th, { attributes: true, attributeFilter: ["class"] });
-    }
-  });
 
   /* ── 4) أثر الموجة (Ripple) عند اللمس — تفويض عام، بلا تدخل في الأحداث القائمة ── */
   document.addEventListener("pointerdown", function (e) {
@@ -14174,8 +13432,8 @@ function ensureCard() {
     + '<div class="v93legend" id="v93legend" style="display:none">'
     + '<span class="l-sold"><i></i>بيع</span><span class="l-add"><i></i>توريد</span></div>'
     + '<div class="v93tap" id="v93tap"></div>'
-    + '<p class="sect" style="margin:12px 0 2px;display:none" id="v93wkh">👥 سلف العمال — هذا الشهر</p>'
-    + '<div id="v93wk" style="display:none"></div>';
+    + '<p class="sect" style="margin:12px 0 2px">🏆 الأكثر بيعاً — اضغط على السلعة لتفاصيلها</p>'
+    + '<div class="v93top" id="v93top"><p class="v93empty">جارِ التحميل...</p></div>';
   var grid = home.querySelector(".grid");
   if (grid && grid.parentElement) grid.parentElement.insertBefore(card, grid.nextSibling);
   else home.appendChild(card);
@@ -14330,6 +13588,7 @@ function load() {
     if (d.hidden) return;
     renderSum(d);
     renderChart(d);
+    renderTop(d);
   }).catch(function (e) {
     if (my !== ST.seq) return;
     if (chart) chart.innerHTML = '<p class="v93empty">تعذر تحميل الإحصائيات — اسحب الشاشة لأسفل للتحديث.</p>';
@@ -15186,1788 +14445,6 @@ try {
 })();
 })();'''
 
-_PWA_V106_CSS = r'''/* ═══ v106: المصروفات — لوحة بهوية التطبيق (RTL كهرماني) ═══
-   الزر في رأس قائمة الرسائل (خارج المحادثات) واللوحة فوق كل شيء. */
-#chatHome .invhead{flex-wrap:wrap;gap:8px}
-.exp106ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99990;
-  display:flex;align-items:center;justify-content:center;padding:14px}
-.exp106card{background:var(--card);color:var(--ink);width:min(94vw,420px);
-  max-height:86vh;overflow:auto;border-radius:18px;padding:14px;
-  border:1px solid var(--goldline);box-shadow:0 18px 50px rgba(0,0,0,.30)}
-.exp106hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.exp106hd b{font-size:15px}
-.exp106hd button{border:none;background:transparent;font-size:17px;color:var(--mut);
-  cursor:pointer;padding:4px 8px;border-radius:8px}
-.exp106form{display:flex;flex-direction:column;gap:9px;margin-bottom:10px}
-.exp106form label{font-size:12.5px;color:var(--mut);display:flex;flex-direction:column;
-  gap:5px;font-weight:700}
-.exp106form input{border:1.5px solid var(--line);background:var(--bg);color:var(--ink);
-  border-radius:11px;padding:11px 12px;font-size:15px;width:100%;box-sizing:border-box}
-.exp106form input:focus{outline:none;border-color:var(--brand)}
-.exp106hint{font-size:11.5px;color:var(--mut);line-height:1.7}
-.exp106err{background:var(--goldsoft);color:#b03030;border:1px solid var(--goldline);
-  border-radius:10px;padding:9px 11px;font-size:12.5px;font-weight:700}
-.exp106tots{display:flex;gap:8px;margin-bottom:8px}
-.exp106tots span{flex:1;background:var(--brandsoft);border-radius:11px;padding:8px 10px;
-  font-size:12.5px;color:var(--mut)}
-.exp106tots b{color:var(--brand);font-size:14px}
-.exp106row{display:flex;justify-content:space-between;gap:10px;padding:9px 2px;
-  border-bottom:1px dashed var(--line);font-size:13px}
-.exp106row:last-child{border-bottom:none}
-.exp106row .l{min-width:0;display:flex;flex-direction:column}
-.exp106row .l b{color:var(--brand);font-size:14px}
-.exp106row .l span{color:var(--mut);font-size:12px;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.exp106row .r{text-align:left;display:flex;flex-direction:column;align-items:flex-start}
-.exp106row .r time{font-size:11.5px;color:var(--mut)}
-.exp106row .r i{font-size:11px;color:var(--mut);opacity:.7;font-style:normal}
-/* ═══ v113: السجل أولاً — تفاصيل قابلة للفتح + حذف آمن + زر ＋ عائم ═══ */
-.exp106main{display:flex;flex-direction:column;min-height:0}
-.exp106fv{display:none}
-.exp106card.fmode .exp106fv{display:block}
-.exp106card.fmode .exp106main{display:none}
-.exp106card.fmode .exp106fab{display:none}
-.exp106row{cursor:pointer;border-radius:9px}
-.exp106row:active{background:var(--brandsoft)}
-.exp106det{display:none;border-top:1px dashed var(--goldline);margin-top:7px;padding-top:7px;
-  font-size:12.5px;color:var(--mut);line-height:2}
-.exp106row.open .exp106det{display:block}
-.exp106det b{color:var(--ink)}
-.exp106del{margin-top:8px;width:100%;border:1.5px solid #d66a5c;background:transparent;
-  color:#c0392b;font-weight:800;font-size:12.5px;border-radius:10px;padding:9px 10px;
-  cursor:pointer;font-family:inherit}
-.exp106del.armed{background:#c0392b;border-color:#c0392b;color:#fff}
-.exp106del:disabled{opacity:.6}
-.exp106back{border:none;background:transparent;color:var(--brand);font-weight:800;font-size:13px;
-  cursor:pointer;padding:2px 4px 10px;font-family:inherit}
-.exp106fab{position:fixed;bottom:26px;inset-inline-end:26px;width:54px;height:54px;border-radius:50%;
-  border:none;background:var(--brand);color:#fff;font-size:28px;line-height:1;
-  box-shadow:0 10px 26px rgba(0,0,0,.30);cursor:pointer;z-index:99995;
-  display:flex;align-items:center;justify-content:center;font-family:inherit}
-.exp106fab:active{transform:scale(.93)}'''
-
-_PWA_V106_JS = r'''/* v106: المصروفات + العلامة + خارج المحادثة.
-   زر «💰 مصروفات» في رأس قائمة الرسائل (خارج المحادثات) للفئات المصرّح لها
-   (صلاحية expenses — للمدراء دائمًا). لوحة: مبلغ + سبب اختياري + تاريخ ووقت
-   حرّ بلا أي min — الماضي مسموح دائمًا (بلاغ يوسف) — وزر «حفظ» لا يُقفل إلا
-   أثناء الإرسال فعليًا ويعرض رسالة الخادم الحقيقية لا «حاول مرة أخرى» عمياء.
-   الإدراج يخزن spent_at دائمًا (الآن عند غياب الاختيار). */
-(function () {
-"use strict";
-
-function q(id) { return document.getElementById(id); }
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-  });
-}
-function fmtMoney(n) {
-  var v = Number(n) || 0;
-  return v.toFixed(Math.abs(v % 1) > 0.001 ? 2 : 0);
-}
-function fmtDT(iso) {
-  try {
-    return new Date(iso).toLocaleString(undefined,
-      { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  } catch (e) { return String(iso || ""); }
-}
-function say(msg, bad) {
-  try { if (typeof toast === "function") { toast(msg, !!bad); return; } } catch (e) {}
-  try { st(msg); } catch (e2) {}
-}
-function allowed() {
-  /* S معلنة بـ let في سكربت pwa.html فلا تصل عبر window — نفحص الرابط المباشر */
-  try { return !!(typeof S !== "undefined" && S.perms && S.perms.expenses); } catch (e) { return false; }
-}
-function toLocalInput(d) {
-  function p(n) { return (n < 10 ? "0" : "") + n; }
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate())
-       + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
-}
-
-/* زر المصروفات في رأس قائمة الرسائل — خارج المحادثات */
-function ensureBtn() {
-  var anchor = q("btnNewChat");
-  if (!anchor) return;
-  var b = q("btnExpenses");
-  if (!allowed()) { if (b) b.remove(); return; }
-  if (!b) {
-    b = document.createElement("button");
-    b.id = "btnExpenses"; b.type = "button";
-    b.className = "btn mini gold";
-    b.textContent = "👥 مصروفات العمال";
-    anchor.parentNode.insertBefore(b, anchor.nextSibling);
-    /* v119: الزر يفتح لوحة مصروفات العمال الجديدة (تجاوز expensesOpen) */
-    b.addEventListener("click", function () {
-      try {
-        if (typeof window.expensesOpen === "function" && window.expensesOpen !== openPanel) {
-          window.expensesOpen();
-          return;
-        }
-      } catch (eW119) {}
-      openPanel();
-    });
-  }
-  b.style.display = "";
-}
-
-function openPanel() {
-  if (!allowed()) { say("خيار المصروفات غير مفعّل لفئتك.", true); return; }
-  if (q("exp106ov")) return;
-  var ov = document.createElement("div");
-  ov.id = "exp106ov"; ov.className = "exp106ov";
-  var card = document.createElement("div");
-  card.className = "exp106card";
-  card.id = "exp106card";
-  /* v113: السجل أولاً (نمط نظام الحركة) — والنموذج خلف زر ＋ عائم */
-  card.innerHTML =
-      '<div class="exp106hd"><b>💰 المصروفات</b>'
-    + '<button type="button" id="exp106x" title="إغلاق">✕</button></div>'
-    + '<div class="exp106main">'
-    + '<div class="exp106tots"><span>اليوم: <b id="exp106tdy">0</b></span>'
-    + '<span>الشهر: <b id="exp106mth">0</b></span></div>'
-    + '<div class="exp106lhd"><b>💾 السجل المحفوظ</b><span>آخر 60 عملية — اضغط أي عملية لتفاصيلها</span>'
-    + '<button type="button" id="exp106rf" title="تحديث السجل">↻</button></div>'
-    + '<div id="exp106list" class="exp106list"><p class="empty">جارِ التحميل...</p></div>'
-    + '</div>'
-    + '<div id="exp106fv" class="exp106fv">'
-    + '<button type="button" class="exp106back" id="exp106back">→ رجوع إلى السجل</button>'
-    + '<div class="exp106form">'
-    + '<label>المبلغ<input id="exp106amt" type="text" inputmode="decimal" '
-    + 'placeholder="0.00" autocomplete="off"></label>'
-    + '<label>السبب — اختياري<input id="exp106rsn" type="text" maxlength="300" '
-    + 'placeholder="اختياري" autocomplete="off"></label>'
-    + '<label>التاريخ والوقت<input id="exp106dt" type="datetime-local"></label>'
-    + '<div class="exp106hint">التاريخ حرّ — يمكنك تسجيل أي يوم ماضٍ، ويُحفظ التاريخ والتوقيت دائمًا.</div>'
-    + '<button type="button" class="btn gold" id="exp106save">حفظ</button>'
-    + '<div id="exp106err" class="exp106err" style="display:none"></div>'
-    + '</div>'
-    + '</div>'
-    + '<button type="button" class="exp106fab" id="exp106fab" title="مصروف جديد">＋</button>';
-  ov.appendChild(card);
-  document.body.appendChild(ov);
-  q("exp106x").addEventListener("click", function () { ov.remove(); });
-  ov.addEventListener("click", function (e) { if (e.target === ov) ov.remove(); });
-  try {
-    document.addEventListener("keydown", function esc106(ev) {
-      if (ev.key === "Escape" && !q("exp106ov")) {
-        document.removeEventListener("keydown", esc106);
-      } else if (ev.key === "Escape") {
-        if (card.classList.contains("fmode")) { showList(); return; }
-        document.removeEventListener("keydown", esc106);
-        ov.remove();
-      }
-    });
-  } catch (e0) {}
-  var dt = q("exp106dt");
-  try { dt.value = toLocalInput(new Date()); } catch (e1) { dt.value = ""; }
-  /* لا min ولا max عمدًا — الماضي حرّ دائمًا (بلاغ يوسف: لا يمكن كتابة تواريخ من أسبوع ماضٍ) */
-  q("exp106save").addEventListener("click", save);
-  q("exp106rf").addEventListener("click", function () { load(); });
-  q("exp106fab").addEventListener("click", showForm);
-  q("exp106back").addEventListener("click", showList);
-  load();
-}
-
-function showErr(msg) {
-  var err = q("exp106err");
-  if (!err) return;
-  err.textContent = msg;
-  err.style.display = "block";
-}
-
-/* v113: تبديل العرضين — السجل افتراضيًا والنموذج خلف زر ＋ */
-function showForm() {
-  var c = q("exp106card");
-  if (c) c.classList.add("fmode");
-  var a = q("exp106amt");
-  if (a) { try { setTimeout(function () { try { a.focus(); } catch (e) {} }, 90); } catch (e0) {} }
-}
-function showList() {
-  var c = q("exp106card");
-  if (c) c.classList.remove("fmode");
-}
-/* v113: حذف بثبات — ضغطة تحضير ثم تأكيد، والخطأ الحقيقي يظهر كتوست */
-async function delClick(btn) {
-  if (btn.getAttribute("data-armed") !== "1") {
-    btn.setAttribute("data-armed", "1");
-    btn.classList.add("armed");
-    btn.textContent = "اضغط مجددًا لتأكيد الحذف";
-    return;
-  }
-  var idv = parseInt(btn.getAttribute("data-del") || "0", 10);
-  btn.disabled = true; btn.textContent = "جارٍ الحذف...";
-  try {
-    var d = await api("/api/expenses/delete", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: idv }) });
-    if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر الحذف.");
-    say(d.message || "✅ تم حذف العملية من السجل");
-    load();
-  } catch (e) {
-    btn.disabled = false;
-    btn.removeAttribute("data-armed");
-    btn.classList.remove("armed");
-    btn.textContent = "🗑 حذف هذه العملية";
-    say(e.message || "تعذر الحذف — تحقق من الشبكة وحاول مجددًا.", true);
-  }
-}
-
-async function save() {
-  var amtEl = q("exp106amt"), btn = q("exp106save");
-  if (!amtEl || !btn) return;
-  var err = q("exp106err");
-  if (err) err.style.display = "none";
-  var raw = (amtEl.value || "").trim().replace(/,/g, ".").replace(/\u060c/g, ".");
-  var amt = parseFloat(raw);
-  if (!isFinite(amt) || amt <= 0) {
-    showErr("المبلغ غير صالح — اكتب رقمًا أكبر من صفر.");
-    return;
-  }
-  var dtVal = q("exp106dt") ? q("exp106dt").value : "";
-  var iso = "";
-  if (dtVal) {
-    var d = new Date(dtVal);
-    if (!isNaN(d.getTime())) iso = d.toISOString();
-  }
-  var oldTxt = btn.textContent;
-  btn.disabled = true; btn.textContent = "جارٍ الحفظ...";
-  try {
-    var d2 = await api("/api/expenses/add", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount: amt,
-        reason: (q("exp106rsn") ? q("exp106rsn").value.trim() : ""),
-        spent_at: iso || null }) });
-    if (!d2 || d2.ok !== true) throw new Error((d2 && d2.error) || "تعذر الحفظ.");
-    say(d2.message || "✅ تم الحفظ مع التاريخ والوقت");
-    amtEl.value = "";
-    if (q("exp106rsn")) q("exp106rsn").value = "";
-    try { if (q("exp106dt")) q("exp106dt").value = toLocalInput(new Date()); } catch (e3) {}
-    showList();
-    load(true);
-  } catch (e4) {
-    showErr(e4.message || "تعذر الحفظ — تحقق من الشبكة وحاول مجددًا.");
-  } finally {
-    btn.disabled = false; btn.textContent = oldTxt;
-  }
-}
-
-async function load(flash) {
-  if (!allowed()) return;
-  var box = q("exp106list");
-  if (!box) return;
-  try {
-    var d = await api("/api/expenses/list", { noCache: true });
-    if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر التحميل.");
-    if (q("exp106tdy")) q("exp106tdy").textContent = fmtMoney(d.today_total);
-    if (q("exp106mth")) q("exp106mth").textContent = fmtMoney(d.month_total);
-    var items = d.items || [];
-    if (!items.length) {
-      box.innerHTML = '<p class="empty">لا مصروفات محفوظة بعد — اضغط زر ＋ لتسجيل أول عملية وستظهر هنا فورًا.</p>';
-      return;
-    }
-    /* v113: صفوف قابلة للفتح (نمط نظام الحركة) — التفاصيل والحذف بالداخل */
-    var html = "";
-    items.forEach(function (it) {
-      html += '<div class="exp106row">'
-        + '<div class="l"><b>' + esc(fmtMoney(it.amount)) + '</b>'
-        + '<span>' + esc(it.reason || "بدون سبب") + '</span></div>'
-        + '<div class="r"><time>' + esc(fmtDT(it.spent_at)) + '</time>'
-        + (it.by ? '<i>' + esc(it.by) + '</i>' : '') + '</div>'
-        + '<div class="exp106det">'
-        + '<div>المبلغ: <b>' + esc(fmtMoney(it.amount)) + '</b> — السبب: <b>' + esc(it.reason || "بدون سبب") + '</b></div>'
-        + '<div>التاريخ والوقت: <b>' + esc(fmtDT(it.spent_at)) + '</b></div>'
-        + '<div>سجّلها: <b>' + esc(it.by || "—") + '</b></div>'
-        + (it.can_delete
-          ? '<button type="button" class="exp106del" data-del="' + esc(it.id) + '">🗑 حذف هذه العملية</button>'
-          : '')
-        + '</div></div>';
-    });
-    box.innerHTML = html;
-    box.onclick = function (ev) {
-      var tg = ev.target || ev.srcElement;
-      if (tg.closest && tg.closest(".exp106del")) { delClick(tg.closest(".exp106del")); return; }
-      var row = tg.closest ? tg.closest(".exp106row") : null;
-      if (row) row.classList.toggle("open");
-    };
-    if (flash) {
-      var nw = box.firstElementChild;
-      if (nw && nw.classList) {
-        nw.classList.add("new");
-        try { nw.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (e5b) {}
-      }
-    }
-  } catch (e2) {
-    box.innerHTML = '<p class="empty">' + esc(e2.message || "تعذر التحميل") + '</p>';
-  }
-}
-
-/* الإقلاع: بعد جاهزية الصلاحيات + عند كل دخول لتبويب الرسائل */
-try {
-  var origEnter = window.chatEnter;
-  if (typeof origEnter === "function") {
-    window.chatEnter = function () {
-      var r = origEnter.apply(this, arguments);
-      try { setTimeout(ensureBtn, 60); } catch (e5) {}
-      return r;
-    };
-  }
-} catch (e6) {}
-setTimeout(ensureBtn, 1200);
-setTimeout(ensureBtn, 3000);
-/* v109: تعريض فاتح اللوحة ومحدّث السجل لبطاقة الرئيسية — نفس اللوحة بالضبط */
-try { window.expensesOpen = openPanel; window.expensesReload = load; } catch (e7) {}
-})();'''
-
-_PWA_V107_CSS = r'''/* ═══ v107: صلاحيات لكل مستخدم — لوحة المصفوفة ثلاثية الحالة ═══ */
-.u107ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99990;
-  display:flex;align-items:center;justify-content:center;padding:14px}
-.u107card{background:var(--card);color:var(--ink);width:min(94vw,440px);
-  max-height:86vh;overflow:auto;border-radius:18px;padding:14px;
-  border:1px solid var(--goldline);box-shadow:0 18px 50px rgba(0,0,0,.30)}
-.u107hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.u107hd b{font-size:15px}
-.u107hd button{border:none;background:transparent;font-size:17px;color:var(--mut);cursor:pointer}
-.u107sub{font-size:12.5px;color:var(--mut);margin-bottom:8px}
-.u107hint{font-size:11.5px;color:var(--mut);background:var(--bg);border-radius:10px;
-  padding:7px 9px;margin-bottom:10px;line-height:1.7}
-.u107row{display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:7px 2px;border-bottom:1px dashed var(--goldline)}
-.u107row:last-child{border-bottom:none}
-.u107nm{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
-.u107dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:0 0 auto}
-.u107dot.g{background:#22a06b;box-shadow:0 0 0 3px rgba(34,160,107,.15)}
-.u107dot.x{background:#c2c8d0}
-.u107sg{display:flex;gap:4px}
-.u107seg{border:1px solid var(--goldline);background:var(--bg);border-radius:9px;
-  min-width:34px;height:30px;font-size:13.5px;cursor:pointer;color:var(--ink);opacity:.55}
-.u107seg.on{opacity:1;background:var(--brand);color:#fff;border-color:var(--brand);
-  box-shadow:0 3px 10px rgba(217,166,72,.35)}
-.u107ft{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
-.u107msg{font-size:12.5px;color:var(--mut)}
-.u107msg.ok{color:#22a06b;font-weight:700}
-.u107msg.err{color:#e05d4b;font-weight:700}'''
-
-_PWA_V107_JS = r'''/* v107: صلاحيات لكل مستخدم — زر 🎛️ على بطاقة المستخدم + لوحة مصفوفة
-   ثلاثية الحالة (↔️ يتبع الفئة / ✅ مفعّلة دائماً / ❌ موقفة دائماً).
-   لا تلاعب بسلسلة v96: تزيين DOM بعد كل رسم + تفويض نقر على المستند. */
-(function () {
-"use strict";
-function q(id) { return document.getElementById(id); }
-function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-  return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-var cur = null;
-
-function canManage() {
-  try { return !!(typeof S !== "undefined" && S && S.perms && S.perms.users); } catch (e) { return false; }
-}
-
-/* 1) زر 🎛️ يُضاف لبطاقات المستخدمين بعد كل رسم (حيث زر «🎯 الفئة» = غير محمي وغيره) */
-function decorate() {
-  if (!canManage()) return;
-  var box = q("usrList");
-  if (!box) return;
-  var rbs = box.querySelectorAll("button[data-role]");
-  for (var i = 0; i < rbs.length; i++) {
-    var rb = rbs[i];
-    var acts = rb.closest ? rb.closest(".u96acts") : null;
-    if (!acts || acts.querySelector("button[data-u107p]")) continue;
-    var b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn mini purple";
-    b.setAttribute("data-u107p", rb.getAttribute("data-role") || "");
-    b.setAttribute("data-n", rb.getAttribute("data-n") || "");
-    b.textContent = "🎛️ صلاحياته";
-    acts.appendChild(b);
-  }
-}
-try {
-  var origRU = window.renderUsers;
-  window.renderUsers = function () {
-    var r = origRU ? origRU.apply(this, arguments) : undefined;
-    try { decorate(); } catch (e) {}
-    return r;
-  };
-} catch (e1) {}
-
-/* 2) النقر يفتح اللوحة — تفويض على المستند فلا نلمس سلسلة توزيع v96 */
-document.addEventListener("click", function (ev) {
-  var t = ev.target;
-  if (!t || !t.closest) return;
-  var b = t.closest("button[data-u107p]");
-  if (!b) return;
-  window.openPerms107(b.getAttribute("data-u107p"), b.getAttribute("data-n") || "");
-});
-
-/* 3) اللوحة */
-function segBtn(state, active) {
-  return '<button type="button" class="u107seg' + (active ? " on" : "") + '" data-s="' + state + '">'
-    + (state === "1" ? "✅" : state === "0" ? "❌" : "↔️") + "</button>";
-}
-function rowHTML(p, lbl, st, eff) {
-  return '<div class="u107row" data-p="' + esc(p) + '">'
-    + '<div class="u107nm"><span class="u107dot ' + (eff ? "g" : "x") + '" title="'
-    + (eff ? "فعّالة الآن" : "موقفة الآن") + '"></span>' + esc(lbl) + "</div>"
-    + '<div class="u107sg">'
-    + segBtn("", st === undefined || st === null)
-    + segBtn("1", st === 1 || st === "1")
-    + segBtn("0", st === 0 || st === "0")
-    + "</div></div>";
-}
-function bindRows() {
-  var ov = q("u107ov");
-  if (!ov) return;
-  ov.querySelectorAll(".u107row button").forEach(function (b) {
-    b.addEventListener("click", function () {
-      var row = b.closest(".u107row");
-      sendPerm(row.getAttribute("data-p"),
-               b.getAttribute("data-s") === "1" ? 1 : b.getAttribute("data-s") === "0" ? 0 : null, b);
-    });
-  });
-  var rs = q("u107reset");
-  if (rs) rs.addEventListener("click", function () {
-    if (!window.confirm("إعادة ضبط كل صلاحياته لتتبع فئته؟")) return;
-    sendPerm(null, null, null, true);
-  });
-}
-async function sendPerm(perm, state, btn, reset) {
-  var ov = q("u107ov"), msg = q("u107msg");
-  if (msg) { msg.textContent = "جارٍ الحفظ…"; msg.className = "u107msg"; }
-  if (btn) btn.disabled = true;
-  try {
-    var res = await fetch("/api/user/" + cur.tid + "/perms", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(reset ? { reset: true } : { perm: perm, state: state })
-    });
-    var d = await res.json().catch(function () { return {}; });
-    if (res.status === 200 && d.ok) {
-      if (msg) { msg.textContent = "✅ " + (d.message || "تم الحفظ"); msg.className = "u107msg ok"; }
-      if (d.effective) {
-        ov.querySelectorAll(".u107row").forEach(function (r) {
-          var p = r.getAttribute("data-p");
-          var dot = r.querySelector(".u107dot");
-          if (dot && (p in d.effective)) {
-            dot.className = "u107dot " + (d.effective[p] ? "g" : "x");
-            dot.title = d.effective[p] ? "فعّالة الآن" : "موقفة الآن";
-          }
-        });
-      }
-      if (reset) { await reload(); }
-      else {
-        var rr = ov.querySelector('.u107row[data-p="' + perm + '"]');
-        if (rr) {
-          rr.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
-          var sel = state === 1 ? 'button[data-s="1"]' : state === 0 ? 'button[data-s="0"]' : 'button[data-s=""]';
-          var sb = rr.querySelector(sel);
-          if (sb) sb.classList.add("on");
-        }
-      }
-    } else {
-      if (msg) { msg.textContent = (d && d.error) || ("فشل الحفظ (" + res.status + ")"); msg.className = "u107msg err"; }
-    }
-  } catch (e) {
-    if (msg) { msg.textContent = "تعذر الاتصال بالخادم."; msg.className = "u107msg err"; }
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-async function reload() {
-  try {
-    var res = await fetch("/api/user/" + cur.tid + "/perms", { credentials: "same-origin" });
-    var d = await res.json().catch(function () { return {}; });
-    if (res.status === 200 && d.ok) paint(d);
-  } catch (e) {}
-}
-function paint(d) {
-  var body = q("u107body");
-  if (!body) return;
-  var tgt = d.target || {};
-  var sub = q("u107sub");
-  if (sub) sub.textContent = (tgt.role_label || "") + (tgt.protected ? " • 🛡 محمي (كامل دائماً)" : "");
-  var h = "";
-  (d.matrix || []).forEach(function (p) {
-    h += rowHTML(p, (d.labels || {})[p] || p, (d.states || {})[p], !!(d.effective || {})[p]);
-  });
-  body.innerHTML = h;
-  bindRows();
-  var msg = q("u107msg");
-  if (msg) { msg.textContent = ""; }
-}
-window.openPerms107 = async function (tid, name) {
-  if (!canManage()) return;
-  cur = { tid: tid, name: name };
-  var old = q("u107ov");
-  if (old) old.remove();
-  var wrap = document.createElement("div");
-  wrap.id = "u107ov";
-  wrap.className = "u107ov";
-  wrap.innerHTML =
-    '<div class="u107card">'
-    + '<div class="u107hd"><b>🎛️ صلاحياته — ' + esc(name) + '</b>'
-    + '<button type="button" id="u107close">✕</button></div>'
-    + '<div class="u107sub" id="u107sub">…</div>'
-    + '<div class="u107hint">↔️ يتبع فئته • ✅ مفعّلة دائماً • ❌ موقفة دائماً — '
-    + "التغيير يسري في البوت فوراً وفي التطبيق خلال دقيقة كحد أقصى.</div>"
-    + '<div id="u107body"><p class="empty">جارِ التحميل…</p></div>'
-    + '<div class="u107ft"><button type="button" class="btn soft-e" id="u107reset">↩️ إعادة ضبط لتتبع الفئة</button>'
-    + '<span class="u107msg" id="u107msg"></span></div>'
-    + "</div>";
-  document.body.appendChild(wrap);
-  q("u107close").addEventListener("click", function () { wrap.remove(); });
-  wrap.addEventListener("click", function (e) { if (e.target === wrap) wrap.remove(); });
-  await reload();
-};
-})();'''
-
-_PWA_V109_CSS = r'''/* ═══ v109: بطاقة «💰 المصروفات» في الرئيسية + رأس السجل + وميض العملية الجديدة ═══
-   بلاغ يوسف: «لم أجد نظام المصروفات وأين أجدها بعد تسجيل عملية وحفظها». */
-.exph{display:flex;align-items:center;justify-content:space-between;gap:10px;
-  margin:10px 0 2px;padding:12px 14px;border:1px solid var(--goldline);
-  border-radius:14px;background:linear-gradient(135deg,var(--goldsoft),transparent);
-  cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform .12s ease}
-.exph:active{transform:scale(.985)}
-.exph-l{display:flex;align-items:center;gap:10px;min-width:0}
-.exph-ic{font-size:24px;line-height:1}
-.exph-t{display:flex;flex-direction:column;min-width:0;gap:1px}
-.exph-t b{font-size:14.5px;color:var(--brand)}
-.exph-t span{font-size:11.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.exph-r{display:flex;flex-direction:column;align-items:flex-end;gap:1px}
-.exph-r b{font-size:16px;color:var(--ok)}
-.exph-r span{font-size:10.5px;color:var(--mut)}
-.exph-r i{font-style:normal;font-size:11px;color:var(--brand);font-weight:700}
-.exp106lhd{display:flex;align-items:center;gap:8px;padding:9px 2px 4px;margin-top:8px;
-  border-top:1px dashed var(--line)}
-.exp106lhd b{font-size:12.5px;color:var(--brand)}
-.exp106lhd span{font-size:11px;color:var(--mut);flex:1;text-align:left}
-.exp106lhd button{border:none;background:var(--goldsoft);color:var(--brand);width:30px;height:30px;
-  border-radius:9px;font-size:15px;cursor:pointer;flex:none}
-@keyframes expnew{0%{background:var(--goldsoft)}100%{background:transparent}}
-.exp106row.new{animation:expnew 1.8s ease-out 1;border-radius:8px}'''
-
-_PWA_V109_JS = r'''/* v109: «المصروفات في الأعلى» — بطاقة في الرئيسية تفتح لوحة المصروفات نفسها
-   (نواة v106) — بلاغ يوسف: لم أجد نظام المصروفات وأين أجدها بعد تسجيل عملية
-   وحفظها. البطاقة بصلاحية expenses فقط، تعرض إجمالي اليوم من الخادم، تُبنى
-   وتُزال مع كل تطبيق صلاحيات، وتُحدَّث عند كل دخول للرئيسية (خنقة 60 ثانية). */
-(function () {
-"use strict";
-function q(id) { return document.getElementById(id); }
-function allowed() {
-  try { return !!(typeof S !== "undefined" && S.perms && S.perms.expenses); } catch (e) { return false; }
-}
-function open() {
-  if (!allowed()) { try { toast("خيار المصروفات غير مفعّل لفئتك.", true); } catch (e) {} return; }
-  if (typeof window.expensesOpen === "function") { window.expensesOpen(); return; }
-  var b = q("btnExpenses"); if (b) b.click();
-}
-function fmtMoney(n) { var v = Number(n) || 0; return v.toFixed(Math.abs(v % 1) > 0.001 ? 2 : 0); }
-function ensureCard() {
-  var home = q("v-home");
-  if (!home) return;
-  var c = q("expHomeCard");
-  if (!allowed()) { if (c) c.remove(); return; }
-  if (c) return;
-  c = document.createElement("div");
-  c.id = "expHomeCard"; c.className = "card exph"; c.setAttribute("role", "button");
-  c.setAttribute("title", "فتح سجل المصروفات");
-  c.innerHTML =
-      '<div class="exph-l"><span class="exph-ic">👥</span>'
-    + '<div class="exph-t"><b>مصروفات العمال</b>'
-    + '<span>سلف العمال من رواتبهم الشهرية — تُسكّر نهاية الشهر</span></div></div>'
-    + '<div class="exph-r"><b id="expHomeTdy">…</b><span>سلف هذا الشهر</span><i>فتح اللوحة ←</i></div>';
-  var grid = home.querySelector(".grid");
-  if (grid && grid.parentNode) grid.parentNode.insertBefore(c, grid.nextSibling);
-  else home.insertBefore(c, home.firstChild);
-  c.addEventListener("click", open);
-}
-var lastFetch = 0, busy = false;
-async function tick(force) {
-  ensureCard();
-  if (!allowed()) return;
-  var c = q("expHomeCard");
-  if (!c) return;
-  var now = Date.now();
-  if (!force && (busy || now - lastFetch < 60000)) return;
-  busy = true;
-  try {
-    var d = await api("/api/workers/summary", { noCache: true });
-    lastFetch = Date.now();
-    if (d && d.ok === true) {
-      var el = q("expHomeTdy");
-      if (el) el.textContent = fmtMoney(d.advances || 0);
-    }
-  } catch (e) {} finally { busy = false; }
-}
-/* كل دخول للرئيسية يمر عبر loadHome، وكل تطبيق صلاحيات عبر applyPerms */
-try {
-  var oLH = window.loadHome;
-  if (typeof oLH === "function") {
-    window.loadHome = function () {
-      var r = oLH.apply(this, arguments);
-      try { setTimeout(function () { tick(); }, 120); } catch (e2) {}
-      return r;
-    };
-  }
-} catch (e3) {}
-try {
-  var oAP = window.applyPerms;
-  if (typeof oAP === "function") {
-    window.applyPerms = function () {
-      var r = oAP.apply(this, arguments);
-      try { ensureCard(); } catch (e4) {}
-      return r;
-    };
-  }
-} catch (e5) {}
-setTimeout(function () { ensureCard(); tick(true); }, 900);
-})();'''
-
-
-# ═══ v114: معالج إضافة السلع — النافذة القديمة (مرساة الاستبدال) والجديدة والطبقات ═══
-# النافذة القديمة مستخرجة حرفياً من pwa.html وقت البناء — الاستبدال بنافذة المعالج
-# يحافظ على كل معرفات الأساس (nTypeChips مخفي + nName/nQty/nQtyLbl/nMin/nPrice/
-# nLoc/dlgNewGo/dlgNewCancel) فيظل منطق الحفظ والتحقق والبادئة التلقائية شغالاً كما هو.
-_PWA_V114_DLG_OLD = r'''<dialog id="dlgNew">
-  <div class="dh">＋ إضافة سلعة جديدة</div>
-  <div class="db">
-    <div class="fld"><label>نوع السلعة — مثل البوت</label>
-      <div class="rchips" id="nTypeChips" style="display:flex;flex-wrap:wrap;gap:6px">
-        <button type="button" class="rchip" data-t="motif">🎨 موتيف (قطع)</button>
-        <button type="button" class="rchip" data-t="12060">🎨 120/60 (قطع)</button>
-        <button type="button" class="rchip" data-t="plante">🌿 plante (قطع)</button>
-        <button type="button" class="rchip on" data-t="other">📦 باقي السلع (كرتون)</button>
-      </div></div>
-    <div class="fld"><label>اسم السلعة (كامل وواضح)</label>
-      <input id="nName" placeholder="مثال: hexa ceram decor beige 30/90"></div>
-    <div class="fld"><label id="nQtyLbl">الكمية الأولية (كرتون)</label>
-      <input id="nQty" type="number" inputmode="numeric" min="0" value="0"></div>
-    <div class="fld"><label>الحد الأدنى للتنبيه</label>
-      <input id="nMin" type="number" inputmode="numeric" min="0" value="5"></div>
-    <div class="fld"><label>السعر (اختياري)</label>
-      <input id="nPrice" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0"></div>
-    <div class="fld"><label>الموقع (اختياري)</label>
-      <input id="nLoc" placeholder="مثال: الرف A1"></div>
-    <button class="btn" id="dlgNewGo">إضافة</button>
-    <button class="btn gray" id="dlgNewCancel" style="margin-top:8px">إلغاء</button>
-  </div>
-</dialog>'''
-
-_PWA_V114_DLG_NEW = r'''<dialog id="dlgNew">
-  <div class="dh">＋ إضافة سلعة جديدة</div>
-  <div class="db">
-    <div id="nTypeChips" style="display:none" aria-hidden="true">
-      <button type="button" class="rchip" data-t="motif">موتيف</button>
-      <button type="button" class="rchip" data-t="12060">120/60</button>
-      <button type="button" class="rchip" data-t="plante">plante</button>
-      <button type="button" class="rchip on" data-t="other">باقي السلع</button>
-    </div>
-    <div id="wizS1">
-      <div class="wizStep">١) اختر فئة السلعة</div>
-      <div class="wizCats">
-        <button type="button" class="wizCat" data-t="motif"><span class="wic">🎨</span><span class="wtx"><b>موتيف</b><i>قطع pcs</i></span></button>
-        <button type="button" class="wizCat" data-t="12060"><span class="wic">🎨</span><span class="wtx"><b>120/60</b><i>قطع pcs</i></span></button>
-        <button type="button" class="wizCat" data-t="plante"><span class="wic">🌿</span><span class="wtx"><b>plante</b><i>قطع pcs</i></span></button>
-        <button type="button" class="wizCat" data-t="other"><span class="wic">📦</span><span class="wtx"><b>باقي السلع</b><i>كرتون crt</i></span></button>
-      </div>
-    </div>
-    <div id="wizS2" style="display:none">
-      <div class="wizBadge"><span id="wizBdIc">📦</span><b id="wizBdNm">باقي السلع</b><span class="wfix">الفئة مثبتة تلقائياً</span></div>
-      <div class="fld"><label>اسم السلعة — بدون الفئة</label>
-        <input id="nName" autocomplete="off"></div>
-      <div class="wizPrev" id="wizPrev" style="display:none"></div>
-      <div class="fld"><label id="nQtyLbl">الكمية الأولية (كرتون)</label>
-        <input id="nQty" type="number" inputmode="numeric" min="0" value="0"></div>
-      <details class="wizMore">
-        <summary>خيارات إضافية — اختياري (حد التنبيه، السعر، الموقع)</summary>
-        <div class="fld"><label>الحد الأدنى للتنبيه</label>
-          <input id="nMin" type="number" inputmode="numeric" min="0" value="5"></div>
-        <div class="fld"><label>السعر (اختياري)</label>
-          <input id="nPrice" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0"></div>
-        <div class="fld"><label>الموقع (اختياري)</label>
-          <input id="nLoc" placeholder="مثال: الرف A1"></div>
-      </details>
-      <button class="btn" id="dlgNewGo">إضافة</button>
-      <div class="wizRow">
-        <button type="button" class="btn gray" id="wizBack">← تغيير الفئة</button>
-        <button class="btn gray" id="dlgNewCancel">إلغاء</button>
-      </div>
-    </div>
-  </div>
-</dialog>'''
-
-_PWA_V114_CSS = r'''/* ═══ v114: معالج إضافة السلع — بطاقات فئات + خطوة الاسم والكمية + تمييز الجديد ═══ */
-#wizS1 .wizStep{font-size:13px;color:var(--mut);font-weight:800;margin:2px 2px 10px}
-.wizCats{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:4px}
-.wizCat{display:flex;flex-direction:column;align-items:center;gap:6px;
-  border:1.5px solid var(--line);background:var(--bg);border-radius:14px;
-  padding:14px 8px 11px;cursor:pointer;font-family:inherit;
-  transition:transform .12s,border-color .12s}
-.wizCat:active{transform:scale(.95);border-color:var(--brand)}
-.wizCat .wic{font-size:26px;line-height:1}
-.wizCat .wtx{display:flex;flex-direction:column;align-items:center;gap:2px}
-.wizCat .wtx b{font-size:14px;color:var(--ink)}
-.wizCat .wtx i{font-style:normal;font-size:11px;color:var(--mut)}
-#wizS2 .wizBadge{display:flex;align-items:center;gap:8px;background:var(--brandsoft);
-  border:1px solid var(--goldline);border-radius:12px;padding:9px 12px;margin:0 0 10px}
-#wizS2 .wizBadge b{font-size:14.5px;color:var(--brand)}
-#wizS2 .wizBadge .wfix{margin-inline-start:auto;font-size:10.5px;color:var(--mut);
-  background:var(--card);border-radius:8px;padding:3px 7px;border:1px dashed var(--goldline);
-  white-space:nowrap}
-.wizPrev{background:var(--goldsoft);border:1px dashed var(--goldline);color:var(--mut);
-  border-radius:10px;padding:8px 11px;font-size:12px;margin:0 0 9px;line-height:1.7}
-.wizPrev b{color:var(--brand);font-size:12.5px;word-break:break-all}
-details.wizMore{border:1.5px dashed var(--line);border-radius:12px;padding:0 11px;
-  margin:0 0 11px;background:var(--bg)}
-details.wizMore summary{cursor:pointer;font-size:12.5px;color:var(--mut);font-weight:700;
-  padding:10px 0}
-details.wizMore[open] summary{border-bottom:1px dashed var(--line);margin-bottom:9px}
-details.wizMore .fld{margin-bottom:9px}
-.wizRow{display:flex;gap:8px;margin-top:8px}
-.wizRow .btn{flex:1}
-#invList .row.wizhl{animation:wizhl 1.1s ease-in-out 5;background:var(--goldsoft);
-  outline:2px solid var(--goldline);border-radius:12px}
-@keyframes wizhl{0%,100%{background:var(--goldsoft)}50%{background:var(--card)}}
-@media (prefers-reduced-motion: reduce){#invList .row.wizhl{animation:none}}'''
-
-_PWA_V114_JS = r'''/* v114: معالج إضافة السلع — خطوتان (فئة ← اسم وكمية).
-   منطق الحفظ الأساسي (dlgNewGo: التحقق + البادئة التلقائية + /api/products/create)
-   يعمل كما هو حرفياً — هذه الطبقة تنظّم العرض فقط: الخطوة ١ بطاقات الفئات،
-   الخطوة ٢ شارة الفئة المثبتة + المعاينة الحية + الخيارات المطوية،
-   وبعد الحفظ تمييز السلعة الجديدة في قائمة المخزون عبر window.__wizAdded. */
-(function () {
-  function $(s) { return document.querySelector(s); }
-  var WNAMES = { motif: "موتيف", "12060": "120/60", plante: "plante", other: "باقي السلع" };
-  var WICONS = { motif: "🎨", "12060": "🎨", plante: "🌿", other: "📦" };
-  var WPH = { motif: "مثال: decor beige 60x60", "12060": "مثال: loire gris",
-              plante: "مثال: blanche 30/60", other: "مثال: hexa ceram decor beige 30/90" };
-  function wizShow1() {
-    var a = $("#wizS1"), b = $("#wizS2");
-    if (a) a.style.display = "";
-    if (b) b.style.display = "none";
-  }
-  function wizShow2() {
-    var a = $("#wizS1"), b = $("#wizS2");
-    if (a) a.style.display = "none";
-    if (b) b.style.display = "";
-  }
-  function wizFinalName() {
-    var el = $("#nName");
-    var raw = ((el && el.value) || "").trim();
-    if (!raw) return "";
-    var t = (typeof S !== "undefined" && S.newType) || "other";
-    var meta = (typeof TYPE_META !== "undefined" && TYPE_META[t]) || null;
-    if (!meta || !meta.prefix) return raw;
-    var low = raw.toLowerCase();
-    var ok = (t === "12060")
-      ? (low.startsWith("120/60") || low.startsWith("120x60") || low.startsWith("120×60"))
-      : low.startsWith(meta.prefix);
-    return ok ? raw : meta.prefix + " " + raw;
-  }
-  function wizPrevUpd() {
-    var p = $("#wizPrev");
-    if (!p) return;
-    var fin = wizFinalName();
-    if (!fin) { p.style.display = "none"; p.innerHTML = ""; return; }
-    var t = (typeof S !== "undefined" && S.newType) || "other";
-    var meta = (typeof TYPE_META !== "undefined" && TYPE_META[t]) || null;
-    var noPrefix = !meta || !meta.prefix;
-    p.style.display = "";
-    p.innerHTML = (noPrefix ? "يُسجَّل كما هو: <b>" : "يُسجَّل باسم: <b>")
-      + fin.replace(/</g, "&lt;") + "</b>";
-  }
-  document.querySelectorAll("#dlgNew .wizCat").forEach(function (c) {
-    c.addEventListener("click", function () {
-      var t = c.getAttribute("data-t");
-      var chip = document.querySelector('#nTypeChips .rchip[data-t="' + t + '"]');
-      if (chip) chip.click();            /* مستمع الأساس يضبط S.newType + الوحدة */
-      var ic = $("#wizBdIc"), nm = $("#wizBdNm"), nn = $("#nName");
-      if (ic) ic.textContent = WICONS[t] || "📦";
-      if (nm) nm.textContent = WNAMES[t] || t;
-      if (nn) nn.placeholder = WPH[t] || "";
-      wizPrevUpd();
-      wizShow2();
-    });
-  });
-  var back = $("#wizBack");
-  if (back) back.addEventListener("click", wizShow1);
-  var nn = $("#nName");
-  if (nn) nn.addEventListener("input", wizPrevUpd);
-  var openBtn = $("#btnAddProd");
-  if (openBtn) openBtn.addEventListener("click", function () {
-    wizShow1();
-    var p = $("#wizPrev");
-    if (p) { p.style.display = "none"; p.innerHTML = ""; }
-    var m = document.querySelector("#dlgNew details.wizMore");
-    if (m) m.removeAttribute("open");
-  });
-  window.__wizAdded = function (name) {
-    try {
-      if (!name) return;
-      var target = String(name).trim().toLowerCase();
-      var tries = 0;
-      var tick = setInterval(function () {
-        tries++;
-        var hit = null;
-        document.querySelectorAll("#invList .row").forEach(function (r) {
-          var b = r.querySelector(".info b");
-          if (b && (b.textContent || "").trim().toLowerCase() === target) hit = r;
-        });
-        if (hit) {
-          clearInterval(tick);
-          hit.classList.add("wizhl");
-          try { hit.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
-          setTimeout(function () { hit.classList.remove("wizhl"); }, 6000);
-        } else if (tries > 25) { clearInterval(tick); }
-      }, 200);
-    } catch (e) {}
-  };
-})();'''
-
-_PWA_V115_CSS = r'''/* ═══ v115: اسم المصنع — حقل المعالج وواجهة الاختيار ═══ */
-button.wizFac{display:flex;align-items:center;gap:8px;width:100%;
-  border:1.5px solid var(--line);background:var(--bg);border-radius:12px;
-  padding:11px 12px;cursor:pointer;font-family:inherit;text-align:start;
-  transition:border-color .12s,transform .12s}
-button.wizFac:active{transform:scale(.98)}
-button.wizFac.on{border-color:var(--brand);background:var(--brandsoft)}
-button.wizFac .wfic{font-size:15px}
-button.wizFac .wftx{flex:1;font-size:13px;font-weight:700;color:var(--ink);
-  word-break:break-all;white-space:normal}
-button.wizFac .wfchg{font-size:10.5px;color:var(--mut);background:var(--card);
-  border:1px dashed var(--goldline);border-radius:8px;padding:3px 7px;white-space:nowrap}
-#wizFacView .wizStep{font-size:13px;color:var(--mut);font-weight:800;margin:2px 2px 10px}
-.facList{display:flex;flex-direction:column;gap:7px;margin:0 0 10px;
-  max-height:44vh;overflow:auto}
-.facRow{display:flex;align-items:center;gap:9px;border:1.5px solid var(--line);
-  background:var(--card);border-radius:12px;padding:11px 12px;cursor:pointer;
-  font-family:inherit;text-align:start;transition:border-color .12s,transform .12s}
-.facRow:active{transform:scale(.98);border-color:var(--brand)}
-.facRow.on{border-color:var(--brand);background:var(--brandsoft)}
-.facRow span{font-size:14px}
-.facRow b{flex:1;font-size:13px;color:var(--ink);word-break:break-all}
-.facNone{border-style:dashed}
-.facLoad,.facEmpty{font-size:12px;color:var(--mut);padding:10px 4px;text-align:center}
-#facAddBox{border:1.5px dashed var(--line);border-radius:12px;
-  padding:2px 11px 11px;margin:0 0 10px;background:var(--bg)}
-#facAddBox .fld{margin:9px 0}'''
-
-_PWA_V115_JS = r'''/* ═══ v115: اسم المصنع في معالج الإضافة — قائمة يوسّعها مدير البوت والنظام ═══
-   قاعدة الاسم النهائي (مطابقة للبوت حرفياً — مثال يوسف):
-   120/60: roma blanc + 120/60 + techno ceram ← roma blanc 120/60 techno ceram
-   plante: plante blanche 30/60 + المصنع — موتيف: motif … + المصنع
-   باقي السلع: الاسم + المصنع (بلا بادئة). */
-(function () {
-  if (window.__wizComposeName) return;
-  function $(s) { return document.querySelector(s); }
-  var RE120 = /(^|\s)(120\/60|120x60|120×60)(?=\s|$)/i;
-
-  window.__wizComposeName = function (raw) {
-    try {
-      raw = String(raw || "").trim().replace(/\s+/g, " ");
-      if (!raw) return "";
-      var t = (typeof S !== "undefined" && S.newType) || "other";
-      var meta = (typeof TYPE_META !== "undefined" && TYPE_META[t]) || null;
-      var low = raw.toLowerCase();
-      if (meta && meta.prefix) {
-        if (t === "12060") {
-          if (!RE120.test(low)) raw = raw + " 120/60";
-        } else if (low.indexOf(meta.prefix) !== 0) {
-          raw = meta.prefix + " " + raw;
-        }
-      }
-      var fac = "";
-      try { fac = String((typeof S !== "undefined" && S.wizFactory) || "").trim(); } catch (e) {}
-      if (fac) raw = raw + " " + fac;
-      return raw;
-    } catch (e) { return String(raw || ""); }
-  };
-
-  /* ── منتقي المصنع: واجهة ثالثة داخل نفس النافذة (بلا نوافذ متداخلة) ── */
-  function facSel() { try { return String(S.wizFactory || ""); } catch (e) { return ""; } }
-  function facPrev() {
-    var nn = $("#nName");
-    if (nn) { try { nn.dispatchEvent(new Event("input")); } catch (e) {} }
-  }
-  function facSet(name) {
-    try { S.wizFactory = String(name || "").trim(); } catch (e) {}
-    var tx = $("#wizFacTxt");
-    if (tx) tx.textContent = facSel() || "بدون مصنع";
-    var btn = $("#wizFacBtn");
-    if (btn) btn.classList.toggle("on", !!facSel());
-  }
-  function facShow() {
-    var s1 = $("#wizS1"), s2 = $("#wizS2"), fv = $("#wizFacView");
-    if (s1) s1.style.display = "none";
-    if (s2) s2.style.display = "none";
-    if (fv) fv.style.display = "";
-    facLoad();
-  }
-  function facHide() {
-    var s2 = $("#wizS2"), fv = $("#wizFacView");
-    if (fv) fv.style.display = "none";
-    if (s2) s2.style.display = "";
-    facPrev();
-  }
-  function facRow(icon, name, on, cb) {
-    var r = document.createElement("button");
-    r.type = "button";
-    r.className = "facRow" + (on ? " on" : "") + (name ? "" : " facNone");
-    var ic = document.createElement("span");
-    ic.textContent = icon;
-    var b = document.createElement("b");
-    b.textContent = name || "بدون مصنع";
-    r.appendChild(ic);
-    r.appendChild(b);
-    r.addEventListener("click", cb);
-    return r;
-  }
-  function facRender(list, canAdd) {
-    var box = $("#facList");
-    if (!box) return;
-    box.innerHTML = "";
-    box.appendChild(facRow("🚫", "", false, function () { facSet(""); facHide(); }));
-    (list || []).forEach(function (f) {
-      box.appendChild(facRow("🏭", f.name, f.name === facSel(),
-        function () { facSet(f.name); facHide(); }));
-    });
-    var add = $("#facAddBox"), empty = $("#facEmpty");
-    if (add) add.style.display = canAdd ? "" : "none";
-    if (empty) empty.style.display = ((list || []).length) ? "none" : "";
-  }
-  async function facLoad() {
-    var box = $("#facList");
-    if (box) box.innerHTML = '<div class="facLoad">جارٍ تحميل المصانع…</div>';
-    try {
-      var d = await api("/api/factories");
-      facRender(d.factories || [], !!d.can_add);
-    } catch (e) {
-      if (box) box.innerHTML = "";
-      try { toast(e.message || "تعذر تحميل المصانع.", true); } catch (e2) {}
-    }
-  }
-  async function facAdd() {
-    var inp = $("#facNewName");
-    var name = ((inp && inp.value) || "").trim().replace(/\s+/g, " ");
-    if (name.length < 2) { toast("أدخل اسم المصنع (حرفان على الأقل).", true); return; }
-    var go = $("#facAddGo");
-    if (go) go.disabled = true;
-    try {
-      var d = await api("/api/factories/add", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name })
-      });
-      if (inp) inp.value = "";
-      facSet((d.factory && d.factory.name) || name);
-      toast(d.message || "تمت إضافة المصنع.");
-      facHide();
-    } catch (e) {
-      toast(e.message || "تعذر إضافة المصنع.", true);
-    } finally {
-      if (go) go.disabled = false;
-    }
-  }
-
-  var fb = $("#wizFacBtn");
-  if (fb) fb.addEventListener("click", facShow);
-  var fbb = $("#wizFacBack");
-  if (fbb) fbb.addEventListener("click", facHide);
-  var fag = $("#facAddGo");
-  if (fag) fag.addEventListener("click", facAdd);
-  var fnn = $("#facNewName");
-  if (fnn) fnn.addEventListener("keydown", function (ev) {
-    if (ev.key === "Enter") { ev.preventDefault(); facAdd(); }
-  });
-  var wbk = $("#wizBack");
-  if (wbk) wbk.addEventListener("click", function () {
-    var fv = $("#wizFacView");
-    if (fv) fv.style.display = "none";
-  });
-  var ob = $("#btnAddProd");
-  if (ob) ob.addEventListener("click", function () {
-    facSet("");
-    var fv = $("#wizFacView");
-    if (fv) fv.style.display = "none";
-  });
-})();'''
-
-
-_PWA_V117_CSS = r'''/* ═══ v117: القياس — حقل المعالج وواجهة الاختيار (نفس هوية المصنع v115) ═══ */
-#wizSizeView .wizStep{font-size:13px;color:var(--mut);font-weight:800;margin:2px 2px 10px}
-#sizeAddBox{border:1.5px dashed var(--line);border-radius:12px;
-  padding:2px 11px 11px;margin:0 0 10px;background:var(--bg)}
-#sizeAddBox .fld{margin:9px 0}'''
-
-_PWA_V117_JS = r'''/* ═══ v117: القياس في معالج الإضافة — قائمة يوسّعها مدير البوت والنظام ═══
-   نفس آلية المصنع (v115) حرفياً: الضغط على الحقل يفتح واجهة اختيار داخل نفس
-   النافذة، والقائمة مشتركة بين التطبيق والبوت، وقاعدة الاسم النهائي:
-   الاسم + القياس (بلا تكرار إن كُتب داخل الاسم) + المصنع.
-   roma blanc + 120/60 + techno ceram ← roma blanc 120/60 techno ceram
-   plante Rouge + 8/45 + seklouli ceram ← plante Rouge 8/45 seklouli ceram */
-(function () {
-  function $(s) { return document.querySelector(s); }
-
-  /* ── قاعدة الاسم v117: إعادة تعريف __wizComposeName فوق نسخة v115 بإضافة القياس ── */
-  var RE120 = /(^|\s)(120\/60|120x60|120×60)(?=\s|$)/i;
-  window.__wizComposeName = function (raw) {
-    try {
-      raw = String(raw || "").trim().replace(/\s+/g, " ");
-      if (!raw) return "";
-      var t = (typeof S !== "undefined" && S.newType) || "other";
-      var meta = (typeof TYPE_META !== "undefined" && TYPE_META[t]) || null;
-      var low = raw.toLowerCase();
-      if (meta && meta.prefix) {
-        if (t === "12060") {
-          if (!RE120.test(low)) raw = raw + " 120/60";
-        } else if (low.indexOf(meta.prefix) !== 0) {
-          raw = meta.prefix + " " + raw;
-        }
-      }
-      var size = "";
-      try { size = String((typeof S !== "undefined" && S.wizSize) || "").trim(); } catch (e0) {}
-      if (size && t !== "12060" && raw.toLowerCase().split(" ").indexOf(size.toLowerCase()) === -1) {
-        raw = raw + " " + size;
-      }
-      var fac = "";
-      try { fac = String((typeof S !== "undefined" && S.wizFactory) || "").trim(); } catch (e) {}
-      if (fac) raw = raw + " " + fac;
-      return raw;
-    } catch (e) { return String(raw || ""); }
-  };
-
-  /* ── منتقي القياس: واجهة إضافية داخل نفس النافذة (بلا نوافذ متداخلة) ── */
-  function sizeSel() { try { return String(S.wizSize || ""); } catch (e) { return ""; } }
-  function sizePrev() {
-    var nn = $("#nName");
-    if (nn) { try { nn.dispatchEvent(new Event("input")); } catch (e) {} }
-  }
-  function sizeSet(name) {
-    try { S.wizSize = String(name || "").trim(); } catch (e) {}
-    var tx = $("#wizSizeTxt");
-    if (tx) tx.textContent = sizeSel() || "بدون قياس";
-    var btn = $("#wizSizeBtn");
-    if (btn) btn.classList.toggle("on", !!sizeSel());
-  }
-  function sizeShow() {
-    var s1 = $("#wizS1"), s2 = $("#wizS2"), sv = $("#wizSizeView"), fv = $("#wizFacView");
-    if (s1) s1.style.display = "none";
-    if (s2) s2.style.display = "none";
-    if (fv) fv.style.display = "none";
-    if (sv) sv.style.display = "";
-    sizeLoad();
-  }
-  function sizeHide() {
-    var s2 = $("#wizS2"), sv = $("#wizSizeView");
-    if (sv) sv.style.display = "none";
-    if (s2) s2.style.display = "";
-    sizePrev();
-  }
-  function sizeRow(icon, name, on, cb) {
-    var r = document.createElement("button");
-    r.type = "button";
-    r.className = "facRow" + (on ? " on" : "") + (name ? "" : " facNone");
-    var ic = document.createElement("span");
-    ic.textContent = icon;
-    var b = document.createElement("b");
-    b.textContent = name || "بدون قياس";
-    r.appendChild(ic);
-    r.appendChild(b);
-    r.addEventListener("click", cb);
-    return r;
-  }
-  /* v118: حذف قياس من قائمة الفئة — 🗑 داخل الصف للإدارة فقط بتأكيد ضغطتين */
-  var sizeDelArm = "";
-  function sizeRender(list, canAdd, canDel) {
-    var box = $("#sizeList");
-    if (!box) return;
-    box.innerHTML = "";
-    box.appendChild(sizeRow("🚫", "", false, function () { sizeSet(""); sizeHide(); }));
-    (list || []).forEach(function (s) {
-      var r = sizeRow("📏", s.name, s.name === sizeSel(),
-        function () { sizeSet(s.name); sizeHide(); });
-      if (canDel) {
-        var x = document.createElement("span");
-        x.className = "sizeDel";
-        x.textContent = "🗑";
-        x.title = "حذف من قائمة هذه الفئة";
-        x.addEventListener("click", function (ev) {
-          ev.preventDefault(); ev.stopPropagation();
-          if (sizeDelArm !== s.name) {
-            sizeDelArm = s.name;
-            x.classList.add("arm");
-            try { toast("اضغط 🗑 مجدداً لتأكيد حذف «" + s.name + "» من قائمة هذه الفئة.", true); } catch (e9) {}
-            setTimeout(function () { sizeDelArm = ""; try { x.classList.remove("arm"); } catch (e10) {} }, 5000);
-            return;
-          }
-          sizeDelArm = "";
-          sizeDel(s.name);
-        });
-        r.appendChild(x);
-      }
-      box.appendChild(r);
-    });
-    var add = $("#sizeAddBox"), empty = $("#sizeEmpty");
-    if (add) add.style.display = canAdd ? "" : "none";
-    if (empty) empty.style.display = ((list || []).length) ? "none" : "";
-  }
-  async function sizeLoad() {
-    var box = $("#sizeList");
-    if (box) box.innerHTML = '<div class="facLoad">جارٍ تحميل القياسات…</div>';
-    try {
-      /* v118: قائمة الفئة المثبتة فقط — plante لا ترى إلا قياساتها المحصورة */
-      var ct = "other";
-      try { ct = String((typeof S !== "undefined" && S.newType) || "other"); } catch (e0) {}
-      var d = await api("/api/sizes?category=" + encodeURIComponent(ct));
-      sizeRender(d.sizes || [], !!d.can_add, !!d.can_delete);
-    } catch (e) {
-      if (box) box.innerHTML = "";
-      try { toast(e.message || "تعذر تحميل القياسات.", true); } catch (e2) {}
-    }
-  }
-  async function sizeDel(name) {
-    /* v118: حذف من قائمة الفئة الحالية — السلع المسجلة به لا تتأثر */
-    var ct = "other";
-    try { ct = String((typeof S !== "undefined" && S.newType) || "other"); } catch (e0) {}
-    try {
-      var d = await api("/api/sizes/delete", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category: ct, name: name })
-      });
-      try { toast(d.message || "حُذف القياس من قائمة هذه الفئة."); } catch (e1) {}
-      if (sizeSel() === String(name)) sizeSet("");
-      sizeLoad();
-    } catch (e) {
-      try { toast(e.message || "تعذر حذف القياس.", true); } catch (e2) {}
-    }
-  }
-  async function sizeAdd() {
-    var inp = $("#sizeNewName");
-    var name = ((inp && inp.value) || "").trim().replace(/\s+/g, " ");
-    if (name.length < 2) { toast("أدخل القياس (حرفان على الأقل).", true); return; }
-    var ct = "other";
-    try { ct = String((typeof S !== "undefined" && S.newType) || "other"); } catch (e0) {}
-    var go = $("#sizeAddGo");
-    if (go) go.disabled = true;
-    try {
-      var d = await api("/api/sizes/add", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name, category: ct })
-      });
-      if (inp) inp.value = "";
-      sizeSet((d.size && d.size.name) || name);
-      toast(d.message || "تمت إضافة القياس.");
-      sizeHide();
-    } catch (e) {
-      toast(e.message || "تعذر إضافة القياس.", true);
-    } finally {
-      if (go) go.disabled = false;
-    }
-  }
-
-  /* ── فئة 120/60 قياسها مثبت بالفئة نفسها — حقل القياس يخفى ويُفرَّغ ── */
-  function sizeFldSync() {
-    var t = (typeof S !== "undefined" && S.newType) || "other";
-    var fld = $("#wizSizeFld");
-    if (fld) fld.style.display = (t === "12060") ? "none" : "";
-    if (t === "12060") sizeSet("");
-  }
-
-  var sb = $("#wizSizeBtn");
-  if (sb) sb.addEventListener("click", sizeShow);
-  var sbb = $("#wizSizeBack");
-  if (sbb) sbb.addEventListener("click", sizeHide);
-  var sag = $("#sizeAddGo");
-  if (sag) sag.addEventListener("click", sizeAdd);
-  var snn = $("#sizeNewName");
-  if (snn) snn.addEventListener("keydown", function (ev) {
-    if (ev.key === "Enter") { ev.preventDefault(); sizeAdd(); }
-  });
-  document.querySelectorAll("#dlgNew .wizCat").forEach(function (c) {
-    c.addEventListener("click", sizeFldSync);
-  });
-  var wbk = $("#wizBack");
-  if (wbk) wbk.addEventListener("click", function () {
-    var sv = $("#wizSizeView");
-    if (sv) sv.style.display = "none";
-    sizeFldSync();
-  });
-  var ob = $("#btnAddProd");
-  if (ob) ob.addEventListener("click", function () {
-    sizeSet("");
-    var sv = $("#wizSizeView");
-    if (sv) sv.style.display = "none";
-    sizeFldSync();
-  });
-})();'''
-
-
-_PWA_V118_CSS = r'''/* ═══ v118: حذف قياس من فئة — زر 🗑 داخل صف الاختيار (للإدارة فقط) ═══ */
-#sizeList .facRow{position:relative;padding-left:36px}
-#sizeList .sizeDel{position:absolute;left:5px;top:50%;transform:translateY(-50%);
-  border:none;background:transparent;font-size:15px;line-height:1;opacity:.5;
-  padding:6px 8px;cursor:pointer;color:inherit;border-radius:8px}
-#sizeList .sizeDel.arm{opacity:1;color:#c0392b;font-weight:800;
-  background:rgba(192,57,43,.12)}'''
-
-
-_PWA_V119_CSS = r'''/* ═══ v119: مصروفات العمال + حذف المعلق + الحذف النهائي ═══ */
-/* زر 🗑 داخل صف الطلب المعلق — بتأكيد ضغطتين */
-.pdel{border:none;background:transparent;font-size:16px;line-height:1;cursor:pointer;
-  padding:6px 7px;border-radius:8px;color:var(--mut);flex:none;-webkit-tap-highlight-color:transparent}
-/* التسليح حالة ساكنة بارزة — بلا نبض متحرك (نمط v118) كي لا يفوت التأكيد الثاني */
-.pdel.arm{color:#c0392b;font-weight:800;background:rgba(192,57,43,.14);
-  box-shadow:0 0 0 2px rgba(192,57,43,.25) inset}
-/* قسمة سلف العمال في بطاقة نبض المخزون */
-.wk93grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;cursor:pointer}
-.wk93k{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 9px}
-.wk93k span{display:block;font-size:10.5px;color:var(--mut);margin-bottom:2px}
-.wk93k b{font-size:12.5px;color:var(--ink)}
-.wk93k.rem b{color:var(--brand)}
-.wk93tap{margin:6px 2px 0;font-size:10.5px;color:var(--brand);text-align:left;font-weight:700}
-/* لوحة مصروفات العمال — بنفس هوية لوحة v106 */
-.wkbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0 8px}
-.wkbar b{font-size:13.5px;color:var(--brand)}
-.wkbar .wkmv{display:flex;gap:6px}
-.wkbar button{border:none;background:var(--goldsoft);color:var(--brand);min-width:32px;height:32px;
-  border-radius:9px;font-size:15px;cursor:pointer;padding:0 8px;font-weight:800}
-.wksum{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin:0 0 10px}
-.wksum>div{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:7px 9px}
-.wksum span{display:block;font-size:10px;color:var(--mut);margin-bottom:2px}
-.wksum b{font-size:12px;color:var(--ink)}
-.wksum .rem b{color:var(--brand)}
-.wkcard{display:flex;align-items:center;justify-content:space-between;gap:9px;width:100%;
-  text-align:right;background:var(--bg);border:1px solid var(--line);border-radius:12px;
-  padding:10px 12px;margin-bottom:8px;cursor:pointer;-webkit-tap-highlight-color:transparent;
-  transition:transform .12s ease}
-.wkcard:active{transform:scale(.985)}
-.wkcard.off{opacity:.62}
-.wkcard .wkc-n{font-size:13.5px;color:var(--ink);font-weight:800}
-.wkcard .wkc-s{font-size:10.5px;color:var(--mut);margin-top:2px}
-.wkcard .wkc-r{text-align:left;min-width:86px}
-.wkcard .wkc-r b{display:block;font-size:13px;color:var(--ok)}
-.wkcard .wkc-r span{display:block;font-size:9.5px;color:var(--mut)}
-.wkcard .wkc-r i{font-style:normal;font-size:10.5px;color:var(--brand);font-weight:800}
-.wkwk-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0 8px}
-.wkwk-hd .wkh-n{font-size:14px;font-weight:800;color:var(--ink)}
-.wkwk-hd .wkh-s{font-size:10.5px;color:var(--mut)}
-.wkacts{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
-.wkacts .btn{flex:none}
-.wkrow{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);
-  border-radius:10px;padding:8px 10px;margin-bottom:6px}
-.wkrow .wkr-m{flex:1;min-width:0}
-.wkrow .wkr-a{font-size:13px;font-weight:800;color:var(--bad)}
-.wkrow .wkr-d{font-size:10px;color:var(--mut);margin-top:1px}
-.wkrow .wkr-n{font-size:10.5px;color:var(--mut)}
-.wkempty{text-align:center;color:var(--mut);font-size:12.5px;padding:14px 8px}
-.wkbadge{display:inline-block;font-size:9.5px;font-weight:800;border-radius:7px;padding:2px 7px;
-  background:var(--goldsoft);color:var(--brand);margin-right:5px}
-/* بطاقة الحذف النهائي */
-.purgewarn{background:var(--goldsoft);border:1px dashed var(--goldline);border-radius:12px;
-  padding:11px 13px;font-size:12.5px;color:var(--ink);line-height:1.7;margin:8px 0 12px}
-'''
-
-_PWA_V119_JS = r'''/* ═══ v119: مصروفات العمال (سلف الرواتب) + حذف الطلبات المعلقة + الحذف النهائي ═══
-   (1) لوحة «مصروفات العمال» تحل محل سجل المصروفات العام — عامل باسم وراتب
-       شهري وتاريخي بداية/نهاية عمل، وتسبيبات مسجلة منه خلال الشهر، وإجماليات
-       الشهر (رواتب / سلف / متبقي للصرف نهاية الشهر) بتوقيت الجزائر.
-   (2) زر 🗑 داخل كل طلب معلق بتأكيد ضغطتين (5 ثوانٍ) — يزيله من كل القوائم.
-   (3) «حذف نهائي» من قائمة المحذوفة — بطاقة تحذير بعدد الحركات + ضغطتان.
-   (4) قسمة «سلف العمال — هذا الشهر» مكان الأكثر بيعاً في نبض المخزون. */
-(function () {
-"use strict";
-function $(id) { return document.getElementById(id); }
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-  });
-}
-function money(n) {
-  var v = Number(n) || 0;
-  return v.toLocaleString("fr-FR", { minimumFractionDigits: (Math.abs(v % 1) > 0.001 ? 2 : 0), maximumFractionDigits: 2 }) + " د.ج";
-}
-function say(msg, bad) {
-  try { if (typeof toast === "function") { toast(msg, !!bad); return; } } catch (e) {}
-}
-function vib(ms) { try { (window.v90vib || function () {})(ms); } catch (e) {} }
-function allowed() {
-  try { return !!(typeof S !== "undefined" && S.perms && S.perms.expenses); } catch (e) { return false; }
-}
-function isAdmin() {
-  try { return !!(typeof S !== "undefined" && S.perms && S.perms.admin); } catch (e) { return false; }
-}
-function toLocalInput(d) {
-  function p(n) { return (n < 10 ? "0" : "") + n; }
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate())
-       + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
-}
-var WK = { month: "", workers: [], totals: null, canManage: false,
-           worker: null, items: [], arm: {}, seqL: 0, seqA: 0, seqS: 0 };
-var MN = ["يناير", "فبراير", "مارس", "أبريل", "ماي", "يونيو",
-          "يوليوز", "غشت", "شتنبر", "أكتوبر", "نونبر", "دجنبر"];
-function curMonth() {
-  var d = new Date();
-  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2);
-}
-function monthShift(m, delta) {
-  var y = +m.slice(0, 4), mo = +m.slice(5, 7);
-  mo += delta;
-  while (mo < 1) { mo += 12; y--; }
-  while (mo > 12) { mo -= 12; y++; }
-  return y + "-" + ("0" + mo).slice(-2);
-}
-function monthLabel(m) { return MN[+m.slice(5, 7) - 1] + " " + m.slice(0, 4); }
-function fmtD(iso) {
-  var s = String(iso || "");
-  if (s.length < 10) return s || "—";
-  return s.slice(8, 10) + "/" + s.slice(5, 7) + "/" + s.slice(0, 4);
-}
-function fmtDT(iso) {
-  try {
-    return new Date(iso).toLocaleString(undefined,
-      { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-  } catch (e) { return String(iso || ""); }
-}
-function armTwo(btn, key, msg, fn) {
-  if (WK.arm[key]) { clearTimeout(WK.arm[key]); WK.arm[key] = null; fn(); return; }
-  WK.arm[key] = setTimeout(function () {
-    WK.arm[key] = null;
-    try { btn.classList.remove("arm"); } catch (e) {}
-  }, 5000);
-  try { btn.classList.add("arm"); } catch (e2) {}
-  say(msg, true);
-}
-
-/* ═══ (1) لوحة مصروفات العمال — تفتح من بطاقة الرئيسية وزر الرسائل والنبض ═══ */
-window.expensesOpen = function () {
-  if (!allowed()) { say("خيار المصروفات غير مفعّل لفئتك.", true); return; }
-  if ($("wk119ov")) return;
-  WK.month = curMonth();
-  WK.arm = {};
-  var ov = document.createElement("div");
-  ov.id = "wk119ov"; ov.className = "exp106ov";
-  var card = document.createElement("div");
-  card.className = "exp106card"; card.id = "wk119card";
-  card.innerHTML =
-      '<div class="exp106hd"><b>👥 مصروفات العمال</b>'
-    + '<button type="button" id="wk119x" title="إغلاق">✕</button></div>'
-    + '<div class="exp106main" id="wk119main"></div>'
-    + '<div class="exp106fv" id="wk119wkr" style="display:none"></div>'
-    + '<div class="exp106fv" id="wk119form" style="display:none"></div>'
-    + '<button type="button" class="exp106fab" id="wk119fab" title="عامل جديد" style="display:none">＋</button>';
-  ov.appendChild(card);
-  document.body.appendChild(ov);
-  $("wk119x").addEventListener("click", function () { ov.remove(); });
-  ov.addEventListener("click", function (e) { if (e.target === ov) ov.remove(); });
-  try {
-    document.addEventListener("keydown", function esc119(ev) {
-      if (ev.key === "Escape" && !$("wk119ov")) {
-        document.removeEventListener("keydown", esc119);
-      } else if (ev.key === "Escape") {
-        if ($("wk119form").style.display !== "none") { wkFormBack(); return; }
-        if ($("wk119wkr").style.display !== "none") { wkShowList(); return; }
-        document.removeEventListener("keydown", esc119);
-        ov.remove();
-      }
-    });
-  } catch (e0) {}
-  wkShowList();
-};
-
-function wkShowList() {
-  var m = $("wk119main"), w = $("wk119wkr"), f = $("wk119form"), fab = $("wk119fab");
-  if (!m) return;
-  m.style.display = "block"; if (w) w.style.display = "none"; if (f) f.style.display = "none";
-  if (fab) { fab.style.display = isAdmin() ? "" : "none"; fab.onclick = function () { wkWorkerForm(null); }; }
-  wkLoadList();
-}
-function wkLoadList() {
-  var m = $("wk119main");
-  if (!m) return;
-  var my = ++WK.seqL;
-  m.innerHTML = '<p class="wkempty">جارِ التحميل...</p>';
-  api("/api/workers?month=" + encodeURIComponent(WK.month), { noCache: true }).then(function (d) {
-    if (my !== WK.seqL || !d || d.ok !== true) return;
-    WK.workers = d.workers || [];
-    WK.totals = d.totals || {};
-    WK.canManage = !!d.can_manage;
-    wkRenderList();
-  }).catch(function (e) {
-    if (my !== WK.seqL) return;
-    m.innerHTML = '<p class="wkempty">' + esc(e.message || "تعذر التحميل.") + '</p>';
-  });
-}
-function wkRenderList() {
-  var m = $("wk119main");
-  if (!m) return;
-  var t = WK.totals || {};
-  var bar = '<div class="wkbar">'
-    + '<button type="button" id="wk119prev" title="الشهر السابق">›</button>'
-    + '<b>' + esc(monthLabel(WK.month)) + '</b>'
-    + '<div class="wkmv">'
-    + '<button type="button" id="wk119next" title="الشهر التالي"' + (WK.month >= curMonth() ? " disabled" : "") + '>‹</button>'
-    + '<button type="button" id="wk119rf" title="تحديث">↻</button></div></div>'
-    + '<div class="wksum">'
-    + '<div><span>رواتب الشهر</span><b>' + money(t.salaries) + '</b></div>'
-    + '<div><span>السلف المصروفة</span><b>' + money(t.advances) + '</b></div>'
-    + '<div class="rem"><span>المتبقي للصرف</span><b>' + money(t.remaining) + '</b></div>'
-    + '</div>';
-  var rows = "";
-  if (!WK.workers.length) {
-    rows = '<p class="wkempty">لا يوجد عمال بعد' + (isAdmin()
-      ? ' — اضغط ＋ لإضافة أول عامل باسمه وراتبه الشهري وتاريخ بداية عمله.'
-      : ' — يضيفهم المدير.') + '</p>';
-  } else {
-    WK.workers.forEach(function (w) {
-      var per = w.work_start ? ("من " + fmtD(w.work_start)) : "بدون تاريخ بداية";
-      per += w.work_end ? (" — إلى " + fmtD(w.work_end)) : (w.active ? " — ما زال يعمل" : "");
-      rows += '<button type="button" class="wkcard' + (w.active ? "" : " off") + '" data-wid="' + w.id + '">'
-        + '<div><div class="wkc-n">' + esc(w.name) + (w.active ? "" : '<span class="wkbadge">انتهت خدمته</span>') + '</div>'
-        + '<div class="wkc-s">راتبه: ' + money(w.salary) + ' • ' + esc(per) + '</div></div>'
-        + '<div class="wkc-r"><b>' + money(w.adv) + '</b><span>سلف ' + esc(monthLabel(WK.month)) + '</span>'
-        + '<i>المتبقي: ' + money(w.remaining) + ' ←</i></div>'
-        + '</button>';
-    });
-  }
-  m.innerHTML = bar + '<div id="wk119list">' + rows + '</div>';
-  $("wk119prev").addEventListener("click", function () { WK.month = monthShift(WK.month, 1); wkLoadList(); });
-  var nx = $("wk119next");
-  if (nx) nx.addEventListener("click", function () { if (WK.month < curMonth()) { WK.month = monthShift(WK.month, -1); wkLoadList(); } });
-  $("wk119rf").addEventListener("click", function () { wkLoadList(); });
-  m.querySelectorAll(".wkcard").forEach(function (c) {
-    c.addEventListener("click", function () {
-      var w = null;
-      WK.workers.forEach(function (x) { if (x.id === +c.getAttribute("data-wid")) w = x; });
-      if (w) wkOpenWorker(w);
-    });
-  });
-}
-
-function wkOpenWorker(w) {
-  WK.worker = w;
-  WK.arm = {};
-  var m = $("wk119main"), v = $("wk119wkr"), fab = $("wk119fab");
-  if (!v) return;
-  m.style.display = "none"; v.style.display = "block";
-  if (fab) fab.style.display = "none";
-  v.innerHTML = '<button type="button" class="exp106back" id="wk119back">→ رجوع إلى القائمة</button>'
-    + '<div class="wkwk-hd"><div><div class="wkh-n">' + esc(w.name) + '</div>'
-    + '<div class="wkh-s">راتبه الشهري: ' + money(w.salary)
-    + (w.work_start ? ' • من ' + fmtD(w.work_start) : '')
-    + (w.work_end ? ' • إلى ' + fmtD(w.work_end) : (w.active ? ' • ما زال يعمل' : ''))
-    + '</div></div></div>'
-    + '<div class="wksum">'
-    + '<div><span>راتب الشهر</span><b>' + money(w.salary) + '</b></div>'
-    + '<div><span>سلف ' + esc(monthLabel(WK.month)) + '</span><b>' + money(w.adv) + '</b></div>'
-    + '<div class="rem"><span>المتبقي للصرف</span><b>' + money(w.remaining) + '</b></div>'
-    + '</div>'
-    + '<div class="wkacts">'
-    + (w.active ? '<button type="button" class="btn gold" id="wk119addadv">➕ تسبيق جديد</button>' : '')
-    + (isAdmin() ? '<button type="button" class="btn gray" id="wk119edtw">✏️ تعديل</button>' : '')
-    + (isAdmin() && w.active ? '<button type="button" class="btn gray" id="wk119endw">🏁 إنهاء العمل</button>' : '')
-    + (isAdmin() && !w.active ? '<button type="button" class="btn gray" id="wk119resw">▶️ إعادة تشغيل عمله</button>' : '')
-    + (isAdmin() ? '<button type="button" class="btn red" id="wk119delw">🗑 حذف العامل</button>' : '')
-    + '</div>'
-    + '<div class="exp106lhd"><b>💾 سلف ' + esc(monthLabel(WK.month)) + '</b>'
-    + '<span>اضغط 🗑 مرتين لحذف تسبيق سجّلته أنت</span>'
-    + '<button type="button" id="wk119adr" title="تحديث">↻</button></div>'
-    + '<div id="wk119advs"><p class="wkempty">جارِ التحميل...</p></div>';
-  $("wk119back").addEventListener("click", wkShowList);
-  var aa = $("wk119addadv");
-  if (aa) aa.addEventListener("click", function () { wkAdvanceForm(w); });
-  var ed = $("wk119edtw");
-  if (ed) ed.addEventListener("click", function () { wkWorkerForm(w); });
-  var en = $("wk119endw");
-  if (en) en.addEventListener("click", function () {
-    wkWorkerEdit({ id: w.id, active: false, work_end: new Date().toISOString().slice(0, 10) },
-      "🏁 تم إنهاء عمل «" + w.name + "» — تاريخ النهاية اليوم.");
-  });
-  var rs = $("wk119resw");
-  if (rs) rs.addEventListener("click", function () {
-    wkWorkerEdit({ id: w.id, active: true, work_end: "" },
-      "▶️ أُعيد تشغيل عمل «" + w.name + "».");
-  });
-  var dw = $("wk119delw");
-  if (dw) dw.addEventListener("click", function () {
-    armTwo(dw, "dw" + w.id,
-      "⚠️ اضغط 🗑 مجدداً خلال 5 ثوانٍ — حذف «" + w.name + "» وكل سلفه نهائياً.",
-      function () {
-        api("/api/workers/delete", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: w.id }) }).then(function (d) {
-          say(d.message || "تم حذف العامل."); wkShowList();
-        }).catch(function (e) { say(e.message, true); });
-      });
-  });
-  $("wk119adr").addEventListener("click", function () { wkLoadAdv(); });
-  wkLoadAdv();
-}
-function wkLoadAdv() {
-  var w = WK.worker, box = $("wk119advs");
-  if (!w || !box) return;
-  var my = ++WK.seqA;
-  api("/api/advances?worker_id=" + w.id + "&month=" + encodeURIComponent(WK.month), { noCache: true }).then(function (d) {
-    if (my !== WK.seqA || !d || d.ok !== true) return;
-    WK.items = d.items || [];
-    wkRenderAdv();
-  }).catch(function (e) {
-    if (my !== WK.seqA) return;
-    box.innerHTML = '<p class="wkempty">' + esc(e.message || "تعذر التحميل.") + '</p>';
-  });
-}
-function wkRenderAdv() {
-  var box = $("wk119advs");
-  if (!box) return;
-  if (!WK.items.length) {
-    box.innerHTML = '<p class="wkempty">لا سلف مسجلة لهذا العامل في ' + esc(monthLabel(WK.month))
-      + ' — اضغط «➕ تسبيق جديد» مع أول مبلغ تعطيه له.</p>';
-    return;
-  }
-  var h = "";
-  WK.items.forEach(function (a) {
-    h += '<div class="wkrow"><div class="wkr-m">'
-      + '<div class="wkr-a">− ' + money(a.amount) + '</div>'
-      + '<div class="wkr-d">🗓 ' + fmtDT(a.given_at) + (a.by ? ' • ✍️ ' + esc(a.by) : '') + '</div>'
-      + (a.note ? '<div class="wkr-n">' + esc(a.note) + '</div>' : '')
-      + '</div>'
-      + (a.can_delete ? '<button type="button" class="pdel wkdel" data-aid="' + a.id + '" title="حذف التسبيق">🗑</button>' : '')
-      + '</div>';
-  });
-  box.innerHTML = h;
-  box.querySelectorAll("button.wkdel").forEach(function (b) {
-    b.addEventListener("click", function () {
-      var aid = +b.getAttribute("data-aid");
-      armTwo(b, "ad" + aid, "اضغط 🗑 مجدداً خلال 5 ثوانٍ لحذف هذا التسبيق.", function () {
-        api("/api/advances/delete", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: aid }) }).then(function (d) {
-          say(d.message || "تم حذف التسبيق.");
-          wkLoadAdv(); wkLoadList();
-        }).catch(function (e) { say(e.message, true); });
-      });
-    });
-  });
-}
-
-function wkFormBack() {
-  var f = $("wk119form");
-  if (f) f.style.display = "none";
-  if (WK.worker) { $("wk119wkr").style.display = "block"; wkLoadAdv(); }
-  else wkShowList();
-}
-function wkFormShell(title, inner) {
-  var m = $("wk119main"), w = $("wk119wkr"), f = $("wk119form");
-  m.style.display = "none"; if (w) w.style.display = "none"; f.style.display = "block";
-  f.innerHTML = '<button type="button" class="exp106back" id="wk119fback">→ رجوع</button>'
-    + '<div class="exp106form">' + title + inner + '</div>';
-  $("wk119fback").addEventListener("click", wkFormBack);
-}
-function wkAdvanceForm(w) {
-  wkFormShell('<label>تسبيق جديد لـ ' + esc(w.name) + ' — من راتبه الشهري</label>',
-      '<label>المبلغ<input id="wk119amt" type="text" inputmode="decimal" '
-    + 'placeholder="0.00" autocomplete="off"></label>'
-    + '<label>ملاحظة — اختيارية<input id="wk119nte" type="text" maxlength="300" '
-    + 'placeholder="اختياري" autocomplete="off"></label>'
-    + '<label>التاريخ والوقت<input id="wk119dt" type="datetime-local"></label>'
-    + '<div class="exp106hint">المبلغ يُخصم من راتب ' + esc(w.name) + ' في ' + esc(monthLabel(WK.month))
-    + ' — أي تاريخ ماضٍ مقبول ويُحفظ التوقيت دائمًا.</div>'
-    + '<button type="button" class="btn gold" id="wk119asave">حفظ التسبيق</button>'
-    + '<div id="wk119aerr" class="exp106err" style="display:none"></div>');
-  try { $("wk119dt").value = toLocalInput(new Date()); } catch (e) {}
-  $("wk119asave").addEventListener("click", function () {
-    var err = $("wk119aerr");
-    function fail(m) { err.textContent = m; err.style.display = "block"; }
-    err.style.display = "none";
-    api("/api/advances/add", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ worker_id: w.id, amount: $("wk119amt").value,
-        note: $("wk119nte").value, given_at: $("wk119dt").value }) })
-      .then(function (d) {
-        say(d.message || "تم تسجيل التسبيق.");
-        wkFormBack(); wkLoadList();
-      })
-      .catch(function (e) { fail(e.message || "تعذر الحفظ."); });
-  });
-}
-function wkWorkerForm(w) {
-  var isEdit = !!w;
-  wkFormShell('<label>' + (isEdit ? "تعديل بيانات العامل" : "عامل جديد") + '</label>',
-      '<label>الاسم<input id="wk119wnm" type="text" maxlength="120" '
-    + 'value="' + (isEdit ? esc(w.name) : "") + '" autocomplete="off"></label>'
-    + '<label>الراتب الشهري<input id="wk119wsal" type="text" inputmode="decimal" '
-    + 'value="' + (isEdit ? esc(w.salary) : "") + '" placeholder="0.00" autocomplete="off"></label>'
-    + '<label>تاريخ بداية العمل<input id="wk119wst" type="date" '
-    + 'value="' + (isEdit && w.work_start ? esc(w.work_start) : new Date().toISOString().slice(0, 10)) + '"></label>'
-    + '<label>تاريخ نهاية العمل — اختياري (ينتهي به ظهوره من القائمة النشطة)'
-    + '<input id="wk119wen" type="date" value="' + (isEdit && w.work_end ? esc(w.work_end) : "") + '"></label>'
-    + '<div class="exp106hint">التسبيبات تُسجل من بطاقة العامل خلال الشهر وتُخصم آلياً من راتبه'
-    + ' — نهاية كل شهر يظهر «المتبقي للصرف» فوق بطاقته.</div>'
-    + '<button type="button" class="btn gold" id="wk119wsave">'
-    + (isEdit ? "حفظ التعديل" : "إضافة العامل") + '</button>'
-    + '<div id="wk119werr" class="exp106err" style="display:none"></div>');
-  $("wk119wsave").addEventListener("click", function () {
-    var err = $("wk119werr");
-    function fail(m) { err.textContent = m; err.style.display = "block"; }
-    err.style.display = "none";
-    var payload = { name: $("wk119wnm").value, salary: $("wk119wsal").value,
-      work_start: $("wk119wst").value, work_end: $("wk119wen").value };
-    var url = "/api/workers/add";
-    if (isEdit) { payload.id = w.id; url = "/api/workers/edit"; }
-    api(url, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload) })
-      .then(function (d) {
-        say(d.message || "تم.");
-        WK.worker = null;
-        wkFormBack(); wkLoadList();
-      })
-      .catch(function (e) { fail(e.message || "تعذر الحفظ."); });
-  });
-}
-function wkWorkerEdit(payload, okMsg) {
-  api("/api/workers/edit", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload) }).then(function (d) {
-    say(okMsg || d.message || "تم.");
-    WK.worker = null;
-    wkShowList();
-  }).catch(function (e) { say(e.message, true); });
-}
-
-/* ═══ (2) حذف الطلب المعلق — يُستدعى من زر 🗑 داخل الصف (بتأكيد ضغطتين) ═══ */
-window.pendingDelete = function (id, btn) {
-  var key = "pd" + id;
-  if (WK.arm[key]) { clearTimeout(WK.arm[key]); WK.arm[key] = null; }
-  else {
-    WK.arm[key] = setTimeout(function () {
-      WK.arm[key] = null;
-      try { btn.classList.remove("arm"); } catch (e) {}
-    }, 5000);
-    try { btn.classList.add("arm"); } catch (e2) {}
-    say("⚠️ اضغط 🗑 مجدداً خلال 5 ثوانٍ لحذف هذا الطلب المعلق من القائمة نهائياً.", true);
-    return;
-  }
-  api("/api/pending/delete", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: id }) }).then(function (d) {
-    say(d.message || "تم حذف الطلب المعلق.");
-    try { if (typeof loadOrders === "function") loadOrders(); } catch (e) {}
-  }).catch(function (e) { say(e.message, true); });
-};
-
-/* ═══ (3) الحذف النهائي من قائمة المحذوفة — بطاقة تحذير + ضغطتان ═══ */
-window.invPurge = function (id, name) {
-  api("/api/products/purge", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: id, confirm: false }) }).then(function (d) {
-    if (!d || d.ok !== true || !d.probe) return;
-    var ov = document.createElement("div");
-    ov.id = "purge119ov"; ov.className = "exp106ov";
-    var card = document.createElement("div");
-    card.className = "exp106card";
-    card.innerHTML =
-        '<div class="exp106hd"><b>🗑 حذف نهائي — لا تراجع</b>'
-      + '<button type="button" id="purge119x" title="إغلاق">✕</button></div>'
-      + '<div class="exp106main">'
-      + '<div class="purgewarn">⚠️ <b>«' + esc(d.name || name) + '»</b> ستُمحى من القاعدة نهائياً'
-      + ' مع <b>' + (d.tx_count || 0) + '</b> من حركاتها المسجلة وكل طلباتها المعلقة.'
-      + '<br>الفواتير القديمة تبقى بأسطرها كاملة. هذا الإجراء لا يمكن التراجع عنه بعد الضغطة الثانية.</div>'
-      + '<button type="button" class="btn red" id="purge119go" style="width:100%">🗑 اضغط مرة أخرى للتأكيد النهائي</button>'
-      + '</div>';
-    ov.appendChild(card);
-    document.body.appendChild(ov);
-    $("purge119x").addEventListener("click", function () { ov.remove(); });
-    ov.addEventListener("click", function (e) { if (e.target === ov) ov.remove(); });
-    var go = $("purge119go");
-    go.addEventListener("click", function () {
-      if (!go.classList.contains("arm")) {
-        go.classList.add("arm");
-        go.textContent = "⚠️ اضغط مجدداً — الحذف نهائي بلا تراجع";
-        try { (window.v90vib || function () {})(20); } catch (e0) {}
-        setTimeout(function () {
-          if (go && go.classList) {
-            go.classList.remove("arm");
-            go.textContent = "🗑 اضغط مرة أخرى للتأكيد النهائي";
-          }
-        }, 5000);
-        return;
-      }
-      api("/api/products/purge", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: id, confirm: true }) }).then(function (d2) {
-        ov.remove();
-        say(d2.message || "تم الحذف النهائي.");
-        try { if (typeof loadInventory === "function") loadInventory(); } catch (e1) {}
-      }).catch(function (e) { say(e.message, true); });
-    });
-  }).catch(function (e) { say(e.message, true); });
-};
-
-/* ═══ (4) قسمة «سلف العمال — هذا الشهر» مكان الأكثر بيعاً في نبض المخزون ═══ */
-function v93wk() {
-  var box = $("v93wk"), hd = $("v93wkh");
-  if (!box) return;
-  if (!allowed()) { box.style.display = "none"; if (hd) hd.style.display = "none"; return; }
-  var my = ++WK.seqS;
-  api("/api/workers/summary", { noCache: true }).then(function (d) {
-    if (my !== WK.seqS || !d) return;
-    if (!d.ok || d.hidden) { box.style.display = "none"; if (hd) hd.style.display = "none"; return; }
-    if (hd) hd.style.display = "";
-    box.style.display = "";
-    box.innerHTML = '<div class="wk93grid">'
-      + '<div class="wk93k"><span>رواتب الشهر</span><b>' + money(d.salaries) + '</b></div>'
-      + '<div class="wk93k"><span>السلف المصروفة</span><b>' + money(d.advances) + '</b></div>'
-      + '<div class="wk93k rem"><span>المتبقي للصرف</span><b>' + money(d.remaining) + '</b></div>'
-      + '</div><p class="wk93tap">اضغط لفتح مصروفات العمال ←</p>';
-    box.onclick = function () { vib(8); window.expensesOpen(); };
-  }).catch(function () {
-    box.style.display = "none";
-    if (hd) hd.style.display = "none";
-  });
-}
-try {
-  var oLH119 = window.loadHome;
-  if (typeof oLH119 === "function") {
-    window.loadHome = function () {
-      var r = oLH119.apply(this, arguments);
-      try { setTimeout(v93wk, 150); } catch (e) {}
-      return r;
-    };
-  }
-} catch (e) {}
-try { window.v119WorkersSection = v93wk; } catch (e) {}
-})();'''
-
-PATCH_PENDING_OLD = r'''    box.innerHTML = list.length ? list.map((p) =>
-      '<div class="row"><div class="info"><b>' + esc(p.product_name) + '</b>'
-      + '<span>' + esc(p.user_name || "—") + " • " + fmtDate(p.created_at)
-      + " • متوفر الآن: " + p.product_qty + '</span></div>'
-      + '<span class="badge r">⏳ ' + p.pending_qty + '</span></div>').join("")
-      : '<p class="empty">✅ لا توجد طلبات معلقة.</p>';
-    return;'''
-
-PATCH_PENDING_NEW = r'''    box.innerHTML = list.length ? list.map((p) => {
-      const del = p.can_delete
-        ? '<button type="button" class="pdel" data-pdel="' + p.id + '" title="حذف الطلب المعلق">🗑</button>' : "";
-      return '<div class="row"><div class="info"><b>' + esc(p.product_name) + '</b>'
-      + '<span>' + esc(p.user_name || "—") + " • " + fmtDate(p.created_at)
-      + " • متوفر الآن: " + p.product_qty + '</span></div>'
-      + del + '<span class="badge r">⏳ ' + p.pending_qty + '</span></div>';
-    }).join("")
-      : '<p class="empty">✅ لا توجد طلبات معلقة.</p>';
-    box.querySelectorAll("button[data-pdel]").forEach((b) =>
-      b.addEventListener("click", () => { if (window.pendingDelete) window.pendingDelete(+b.dataset.pdel, b); }));
-    return;'''
-
-PATCH_PURGE_MENU_OLD = r'''  if (S.invTab === "arch") {
-    h += mk("restore", "♻️ استعادة إلى المخزون", "green");
-    if (S.perms.admin || S.perms.edit_product) h += mk("edit", "✏️ تعديل البيانات", "soft-e");
-  } else {'''
-
-PATCH_PURGE_MENU_NEW = r'''  if (S.invTab === "arch") {
-    h += mk("restore", "♻️ استعادة إلى المخزون", "green");
-    if (S.perms.admin || S.perms.edit_product) h += mk("edit", "✏️ تعديل البيانات", "soft-e");
-    if (S.perms.admin) h += mk("purge", "🗑 حذف نهائي", "red");
-  } else {'''
-
-PATCH_PURGE_DISPATCH_OLD = r'''      else if (act === "del") invDelete(mid, mn);
-      else if (act === "restore") invRestore(mid, mn);'''
-
-PATCH_PURGE_DISPATCH_NEW = r'''      else if (act === "del") invDelete(mid, mn);
-      else if (act === "restore") invRestore(mid, mn);
-      else if (act === "purge" && window.invPurge) window.invPurge(mid, mn);'''
-
-
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -17216,162 +14693,6 @@ _PWA_HTML_PATCHES = (
     # 49) v105: سكن أندرويد أصيل داخل التطبيق فقط — CSS ثم JS (آخر سلسلة المراسي الحية)
     ('</script>\n</body>',
      '</script>\n<style id="v105css">' + _PWA_V105_CSS + '</style>\n<script id="v105js">\n' + _PWA_V105_JS + '\n</script>\n</body>'),
-    # 50) v106: المصروفات — زر خارج المحادثات + لوحة حفظ بالتاريخ والوقت (آخر سلسلة المراسي الحية)
-    ('</script>\n</body>',
-     '</script>\n<style id="v106css">' + _PWA_V106_CSS + '</style>\n<script id="v106js">\n' + _PWA_V106_JS + '\n</script>\n</body>'),
-    # ── v107: صلاحيات لكل مستخدم — بوابات العميل على الوحدات الجديدة ثم اللوحة ──
-    # 51a) بوابات applyPerms: زر إضافة السلعة والشريحة بوعي الصلاحيتين المستقلتين
-    ('  $("#btnAddProd").style.display = S.perms.admin ? "" : "none";\n'
-     '  $("#segArch").style.display = S.perms.admin ? "" : "none";',
-     '  $("#btnAddProd").style.display = (S.perms.admin || S.perms.add_product) ? "" : "none";\n'
-     '  $("#segArch").style.display = (S.perms.admin || S.perms.edit_product) ? "" : "none";'),
-    # 51b) قائمة ⋮: تعديل السلعة المحذوفة بالصلاحية المستقلة
-    ('    if (S.perms.admin) h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n  } else {',
-     '    if (S.perms.admin || S.perms.edit_product) h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n  } else {'),
-    # 51c) قائمة ⋮: الجرد يبقى للمدراء، والتعديل/الحذف بالصلاحية المستقلة
-    ('    if (S.perms.admin) {\n'
-     '      h += mk("reconcile", "🧮 جرد وتسوية", "gray");\n'
-     '      h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n'
-     '      h += mk("del", "🗑 حذف (أرشفة)", "red");\n    }',
-     '    if (S.perms.admin) h += mk("reconcile", "🧮 جرد وتسوية", "gray");\n'
-     '    if (S.perms.admin || S.perms.edit_product) {\n'
-     '      h += mk("edit", "✏️ تعديل البيانات", "soft-e");\n'
-     '      h += mk("del", "🗑 حذف (أرشفة)", "red");\n    }'),
-    # 51d) تفاصيل السلعة: أزرار التعديل/الحذف بالصلاحية المستقلة
-    ('    if (S.perms.admin)\n'
-     '      acts += \'<button class="btn mini gold" id="detEdit">✏️ تعديل</button>\';',
-     '    if (S.perms.admin || S.perms.edit_product)\n'
-     '      acts += \'<button class="btn mini gold" id="detEdit">✏️ تعديل</button>\';'),
-    ('    if (S.perms.admin)\n'
-     '      acts += p.archived\n'
-     '        ? \'<button class="btn mini green" id="detRes">♻️ استعادة</button>\'\n'
-     '        : \'<button class="btn mini red" id="detDel">🗑 حذف</button>\';',
-     '    if (S.perms.admin || S.perms.edit_product)\n'
-     '      acts += p.archived\n'
-     '        ? \'<button class="btn mini green" id="detRes">♻️ استعادة</button>\'\n'
-     '        : \'<button class="btn mini red" id="detDel">🗑 حذف</button>\';'),
-    ('    if (S.perms.admin) {\n'
-     '      $("#detEdit").addEventListener("click", () => {',
-     '    if (S.perms.admin || S.perms.edit_product) {\n'
-     '      $("#detEdit").addEventListener("click", () => {'),
-    # 51e) لوحة المصفوفة — آخر سلسلة المراسي الحية
-    ('</script>\n</body>',
-     '</script>\n<style id="v107css">' + _PWA_V107_CSS + '</style>\n<script id="v107js">\n' + _PWA_V107_JS + '\n</script>\n</body>'),
-    # 52) v109: بطاقة «💰 المصروفات» في الرئيسية + رأس السجل والوميض — آخر سلسلة المراسي الحية
-    ('</script>\n</body>',
-     '</script>\n<style id="v109css">' + _PWA_V109_CSS + '</style>\n<script id="v109js">\n' + _PWA_V109_JS + '\n</script>\n</body>'),
-    # 53) v114: معالج إضافة السلع — نافذة dlgNew تصير خطوتين (بطاقات فئات ← اسم وكمية)
-    (_PWA_V114_DLG_OLD, _PWA_V114_DLG_NEW),
-    # 54) v114: خطّاف تمييز السلعة المضافة — الاسم النهائي (بالبادئة) يمرر لطبقة v114 بعد الحفظ
-    ('    $("#dlgNew").close(); toast(d.message || "تمت الإضافة."); loadInventory();',
-     '    $("#dlgNew").close(); toast(d.message || "تمت الإضافة.");'
-     ' try { window.__wizAdded && window.__wizAdded(name); } catch (_e) {} loadInventory();'),
-    # 55) v114: طبقة المعالج — CSS ثم JS (آخر سلسلة المراسي الحية)
-    ('</script>\n</body>',
-     '</script>\n<style id="v114css">' + _PWA_V114_CSS + '</style>\n<script id="v114js">\n' + _PWA_V114_JS + '\n</script>\n</body>'),
-    # 56) v115: قاعدة الاسم النهائي — __wizComposeName تتولى البادئة والقياس والمصنع
-    #     (المسار القديم يبقى احتياطاً لو غابت الطبقة)
-    ('  const meta = TYPE_META[S.newType] || TYPE_META.other;\n'
-     '  if (meta.prefix) {',
-     '  const meta = TYPE_META[S.newType] || TYPE_META.other;\n'
-     '  if (window.__wizComposeName) {\n'
-     '    name = window.__wizComposeName(name);\n'
-     '  } else if (meta.prefix) {'),
-    # 57) v115: معاينة v114 تفوّض التركيب لـ __wizComposeName — تطابق الحفظ حرفياً
-    ('    var raw = ((el && el.value) || "").trim();\n'
-     '    if (!raw) return "";\n'
-     '    var t = (typeof S !== "undefined" && S.newType) || "other";',
-     '    var raw = ((el && el.value) || "").trim();\n'
-     '    if (!raw) return "";\n'
-     '    if (window.__wizComposeName) return window.__wizComposeName(raw);\n'
-     '    var t = (typeof S !== "undefined" && S.newType) || "other";'),
-    # 58) v115: حقل «اسم المصنع» بعد الكمية في الخطوة ٢ — بالضغط يظهر خيارات المصانع
-    ('      <div class="fld"><label id="nQtyLbl">الكمية الأولية (كرتون)</label>\n'
-     '        <input id="nQty" type="number" inputmode="numeric" min="0" value="0"></div>',
-     '      <div class="fld"><label id="nQtyLbl">الكمية الأولية (كرتون)</label>\n'
-     '        <input id="nQty" type="number" inputmode="numeric" min="0" value="0"></div>\n'
-     '      <div class="fld"><label>اسم المصنع — اضغط للاختيار (اختياري)</label>\n'
-     '        <button type="button" class="wizFac" id="wizFacBtn">'
-     '<span class="wfic">🏭</span><span class="wftx" id="wizFacTxt">بدون مصنع</span>'
-     '<span class="wfchg">اختيار</span></button></div>'),
-    # 59) v115: واجهة اختيار المصنع داخل نفس النافذة — بدون + القائمة + إضافة للإدارة
-    ('      <div class="wizRow">\n'
-     '        <button type="button" class="btn gray" id="wizBack">← تغيير الفئة</button>\n'
-     '        <button class="btn gray" id="dlgNewCancel">إلغاء</button>\n'
-     '      </div>\n'
-     '    </div>\n'
-     '  </div>\n'
-     '</dialog>',
-     '      <div class="wizRow">\n'
-     '        <button type="button" class="btn gray" id="wizBack">← تغيير الفئة</button>\n'
-     '        <button class="btn gray" id="dlgNewCancel">إلغاء</button>\n'
-     '      </div>\n'
-     '    </div>\n'
-     '    <div id="wizFacView" style="display:none">\n'
-     '      <div class="wizStep">🏭 اختر اسم المصنع — يُضاف في نهاية اسم السلعة</div>\n'
-     '      <div id="facList" class="facList"></div>\n'
-     '      <div id="facEmpty" class="facEmpty" style="display:none">'
-     'لا توجد مصانع مضافة بعد — تُضاف من طرف المدير.</div>\n'
-     '      <div id="facAddBox" style="display:none">\n'
-     '        <div class="fld"><label>إضافة مصنع جديد إلى القائمة</label>\n'
-     '          <input id="facNewName" autocomplete="off" maxlength="60" '
-     'placeholder="مثال: techno ceram"></div>\n'
-     '        <button class="btn" id="facAddGo">➕ إضافة المصنع واختياره</button>\n'
-     '      </div>\n'
-     '      <div class="wizRow"><button type="button" class="btn gray" id="wizFacBack">← رجوع</button></div>\n'
-     '    </div>\n'
-     '  </div>\n'
-     '</dialog>'),
-    # 60) v115: طبقة المصانع — CSS ثم JS (آخر سلسلة المراسي الحية)
-    ('</script>\n</body>',
-     '</script>\n<style id="v115css">' + _PWA_V115_CSS + '</style>\n<script id="v115js">\n' + _PWA_V115_JS + '\n</script>\n</body>'),
-    # 61) v117: حقل «القياس» بعد اسم السلعة في الخطوة ٢ — بالضغط يظهر خيارات القياسات
-    #     (يختفى في فئة 120/60 — قياسها مثبت بالفئة)
-    ('      <div class="wizPrev" id="wizPrev" style="display:none"></div>',
-     '      <div class="wizPrev" id="wizPrev" style="display:none"></div>\n'
-     '      <div class="fld" id="wizSizeFld"><label>القياس — اضغط للاختيار (اختياري)</label>\n'
-     '        <button type="button" class="wizFac" id="wizSizeBtn">'
-     '<span class="wfic">📏</span><span class="wftx" id="wizSizeTxt">بدون قياس</span>'
-     '<span class="wfchg">اختيار</span></button></div>'),
-    # 62) v117: واجهة اختيار القياس داخل نفس النافذة — بدون + القائمة + إضافة للإدارة
-    ('      <div class="wizRow"><button type="button" class="btn gray" id="wizFacBack">← رجوع</button></div>\n'
-     '    </div>\n'
-     '  </div>\n'
-     '</dialog>',
-     '      <div class="wizRow"><button type="button" class="btn gray" id="wizFacBack">← رجوع</button></div>\n'
-     '    </div>\n'
-     '    <div id="wizSizeView" style="display:none">\n'
-     '      <div class="wizStep">📏 اختر القياس — يُضاف بعد اسم السلعة</div>\n'
-     '      <div id="sizeList" class="facList"></div>\n'
-     '      <div id="sizeEmpty" class="facEmpty" style="display:none">'
-     'لا توجد قياسات مضافة بعد — تُضاف من طرف المدير.</div>\n'
-     '      <div id="sizeAddBox" style="display:none">\n'
-     '        <div class="fld"><label>إضافة قياس جديد إلى قائمة هذه الفئة</label>\n'
-     '          <input id="sizeNewName" autocomplete="off" maxlength="60" '
-     'placeholder="مثال: 30/90"></div>\n'
-     '        <button class="btn" id="sizeAddGo">➕ إضافة القياس واختياره</button>\n'
-     '      </div>\n'
-     '      <div class="wizRow"><button type="button" class="btn gray" id="wizSizeBack">← رجوع</button></div>\n'
-     '    </div>\n'
-     '  </div>\n'
-     '</dialog>'),
-    # 63) v117: طبقة القياس — CSS ثم JS (آخر سلسلة المراسي الحية)
-    ('</script>\n</body>',
-     '</script>\n<style id="v117css">' + _PWA_V117_CSS + '</style>\n<script id="v117js">\n' + _PWA_V117_JS + '\n</script>\n</body>'),
-    # 64) v118: قياسات لكل فئة + حذف القياس — طبقة CSS لزر 🗑 داخل صف القياس
-    ('</script>\n</body>',
-     '</script>\n<style id="v118css">' + _PWA_V118_CSS + '</style>\n</body>'),
-    # 65) v119: زر 🗑 داخل صف الطلب المعلق — بتأكيد ضغطتين عبر window.pendingDelete
-    (PATCH_PENDING_OLD, PATCH_PENDING_NEW),
-    # 66) v119: زر «حذف نهائي» في قائمة ⋮ للسلعة المؤرشفة
-    (PATCH_PURGE_MENU_OLD, PATCH_PURGE_MENU_NEW),
-    # 67) v119: توجيه فعلة purge إلى window.invPurge
-    (PATCH_PURGE_DISPATCH_OLD, PATCH_PURGE_DISPATCH_NEW),
-    # 68) v119: طبقة مصروفات العمال + الحذف النهائي — CSS ثم JS (آخر سلسلة المراسي الحية)
-    #     المرساة ذيل v118css — فئة v118 أضافت style فقط فصار الذيل </style></body>
-    ('</style>\n</body>',
-     '</style>\n<style id="v119css">' + _PWA_V119_CSS
-     + '</style>\n<script id="v119js">\n' + _PWA_V119_JS + '\n</script>\n</body>'),
 )
 
 
@@ -17908,28 +15229,14 @@ def _pwa_norm_username(u):
 
 
 def _pwa_init_tables():
-    """v108: زرع جداول PWA لا يرفع استثناءً أبداً — عبارةً-عبارة بعزل
-    _safe_exec (نفس حصن init_db) والفشل يُسجَّل فقط؛ حلقة الإقلاع الخلفية
-    تعيد المحاولة حتى النجاح. العائد: True اكتمل / False تأخر."""
-    conn = None
-    try:
-        conn = get_connection()
-    except Exception as e:
-        logging.error("[PWA][v108] لا اتصال لزرع جداول PWA: " + str(e)[:200])
-        return False
+    conn = get_connection()
     try:
         with conn.cursor() as cur:
-            for _pi, _pstmt in enumerate(_split_sql_statements(PWA_SCHEMA_SQL), 1):
-                _safe_exec(cur, _pstmt, "PWA#" + str(_pi))
+            cur.execute(PWA_SCHEMA_SQL)
         conn.commit()
-        return True
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        logging.error("[PWA][v108] جداول PWA لم تكتمل: " + str(e)[:200])
-        return False
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         release_connection(conn)
     # v52: دمج المكرر عند الإقلاع — نفس الشخص من التطبيق ومن تلجرام = حساب واحد
@@ -18302,9 +15609,8 @@ async def notify_everyone(kind, title, body, actor="", source="web", tg=True):
         pass
     if TG_APP is None or not tg:
         return
-    # v116 «إشعارات بلا أسماء»: لا يُلحق اسم الفاعل بالبث التلغرامي —
-    # طلب يوسف: «لا تجعل اسمي يظهر لأي شخص حتى ولو اضفت سلعة جديدة او عدلتها»
-    text = str(title) + "\n\n" + str(body or "")
+    text = str(title) + "\n\n" + str(body or "") + \
+        "\n\n👤 " + (str(actor) if actor else "موظف") + " • عبر التطبيق 📱"
     try:
         rows = await _pwa_run(_notify_recipients)
         for r in rows or []:
@@ -18608,50 +15914,28 @@ def _pwa_api_login(username, password):
     return True, (token, user), None
 
 
-def _pwa_perm_map(user):
-    """خريطة صلاحيات الواجهة (v107) — بوعي المستخدم أولاً ثم فئته:
-    تقبل قاموس جلسة المستخدم (يفضل — يطبق تجاوزاته الصريحة من
-    user_permissions) أو نص الفئة (توافق قديم: سلوك الفئة فقط)."""
-    if isinstance(user, dict):
-        role = user.get("role")
-        uid = user.get("telegram_id")
-    else:
-        role, uid = user, None
+def _pwa_perm_map(role):
+    """خريطة صلاحيات الواجهة للفئة — نفس نظام الصلاحيات المشترك."""
     admin = role in (ROLE_ADMIN, ROLE_MANAGER)
-
-    def _p(perm):
-        if uid is None:
-            return True if admin else role_perm_enabled(role, perm)
-        return user_perm_enabled(uid, role, perm)
-
     return {
         "admin": admin,
-        "search": _p(PERM_SEARCH),
-        "add_qty": _p(PERM_ADD_QTY),
-        "remove": _p(PERM_REMOVE),
-        # v107: وحدات إدارة السلع صارت صلاحيات مستقلة قابلة للمنح لكل مستخدم
-        "add_product": _p(PERM_ADD_PRODUCT),
-        "edit_product": _p(PERM_EDIT_PRODUCT),
-        "movements": _p(PERM_MOVEMENTS),
-        "low_stock": _p(PERM_LOW_STOCK),
+        "search": admin or role_perm_enabled(role, PERM_SEARCH),
+        "add_qty": admin or role_perm_enabled(role, PERM_ADD_QTY),
+        "remove": admin or role_perm_enabled(role, PERM_REMOVE),
+        "movements": admin or role_perm_enabled(role, PERM_MOVEMENTS),
+        "low_stock": admin or role_perm_enabled(role, PERM_LOW_STOCK),
         "oil": admin,
-        # v107: نظام المستخدمين — للمدراء بالفئة أو من أُعطيه الصلاحية
-        "users": _p(PERM_USERS),
-        # v88: إنشاء الفواتير — نفس بوابة فاتورة تلغرام (الفئة ثم التجاوز)
-        "invoice": _p(PERM_INVOICE),
+        "users": admin,
+        # v88: إنشاء الفواتير — للمدراء والبائعين (نفس بوابة فاتورة تلغرام)
+        "invoice": admin or role == ROLE_SELLER,
         # v97: رؤية الفواتير (ما أنشأه المستخدم أو كُلِّف بتجهيزه) — التخزين يشاهد دون إنشاء
         "invoice_view": admin or role in (ROLE_STOCK, ROLE_SELLER),
         # v93: نبض المخزون — الفريق الداخلي فقط (دون البائع الخارجي/العميل: نشاط تجاري داخلي)
         "activity": admin or role in (ROLE_STOCK, ROLE_SELLER),
         # v103: الاستبدال العام (بلا فاتورة) — مدير/مدير عام/عامل مخزون بالصلاحيتين
         "swapg": admin or (role == ROLE_STOCK
-                           and _p(PERM_ADD_QTY)
-                           and _p(PERM_REMOVE)),
-        # v106: المصروفات — للمدراء دائمًا ولكل من تُمنح الصلاحية
-        "expenses": _p(PERM_EXPENSES),
-        # v107: بوابات الوحدات المُعاد ربطها (طلبات التوريد + المعلقة)
-        "supply_order": _p(PERM_SUPPLY_ORDER),
-        "pending": _p(PERM_PENDING),
+                           and role_perm_enabled(role, PERM_ADD_QTY)
+                           and role_perm_enabled(role, PERM_REMOVE)),
     }
 
 
@@ -18663,7 +15947,7 @@ def _pwa_api_me(user):
         "display_name": user.get("display_name") or "",
         "avatar": user.get("avatar") or "",          # v41: صورة الحساب الشخصي
         "telegram_id": user.get("telegram_id"),
-    }, "perms": _pwa_perm_map(user)}
+    }, "perms": _pwa_perm_map(user["role"])}
 
 
 # ═══════════ v39: التسجيل بلا بريد — اسم دخول + رقم سر + موافقة الإدارة ═══════════
@@ -19451,7 +16735,7 @@ def _pwa_api_user_role(user, target_tid, role):
 
 
 def _pwa_api_stats(user):
-    perms = _pwa_perm_map(user)
+    perms = _pwa_perm_map(user["role"])
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -19462,10 +16746,10 @@ def _pwa_api_stats(user):
             cur.execute("SELECT COUNT(*) FROM transactions WHERE date >= CURRENT_DATE")
             n_today = cur.fetchone()[0]
             if perms["admin"]:
-                cur.execute("SELECT COUNT(*) FROM pending_deliveries WHERE pending_qty > 0 AND NOT COALESCE(dismissed, FALSE)")
+                cur.execute("SELECT COUNT(*) FROM pending_deliveries WHERE pending_qty > 0")
             else:
                 cur.execute("SELECT COUNT(*) FROM pending_deliveries "
-                            "WHERE pending_qty > 0 AND NOT COALESCE(dismissed, FALSE) AND user_id = %s", (user["id"],))
+                            "WHERE pending_qty > 0 AND user_id = %s", (user["id"],))
             n_pend = cur.fetchone()[0]
             if perms["admin"]:
                 cur.execute("SELECT COUNT(*) FROM incoming_orders "
@@ -19507,7 +16791,7 @@ def _pwa_api_activity(user, days=7):
     except (TypeError, ValueError):
         days = 7
     days = 30 if days >= 30 else 7
-    perms = _pwa_perm_map(user)
+    perms = _pwa_perm_map(user["role"])
     admin = perms["admin"]
     if not perms.get("activity"):
         # بوابة مزدوجة: الواجهة تخفي البطاقة والخادم لا يحسب شيئاً أصلاً
@@ -19614,40 +16898,19 @@ def _pwa_api_products(user, q, archived=False, low=False):
             lsql = " AND (COALESCE(quantity,0) <= COALESCE(minimum_stock,0))" if low else ""   # v43: فلتر المنخفضة
             # v81: السقف 200→500 + العدد الكلي — قديماً كانت القوائم الطويلة تُقتطع
             # صامتة عند 200 فتبدو السلع «غير موجودة» مع أنها حية (تظهر بالبحث فقط)
-            # v119: البحث الذكي — عند صفر نتائج حرفية تُستدعى نواة البوت نفسها
-            # (_normalize_text + _fuzzy_score: تطبيع / و× إلى x + تسامح أخطاء
-            # إملائية Levenshtein بنسبة تشابه 60%+) فما يجده البوت يجده التطبيق.
-            smart_used = False
             if q:
                 cur.execute(
                     "SELECT * FROM products WHERE " + asql + lsql + " AND name ILIKE %s "
                     "ORDER BY LOWER(name) LIMIT 500",
                     ("%" + q + "%",))
-                rows = cur.fetchall()
-                if not rows:
-                    _tokens = _normalize_text(q).split()
-                    if _tokens:
-                        cur.execute("SELECT * FROM products WHERE "
-                                    + asql + lsql + " ORDER BY id")
-                        _scored = []
-                        for _p in cur.fetchall():
-                            _s = _fuzzy_score(_p["name"], _tokens)
-                            if _s > 0:
-                                _scored.append((-_s, _p["id"], _p))
-                        _scored.sort(key=lambda x: (x[0], x[1]))
-                        rows = [t[2] for t in _scored[:500]]
-                        smart_used = bool(rows)
             else:
                 cur.execute("SELECT * FROM products WHERE " + asql + lsql +
                             " ORDER BY LOWER(name) LIMIT 500")
-                rows = cur.fetchall()
-            if smart_used:
-                total = len(rows)
-            else:
-                cur.execute("SELECT COUNT(*) AS cnt FROM products WHERE " + asql + lsql +
-                            (" AND name ILIKE %s" if q else ""),
-                            ("%" + q + "%",) if q else ())
-                total = int(cur.fetchone()["cnt"])
+            rows = cur.fetchall()
+            cur.execute("SELECT COUNT(*) AS cnt FROM products WHERE " + asql + lsql +
+                        (" AND name ILIKE %s" if q else ""),
+                        ("%" + q + "%",) if q else ())
+            total = int(cur.fetchone()["cnt"])
         conn.commit()
     finally:
         release_connection(conn)
@@ -19664,7 +16927,7 @@ def _pwa_api_products(user, q, archived=False, low=False):
                         "img": bool(r.get("image_url") or r.get("image")),   # v90: صورة السلعة
                         "unit": _get_unit_ar(r["name"]),
                         "low": (r["quantity"] or 0) <= (r["minimum_stock"] or 0)})
-    return {"ok": True, "products": out, "total": total, "limited": external_only, "archived": bool(archived), "low": bool(low), "smart": smart_used}
+    return {"ok": True, "products": out, "total": total, "limited": external_only, "archived": bool(archived), "low": bool(low)}
 
 
 def _pwa_api_product_detail(user, product_id):
@@ -19718,10 +16981,10 @@ def _pwa_api_product_detail(user, product_id):
 def _pwa_api_qty(user, product_id, qtype, quantity, reason):
     role = user["role"]
     if qtype == "add":
-        if not user_perm_enabled(user.get("telegram_id"), role, PERM_ADD_QTY):
+        if not role_perm_enabled(role, PERM_ADD_QTY) and role not in (ROLE_ADMIN, ROLE_MANAGER):
             return False, "ليست لديك صلاحية إضافة الكميات."
     elif qtype == "remove":
-        if not user_perm_enabled(user.get("telegram_id"), role, PERM_REMOVE):
+        if not role_perm_enabled(role, PERM_REMOVE) and role not in (ROLE_ADMIN, ROLE_MANAGER):
             return False, "ليست لديك صلاحية إخراج الكميات."
     elif qtype == "reconcile":
         if role not in (ROLE_ADMIN, ROLE_MANAGER):
@@ -19794,8 +17057,8 @@ def _pwa_api_qty(user, product_id, qtype, quantity, reason):
 
 def _pwa_api_add_product(user, name, qty, min_stock, price, location):
     """＋ إضافة سلعة جديدة (مدراء فقط) — مثل زر «إضافة سلعة» في البوت."""
-    if not _pwa_perm_map(user)["add_product"]:
-        return False, "ليست لديك صلاحية إضافة سلع جديدة."
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, "إضافة سلعة للمدراء فقط."
     name = str(name or "").strip()
     if len(name) < 2:
         return False, "أدخل اسم السلعة (حرفان على الأقل)."
@@ -19852,8 +17115,8 @@ def _pwa_api_product_edit(user, product_id, name, location=None, price=None,
                           minimum_stock=None):
     """✏️ v41: تعديل سلعة (مدراء فقط) — الاسم إلزامي، والحقول الأخرى اختيارية
     (None = تبقى كما هي). التعديل لا يمسّ سجل الحركة إطلاقاً."""
-    if not _pwa_perm_map(user)["edit_product"]:
-        return False, None, "ليست لديك صلاحية تعديل السلع."
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, None, "تعديل السلع للمدراء فقط."
     try:
         product_id = int(product_id)
     except (TypeError, ValueError):
@@ -19917,8 +17180,8 @@ def _pwa_api_product_edit(user, product_id, name, location=None, price=None,
 def _pwa_api_product_archive(user, product_id, archived=True):
     """🗑 v41: حذف ناعم للسلعة (مدراء فقط) — تُخفى من كل القوائم بينما يبقى
     سجل حركتها كاملاً محفوظاً (قيد RESTRICT محترم)، ويمكن استعادتها لاحقاً."""
-    if not _pwa_perm_map(user)["edit_product"]:
-        return False, None, "ليست لديك صلاحية حذف/استعادة السلع."
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, None, "حذف السلع للمدراء فقط."
     try:
         product_id = int(product_id)
     except (TypeError, ValueError):
@@ -19953,54 +17216,6 @@ def _pwa_api_product_archive(user, product_id, archived=True):
         release_connection(conn)
 
 
-def _pwa_api_product_purge(user, product_id, confirm):
-    """v119: حذف نهائي من قائمة المحذوفة بعد ضغطتين — طلب يوسف حرفياً.
-    الضغطة الأولى (confirm=False) بطاقة تحذير فقط بعدد الحركات المسجلة،
-    والثانية (confirm=True) تنفذ مسحاً حقيقياً داخل معاملة واحدة: صف السلعة
-    + كل حركاتها + طلباتها المعلقة — الفواتير تبقى بأسطرها كاملة (يُسند
-    product_id إلى NULL آلياً) وسجل تدقيق product_purge يوثق كل شيء.
-    يعيد None لغير المصرح، أو (False, رسالة)، أو (True, dict)."""
-    pm = _pwa_perm_map(user)
-    if not (pm["admin"] or pm["edit_product"]):
-        return None
-    try:
-        product_id = int(product_id)
-    except (TypeError, ValueError):
-        return False, "معرّف غير صالح."
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT name FROM products WHERE id = %s AND archived", (product_id,))
-            row = cur.fetchone()
-            if not row:
-                return False, "السلعة غير موجودة أو ليست في قائمة المحذوفة."
-            pname = row[0]
-            cur.execute("SELECT COUNT(*) FROM transactions WHERE product_id = %s",
-                        (product_id,))
-            tx_count = int(cur.fetchone()[0] or 0)
-            if not confirm:
-                conn.rollback()   # قراءة تحضيرية فقط — لا تغيير
-                return True, {"probe": True, "id": product_id, "name": pname,
-                              "tx_count": tx_count}
-            cur.execute("DELETE FROM pending_deliveries WHERE product_id = %s",
-                        (product_id,))
-            cur.execute("DELETE FROM transactions WHERE product_id = %s", (product_id,))
-            cur.execute("DELETE FROM products WHERE id = %s AND archived", (product_id,))
-            if cur.rowcount != 1:
-                conn.rollback()
-                return False, "تعذر الحذف النهائي — أعد المحاولة."
-        conn.commit()
-        return True, {"probe": False, "id": product_id, "name": pname,
-                      "tx_count": tx_count}
-    except Exception as e:
-        conn.rollback()
-        logging.error("[PWA][v119] product purge failed: " + str(e))
-        return False, "فشل الحذف النهائي — " + _pg_err_hint(e)
-    finally:
-        release_connection(conn)
-
-
 def _pwa_product_id_by_name(name):
     """v90: إيجاد معرّف سلعة بالاسم (الأحدث) — لرفع صورتها فور إنشائها."""
     conn = get_connection()
@@ -20019,8 +17234,8 @@ def _pwa_api_product_photo(user, product_id, photo_b64, mime, remove=False):
     """📷 v90: صورة السلعة — رفع/استبدال/إزالة (مدراء فقط).
     التخزين بمنطق v89 حرفياً: Supabase Storage إن توفّرت المفاتيح،
     وإلا بايتات في القاعدة (BYTEA) كالوضع القديم — والرجعة آلية."""
-    if not _pwa_perm_map(user)["edit_product"]:
-        return False, "ليست لديك صلاحية صور السلع."
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return False, "صور السلع للمدراء فقط."
     try:
         product_id = int(product_id)
     except (TypeError, ValueError):
@@ -20097,7 +17312,7 @@ def _pwa_api_user_avatar(user, target_tid):
         target_tid = int(target_tid)
     except (TypeError, ValueError):
         return None, None, "طلب غير صالح."
-    if target_tid != user.get("telegram_id") and not _pwa_perm_map(user)["users"]:
+    if target_tid != user.get("telegram_id") and not _pwa_perm_map(user["role"])["users"]:
         return None, None, "غير مصرح."
     conn = get_connection()
     try:
@@ -20141,7 +17356,7 @@ def _pwa_api_admin_selfpass(user, password):
     """🔑 v90: المدير يضبط رقم سر جديداً لحسابه دون الرقم القديم (حالة النسيان فقط).
     يتطلب جلسة مدير مصادَقة، يُبطل الجلسات القديمة — والمعالج يعيد زرع جلسة
     هذا الجهاز فوراً كي لا يُسجَّل المدير خروجاً. يُسجَّل في audit_log."""
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return False, None, "للمدير فقط."
     pol_ok, pol_msg = _pwa_password_ok(password)
     if not pol_ok:
@@ -20157,21 +17372,20 @@ def _pwa_api_admin_selfpass(user, password):
 
 
 def _pwa_api_pending(user):
-    """🔴 الطلبات المعلقة (عجز المخزون السالب): المدير (أو صاحب صلاحية
-    المعلقة منذ v107) يراها كلها والموظف يرى طلباته فقط — فلسفة البوت."""
-    admin = _pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["pending"]
+    """🔴 الطلبات المعلقة (عجز المخزون السالب): المدير يراها كلها
+    والموظف يرى طلباته فقط — نفس فلسفة البوت."""
+    admin = _pwa_perm_map(user["role"])["admin"]
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             base = (
                 "SELECT pd.id, pd.pending_qty, pd.created_at, "
                 "p.name AS product_name, p.quantity AS product_qty, "
-                "COALESCE(u.first_name, u.username, '#' || u.telegram_id::text) AS user_name, "
-                "pd.user_id "
+                "COALESCE(u.first_name, u.username, '#' || u.telegram_id::text) AS user_name "
                 "FROM pending_deliveries pd "
                 "JOIN products p ON p.id = pd.product_id "
                 "LEFT JOIN users u ON u.id = pd.user_id "
-                "WHERE pd.pending_qty > 0 AND NOT COALESCE(pd.dismissed, FALSE) ")
+                "WHERE pd.pending_qty > 0 ")
             if admin:
                 cur.execute(base + "ORDER BY pd.created_at ASC LIMIT 200")
             else:
@@ -20179,61 +17393,15 @@ def _pwa_api_pending(user):
                             (user["id"],))
             rows = cur.fetchall()
         conn.commit()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["can_delete"] = bool(admin or (d.get("user_id") or 0) == (user.get("id") or 0))
-            out.append(d)
-        return {"ok": True, "pending": out, "admin": admin}
-    finally:
-        release_connection(conn)
-
-
-def _pwa_api_pending_delete(user, body):
-    """v119: حذف (إلغاء) طلب معلق — للمدير أو صاحب صلاحية المعلقة أو صاحب الطلب.
-    بلاغ يوسف: طلبات معلقة من شهرين أو أكثر لأن السلعة استُبدلت مباشرة دون تحديث
-    البيانات. الحذف علامة dismissed لا مسح للسجل: الصف يختفي من كل القوائم
-    (البوت والتطبيق والإحصاءات) ولا يعيد نظام مرآة العجز (v80) إنشاءه لأن مجموعه
-    المحاسبي يبقى يحتسبه غطاءً للعجز — أي أن العجز المصرّح بأنه لا يدين لأحد
-    لا يعود ظاهراً أبداً. يعيد (True, صف) أو (False, رسالة)."""
-    pm = _pwa_perm_map(user)
-    allowed = bool(pm["admin"] or pm["pending"])
-    try:
-        pd_id = int((body or {}).get("id"))
-    except (TypeError, ValueError):
-        return False, "معرّف غير صالح."
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT pd.id, pd.user_id, pd.pending_qty, p.name AS product_name "
-                "FROM pending_deliveries pd JOIN products p ON p.id = pd.product_id "
-                "WHERE pd.id = %s AND pd.pending_qty > 0 "
-                "AND NOT COALESCE(pd.dismissed, FALSE)",
-                (pd_id,))
-            row = cur.fetchone()
-            if not row:
-                return False, "الطلب المعلق غير موجود أو محذوف من قبل."
-            if not allowed and (row["user_id"] or 0) != (user.get("id") or 0):
-                return False, "حذف الطلبات المعلقة للمدير أو صاحب الطلب فقط."
-            cur.execute(
-                "UPDATE pending_deliveries SET dismissed = TRUE "
-                "WHERE id = %s AND NOT COALESCE(dismissed, FALSE)", (pd_id,))
-        conn.commit()
-        return True, {"id": int(row["id"]), "product_name": row["product_name"],
-                      "pending_qty": int(row["pending_qty"] or 0)}
-    except Exception as e:
-        conn.rollback()
-        logging.error("[PWA][v119] pending delete failed: " + str(e))
-        return False, "فشلت العملية — " + _pg_err_hint(e)
+        return {"ok": True, "pending": [dict(r) for r in rows], "admin": admin}
     finally:
         release_connection(conn)
 
 
 def _pwa_api_incoming_list(user):
-    """🚚 طلبات التوريد المفتوحة: المدير (أو صاحب صلاحية التوريد منذ v107)
-    يراها كلها والموظف يرى طلباته. (v31) تضيف has_photo و mine."""
-    admin = _pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["supply_order"]
+    """🚚 طلبات التوريد المفتوحة: المدير يراها كلها والموظف يرى طلباته.
+    (v31) تضيف has_photo لزر «تصوير الوصل» و mine لتحديد من يملك الطلب."""
+    admin = _pwa_perm_map(user["role"])["admin"]
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -20266,13 +17434,12 @@ _PWA_PHOTO_MIMES = {"image/jpeg", "image/png", "image/webp"}
 
 def _pwa_receipt_allowed(user, order_row):
     """المدير/المدير العام — أو صاحب الطلب نفسه."""
-    return (_pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["supply_order"]
-            or (order_row and order_row.get("requester_id") == user["id"]))
+    return _pwa_perm_map(user["role"])["admin"] or (order_row and order_row.get("requester_id") == user["id"])
 
 
 def _pwa_api_receipt_upload(user, order_id, photo_b64, mime):
     """📸 رفع/استبدال صورة وصل التوريد من التطبيق (v31)."""
-    admin = _pwa_perm_map(user)["admin"] or _pwa_perm_map(user)["supply_order"]
+    admin = _pwa_perm_map(user["role"])["admin"]
     if not admin and user["role"] in (ROLE_CUSTOMER, ROLE_PENDING):
         return False, "لا يوجد وصول لك حالياً — راجع الإدارة."
     try:
@@ -20382,7 +17549,7 @@ def _pwa_api_incoming_create(user, product_name, quantity):
 
 def _pwa_api_incoming_advance(user, order_id, action):
     """إدارة طلب توريد (مدراء فقط): receive = استُلم من المورد، complete = جاهز."""
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return False, None, "إدارة طلبات التوريد للمدراء فقط."
     if action not in ("receive", "complete"):
         return False, None, "إجراء غير معروف."
@@ -20414,7 +17581,7 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
                        mov_type=None):
     """📋 v41: سجل الحركة بفلاتر كاملة — من تاريخ/إلى تاريخ + سلعة محددة
     + استثناء يوم الجمعة (ISODOW=5) + بحث بالاسم + ملخص إجمالي للفترة."""
-    if not _pwa_perm_map(user)["movements"]:
+    if not _pwa_perm_map(user["role"])["movements"]:
         return None
     limit = max(1, min(int(limit or 300), 500))
     where = ["1=1"]
@@ -20482,7 +17649,7 @@ def _pwa_api_movements(user, limit, date_from=None, date_to=None,
 
 
 def _pwa_api_low(user):
-    if not _pwa_perm_map(user)["low_stock"]:
+    if not _pwa_perm_map(user["role"])["low_stock"]:
         return None
     rows = get_low_stock_products()
     return {"ok": True, "products": [
@@ -20491,7 +17658,7 @@ def _pwa_api_low(user):
 
 
 def _pwa_api_oil(user):
-    if not _pwa_perm_map(user)["oil"]:
+    if not _pwa_perm_map(user["role"])["oil"]:
         return None
     st = oil_ensure_row()
     readings = oil_recent_readings(6)
@@ -20529,7 +17696,7 @@ def _invoice_swap_fetch(user, invoice_id):
         return False, "رقم فاتورة غير صالح."
     role = (user or {}).get("role")
     uid = (user or {}).get("id")
-    if not user_perm_enabled((user or {}).get("telegram_id"), role, PERM_INVOICE):
+    if role not in (ROLE_ADMIN, ROLE_MANAGER) and not role_perm_enabled(role, PERM_INVOICE):
         return False, "الاستبدال لمنشئي الفواتير فقط."
     conn = get_connection()
     try:
@@ -20577,7 +17744,7 @@ def _invoice_swap_core(user, invoice_id, item_id, product_id, qty,
     يرجع (True, ملخص) أو (False, رسالة)."""
     uid = (user or {}).get("id")
     role = (user or {}).get("role")
-    if not user_perm_enabled((user or {}).get("telegram_id"), role, PERM_INVOICE):
+    if role not in (ROLE_ADMIN, ROLE_MANAGER) and not role_perm_enabled(role, PERM_INVOICE):
         return False, "الاستبدال لمنشئي الفواتير فقط."
     try:
         invoice_id = int(invoice_id or 0)
@@ -20781,9 +17948,8 @@ def execute_general_swap(user, ret_pid, ret_qty, new_pid, new_qty):
     role = (user or {}).get("role")
     if role not in (ROLE_ADMIN, ROLE_MANAGER, ROLE_STOCK):
         return False, "الاستبدال العام للمدراء وعامل المخزون فقط."
-    _up_tid = (user or {}).get("telegram_id")
-    if role == ROLE_STOCK and not (user_perm_enabled(_up_tid, role, PERM_ADD_QTY)
-                                   and user_perm_enabled(_up_tid, role, PERM_REMOVE)):
+    if role == ROLE_STOCK and not (role_perm_enabled(role, PERM_ADD_QTY)
+                                   and role_perm_enabled(role, PERM_REMOVE)):
         return False, "الاستبدال يحتاج تفعيل صلاحيتي الإضافة والإخراج لفئة عامل المخزون."
     try:
         ret_pid = int(ret_pid or 0)
@@ -21267,7 +18433,7 @@ _PWA_INV_MAX_PRICE = 10000000.0  # سقف السعر
 
 def _pwa_api_invoice_products(user, q):
     """بحث سلع للفاتورة: الاسم والسعر والكمية والنوع (لعرض الحقل المناسب)."""
-    if not _pwa_perm_map(user)["invoice"]:
+    if not _pwa_perm_map(user["role"])["invoice"]:
         return None
     q = str(q or "").strip()[:80]
     conn = get_connection()
@@ -21279,26 +18445,11 @@ def _pwa_api_invoice_products(user, q):
                     "WHERE NOT archived AND name ILIKE %s "
                     "ORDER BY LOWER(name) LIMIT 25",
                     ("%" + q + "%",))
-                rows = cur.fetchall()
-                # v119: البحث الذكي — نفس نواة البوت عند صفر نتائج حرفية
-                if not rows:
-                    _tokens = _normalize_text(q).split()
-                    if _tokens:
-                        cur.execute(
-                            "SELECT id, name, quantity, selling_price, box_area FROM products "
-                            "WHERE NOT archived ORDER BY id")
-                        _scored = []
-                        for _p in cur.fetchall():
-                            _s = _fuzzy_score(_p["name"], _tokens)
-                            if _s > 0:
-                                _scored.append((-_s, _p["id"], _p))
-                        _scored.sort(key=lambda x: (x[0], x[1]))
-                        rows = [t[2] for t in _scored[:25]]
             else:
                 cur.execute(
                     "SELECT id, name, quantity, selling_price, box_area FROM products "
                     "WHERE NOT archived ORDER BY LOWER(name) LIMIT 25")
-                rows = cur.fetchall()
+            rows = cur.fetchall()
         conn.commit()
     finally:
         release_connection(conn)
@@ -21320,7 +18471,7 @@ def _pwa_api_invoice_products(user, q):
 
 def _pwa_api_invoice_workers(user):
     """قائمة العمال المتاحين لتجهيز الفاتورة — نفس استعلام فاتورة تلغرام."""
-    if not _pwa_perm_map(user)["invoice"]:
+    if not _pwa_perm_map(user["role"])["invoice"]:
         return None
     conn = get_connection()
     try:
@@ -21443,7 +18594,7 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
     """إنشاء فاتورة من التطبيق — نفس منطق _invoice_finalize بالحرف:
     حفظ + خصم مخزون (تحذير دون رفض عند العجز كما في البوت) + سجل حركات.
     الإشعارات وPDF تجري في المُعالج غير المتزامن بعد نجاح الحفظ."""
-    if not _pwa_perm_map(user)["invoice"]:
+    if not _pwa_perm_map(user["role"])["invoice"]:
         return None
     customer = str(customer or "").strip()[:120]
     if not customer:
@@ -21512,7 +18663,7 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
 def _pwa_api_invoice_recent(user, limit=8):
     """آخر الفواتير (لإعادة تحميل PDF أو مراجعة سريعة).
     v97: البائع/التخزين يرى فواتيره المنشأة وفواتيره المكلَّف بها معاً."""
-    if not _pwa_perm_map(user)["invoice_view"]:
+    if not _pwa_perm_map(user["role"])["invoice_view"]:
         return None
     limit = max(1, min(int(limit or 8), 20))
     conn = get_connection()
@@ -21550,7 +18701,7 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
     """v88.1: سجل الفواتير الكامل — بحث بالزبون أو رقم الفاتورة + ترقيم بالمؤشر
     (before = آخر معرف ظهر) للوصول إلى أي فاتورة سابقة وتحميل PDF منها.
     v97: البائع/التخزين يرى فواتيره المنشأة وفواتيره المكلَّف بها معاً."""
-    if not _pwa_perm_map(user)["invoice_view"]:
+    if not _pwa_perm_map(user["role"])["invoice_view"]:
         return None
     try:
         limit = max(1, min(int(limit or 15), 30))
@@ -21608,7 +18759,7 @@ def _pwa_api_invoice_list(user, q="", before_id=0, limit=15):
 
 def _pwa_api_invoice_get(user, invoice_id):
     """جلب فاتورة مع عناصرها — للمدير أي فاتورة، وللبائع/التخزين ما أنشأه أو كُلِّف به (v97)."""
-    if not _pwa_perm_map(user)["invoice_view"]:
+    if not _pwa_perm_map(user["role"])["invoice_view"]:
         return None
     try:
         invoice_id = int(invoice_id or 0)
@@ -21693,7 +18844,7 @@ def _pwa_api_invoice_swap(user, payload):
 
 def _pwa_swap_products(user, q):
     """v103: بحث سلع للاستبدال العام — نفس استعلام بحث الفواتير بصلاحية swapg."""
-    if not _pwa_perm_map(user)["swapg"]:
+    if not _pwa_perm_map(user["role"])["swapg"]:
         return None
     q = str(q or "").strip()[:80]
     conn = get_connection()
@@ -21720,7 +18871,7 @@ def _pwa_swap_products(user, q):
 
 def _pwa_api_swap_general(user, payload):
     """v103: الاستبدال العام من التطبيق — غلاف رقيق فوق execute_general_swap."""
-    if not _pwa_perm_map(user)["swapg"]:
+    if not _pwa_perm_map(user["role"])["swapg"]:
         return None
     if not isinstance(payload, dict):
         payload = {}
@@ -21735,7 +18886,7 @@ def _pwa_api_swap_general(user, payload):
 
 
 def _pwa_api_users(user):
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return None
     conn = get_connection()
     try:
@@ -21770,7 +18921,7 @@ def _pwa_api_users(user):
 
 
 def _pwa_api_toggle(user, target_tid, active):
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return None
     if target_tid == user["telegram_id"]:
         return False, "لا يمكنك تنفيذ هذا الإجراء على نفسك."
@@ -21806,7 +18957,7 @@ def _pwa_api_toggle(user, target_tid, active):
 
 
 def _pwa_api_webpass(user, target_tid, password):
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return None
     password = str(password or "")
     pol_ok, pol_msg = _pwa_password_ok(password)
@@ -22208,7 +19359,7 @@ async def pwa_resets_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return _pwa_err(403, "هذه الشاشة للمديرين فقط.")
     resets = await _pwa_run(_pwa_api_resets_list)
     return _pwa_jr({"ok": True, "resets": resets})
@@ -22220,7 +19371,7 @@ async def pwa_reset_generate_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -22243,7 +19394,7 @@ async def pwa_registrations_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return _pwa_err(403, "هذه الشاشة للمديرين فقط.")
     regs = await _pwa_run(_pwa_api_registrations_list, user)
     return _pwa_jr({"ok": True, "registrations": regs})
@@ -22253,7 +19404,7 @@ async def pwa_registration_delete_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -22310,8 +19461,8 @@ async def callback_pwreg_handler(update, context):
     الموافقة تُنشئ الحساب بالبريد والرقم السري المحفوظين وتُشعِر صاحبه بالبريد."""
     query = update.callback_query
     # 🔒 AUTH GUARD — المدير وحده
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
     parts = str(query.data or "").split("_")   # pwreg_ok_12_seller / pwreg_del_12
@@ -22374,8 +19525,8 @@ async def callback_pwreset_handler(update, context):
     يولّد رقماً عشوائياً، يحفظه مكان القديم، يبطل جلسات صاحبه، ويعرضه هنا مرة واحدة."""
     query = update.callback_query
     # 🔒 AUTH GUARD — المدير وحده
-    if not _can_manage_users(query.from_user.id):
-        await query.answer("❌ هذا الإجراء لإدارة المستخدمين فقط.", show_alert=True)
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ هذا الإجراء للمديرين فقط.", show_alert=True)
         return
     await query.answer()
     parts = str(query.data or "").split("_")   # pwreset_gen_12
@@ -22960,7 +20111,7 @@ async def pwa_registration_approve_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -22981,7 +20132,7 @@ async def pwa_users_role_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return _pwa_err(403, "هذا الإجراء للمديرين فقط.")
     try:
         body = await request.json()
@@ -23009,112 +20160,13 @@ async def pwa_users_role_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
-def _pwa_api_user_perms(user, target_tid):
-    """🎛️ v107: قراءة مصفوفة صلاحيات مستخدم محدد — لمن يملك صلاحية المستخدمين.
-    يعيد dict جاهزاً أو (False, رسالة) أو None لعدم الصلاحية."""
-    if not _pwa_perm_map(user)["users"]:
-        return None
-    if target_tid is None:
-        return False, "طلب غير صالح."
-    tu = get_user(target_tid)
-    if not tu:
-        return False, "المستخدم غير موجود."
-    _states = get_user_perm_states(target_tid)
-    _role = tu.get("role")
-    _label = (tu.get("first_name")
-              or ("@" + tu["username"] if tu.get("username") else str(target_tid)))
-    return {
-        "target": {"telegram_id": target_tid, "name": _label,
-                   "role": _role,
-                   "role_label": ROLE_LABELS.get(_role, _role or "؟"),
-                   "protected": _protected_account(target_tid)},
-        "matrix": list(UPERM_MATRIX),
-        "labels": {p: PERM_LABELS[p] for p in UPERM_MATRIX},
-        "states": {p: _states[p] for p in UPERM_MATRIX if p in _states},
-        "effective": {p: user_perm_enabled(target_tid, _role, p) for p in UPERM_MATRIX},
-    }
-
-
-def _pwa_api_user_perms_set(user, target_tid, perm, state, reset=False):
-    """🎛️ v107: ضبط تجاوز صلاحية لمستخدم (state: 1/0/None) أو إعادة ضبط كاملة."""
-    if not _pwa_perm_map(user)["users"]:
-        return False, "هذا الإجراء لإدارة المستخدمين فقط."
-    if target_tid is None or target_tid == user.get("telegram_id"):
-        return False, "لا يمكنك تعديل صلاحيات حسابك نفسه — استخدم حساب مدير آخر."
-    if _protected_account(target_tid):
-        return False, "🔒 هذا الحساب محمي (المالك/متغيرات البيئة) — صلاحياته كاملة دائماً."
-    if not get_user(target_tid):
-        return False, "المستخدم غير موجود."
-    try:
-        if reset:
-            clear_user_perms(target_tid)
-        else:
-            if perm not in UPERM_MATRIX:
-                return False, "صلاحية غير معروفة."
-            set_user_perm_state(target_tid, perm, state)
-    except Exception as e:
-        return False, "خطأ في الحفظ: " + str(e)
-    return True, "تم الحفظ ✅"
-
-
-async def pwa_user_perms_handler(request):
-    """🎛️ v107: GET /api/user/{tid}/perms — مصفوفة صلاحيات مستخدم."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        tid = int(request.match_info["tid"])
-    except (KeyError, TypeError, ValueError):
-        return _pwa_err(400, "طلب غير صالح.")
-    data = await _pwa_run(_pwa_api_user_perms, user, tid)
-    if data is None:
-        return _pwa_err(403, "هذا القسم لإدارة المستخدمين فقط.")
-    if isinstance(data, tuple):
-        return _pwa_err(400, data[1])
-    return _pwa_jr({"ok": True, **data})
-
-
-async def pwa_user_perms_set_handler(request):
-    """🎛️ v107: POST /api/user/{tid}/perms — {perm, state: 1|0|null} أو {reset: true}."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        tid = int(request.match_info["tid"])
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise ValueError
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    reset = bool(body.get("reset"))
-    perm = str(body.get("perm") or "")
-    state = body.get("state")
-    if state is not None and state not in (0, 1, True, False):
-        return _pwa_err(400, "حالة غير صالحة.")
-    ok, msg = await _pwa_run(_pwa_api_user_perms_set, user, tid,
-                             None if reset else perm,
-                             None if reset else (None if state is None else (1 if state else 0)),
-                             reset)
-    await _pwa_run(_audit_log, "user_perms" if ok else "user_perms_fail", user,
-                   details=("إعادة ضبط كاملة" if reset
-                            else perm + " ← " + ("تشغيل" if state == 1 else
-                                                 "إيقاف" if state == 0 else "تتبع الفئة"))
-                           + " — الهدف: " + str(tid),
-                   ip=request.remote or "؟")
-    if not ok:
-        return _pwa_err(400, msg)
-    fresh = await _pwa_run(_pwa_api_user_perms, user, tid)
-    eff = fresh.get("effective") if isinstance(fresh, dict) else {}
-    return _pwa_jr({"ok": True, "message": msg, "effective": eff})
-
-
 def _pwa_guard(user, need):
     """فحص موحّد: جلسة صالحة + نشط + صلاحية مطلوبة. يرجع (user, error_response)."""
     if user is None:
         return None, _pwa_err(401, "انتهت الجلسة — سجّل الدخول من جديد.")
     if not user["active"]:
         return None, _pwa_err(403, KICK_NOTICE)
-    if need and not _pwa_perm_map(user)[need]:
+    if need and not _pwa_perm_map(user["role"])[need]:
         return None, _pwa_err(403, "ليست لديك صلاحية لهذه الشاشة.")
     return user, None
 
@@ -23145,7 +20197,7 @@ async def pwa_products_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["search"]:
+    if not _pwa_perm_map(user["role"])["search"]:
         return _pwa_err(403, "ليست لديك صلاحية البحث.")
     q = (request.query.get("q") or "").strip()[:120]
     show_archived = (request.query.get("archived") in ("1", "true"))
@@ -23189,7 +20241,7 @@ async def pwa_qty_handler(request):
             _title = ("🚚 وصول شاحنة" if "شاحنة" in _reason
                       else ("↩️ إرجاع من زبون" if ("إرجاع" in _reason or "ارجاع" in _reason)
                             else "📥 إضافة كمية"))
-            _line = "➕ الكمية: " + str(qty)
+            _line = "الكمية: " + str(qty)
         elif qtype == "remove":
             _title = ("💰 " + _reason) if _reason else "📤 إخراج كمية"
             _line = "➖ الكمية: " + str(qty)
@@ -23211,8 +20263,8 @@ async def pwa_products_create_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["add_product"]:
-        return _pwa_err(403, "ليست لديك صلاحية إضافة سلع جديدة.")
+    if not _pwa_perm_map(user["role"])["admin"]:
+        return _pwa_err(403, "إضافة سلعة للمدراء فقط.")
     try:
         body = await request.json()
     except Exception:
@@ -23235,7 +20287,7 @@ async def pwa_products_create_handler(request):
     try:
         _nqty = int(body.get("quantity", 0) or 0)
         _nloc = str(body.get("location") or "").strip()
-        _nbody = "📦 " + str(body.get("name", ""))[:200] + "\n➕ الكمية الابتدائية: " + str(_nqty)
+        _nbody = "📦 " + str(body.get("name", ""))[:200] + "\nالكمية الابتدائية: " + str(_nqty)
         if _nloc:
             _nbody += "\n📍 الموقع: " + _nloc[:100]
         asyncio.create_task(notify_everyone(
@@ -23250,7 +20302,7 @@ async def pwa_products_edit_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "تعديل السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -23275,7 +20327,7 @@ async def pwa_products_archive_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "حذف السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -23442,7 +20494,7 @@ async def pwa_incoming_advance_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "إدارة طلبات التوريد للمدراء فقط.")
     try:
         body = await request.json()
@@ -23747,2279 +20799,6 @@ async def pwa_invoice_swap_handler(request):
     return _pwa_jr(payload)
 
 
-# ═══ v110: حصن المصروفات — جدول مملوك للتطبيق لا الجدول الغربي ═══
-# لوج الإنتاج أثبت أن قاعدة Supabase المشتركة تحمل جدول expenses غريباً من
-# مصدر خارجي: شفاء v108 (ADD COLUMN IF NOT EXISTS) يضيف الأعمدة الناقصة فقط
-# ولا يستطيع إصلاح id بلا افتراضي ولا NOT NULL زائدة ولا أنواعاً مخالفة ولا
-# CHECK غريبة — فأي إدراج/قراءة كان يرمي استثناءً يصل المتصفح 500 HTML وتعرض
-# الواجهة «خطأ في الخادم — حاول بعد قليل» بلا أي فائدة تشخيصية.
-# الحل النهائي: expenses_v2 مملوك بالكامل، يُزرع ويُشفى عند الإقلاع وعند أول
-# طلب، مع ترحيل أحادي أفضل-جهد من القديم، وإعادة محاولة ذاتية، ورسائل خطأ
-# حقيقية تصل للمستخدم كما هي.
-
-_EXPENSES_TABLE = "expenses_v2"
-_EXPENSES_READY = False
-_EXPENSES_LOCK = threading.Lock()
-
-# زرع/شفاء الجدول المملوك — كل عبارة مستقلة (SAVEPOINT داخلي في _expenses_ensure)
-_EXPENSES_DDL = (
-    ("CREATE TABLE IF NOT EXISTS expenses_v2 ("
-     " id BIGSERIAL PRIMARY KEY,"
-     " user_id INTEGER NOT NULL,"
-     " amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),"
-     " reason TEXT,"
-     " spent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-     " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-     "إنشاء expenses_v2"),
-    ("ALTER TABLE expenses_v2 ADD COLUMN IF NOT EXISTS user_id INTEGER", "شفاء user_id"),
-    ("ALTER TABLE expenses_v2 ADD COLUMN IF NOT EXISTS amount NUMERIC(12,2)", "شفاء amount"),
-    ("ALTER TABLE expenses_v2 ADD COLUMN IF NOT EXISTS reason TEXT", "شفاء reason"),
-    ("ALTER TABLE expenses_v2 ADD COLUMN IF NOT EXISTS spent_at TIMESTAMPTZ", "شفاء spent_at"),
-    ("ALTER TABLE expenses_v2 ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ", "شفاء created_at"),
-    ("CREATE INDEX IF NOT EXISTS idx_expenses_v2_spent ON expenses_v2 (spent_at DESC)",
-     "فهرس expenses_v2 الزمني"),
-)
-
-
-# ═══ v115: مصانع السلع — قائمة يوسّعها مدير البوت والنظام ═══
-# بنمط v110 حرفياً: جدول مملوك بسيط، زرع عند الإقلاع وعند أول طلب، SAVEPOINT
-# لكل عبارة، صفر raise — فشله لا يسقط الإقلاع ولا أي مسار آخر. التفرد
-# غير حساس لحالة الأحرف عبر فهرس lower(btrim(name)) فلا تكرار في القائمة.
-_FACTORIES_READY = False
-_FACTORIES_LOCK = threading.Lock()
-
-_FACTORIES_DDL = (
-    ("CREATE TABLE IF NOT EXISTS factories ("
-     " id BIGSERIAL PRIMARY KEY,"
-     " name TEXT NOT NULL,"
-     " created_by BIGINT,"
-     " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-     "إنشاء factories"),
-    ("CREATE UNIQUE INDEX IF NOT EXISTS uq_factories_name_lc "
-     "ON factories (lower(btrim(name)))",
-     "فهرس تفرد اسم المصنع"),
-)
-
-
-def _factories_ensure(conn=None, cur=None):
-    """زرع/شفاء factories — كل عبارة داخل SAVEPOINT عازل، لا يرفع أبداً.
-    True فقط إذا نجحت كل العبارات. يعمل بمؤشر جاهز (init_db) أو اتصال (الطلبات)."""
-    if cur is None and conn is None:
-        return False
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception as cur_err:
-            logging.warning("[DB][v115] لا مؤشر لزرع المصانع: " + str(cur_err)[:160])
-            return False
-    all_ok = True
-    try:
-        for sql, lbl in _FACTORIES_DDL:
-            sp_ok = True
-            try:
-                cur.execute("SAVEPOINT fac115ddl")
-            except Exception:
-                sp_ok = False
-            try:
-                cur.execute(sql)
-                if sp_ok:
-                    cur.execute("RELEASE SAVEPOINT fac115ddl")
-            except Exception as one_err:
-                if sp_ok:
-                    try:
-                        cur.execute("ROLLBACK TO SAVEPOINT fac115ddl")
-                    except Exception:
-                        pass
-                all_ok = False
-                logging.warning("[DB][v115] " + lbl + ": " + str(one_err)[:160])
-        return all_ok
-    except Exception as fatal_err:
-        logging.warning("[DB][v115] زرع المصانع فشل كلياً: " + str(fatal_err)[:200])
-        return False
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _factories_lazy_ready():
-    """زرع المصانع عند أول طلب في حياة العملية — True إذا كان الجدول جاهزاً."""
-    global _FACTORIES_READY
-    if _FACTORIES_READY:
-        return True
-    with _FACTORIES_LOCK:
-        if _FACTORIES_READY:
-            return True
-        conn = get_connection()
-        try:
-            ok = _factories_ensure(conn=conn)
-            try:
-                conn.commit()
-            except Exception:
-                pass
-            if ok:
-                _FACTORIES_READY = True
-            return ok
-        except Exception as e:
-            logging.warning("[DB][v115] تهيئة المصانع تخطيت: " + str(e)[:160])
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return False
-        finally:
-            release_connection(conn)
-
-
-def db_list_factories():
-    """قائمة المصانع مرتبة بالاسم — [] عند أي فشل (لا يرفع أبداً)."""
-    try:
-        _factories_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, name FROM factories ORDER BY name ASC LIMIT 200")
-                rows = cur.fetchall()
-            conn.commit()
-            return [{"id": int(r[0]), "name": str(r[1])} for r in rows]
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[DB][v115] قراءة المصانع فشلت: " + str(e)[:160])
-        return []
-
-
-def db_add_factory(name, user_id=None):
-    """إضافة مصنع — (factory, existed, err). التكرار بأي حالة أحرف يعيد الموجود
-    مع existed=True فلا تكرار في القائمة أبداً. لا يرفع أبداً."""
-    fname = " ".join(str(name or "").split())
-    if len(fname) < 2:
-        return None, False, "اسم المصنع قصير جداً (حرفان على الأقل)."
-    if len(fname) > 60:
-        return None, False, "اسم المصنع طويل جداً (60 حرفاً كحد أقصى)."
-    try:
-        _factories_lazy_ready()
-        conn = get_connection()
-        try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, name FROM factories "
-                        "WHERE lower(btrim(name)) = lower(%s)", (fname,))
-                    row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                    cur.execute(
-                        "INSERT INTO factories (name, created_by) VALUES (%s, %s) "
-                        "RETURNING id, name", (fname, user_id))
-                    row = cur.fetchone()
-                conn.commit()
-                logging.info("[FAC][v115] مصنع جديد أُضيف: " + fname)
-                return {"id": int(row[0]), "name": str(row[1])}, False, None
-            except Exception as ins_err:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                # سباق تكرار محتمل بين طلبين متزامنين — قراءة أخيرة
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT id, name FROM factories "
-                            "WHERE lower(btrim(name)) = lower(%s)", (fname,))
-                        row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                except Exception:
-                    pass
-                return None, False, _pg_err_hint(ins_err)
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        return None, False, _pg_err_hint(e)
-
-
-def _factories_name_by_id(fid):
-    """اسم مصنع بالمعرف — "" عند الفشل (لالتقاط أزرار قائمة قديمة)."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM factories WHERE id = %s", (int(fid),))
-                r = cur.fetchone()
-            conn.commit()
-            return str(r[0]) if r else ""
-        finally:
-            release_connection(conn)
-    except Exception:
-        return ""
-
-
-# ═══ v117: قياسات السلع — نفس بنية المصانع حرفياً (زرع آمن + تفرد + صفر raise) ═══
-_SIZES_READY = False
-_SIZES_LOCK = threading.Lock()
-
-_SIZES_DDL = (
-    ("CREATE TABLE IF NOT EXISTS sizes ("
-     " id BIGSERIAL PRIMARY KEY,"
-     " name TEXT NOT NULL,"
-     " created_by BIGINT,"
-     " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-     "إنشاء sizes"),
-    ("CREATE UNIQUE INDEX IF NOT EXISTS uq_sizes_name_lc "
-     "ON sizes (lower(btrim(name)))",
-     "فهرس تفرد القياس"),
-)
-
-# قياسات المتجر الافتراضية — المستخرجة من سلع يوسف الحقيقية — تُزرع مرة واحدة
-# فقط إن كان الجدول فارغاً، ولا تتكرر أبداً ولا تُفرض على قائمة يوسعها المدير.
-_SIZES_SEED = ("120/60", "30/90", "8/45", "25kg")
-
-
-def _sizes_ensure(conn=None, cur=None):
-    """زرع/شفاء sizes — كل عبارة داخل SAVEPOINT عازل، لا يرفع أبداً.
-    True فقط إذا نجحت كل العبارات. يعمل بمؤشر جاهز (init_db) أو اتصال (الطلبات)."""
-    if cur is None and conn is None:
-        return False
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception as cur_err:
-            logging.warning("[DB][v117] لا مؤشر لزرع القياسات: " + str(cur_err)[:160])
-            return False
-    all_ok = True
-    try:
-        for sql, lbl in _SIZES_DDL:
-            sp_ok = True
-            try:
-                cur.execute("SAVEPOINT siz117ddl")
-            except Exception:
-                sp_ok = False
-            try:
-                cur.execute(sql)
-                if sp_ok:
-                    cur.execute("RELEASE SAVEPOINT siz117ddl")
-            except Exception as one_err:
-                if sp_ok:
-                    try:
-                        cur.execute("ROLLBACK TO SAVEPOINT siz117ddl")
-                    except Exception:
-                        pass
-                all_ok = False
-                logging.warning("[DB][v117] " + lbl + ": " + str(one_err)[:160])
-        return all_ok
-    except Exception as fatal_err:
-        logging.warning("[DB][v117] زرع القياسات فشل كلياً: " + str(fatal_err)[:200])
-        return False
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _sizes_seed_if_empty(conn=None, cur=None):
-    """v117: زرع قياسات المتجر الافتراضية مرة واحدة — فقط إن كان الجدول فارغاً.
-    كل عبارة داخل SAVEPOINT عازل ولا يرفع أبداً — فشل الزرع لا يسد القائمة
-    (المدير يضيف قياساته يدوياً كما في المصانع)."""
-    if cur is None and conn is None:
-        return
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception:
-            return
-    try:
-        try:
-            cur.execute("SELECT COUNT(*) FROM sizes")
-            row = cur.fetchone()
-            if row and int(row[0] or 0) > 0:
-                return
-        except Exception:
-            return
-        for _nm in _SIZES_SEED:
-            try:
-                cur.execute("SAVEPOINT siz117seed")
-            except Exception:
-                pass
-            try:
-                cur.execute(
-                    "INSERT INTO sizes (name, created_by) SELECT %s, NULL "
-                    "WHERE NOT EXISTS (SELECT 1 FROM sizes "
-                    "WHERE lower(btrim(name)) = lower(%s))", (_nm, _nm))
-                try:
-                    cur.execute("RELEASE SAVEPOINT siz117seed")
-                except Exception:
-                    pass
-            except Exception as seed_one_err:
-                try:
-                    cur.execute("ROLLBACK TO SAVEPOINT siz117seed")
-                except Exception:
-                    pass
-                logging.warning("[DB][v117] زرع قياس " + str(_nm) + ": "
-                                + str(seed_one_err)[:160])
-        try:
-            logging.info("[SIZ][v117] قياسات المتجر الافتراضية زُرعت: "
-                         + ", ".join(_SIZES_SEED))
-        except Exception:
-            pass
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _sizes_lazy_ready():
-    """زرع القياسات عند أول طلب في حياة العملية — True إذا كان الجدول جاهزاً."""
-    global _SIZES_READY
-    if _SIZES_READY:
-        return True
-    with _SIZES_LOCK:
-        if _SIZES_READY:
-            return True
-        conn = get_connection()
-        try:
-            ok = _sizes_ensure(conn=conn)
-            if ok:
-                try:
-                    _sizes_seed_if_empty(conn=conn)
-                except Exception as seed_err:
-                    logging.warning("[DB][v117] زرع القياسات الافتراضية تخطي: "
-                                    + str(seed_err)[:160])
-            try:
-                conn.commit()
-            except Exception:
-                pass
-            if ok:
-                _SIZES_READY = True
-            return ok
-        except Exception as e:
-            logging.warning("[DB][v117] تهيئة القياسات تخطيت: " + str(e)[:160])
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return False
-        finally:
-            release_connection(conn)
-
-
-# ═══ v118: قياسات لكل فئة — plante محصورة بقياساتها + حذف القياس للإدارة ═══
-# طلب يوسف: «4 فئات اجعل فئة plante محصورة بين قياسات 08/45 ،08/33،08/60
-# واضف خيار حذف قياس ما من الفئات».
-_CAT_SIZE_TYPES = ("12060", "plante", "motif", "other")
-
-# plante تُزرع بقياساتها المحصورة حرفياً كما حددها يوسف — بلا وراثة من القائمة
-# العامة. موتيف وباقي السلع يبدآن بما هو مضاف في القائمة العامة (أو الافتراضي)
-# والمدير يشكّل كل قائمة بعد ذلك بحرية (إضافة/حذف لكل فئة على حدة).
-# 120/60 قياسها مثبت بالفئة — القائمة هنا شكلية (الحقل مخفي كما في v117).
-_CAT_SIZES_SEED = {
-    "plante": ("08/45", "08/33", "08/60"),
-    "motif": ("120/60", "30/90", "8/45", "25kg"),
-    "other": ("120/60", "30/90", "8/45", "25kg"),
-    "12060": ("120/60",),
-}
-
-_CATSIZE_LABELS = {"12060": "120/60", "plante": "plante",
-                   "motif": "موتيف", "other": "باقي السلع"}
-
-_CATSIZES_MARKER = "catsizes_seeded_v118"
-_CATSIZES_READY = False
-_CATSIZES_LOCK = threading.Lock()
-
-_CATSIZES_DDL = (
-    ("CREATE TABLE IF NOT EXISTS category_sizes ("
-     " id BIGSERIAL PRIMARY KEY,"
-     " category TEXT NOT NULL,"
-     " name TEXT NOT NULL,"
-     " created_by BIGINT,"
-     " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-     "إنشاء category_sizes"),
-    ("CREATE UNIQUE INDEX IF NOT EXISTS uq_catsizes_cat_name_lc "
-     "ON category_sizes (category, lower(btrim(name)))",
-     "فهرس تفرد القياس لكل فئة"),
-)
-
-
-def _catsize_norm_cat(raw):
-    """توحيد الفئة — أي قيمة غريبة/فارغة تعود إلى other (دفاعية بلا raise)."""
-    try:
-        c = str(raw or "").strip().lower()
-    except Exception:
-        return "other"
-    return c if c in _CAT_SIZE_TYPES else "other"
-
-
-def _catsizes_ensure(conn=None, cur=None):
-    """زرع/شفاء category_sizes — كل عبارة داخل SAVEPOINT عازل، لا يرفع أبداً.
-    True فقط إذا نجحت كل العبارات. يعمل بمؤشر جاهز (init_db) أو اتصال (الطلبات)."""
-    if cur is None and conn is None:
-        return False
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception as cur_err:
-            logging.warning("[DB][v118] لا مؤشر لزرع قياسات الفئات: " + str(cur_err)[:160])
-            return False
-    all_ok = True
-    try:
-        for sql, lbl in _CATSIZES_DDL:
-            sp_ok = True
-            try:
-                cur.execute("SAVEPOINT siz118ddl")
-            except Exception:
-                sp_ok = False
-            try:
-                cur.execute(sql)
-                if sp_ok:
-                    cur.execute("RELEASE SAVEPOINT siz118ddl")
-            except Exception as one_err:
-                if sp_ok:
-                    try:
-                        cur.execute("ROLLBACK TO SAVEPOINT siz118ddl")
-                    except Exception:
-                        pass
-                all_ok = False
-                logging.warning("[DB][v118] " + lbl + ": " + str(one_err)[:160])
-        return all_ok
-    except Exception as fatal_err:
-        logging.warning("[DB][v118] زرع قياسات الفئات فشل كلياً: " + str(fatal_err)[:200])
-        return False
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _catsizes_legacy_names(cur):
-    """أسماء القائمة العامة v117 (إن وجدت) لتوريثها لموتيف وباقي السلع —
-    best-effort: [] عند أي فشل (جدول غائب/قاعدة نائمة)."""
-    try:
-        cur.execute("SELECT name FROM sizes ORDER BY name ASC LIMIT 200")
-        rows = cur.fetchall()
-        return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
-    except Exception:
-        return []
-
-
-def _catsizes_seed_once(conn=None, cur=None):
-    """v118: زرع قوائم قياسات الفئات مرة واحدة في حياة القاعدة — حارس marker
-    في bot_settings يمنع أي إعادة زرع بعدها، فلو أفرغ المدير قائمة فئة عمداً
-    (بالزر الجديد) لا تعود القياسات بعد إقلاع جديد. plante تُزرع بقياساتها
-    المحصورة حرفياً، وموتيف/باقي السلع يورّثان القائمة العامة الحالية أو
-    الافتراضية. كل عبارة داخل SAVEPOINT عازل ولا يرفع أبداً."""
-    if cur is None and conn is None:
-        return
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception:
-            return
-    try:
-        try:
-            cur.execute("SELECT value FROM bot_settings WHERE key = %s",
-                        (_CATSIZES_MARKER,))
-            row = cur.fetchone()
-            if row and str(row[0] or "").strip() == "1":
-                return
-        except Exception as mk_err:
-            logging.warning("[DB][v118] قراءة marker القياسات تخطيت: "
-                            + str(mk_err)[:160])
-        legacy = _catsizes_legacy_names(cur)
-        inherit = legacy or list(_CAT_SIZES_SEED["other"])
-        for cat in _CAT_SIZE_TYPES:
-            try:
-                cur.execute("SELECT COUNT(*) FROM category_sizes WHERE category = %s",
-                            (cat,))
-                row = cur.fetchone()
-                if row and int(row[0] or 0) > 0:
-                    continue
-                names = list(_CAT_SIZES_SEED.get(cat) or ())
-                if cat in ("motif", "other") and inherit:
-                    names = inherit
-                for nm in names:
-                    try:
-                        cur.execute("SAVEPOINT siz118seed")
-                    except Exception:
-                        pass
-                    try:
-                        cur.execute(
-                            "INSERT INTO category_sizes (category, name, created_by) "
-                            "SELECT %s, %s, NULL WHERE NOT EXISTS "
-                            "(SELECT 1 FROM category_sizes WHERE category = %s "
-                            "AND lower(btrim(name)) = lower(%s))",
-                            (cat, nm, cat, nm))
-                        try:
-                            cur.execute("RELEASE SAVEPOINT siz118seed")
-                        except Exception:
-                            pass
-                    except Exception as seed_one_err:
-                        try:
-                            cur.execute("ROLLBACK TO SAVEPOINT siz118seed")
-                        except Exception:
-                            pass
-                        logging.warning("[DB][v118] زرع قياس " + cat + "/" + str(nm)
-                                        + ": " + str(seed_one_err)[:160])
-            except Exception as cat_err:
-                logging.warning("[DB][v118] زرع فئة " + cat + ": " + str(cat_err)[:160])
-        try:
-            cur.execute("SAVEPOINT siz118mark")
-        except Exception:
-            pass
-        try:
-            cur.execute("INSERT INTO bot_settings (key, value) VALUES (%s, %s) "
-                        "ON CONFLICT (key) DO NOTHING", (_CATSIZES_MARKER, "1"))
-            try:
-                cur.execute("RELEASE SAVEPOINT siz118mark")
-            except Exception:
-                pass
-        except Exception as mark_err:
-            try:
-                cur.execute("ROLLBACK TO SAVEPOINT siz118mark")
-            except Exception:
-                pass
-            logging.warning("[DB][v118] كتابة marker القياسات فشلت: "
-                            + str(mark_err)[:160])
-        try:
-            logging.info("[SIZ][v118] قياسات الفئات جاهزة — plante محصورة: "
-                         + ", ".join(_CAT_SIZES_SEED["plante"]))
-        except Exception:
-            pass
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _catsizes_lazy_ready():
-    """زرع قياسات الفئات عند أول طلب في حياة العملية — True إذا كانت جاهزة."""
-    global _CATSIZES_READY
-    if _CATSIZES_READY:
-        return True
-    with _CATSIZES_LOCK:
-        if _CATSIZES_READY:
-            return True
-        conn = get_connection()
-        try:
-            ok = _catsizes_ensure(conn=conn)
-            if ok:
-                try:
-                    _catsizes_seed_once(conn=conn)
-                except Exception as seed_err:
-                    logging.warning("[DB][v118] زرع قياسات الفئات تخطي: "
-                                    + str(seed_err)[:160])
-            try:
-                conn.commit()
-            except Exception:
-                pass
-            if ok:
-                _CATSIZES_READY = True
-            return ok
-        except Exception as e:
-            logging.warning("[DB][v118] تهيئة قياسات الفئات تخطيت: " + str(e)[:160])
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return False
-        finally:
-            release_connection(conn)
-
-
-def db_list_cat_sizes(category):
-    """قائمة قياسات فئة محددة مرتبة بالاسم — [] عند أي فشل (لا يرفع أبداً)."""
-    cat = _catsize_norm_cat(category)
-    try:
-        _catsizes_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, name FROM category_sizes "
-                            "WHERE category = %s ORDER BY name ASC LIMIT 200", (cat,))
-                rows = cur.fetchall()
-            conn.commit()
-            return [{"id": int(r[0]), "name": str(r[1])} for r in rows]
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[DB][v118] قراءة قياسات الفئة " + cat + " فشلت: " + str(e)[:160])
-        return []
-
-
-def db_add_cat_size(category, name, user_id=None):
-    """إضافة قياس إلى فئة — (size, existed, err). التكرار بأي حالة أحرف داخل
-    الفئة نفسها يعيد الموجود مع existed=True فلا تكرار في القائمة أبداً،
-    ونفس الاسم في فئة أخرى مسموح (التفرد لكل فئة). لا يرفع أبداً."""
-    cat = _catsize_norm_cat(category)
-    sname = " ".join(str(name or "").split())
-    if len(sname) < 2:
-        return None, False, "القياس قصير جداً (حرفان على الأقل)."
-    if len(sname) > 60:
-        return None, False, "القياس طويل جداً (60 حرفاً كحد أقصى)."
-    try:
-        _catsizes_lazy_ready()
-        conn = get_connection()
-        try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, name FROM category_sizes "
-                        "WHERE category = %s AND lower(btrim(name)) = lower(%s)",
-                        (cat, sname))
-                    row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                    cur.execute(
-                        "INSERT INTO category_sizes (category, name, created_by) "
-                        "VALUES (%s, %s, %s) RETURNING id, name",
-                        (cat, sname, user_id))
-                    row = cur.fetchone()
-                conn.commit()
-                logging.info("[SIZ][v118] قياس جديد أُضيف لفئة " + cat + ": " + sname)
-                return {"id": int(row[0]), "name": str(row[1])}, False, None
-            except Exception as ins_err:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                # سباق تكرار محتمل بين طلبين متزامنين — قراءة أخيرة
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT id, name FROM category_sizes "
-                            "WHERE category = %s AND lower(btrim(name)) = lower(%s)",
-                            (cat, sname))
-                        row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                except Exception:
-                    pass
-                return None, False, _pg_err_hint(ins_err)
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        return None, False, _pg_err_hint(e)
-
-
-def _catsizes_name_by_id(category, fid):
-    """قياس بالمعرف داخل فئة — "" عند الفشل (لالتقاط أزرار قائمة قديمة)."""
-    cat = _catsize_norm_cat(category)
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM category_sizes "
-                            "WHERE category = %s AND id = %s", (cat, int(fid)))
-                r = cur.fetchone()
-            conn.commit()
-            return str(r[0]) if r else ""
-        finally:
-            release_connection(conn)
-    except Exception:
-        return ""
-
-
-def db_delete_cat_size(category, name=None, row_id=None, user_id=None):
-    """v118: حذف قياس من قائمة فئة — (deleted_name, err). لا يرفع أبداً.
-    الحذف داخل الفئة فقط بالاسم (غير حساس لحالة الأحرف) — قياس فئة أخرى
-    بنفس الاسم لا يُمس، والسلع المسجلة سابقاً لا تتأثر إطلاقاً."""
-    cat = _catsize_norm_cat(category)
-    sname = " ".join(str(name or "").split())
-    if not sname and row_id is not None:
-        sname = _catsizes_name_by_id(cat, row_id)
-    if not sname:
-        return None, "القياس غير موجود في قائمة هذه الفئة."
-    try:
-        _catsizes_lazy_ready()
-        conn = get_connection()
-        try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "DELETE FROM category_sizes "
-                        "WHERE category = %s AND lower(btrim(name)) = lower(%s) "
-                        "RETURNING name", (cat, sname))
-                    row = cur.fetchone()
-                conn.commit()
-                if row:
-                    logging.info("[SIZ][v118] حُذف قياس من فئة " + cat + ": " + str(row[0]))
-                    return str(row[0]), None
-                return None, "القياس غير موجود في قائمة هذه الفئة."
-            except Exception as del_err:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return None, _pg_err_hint(del_err)
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        return None, _pg_err_hint(e)
-
-
-def db_list_sizes():
-    """قائمة القياسات مرتبة بالاسم — [] عند أي فشل (لا يرفع أبداً)."""
-    try:
-        _sizes_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, name FROM sizes ORDER BY name ASC LIMIT 200")
-                rows = cur.fetchall()
-            conn.commit()
-            return [{"id": int(r[0]), "name": str(r[1])} for r in rows]
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[DB][v117] قراءة القياسات فشلت: " + str(e)[:160])
-        return []
-
-
-def db_add_size(name, user_id=None):
-    """إضافة قياس — (size, existed, err). التكرار بأي حالة أحرف يعيد الموجود
-    مع existed=True فلا تكرار في القائمة أبداً. لا يرفع أبداً."""
-    sname = " ".join(str(name or "").split())
-    if len(sname) < 2:
-        return None, False, "القياس قصير جداً (حرفان على الأقل)."
-    if len(sname) > 60:
-        return None, False, "القياس طويل جداً (60 حرفاً كحد أقصى)."
-    try:
-        _sizes_lazy_ready()
-        conn = get_connection()
-        try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, name FROM sizes "
-                        "WHERE lower(btrim(name)) = lower(%s)", (sname,))
-                    row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                    cur.execute(
-                        "INSERT INTO sizes (name, created_by) VALUES (%s, %s) "
-                        "RETURNING id, name", (sname, user_id))
-                    row = cur.fetchone()
-                conn.commit()
-                logging.info("[SIZ][v117] قياس جديد أُضيف: " + sname)
-                return {"id": int(row[0]), "name": str(row[1])}, False, None
-            except Exception as ins_err:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                # سباق تكرار محتمل بين طلبين متزامنين — قراءة أخيرة
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT id, name FROM sizes "
-                            "WHERE lower(btrim(name)) = lower(%s)", (sname,))
-                        row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                except Exception:
-                    pass
-                return None, False, _pg_err_hint(ins_err)
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        return None, False, _pg_err_hint(e)
-
-
-def _sizes_name_by_id(fid):
-    """قياس بالمعرف — "" عند الفشل (لالتقاط أزرار قائمة قديمة)."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM sizes WHERE id = %s", (int(fid),))
-                r = cur.fetchone()
-            conn.commit()
-            return str(r[0]) if r else ""
-        finally:
-            release_connection(conn)
-    except Exception:
-        return ""
-
-
-def _pg_err_hint(e):
-    """رسالة قاعدة بيانات قصيرة ومفهومة — تصل للمستخدم كما هي بدل 500 صامت."""
-    if e is None:
-        return "خطأ غير معروف."
-    try:
-        diag = getattr(e, "diag", None)
-        msg = (getattr(diag, "message_primary", None) if diag is not None else None) \
-            or getattr(e, "pgerror", None) or str(e)
-        msg = str(msg).strip()
-        return (msg[:180] + "…") if len(msg) > 180 else (msg or "خطأ غير معروف.")
-    except Exception:
-        return "خطأ غير معروف."
-
-
-def _expenses_ensure(conn=None, cur=None):
-    """زرع/شفاء expenses_v2 — كل عبارة داخل SAVEPOINT عازل، لا يرفع أبداً.
-    True فقط إذا نجحت كل العبارات. يعمل بمؤشر جاهز (init_db) أو اتصال (الطلبات)."""
-    if cur is None and conn is None:
-        return False
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception as cur_err:
-            logging.warning("[DB][v110] لا مؤشر لزرع المصروفات: " + str(cur_err)[:160])
-            return False
-    all_ok = True
-    try:
-        for sql, lbl in _EXPENSES_DDL:
-            sp_ok = True
-            try:
-                cur.execute("SAVEPOINT exp110ddl")
-            except Exception:
-                sp_ok = False  # اتصال autocommit أو بلا معاملة — نجرّب العبارة عارية
-            try:
-                cur.execute(sql)
-                if sp_ok:
-                    cur.execute("RELEASE SAVEPOINT exp110ddl")
-            except Exception as one_err:
-                if sp_ok:
-                    try:
-                        cur.execute("ROLLBACK TO SAVEPOINT exp110ddl")
-                    except Exception:
-                        pass
-                all_ok = False
-                logging.warning("[DB][v110] " + lbl + ": " + str(one_err)[:160])
-        try:
-            cur.execute("SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name = '" + _EXPENSES_TABLE + "' "
-                        "ORDER BY ordinal_position")
-            logging.info("[DB][v110] أعمدة " + _EXPENSES_TABLE + ": "
-                         + ", ".join(str(r[0]) for r in cur.fetchall()))
-        except Exception:
-            pass
-        return all_ok
-    except Exception as fatal_err:
-        logging.warning("[DB][v110] زرع " + _EXPENSES_TABLE + " فشل كلياً: " + str(fatal_err)[:200])
-        return False
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _expenses_migrate_legacy(conn, commit=True):
-    """ترحيل أحادي أفضل-جهد من جدول expenses الغربي إلى expenses_v2.
-    حارس marker في bot_settings (expenses_v2_migrated) يمنع التكرار.
-    commit=False (داخل init_db): يعمل داخل معاملة المخطط عبر SAVEPOINT
-    ولا يلمس التراجع الخارجي أبداً. لا يرفع أبداً — يعيد عدد الصفوف أو -1."""
-    moved = -1
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('expenses')")
-            if not cur.fetchone()[0]:
-                return 0          # لا جدول قديم أصلاً — لا شيء للترحيل
-            cur.execute("SELECT value FROM bot_settings WHERE key = 'expenses_v2_migrated'")
-            if cur.fetchone():
-                return 0          # رُحّل سابقاً
-            cur.execute("SAVEPOINT exp110mig")
-            try:
-                cur.execute("SELECT COUNT(*) FROM expenses")
-                n = int(cur.fetchone()[0] or 0)
-                moved = 0
-                if n > 0:
-                    cur.execute(
-                        "INSERT INTO " + _EXPENSES_TABLE +
-                        " (user_id, amount, reason, spent_at, created_at) "
-                        "SELECT user_id, amount, reason, spent_at, created_at FROM expenses")
-                    moved = max(int(cur.rowcount or 0), 0)
-                cur.execute(
-                    "INSERT INTO bot_settings (key, value) VALUES ('expenses_v2_migrated', %s) "
-                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                    (str(moved),))
-                cur.execute("RELEASE SAVEPOINT exp110mig")
-            except Exception as mig_err:
-                moved = -1
-                try:
-                    cur.execute("ROLLBACK TO SAVEPOINT exp110mig")
-                except Exception:
-                    pass
-                logging.warning("[DB][v110] تخطي ترحيل المصروفات القديمة "
-                                "(بيانات الجدول الغربي غير متوافقة): " + str(mig_err)[:200])
-                return -1
-        if commit:
-            conn.commit()
-        logging.info("[DB][v110] ترحيل المصروفات القديمة اكتمل: " + str(moved) + " عملية")
-        return moved
-    except Exception as e:
-        logging.warning("[DB][v110] ترحيل المصروفات تجاهل بأمان: " + str(e)[:200])
-        return -1
-
-
-def _expenses_lazy_ready():
-    """زرع + شفاء + ترحيل عند أول طلب مصروفات في حياة العملية (وبعد أي فشل).
-    لا يرفع أبداً — True إذا كان الجدول المملوك جاهزاً."""
-    global _EXPENSES_READY
-    if _EXPENSES_READY:
-        return True
-    with _EXPENSES_LOCK:
-        if _EXPENSES_READY:
-            return True
-        try:
-            conn = get_connection()
-            try:
-                ok = _expenses_ensure(conn=conn)
-                _expenses_migrate_legacy(conn, commit=False)
-                # إتاحة الزرع حتماً: putconn يعيد الاتصال للـPool بتراجع صامت
-                # عن أي معاملة مفتوحة — بلا commit صريح يضيع الشفاء كله.
-                conn.commit()
-            finally:
-                release_connection(conn)
-            _EXPENSES_READY = ok
-            if ok:
-                logging.info("[DB][v110] جدول المصروفات المملوك جاهز.")
-        except Exception as e:
-            logging.warning("[DB][v110] تهيئة المصروفات عند الطلب فشلت: " + str(e)[:200])
-        return _EXPENSES_READY
-
-
-# ═══ v106: المصروفات — سبب اختياري والتاريخ والوقت محفوظان دائمًا ═══
-
-_EXPENSES_REASON_MAX = 300
-_EXPENSES_MAX = 1_000_000_000
-
-
-# ═══ v119: مصروفات العمال — سلف من الرواتب الشهرية (جداول مملوكة بنمط v110) ═══
-# طلب يوسف: قائمة المصروفات كانت سجلاً عاماً غير مفيد — صارت مخصصة لمصروفات
-# العمال من رواتبهم الشهرية قبل استلامها (تسبيبات) تُسكّر نهاية الشهر، مع
-# اختلاف تواريخ بداية ونهاية عمل كل عامل. الجداول مملوكة بلا FK ولا قيود
-# موروثة: زرع عند الإقلاع وعند أول طلب، SAVEPOINT لكل عبارة، صفر raise.
-_WORKERS_READY = False
-_WORKERS_LOCK = threading.Lock()
-
-_WORKERS_DDL = (
-    ("CREATE TABLE IF NOT EXISTS workers ("
-     " id BIGSERIAL PRIMARY KEY,"
-     " name TEXT NOT NULL,"
-     " monthly_salary NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (monthly_salary >= 0),"
-     " work_start DATE,"
-     " work_end DATE,"
-     " active BOOLEAN NOT NULL DEFAULT TRUE,"
-     " created_by BIGINT,"
-     " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-     "إنشاء workers"),
-    ("ALTER TABLE workers ADD COLUMN IF NOT EXISTS work_start DATE", "شفاء work_start"),
-    ("ALTER TABLE workers ADD COLUMN IF NOT EXISTS work_end DATE", "شفاء work_end"),
-    ("ALTER TABLE workers ADD COLUMN IF NOT EXISTS active BOOLEAN", "شفاء active"),
-    ("ALTER TABLE workers ADD COLUMN IF NOT EXISTS created_by BIGINT", "شفاء created_by"),
-    ("CREATE INDEX IF NOT EXISTS idx_workers_active ON workers (active, LOWER(name))",
-     "فهرس workers"),
-    ("CREATE TABLE IF NOT EXISTS salary_advances ("
-     " id BIGSERIAL PRIMARY KEY,"
-     " worker_id BIGINT NOT NULL,"
-     " amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),"
-     " note TEXT,"
-     " given_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-     " created_by BIGINT,"
-     " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-     "إنشاء salary_advances"),
-    ("ALTER TABLE salary_advances ADD COLUMN IF NOT EXISTS note TEXT", "شفاء note"),
-    ("ALTER TABLE salary_advances ADD COLUMN IF NOT EXISTS created_by BIGINT", "شفاء created_by"),
-    ("CREATE INDEX IF NOT EXISTS idx_advances_worker ON salary_advances (worker_id, given_at DESC)",
-     "فهرس advances الزمني"),
-)
-
-
-def _workers_ensure(conn=None, cur=None):
-    """زرع/شفاء workers وsalary_advances — كل عبارة داخل SAVEPOINT عازل، لا يرفع أبداً."""
-    if cur is None and conn is None:
-        return False
-    own_cur = cur is None
-    if own_cur:
-        try:
-            cur = conn.cursor()
-        except Exception as cur_err:
-            logging.warning("[DB][v119] لا مؤشر لزرع عمال الرواتب: " + str(cur_err)[:160])
-            return False
-    all_ok = True
-    try:
-        for sql, lbl in _WORKERS_DDL:
-            sp_ok = True
-            try:
-                cur.execute("SAVEPOINT wk119ddl")
-            except Exception:
-                sp_ok = False
-            try:
-                cur.execute(sql)
-                if sp_ok:
-                    cur.execute("RELEASE SAVEPOINT wk119ddl")
-            except Exception as one_err:
-                if sp_ok:
-                    try:
-                        cur.execute("ROLLBACK TO SAVEPOINT wk119ddl")
-                    except Exception:
-                        pass
-                all_ok = False
-                logging.warning("[DB][v119] " + lbl + ": " + str(one_err)[:160])
-        return all_ok
-    finally:
-        if own_cur:
-            try:
-                cur.close()
-            except Exception:
-                pass
-
-
-def _workers_lazy_ready():
-    """زرع عمال الرواتب عند أول طلب في حياة العملية — True إذا كانت الجداول جاهزة."""
-    global _WORKERS_READY
-    if _WORKERS_READY:
-        return True
-    with _WORKERS_LOCK:
-        if _WORKERS_READY:
-            return True
-        conn = get_connection()
-        try:
-            ok = _workers_ensure(conn=conn)
-            try:
-                conn.commit()
-            except Exception:
-                pass
-            if ok:
-                _WORKERS_READY = True
-            return ok
-        except Exception as e:
-            logging.warning("[DB][v119] تهيئة عمال الرواتب تخطيت: " + str(e)[:160])
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return False
-        finally:
-            release_connection(conn)
-
-
-# الجزائر UTC+1 دائم — نفس مرجع الإجماليات المستعمل في المصروفات (SQL AT TIME ZONE)
-_WK_TZ = datetime.timezone(datetime.timedelta(hours=1), name="Africa/Algiers")
-_WK_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
-_WK_NAME_MAX = 120
-_WK_NOTE_MAX = 300
-
-
-def _wk_month_norm(mstr):
-    """تطبيع شهر YYYY-MM — الافتراضي الشهر الحالي بتوقيت الجزائر. شهر غريب → الحالي."""
-    mstr = str(mstr or "").strip()
-    if _WK_MONTH_RE.match(mstr):
-        return mstr
-    n = datetime.datetime.now(_WK_TZ)
-    return "%04d-%02d" % (n.year, n.month)
-
-
-def _wk_month_bounds(mstr):
-    """حدود الشهر محلياً بتوقيت الجزائر: (بداية ISO، نهاية حصرية ISO) لتاريخ given_at."""
-    y, m = int(mstr[:4]), int(mstr[5:7])
-    start = datetime.date(y, m, 1)
-    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
-    return start.isoformat(), datetime.date(ny, nm, 1).isoformat()
-
-
-def _wk_parse_date(val, field):
-    """تحقق حقل تاريخ DATE اختياري — يعيد date أو None أو يرفع ValueError."""
-    val = str(val or "").strip()
-    if not val:
-        return None
-    try:
-        d = datetime.date.fromisoformat(val[:10])
-    except ValueError:
-        raise ValueError("تاريخ " + field + " غير صالح — اختره من الحقل.")
-    if d.year < 2000 or d.year > 2100:
-        raise ValueError("تاريخ " + field + " خارج النطاق المعقول.")
-    return d
-
-
-def _wk_parse_dt(val):
-    """تحقق تاريخ/وقت التسبيق — مثل المصروفات: أي ماضٍ مقبول، غيابه يعني الآن."""
-    val = str(val or "").strip()
-    if not val:
-        return None
-    try:
-        dt = datetime.datetime.fromisoformat(val.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValueError("صيغة التاريخ غير مفهومة — اختر التاريخ من الحقل من جديد.")
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    if dt.year < 2000 or dt.year > 2100:
-        raise ValueError("التاريخ خارج النطاق المعقول — صحّح التاريخ والوقت.")
-    return dt
-
-
-def _wk_money(val, label, allow_zero=False):
-    """تحقق مبلغ مالي — نفس قواعد المصروفات (فاصلة عربية/فرنسية مقبولة)."""
-    if isinstance(val, str):
-        val = val.replace(",", ".").replace("\u060c", ".").strip()
-    try:
-        amount = round(float(val), 2)
-    except (TypeError, ValueError):
-        raise ValueError(label + " غير صالح — اكتب رقمًا أكبر من صفر.")
-    if (amount > 0) if not allow_zero else (amount >= 0):
-        if amount > _EXPENSES_MAX:
-            raise ValueError(label + " كبير جداً — تحقق من الرقم.")
-        return amount
-    raise ValueError(label + " يجب أن يكون رقمًا أكبر من صفر." if not allow_zero
-                     else label + " لا يمكن أن يكون سالبًا.")
-
-
-def db_workers_list(month):
-    """قائمة العمال + سلف الشهر المطلوب وإجمالياته — (rows, totals, err). لا يرفع أبداً."""
-    try:
-        _workers_lazy_ready()
-        mstart, mend = _wk_month_bounds(month)
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT w.id, w.name, w.monthly_salary, w.work_start, w.work_end, w.active, "
-                    "COALESCE(a.adv, 0) AS adv "
-                    "FROM workers w "
-                    "LEFT JOIN (SELECT worker_id, SUM(amount) AS adv FROM salary_advances "
-                    " WHERE (given_at AT TIME ZONE 'Africa/Algiers')::date >= %s "
-                    "   AND (given_at AT TIME ZONE 'Africa/Algiers')::date < %s "
-                    " GROUP BY worker_id) a ON a.worker_id = w.id "
-                    "ORDER BY w.active DESC, LOWER(w.name) ASC LIMIT 300",
-                    (mstart, mend))
-                rows = [dict(r) for r in cur.fetchall()]
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount), 0) AS total FROM salary_advances "
-                    "WHERE (given_at AT TIME ZONE 'Africa/Algiers')::date >= %s "
-                    "AND (given_at AT TIME ZONE 'Africa/Algiers')::date < %s",
-                    (mstart, mend))
-                adv_total = float(cur.fetchone()["total"] or 0)
-            conn.commit()
-        finally:
-            release_connection(conn)
-        sal_total = 0.0
-        for r in rows:
-            if r["active"]:
-                sal_total += float(r["monthly_salary"] or 0)
-        out = []
-        for r in rows:
-            sal = float(r["monthly_salary"] or 0)
-            adv = float(r["adv"] or 0)
-            out.append({
-                "id": int(r["id"]), "name": r["name"],
-                "salary": round(sal, 2), "adv": round(adv, 2),
-                "remaining": round(sal - adv, 2),
-                "work_start": r["work_start"].isoformat() if r["work_start"] else "",
-                "work_end": r["work_end"].isoformat() if r["work_end"] else "",
-                "active": bool(r["active"]),
-            })
-        totals = {"salaries": round(sal_total, 2), "advances": round(adv_total, 2),
-                  "remaining": round(sal_total - adv_total, 2)}
-        return out, totals, None
-    except Exception as e:
-        logging.warning("[WK][v119] قراءة العمال فشلت: " + str(e)[:180])
-        return [], {"salaries": 0, "advances": 0, "remaining": 0}, _pg_err_hint(e)
-
-
-def db_workers_summary():
-    """إجماليات الشهر الحالي للبطاقات — (totals, err). لا يرفع أبداً."""
-    rows, totals, err = db_workers_list(_wk_month_norm(""))
-    return totals, err
-
-
-def db_worker_add(name, salary, work_start, work_end, user_id):
-    """إضافة عامل — (worker, err). التكرار مسموح (أسماء متشابهة عادية) — المعرف يميز."""
-    wname = " ".join(str(name or "").split())
-    if len(wname) < 2:
-        return None, "اسم العامل قصير جداً (حرفان على الأقل)."
-    if len(wname) > _WK_NAME_MAX:
-        return None, "اسم العامل طويل جداً — الحد " + str(_WK_NAME_MAX) + " حرفًا."
-    try:
-        _workers_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO workers (name, monthly_salary, work_start, work_end, active, created_by) "
-                    "VALUES (%s, %s, %s, %s, TRUE, %s) RETURNING id",
-                    (wname, salary, work_start, work_end, user_id))
-                wid = int(cur.fetchone()[0])
-            conn.commit()
-            return {"id": wid, "name": wname, "salary": round(float(salary), 2),
-                    "work_start": work_start.isoformat() if work_start else "",
-                    "work_end": work_end.isoformat() if work_end else "",
-                    "active": True, "adv": 0.0, "remaining": round(float(salary), 2)}, None
-        except Exception as e:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[WK][v119] إضافة عامل فشلت: " + str(e)[:180])
-        return None, _pg_err_hint(e)
-
-
-def db_worker_edit(worker_id, fields, user_id):
-    """تعديل عامل (حقول جزئية: name/salary/work_start/work_end/active) — (worker, err)."""
-    if not fields:
-        return None, "لا يوجد ما يُعدَّل."
-    try:
-        _workers_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM workers WHERE id = %s", (worker_id,))
-                if not cur.fetchone():
-                    return None, "العامل غير موجود."
-                sets, vals = [], []
-                if "name" in fields:
-                    wname = " ".join(str(fields["name"] or "").split())
-                    if len(wname) < 2:
-                        return None, "اسم العامل قصير جداً (حرفان على الأقل)."
-                    if len(wname) > _WK_NAME_MAX:
-                        return None, "اسم العامل طويل جداً — الحد " + str(_WK_NAME_MAX) + " حرفًا."
-                    sets.append("name = %s")
-                    vals.append(wname)
-                if "salary" in fields:
-                    sets.append("monthly_salary = %s")
-                    vals.append(fields["salary"])
-                if "work_start" in fields:
-                    sets.append("work_start = %s")
-                    vals.append(fields["work_start"])
-                if "work_end" in fields:
-                    sets.append("work_end = %s")
-                    vals.append(fields["work_end"])
-                if "active" in fields:
-                    sets.append("active = %s")
-                    vals.append(bool(fields["active"]))
-                vals.append(worker_id)
-                cur.execute("UPDATE workers SET " + ", ".join(sets) + " WHERE id = %s", vals)
-            conn.commit()
-            return {"id": int(worker_id)}, None
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[WK][v119] تعديل عامل فشل: " + str(e)[:180])
-        return None, _pg_err_hint(e)
-
-
-def db_worker_delete(worker_id, user_id):
-    """حذف عامل نهائياً مع سلفه (CASCADE منطقي يدوي) — (deleted, name, err)."""
-    try:
-        _workers_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM workers WHERE id = %s", (worker_id,))
-                row = cur.fetchone()
-                if not row:
-                    return False, "", "العامل غير موجود."
-                wname = row[0]
-                cur.execute("SELECT COUNT(*) FROM salary_advances WHERE worker_id = %s", (worker_id,))
-                adv_cnt = int(cur.fetchone()[0] or 0)
-                cur.execute("DELETE FROM salary_advances WHERE worker_id = %s", (worker_id,))
-                cur.execute("DELETE FROM workers WHERE id = %s", (worker_id,))
-            conn.commit()
-            return True, (wname, adv_cnt), None
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[WK][v119] حذف عامل فشل: " + str(e)[:180])
-        return False, ("", 0), _pg_err_hint(e)
-
-
-def db_advances_list(worker_id, month):
-    """سلف عامل في شهر — (items, worker_name, err)."""
-    try:
-        _workers_lazy_ready()
-        mstart, mend = _wk_month_bounds(month)
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT name FROM workers WHERE id = %s", (worker_id,))
-                w = cur.fetchone()
-                if not w:
-                    return [], "", "العامل غير موجود."
-                cur.execute(
-                    "SELECT a.id, a.amount, a.note, a.given_at, a.created_by, "
-                    "COALESCE(NULLIF(u.first_name, ''), COALESCE(u.username, '')) AS by_name "
-                    "FROM salary_advances a LEFT JOIN users u ON u.id = a.created_by "
-                    "WHERE a.worker_id = %s "
-                    "AND (a.given_at AT TIME ZONE 'Africa/Algiers')::date >= %s "
-                    "AND (a.given_at AT TIME ZONE 'Africa/Algiers')::date < %s "
-                    "ORDER BY a.given_at DESC, a.id DESC LIMIT 200",
-                    (worker_id, mstart, mend))
-                rows = [dict(r) for r in cur.fetchall()]
-            conn.commit()
-            return rows, w["name"], None
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[WK][v119] قراءة السلف فشلت: " + str(e)[:180])
-        return [], "", _pg_err_hint(e)
-
-
-def db_advance_add(worker_id, amount, note, given_at, user_id):
-    """تسجيل تسبيق لعامل — (item, err)."""
-    note = str(note or "").strip()
-    if len(note) > _WK_NOTE_MAX:
-        return None, "الملاحظة طويلة جداً — الحد " + str(_WK_NOTE_MAX) + " حرفًا."
-    try:
-        _workers_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM workers WHERE id = %s", (worker_id,))
-                w = cur.fetchone()
-                if not w:
-                    return None, "العامل غير موجود."
-                cur.execute(
-                    "INSERT INTO salary_advances (worker_id, amount, note, given_at, created_by) "
-                    "VALUES (%s, %s, %s, COALESCE(%s, NOW()), %s) "
-                    "RETURNING id, given_at",
-                    (worker_id, amount, note or None, given_at, user_id))
-                row = cur.fetchone()
-            conn.commit()
-            return {"id": int(row[0]), "worker_id": int(worker_id), "worker_name": w[0],
-                    "amount": round(float(amount), 2), "note": note,
-                    "given_at": row[1].isoformat()}, None
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[WK][v119] حفظ تسبيق فشل: " + str(e)[:180])
-        return None, _pg_err_hint(e)
-
-
-def db_advance_delete(adv_id, user, is_admin):
-    """حذف تسبيق — للمسجّل نفسه أو الإدارة (نمط v113) — (item, err)."""
-    try:
-        _workers_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT a.id, a.amount, a.worker_id, a.created_by, w.name AS worker_name "
-                    "FROM salary_advances a LEFT JOIN workers w ON w.id = a.worker_id "
-                    "WHERE a.id = %s", (adv_id,))
-                row = cur.fetchone()
-                if not row:
-                    return None, "التسبيق غير موجود أو حُذف من قبل."
-                if not is_admin and (row["created_by"] or 0) != (user.get("id") or 0):
-                    return None, "حذف التسبيق لمسجّله نفسه أو للإدارة فقط."
-                cur.execute("DELETE FROM salary_advances WHERE id = %s", (adv_id,))
-            conn.commit()
-            return {"id": int(row["id"]), "worker_name": row["worker_name"] or "",
-                    "amount": float(row["amount"])}, None
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[WK][v119] حذف تسبيق فشل: " + str(e)[:180])
-        return None, _pg_err_hint(e)
-
-
-# ═══ v119: واجهات مصروفات العمال (سلف الرواتب) — متزامنة تُستدعى عبر _pwa_run ═══
-
-def _pwa_api_workers_list(user, month):
-    """قائمة العمال + إجماليات الشهر — None لمن لا صلاحية مصروفات له."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return None
-    m = _wk_month_norm(month)
-    rows, totals, err = db_workers_list(m)
-    if err:
-        raise ValueError("تعذّر قراءة قائمة العمال — " + err)
-    return {"month": m, "workers": rows, "totals": totals,
-            "can_manage": bool(_pwa_perm_map(user)["admin"])}
-
-
-def _pwa_api_workers_summary(user):
-    """إجماليات الشهر الحالي للبطاقات — hidden لمن لا صلاحية مصروفات له."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return {"ok": True, "hidden": True}
-    totals, err = db_workers_summary()
-    if err:
-        raise ValueError("تعذّر قراءة الإجماليات — " + err)
-    return {"ok": True, "hidden": False, "month": _wk_month_norm(""), **totals}
-
-
-def _pwa_api_advances_list(user, worker_id, month):
-    """سلف عامل في شهر — None لمن لا صلاحية، ValueError لعامل غريب."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return None
-    try:
-        wid = int(worker_id)
-    except (TypeError, ValueError):
-        raise ValueError("معرّف عامل غير صالح.")
-    m = _wk_month_norm(month)
-    rows, wname, err = db_advances_list(wid, m)
-    if err:
-        raise ValueError(err or "تعذّر قراءة السلف.")
-    uid = user.get("id")
-    adm = bool(_pwa_perm_map(user)["admin"])
-    items = []
-    for r in rows:
-        items.append({
-            "id": int(r["id"]), "amount": float(r["amount"]),
-            "note": r.get("note") or "", "given_at": r["given_at"].isoformat(),
-            "by": r.get("by_name") or "",
-            "can_delete": bool(adm or (r.get("created_by") or 0) == (uid or 0)),
-        })
-    return {"month": m, "worker_id": wid, "worker_name": wname, "items": items}
-
-
-def _pwa_api_worker_add(user, body):
-    """إضافة عامل — للمدير/المدير العام فقط."""
-    if not _pwa_perm_map(user)["admin"]:
-        return None
-    b = body or {}
-    try:
-        salary = _wk_money(b.get("salary"), "الراتب الشهري")
-    except ValueError as e:
-        raise ValueError(str(e))
-    try:
-        wstart = _wk_parse_date(b.get("work_start"), "بداية العمل")
-        wend = _wk_parse_date(b.get("work_end"), "نهاية العمل")
-    except ValueError as e:
-        raise ValueError(str(e))
-    if wstart and wend and wend < wstart:
-        raise ValueError("تاريخ نهاية العمل قبل تاريخ بدايته — صحّح التاريخين.")
-    w, err = db_worker_add(b.get("name"), salary, wstart, wend, user.get("id"))
-    if err or not w:
-        raise ValueError(err or "تعذر إضافة العامل.")
-    return w
-
-
-def _pwa_api_worker_edit(user, body):
-    """تعديل عامل (حقول جزئية) — للمدير/المدير العام فقط."""
-    if not _pwa_perm_map(user)["admin"]:
-        return None
-    b = body or {}
-    try:
-        wid = int(b.get("id"))
-    except (TypeError, ValueError):
-        raise ValueError("معرّف غير صالح.")
-    fields = {}
-    if "name" in b:
-        fields["name"] = b.get("name")
-    if "salary" in b:
-        fields["salary"] = _wk_money(b.get("salary"), "الراتب الشهري")
-    if "work_start" in b:
-        try:
-            fields["work_start"] = _wk_parse_date(b.get("work_start"), "بداية العمل")
-        except ValueError as e:
-            raise ValueError(str(e))
-    if "work_end" in b:
-        try:
-            fields["work_end"] = _wk_parse_date(b.get("work_end"), "نهاية العمل")
-        except ValueError as e:
-            raise ValueError(str(e))
-    if "active" in b:
-        fields["active"] = bool(b.get("active"))
-    w, err = db_worker_edit(wid, fields, user.get("id"))
-    if err or not w:
-        raise ValueError(err or "تعذر تعديل العامل.")
-    return w
-
-
-def _pwa_api_worker_delete(user, body):
-    """حذف عامل نهائياً مع سلفه — للمدير/المدير العام فقط (تأكيد ضغطتين في الواجهة)."""
-    if not _pwa_perm_map(user)["admin"]:
-        return None
-    try:
-        wid = int((body or {}).get("id"))
-    except (TypeError, ValueError):
-        raise ValueError("معرّف غير صالح.")
-    ok, info, err = db_worker_delete(wid, user.get("id"))
-    if err or not ok:
-        raise ValueError(err or "تعذر حذف العامل.")
-    return {"id": wid, "name": info[0], "advances": info[1]}
-
-
-def _pwa_api_advances_add(user, body):
-    """تسجيل تسبيق — لأي صاحب صلاحية مصروفات (نمط v106)."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return None
-    b = body or {}
-    try:
-        wid = int(b.get("worker_id"))
-    except (TypeError, ValueError):
-        raise ValueError("معرّف عامل غير صالح.")
-    try:
-        amount = _wk_money(b.get("amount"), "المبلغ")
-        given_at = _wk_parse_dt(b.get("given_at"))
-    except ValueError as e:
-        raise ValueError(str(e))
-    a, err = db_advance_add(wid, amount, b.get("note"), given_at, user.get("id"))
-    if err or not a:
-        raise ValueError(err or "تعذر حفظ التسبيق.")
-    return a
-
-
-def _pwa_api_advances_delete(user, body):
-    """حذف تسبيق — للمسجّل نفسه أو الإدارة (نمط v113 حرفياً)."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return None
-    try:
-        aid = int((body or {}).get("id"))
-    except (TypeError, ValueError):
-        raise ValueError("معرّف غير صالح.")
-    item, err = db_advance_delete(aid, user, bool(_pwa_perm_map(user)["admin"]))
-    if err or not item:
-        raise ValueError(err or "تعذر حذف التسبيق.")
-    return item
-
-
-# ═══ v119: معالجات HTTP — نفس نمط معالجات القياسات (v118) ═══
-
-async def pwa_pending_delete_handler(request):
-    """v119: POST /api/pending/delete {id} — حذف طلب معلق بتأكيد ضغطتين."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    ok, info = await _pwa_run(_pwa_api_pending_delete, user, body)
-    if not ok:
-        return _pwa_err(400, str(info))
-    _pinfo = info if isinstance(info, dict) else {}
-    await _pwa_run(_audit_log, "pending_delete", user,
-                   details="طلب معلق: " + str(_pinfo.get("product_name", ""))
-                           + " — " + str(_pinfo.get("pending_qty", 0)) + " وحدة",
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "deleted": _pinfo,
-                    "message": "🗑 تم حذف الطلب المعلق من القائمة."})
-
-
-async def pwa_product_purge_handler(request):
-    """v119: POST /api/products/purge {id, confirm} — حذف نهائي بعد ضغطتين."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    confirm = bool(body.get("confirm"))
-    result = await _pwa_run(_pwa_api_product_purge, user, body.get("id"), confirm)
-    if result is None:
-        return _pwa_err(403, "الحذف النهائي للسلع يتطلب صلاحية الإدارة.")
-    ok, info = result
-    if not ok:
-        return _pwa_err(400, str(info))
-    if confirm:
-        _info = info if isinstance(info, dict) else {}
-        await _pwa_run(_audit_log, "product_purge", user,
-                       details="حذف نهائي: " + str(_info.get("name", ""))
-                               + " — حركات مسجلة: " + str(_info.get("tx_count", 0)),
-                       ip=request.remote or "؟")
-        return _pwa_jr({"ok": True, "purged": _info,
-                        "message": "✅ تم الحذف النهائي — «" + str(_info.get("name", ""))
-                                   + "» ومسحت من القاعدة."})
-    return _pwa_jr({"ok": True, **info})
-
-
-async def pwa_workers_list_handler(request):
-    """v119: GET /api/workers?month= — قائمة العمال وإجماليات الشهر."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        data = await _pwa_run(_pwa_api_workers_list, user,
-                              request.query.get("month", ""))
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] قائمة العمال رفعت استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذّر قراءة قائمة العمال — " + _pg_err_hint(_wk_err))
-    if data is None:
-        return _pwa_err(403, "مصروفات العمال لمن يملك صلاحية المصروفات فقط.")
-    return _pwa_jr({"ok": True, **data})
-
-
-async def pwa_workers_summary_handler(request):
-    """v119: GET /api/workers/summary — إجماليات الشهر للبطاقات."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        data = await _pwa_run(_pwa_api_workers_summary, user)
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] الإجماليات رفعت استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذّر قراءة الإجماليات — " + _pg_err_hint(_wk_err))
-    return _pwa_jr(data)
-
-
-async def pwa_advances_list_handler(request):
-    """v119: GET /api/advances?worker_id=&month= — سلف عامل في شهر."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        data = await _pwa_run(_pwa_api_advances_list, user,
-                              request.query.get("worker_id", ""),
-                              request.query.get("month", ""))
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] قائمة السلف رفعت استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذّر قراءة السلف — " + _pg_err_hint(_wk_err))
-    if data is None:
-        return _pwa_err(403, "سلف العمال لمن يملك صلاحية المصروفات فقط.")
-    return _pwa_jr({"ok": True, **data})
-
-
-async def pwa_worker_add_handler(request):
-    """v119: POST /api/workers/add — إضافة عامل (إدارة فقط)."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        w = await _pwa_run(_pwa_api_worker_add, user, body)
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] إضافة عامل رفعت استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذر إضافة العامل — " + _pg_err_hint(_wk_err))
-    if w is None:
-        return _pwa_err(403, "إدارة العمال للمدير والمدير العام فقط.")
-    await _pwa_run(_audit_log, "worker_add", user,
-                   details="عامل: " + str(w.get("name", ""))
-                           + " — راتب: " + str(w.get("salary", 0)),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "worker": w, "message": "✅ تمت إضافة العامل."})
-
-
-async def pwa_worker_edit_handler(request):
-    """v119: POST /api/workers/edit — تعديل عامل (إدارة فقط)."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        w = await _pwa_run(_pwa_api_worker_edit, user, body)
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] تعديل عامل رفع استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذر تعديل العامل — " + _pg_err_hint(_wk_err))
-    if w is None:
-        return _pwa_err(403, "إدارة العمال للمدير والمدير العام فقط.")
-    await _pwa_run(_audit_log, "worker_edit", user,
-                   details="تعديل عامل #" + str((body or {}).get("id", "")),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "worker": w, "message": "✅ تم حفظ التعديل."})
-
-
-async def pwa_worker_delete_handler(request):
-    """v119: POST /api/workers/delete — حذف عامل مع سلفه (إدارة فقط)."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        w = await _pwa_run(_pwa_api_worker_delete, user, body)
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] حذف عامل رفع استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذر حذف العامل — " + _pg_err_hint(_wk_err))
-    if w is None:
-        return _pwa_err(403, "إدارة العمال للمدير والمدير العام فقط.")
-    await _pwa_run(_audit_log, "worker_delete", user,
-                   details="حذف عامل: " + str(w.get("name", ""))
-                           + " — سلف محذوفة معه: " + str(w.get("advances", 0)),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "worker": w,
-                    "message": "🗑 تم حذف العامل وكل سلفه المسجلة."})
-
-
-async def pwa_advances_add_handler(request):
-    """v119: POST /api/advances/add {worker_id, amount, note, given_at}."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        a = await _pwa_run(_pwa_api_advances_add, user, body)
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] حفظ تسبيق رفع استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذر حفظ التسبيق — " + _pg_err_hint(_wk_err))
-    if a is None:
-        return _pwa_err(403, "تسجيل السلف لمن يملك صلاحية المصروفات فقط.")
-    await _pwa_run(_audit_log, "advance_add", user,
-                   details="تسبيق: " + str(a.get("amount", 0)) + " د.ج لـ "
-                           + str(a.get("worker_name", "")),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "advance": a, "message": "✅ تم تسجيل التسبيق."})
-
-
-async def pwa_advances_delete_handler(request):
-    """v119: POST /api/advances/delete {id} — حذف تسبيق (المسجّل أو الإدارة)."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        a = await _pwa_run(_pwa_api_advances_delete, user, body)
-    except ValueError as _wk_val:
-        return _pwa_err(400, str(_wk_val))
-    except Exception as _wk_err:
-        logging.error("[WK][v119] حذف تسبيق رفع استثناء: " + repr(_wk_err)[:300])
-        return _pwa_err(500, "تعذر حذف التسبيق — " + _pg_err_hint(_wk_err))
-    if a is None:
-        return _pwa_err(403, "حذف السلف لمن يملك صلاحية المصروفات فقط.")
-    await _pwa_run(_audit_log, "advance_delete", user,
-                   details="حذف تسبيق: " + str(a.get("amount", 0)) + " د.ج لـ "
-                           + str(a.get("worker_name", "")),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "advance": a, "message": "🗑 تم حذف التسبيق."})
-
-
-def _pwa_api_expenses_add(user, body):
-    """v106: تسجيل مصروف. amount مطلوب (>0)، reason اختياري،
-    spent_at اختياري بصيغة ISO — أي تاريخ ماضٍ مقبول دائمًا بلا قيد
-    (بلاغ يوسف: لا يمكن كتابة تواريخ من أسبوع ماضٍ)، وغيابه يعني «الآن»
-    فيُحفظ التاريخ والوقت دائمًا حقيقةً.
-    يعيد (True, صف) أو (False, رسالة حقيقية) أو None لعدم الصلاحية."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return None
-    raw = body.get("amount")
-    if isinstance(raw, str):
-        raw = raw.replace(",", ".").replace("\u060c", ".").strip()
-    try:
-        amount = round(float(raw), 2)
-    except (TypeError, ValueError):
-        return False, "المبلغ غير صالح — اكتب رقمًا أكبر من صفر."
-    if not (amount > 0):
-        return False, "المبلغ يجب أن يكون رقمًا أكبر من صفر."
-    if amount > _EXPENSES_MAX:
-        return False, "المبلغ كبير جدًا — تحقق من الرقم."
-    reason = str(body.get("reason") or "").strip()
-    if len(reason) > _EXPENSES_REASON_MAX:
-        return False, "السبب طويل جدًا — الحد " + str(_EXPENSES_REASON_MAX) + " حرفًا."
-    spent_val = None
-    spent_raw = str(body.get("spent_at") or "").strip()
-    if spent_raw:
-        try:
-            spent_val = datetime.datetime.fromisoformat(spent_raw.replace("Z", "+00:00"))
-        except ValueError:
-            return False, "صيغة التاريخ غير مفهومة — اختر التاريخ من الحقل من جديد."
-        if spent_val.tzinfo is None:
-            spent_val = spent_val.replace(tzinfo=datetime.timezone.utc)
-        if spent_val.year < 2000 or spent_val.year > 2100:
-            return False, "التاريخ خارج النطاق المعقول — صحّح التاريخ والوقت."
-    # v110: جدول مملوك + شفاء ذاتي + إعادة محاولة واحدة + رسالة خطأ حقيقية
-    global _EXPENSES_READY
-    conn = get_connection()
-    try:
-        _expenses_lazy_ready()
-        last_err = None
-        for _attempt in (1, 2):
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO " + _EXPENSES_TABLE + " (user_id, amount, reason, spent_at) "
-                        "VALUES (%s, %s, %s, COALESCE(%s, NOW())) "
-                        "RETURNING id, amount, reason, spent_at",
-                        (user["id"], amount, reason or None, spent_val),
-                    )
-                    row = cur.fetchone()
-                conn.commit()
-                _EXPENSES_READY = True
-                return True, {"id": row[0], "amount": float(row[1]), "reason": row[2],
-                              "spent_at": row[3].isoformat()}
-            except Exception as db_err:
-                last_err = db_err
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                if _attempt == 1:
-                    logging.warning("[EXP][v110] فشل الحفظ — شفاء ذاتي ثم إعادة واحدة: "
-                                    + str(db_err)[:200])
-                    try:
-                        _EXPENSES_READY = False
-                        _expenses_lazy_ready()
-                    except Exception:
-                        pass
-        logging.error("[EXP][v110] فشل حفظ المصروف نهائياً: " + repr(last_err)[:300])
-        return False, "تعذّر الحفظ في قاعدة البيانات — " + _pg_err_hint(last_err)
-    finally:
-        release_connection(conn)
-
-
-def _pwa_api_expenses_list(user):
-    """v106: آخر 60 مصروفًا + إجمالي اليوم والشهر بتوقيت الجزائر.
-    الأوقات تعود ISO بتوقيت UTC والمتصفح يعرضها بتوقيت الجهاز. None لعدم الصلاحية."""
-    if not _pwa_perm_map(user)["expenses"]:
-        return None
-    # v110: جدول مملوك + شفاء ذاتي + إعادة واحدة — الفشل النهائي يُرفع
-    # برسالة حقيقية يلتقطها المعالج ويبعثها JSON بدل 500 HTML صامت.
-    global _EXPENSES_READY
-    conn = get_connection()
-    try:
-        _expenses_lazy_ready()
-        last_err = None
-        for _attempt in (1, 2):
-            try:
-                with conn.cursor() as cur:
-                    # v112: العمود الصحيح username — وtg_username اسم مستعار
-                    # لا وجود له كعمود (هذا بالضبط عيب v110/v111).
-                    try:
-                        cur.execute(
-                            "SELECT e.id, e.amount, e.reason, e.spent_at, "
-                            "COALESCE(NULLIF(u.first_name, ''), COALESCE(u.username, '')), "
-                            "e.user_id "
-                            "FROM " + _EXPENSES_TABLE + " e LEFT JOIN users u ON u.id = e.user_id "
-                            "ORDER BY e.spent_at DESC, e.id DESC LIMIT 60"
-                        )
-                        rows = cur.fetchall()
-                    except Exception as _name_join_err:
-                        # v112 حصن السجل: أي مفاجأة مستقبلية في join الأسماء
-                        # مهما كان سببها لا تُسقط قراءة السجل — rollback نظيف
-                        # ثم قراءة بلا أسماء بهوية المسجّل الرقمية #المعرّف.
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-                        logging.warning("[EXP][v112] join الأسماء فشل — السجل يُقرأ بلا أسماء: "
-                                        + str(_name_join_err)[:150])
-                        cur.execute(
-                            "SELECT id, amount, reason, spent_at, user_id "
-                            "FROM " + _EXPENSES_TABLE + " "
-                            "ORDER BY spent_at DESC, id DESC LIMIT 60"
-                        )
-                        rows = [(r[0], r[1], r[2], r[3], "#" + str(r[4]), r[4])
-                                for r in cur.fetchall()]
-                    cur.execute(
-                        "SELECT COALESCE(SUM(amount), 0) FROM " + _EXPENSES_TABLE + " "
-                        "WHERE (spent_at AT TIME ZONE 'Africa/Algiers') "
-                        ">= date_trunc('day', NOW() AT TIME ZONE 'Africa/Algiers')"
-                    )
-                    today_total = float(cur.fetchone()[0] or 0)
-                    cur.execute(
-                        "SELECT COALESCE(SUM(amount), 0) FROM " + _EXPENSES_TABLE + " "
-                        "WHERE (spent_at AT TIME ZONE 'Africa/Algiers') "
-                        ">= date_trunc('month', NOW() AT TIME ZONE 'Africa/Algiers')"
-                    )
-                    month_total = float(cur.fetchone()[0] or 0)
-                # v113: صلاحية الحذف يقررها الخادم — المسجّل نفسه أو الإدارة
-                _uid = user.get("id") if isinstance(user, dict) else None
-                _adm = bool(_pwa_perm_map(user).get("admin")) if isinstance(user, dict) else False
-                items = [{"id": r[0], "amount": float(r[1]), "reason": r[2],
-                          "spent_at": r[3].isoformat(), "by": r[4] or "",
-                          "can_delete": bool(_adm or (r[5] == _uid))} for r in rows]
-                _EXPENSES_READY = True
-                return {"items": items, "today_total": today_total, "month_total": month_total}
-            except Exception as db_err:
-                last_err = db_err
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                if _attempt == 1:
-                    logging.warning("[EXP][v110] فشل القراءة — شفاء ذاتي ثم إعادة واحدة: "
-                                    + str(db_err)[:200])
-                    try:
-                        _EXPENSES_READY = False
-                        _expenses_lazy_ready()
-                    except Exception:
-                        pass
-        raise last_err
-    finally:
-        release_connection(conn)
-
-
-
-def _pwa_api_expenses_delete(user, body):
-    """v113: حذف مصروف — للمسجّل نفسه أو لفئة المدير/المدير العام فقط.
-    يعيد (True, صف) أو (False, رسالة حقيقية) أو None لعدم الصلاحية.
-    نفس حصن v110: شفاء ذاتي + إعادة محاولة واحدة + رسالة PostgreSQL الحقيقية."""
-    pm = _pwa_perm_map(user)
-    if not pm["expenses"]:
-        return None
-    is_admin = bool(pm.get("admin"))
-    try:
-        xid = int(body.get("id"))
-    except (TypeError, ValueError):
-        return False, "معرّف العملية غير صالح."
-    if xid <= 0:
-        return False, "معرّف العملية غير صالح."
-    uid = user.get("id") if isinstance(user, dict) else None
-    global _EXPENSES_READY
-    conn = get_connection()
-    try:
-        _expenses_lazy_ready()
-        last_err = None
-        for _attempt in (1, 2):
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT user_id, amount, reason FROM " + _EXPENSES_TABLE + " "
-                        "WHERE id = %s",
-                        (xid,),
-                    )
-                    row = cur.fetchone()
-                    if row is None:
-                        conn.rollback()
-                        return False, "العملية غير موجودة — ربما حُذفت من قبل."
-                    if (not is_admin) and (row[0] != uid):
-                        conn.rollback()
-                        return False, "الحذف للمسجّل نفسه أو للإدارة فقط."
-                    cur.execute(
-                        "DELETE FROM " + _EXPENSES_TABLE + " WHERE id = %s",
-                        (xid,),
-                    )
-                    if cur.rowcount != 1:
-                        conn.rollback()
-                        return False, "العملية غير موجودة — ربما حُذفت من قبل."
-                conn.commit()
-                _EXPENSES_READY = True
-                return True, {"id": xid, "amount": float(row[1]),
-                              "reason": row[2] or ""}
-            except Exception as db_err:
-                last_err = db_err
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                if _attempt == 1:
-                    logging.warning("[EXP][v113] فشل الحذف — شفاء ذاتي ثم إعادة واحدة: "
-                                    + str(db_err)[:200])
-                    try:
-                        _EXPENSES_READY = False
-                        _expenses_lazy_ready()
-                    except Exception:
-                        pass
-        logging.error("[EXP][v113] فشل حذف المصروف نهائياً: " + repr(last_err)[:300])
-        return False, "تعذّر الحذف من قاعدة البيانات — " + _pg_err_hint(last_err)
-    finally:
-        release_connection(conn)
-
-
-def _factories_can_add(user):
-    """v115: إضافة المصانع لمدير البوت والنظام — فئتا admin/manager فقط."""
-    try:
-        return str(user.get("role") or "") in (ROLE_ADMIN, ROLE_MANAGER)
-    except Exception:
-        return False
-
-
-def _pwa_api_factories_list(user):
-    """v115: قائمة المصانع + هل يستطيع هذا المستخدم الإضافة (متزامنة — _pwa_run)."""
-    rows = db_list_factories()
-    return {"factories": rows, "can_add": _factories_can_add(user)}
-
-
-def _pwa_api_factories_add(user, body):
-    """v115: إضافة مصنع — None لغير المدير، ValueError لاسم غير صالح،
-    أو (factory, existed) عند النجاح (متزامنة — _pwa_run)."""
-    if not _factories_can_add(user):
-        return None
-    name = " ".join(str((body or {}).get("name") or "").split())
-    f, existed, err = db_add_factory(name, user.get("id"))
-    if err or not f:
-        raise ValueError(err or "تعذر إضافة المصنع.")
-    return f, existed
-
-
-async def pwa_factories_list_handler(request):
-    """v115: GET /api/factories — قائمة مصانع السلع لمعالج الإضافة."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        data = await _pwa_run(_pwa_api_factories_list, user)
-    except Exception as _fac_list_err:
-        logging.error("[FAC][v115] قائمة المصانع رفعت استثناء: " + repr(_fac_list_err)[:300])
-        return _pwa_err(500, "تعذّر قراءة قائمة المصانع — " + _pg_err_hint(_fac_list_err))
-    return _pwa_jr({"ok": True, **data})
-
-
-async def pwa_factories_add_handler(request):
-    """v115: POST /api/factories/add — إضافة مصنع (مدير البوت والنظام فقط)."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        result = await _pwa_run(_pwa_api_factories_add, user, body)
-    except ValueError as _fac_val:
-        return _pwa_err(400, str(_fac_val))
-    except Exception as _fac_add_err:
-        logging.error("[FAC][v115] إضافة مصنع رفعت استثناء: " + repr(_fac_add_err)[:300])
-        return _pwa_err(500, "تعذّر إضافة المصنع — " + _pg_err_hint(_fac_add_err))
-    if result is None:
-        return _pwa_err(403, "إضافة المصانع لمدير البوت والنظام فقط.")
-    _fac_f, _fac_existed = result
-    await _pwa_run(_audit_log, "factory_add", user,
-                   details="مصنع: " + _fac_f["name"]
-                           + (" (موجود مسبقاً)" if _fac_existed else ""),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "factory": _fac_f, "existed": _fac_existed,
-                    "message": ("✅ تمت إضافة المصنع." if not _fac_existed
-                                else "ℹ️ المصنع موجود مسبقاً — تم اختياره.")})
-
-
-def _pwa_api_sizes_list(user, category=""):
-    """v118: قائمة قياسات فئة محددة + هل يستطيع هذا المستخدم الإضافة/الحذف
-    (متزامنة — _pwa_run). فئة غريبة/فارغة تعود آمناً إلى other."""
-    cat = _catsize_norm_cat(category)
-    rows = db_list_cat_sizes(cat)
-    can = _factories_can_add(user)
-    return {"sizes": rows, "can_add": can, "can_delete": can, "category": cat}
-
-
-def _pwa_api_sizes_add(user, body):
-    """v118: إضافة قياس إلى فئة — None لغير المدير، ValueError لاسم غير صالح،
-    أو (size, existed) عند النجاح (متزامنة — _pwa_run)."""
-    if not _factories_can_add(user):
-        return None
-    name = " ".join(str((body or {}).get("name") or "").split())
-    cat = _catsize_norm_cat((body or {}).get("category"))
-    s, existed, err = db_add_cat_size(cat, name, user.get("id"))
-    if err or not s:
-        raise ValueError(err or "تعذر إضافة القياس.")
-    return s, existed
-
-
-def _pwa_api_sizes_delete(user, body):
-    """v118: حذف قياس من فئة — None لغير المدير، ValueError عند الفشل،
-    أو {"category", "name"} عند النجاح (متزامنة — _pwa_run)."""
-    if not _factories_can_add(user):
-        return None
-    name = " ".join(str((body or {}).get("name") or "").split())
-    cat = _catsize_norm_cat((body or {}).get("category"))
-    dname, err = db_delete_cat_size(cat, name, None, user.get("id"))
-    if err or not dname:
-        raise ValueError(err or "تعذر حذف القياس.")
-    return {"category": cat, "name": dname}
-
-
-async def pwa_sizes_list_handler(request):
-    """v118: GET /api/sizes?category= — قائمة قياسات فئة لمعالج الإضافة."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        data = await _pwa_run(_pwa_api_sizes_list, user,
-                              request.query.get("category", ""))
-    except Exception as _size_list_err:
-        logging.error("[SIZ][v118] قائمة القياسات رفعت استثناء: " + repr(_size_list_err)[:300])
-        return _pwa_err(500, "تعذّر قراءة قائمة القياسات — " + _pg_err_hint(_size_list_err))
-    return _pwa_jr({"ok": True, **data})
-
-
-async def pwa_sizes_add_handler(request):
-    """v118: POST /api/sizes/add {name, category} — إضافة قياس لفئة (مدير البوت والنظام فقط)."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        result = await _pwa_run(_pwa_api_sizes_add, user, body)
-    except ValueError as _size_val:
-        return _pwa_err(400, str(_size_val))
-    except Exception as _size_add_err:
-        logging.error("[SIZ][v118] إضافة قياس رفعت استثناء: " + repr(_size_add_err)[:300])
-        return _pwa_err(500, "تعذّر إضافة القياس — " + _pg_err_hint(_size_add_err))
-    if result is None:
-        return _pwa_err(403, "إضافة القياسات لمدير البوت والنظام فقط.")
-    _size_f, _size_existed = result
-    _size_cat = _catsize_norm_cat((body or {}).get("category"))
-    await _pwa_run(_audit_log, "size_add", user,
-                   details="قياس: " + _size_f["name"] + " (فئة: "
-                           + _CATSIZE_LABELS.get(_size_cat, _size_cat) + ")"
-                           + (" (موجود مسبقاً)" if _size_existed else ""),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "size": _size_f, "existed": _size_existed,
-                    "message": ("✅ تمت إضافة القياس." if not _size_existed
-                                else "ℹ️ القياس موجود مسبقاً — تم اختياره.")})
-
-
-async def pwa_sizes_delete_handler(request):
-    """v118: POST /api/sizes/delete {category, name} — حذف قياس من قائمة فئة
-    (مدير البوت والنظام فقط). الحذف من القائمة فقط: السلع المسجلة لا تتأثر
-    وقياس فئة أخرى بنفس الاسم لا يُمس."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    try:
-        result = await _pwa_run(_pwa_api_sizes_delete, user, body)
-    except ValueError as _size_del_val:
-        return _pwa_err(400, str(_size_del_val))
-    except Exception as _size_del_err:
-        logging.error("[SIZ][v118] حذف قياس رفع استثناء: " + repr(_size_del_err)[:300])
-        return _pwa_err(500, "تعذر حذف القياس — " + _pg_err_hint(_size_del_err))
-    if result is None:
-        return _pwa_err(403, "حذف القياسات لمدير البوت والنظام فقط.")
-    await _pwa_run(_audit_log, "size_delete", user,
-                   details="حذف قياس «" + result["name"] + "» من قائمة فئة "
-                           + _CATSIZE_LABELS.get(result["category"], result["category"]),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True,
-                    "message": "🗑 حُذف القياس «" + result["name"]
-                               + "» من قائمة هذه الفئة."})
-
-
-async def pwa_expenses_add_handler(request):
-    """v106: تسجيل مصروف — POST JSON {amount, reason?, spent_at? ISO}."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    # v110: أي عطل غير متوقع يعيد JSON برسالة حقيقية — لا 500 HTML صامت أبداً
-    try:
-        result = await _pwa_run(_pwa_api_expenses_add, user, body)
-    except Exception as _exp_add_err:
-        logging.error("[EXP][v110] حفظ المصروف رفع استثناء: " + repr(_exp_add_err)[:300])
-        return _pwa_err(500, "تعذّر الحفظ في قاعدة البيانات — " + _pg_err_hint(_exp_add_err))
-    if result is None:
-        return _pwa_err(403, "خيار المصروفات غير مفعّل لفئتك — راجع الإدارة.")
-    ok, payload = result
-    if not ok:
-        return _pwa_err(400, payload)
-    await _pwa_run(_audit_log, "expenses_add", user,
-                   details="مصروف " + str(payload["amount"])
-                           + ((" — " + payload["reason"]) if payload["reason"] else ""),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "expense": payload,
-                    "message": "✅ تم حفظ المصروف — التاريخ والوقت محفوظان دائمًا."})
-
-
-async def pwa_expenses_list_handler(request):
-    """v106: قائمة المصروفات — GET."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    # v110: أي عطل غير متوقع يعيد JSON برسالة حقيقية — لا 500 HTML صامت أبداً
-    try:
-        data = await _pwa_run(_pwa_api_expenses_list, user)
-    except Exception as _exp_list_err:
-        logging.error("[EXP][v110] قائمة المصروفات رفعت استثناء: " + repr(_exp_list_err)[:300])
-        return _pwa_err(500, "تعذّر قراءة سجل المصروفات — " + _pg_err_hint(_exp_list_err))
-    if data is None:
-        return _pwa_err(403, "خيار المصروفات غير مفعّل لفئتك — راجع الإدارة.")
-    return _pwa_jr({"ok": True, **data})
-
-
-async def pwa_expenses_delete_handler(request):
-    """v113: حذف مصروف — POST JSON {id} — للمسجّل نفسه أو للإدارة فقط."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    try:
-        body = await request.json()
-    except Exception:
-        return _pwa_err(400, "طلب غير صالح.")
-    if not isinstance(body, dict):
-        return _pwa_err(400, "طلب غير صالح.")
-    # v113: أي عطل غير متوقع يعيد JSON برسالة حقيقية — لا 500 HTML صامت أبداً
-    try:
-        result = await _pwa_run(_pwa_api_expenses_delete, user, body)
-    except Exception as _exp_del_err:
-        logging.error("[EXP][v113] حذف المصروف رفع استثناء: " + repr(_exp_del_err)[:300])
-        return _pwa_err(500, "تعذّر الحذف من قاعدة البيانات — " + _pg_err_hint(_exp_del_err))
-    if result is None:
-        return _pwa_err(403, "خيار المصروفات غير مفعّل لفئتك — راجع الإدارة.")
-    ok, payload = result
-    if not ok:
-        return _pwa_err(400, payload)
-    await _pwa_run(_audit_log, "expenses_delete", user,
-                   details="حذف مصروف " + str(payload["amount"])
-                           + ((" — " + payload["reason"]) if payload["reason"] else ""),
-                   ip=request.remote or "؟")
-    return _pwa_jr({"ok": True, "deleted": payload,
-                    "message": "✅ تم حذف المصروف من السجل."})
-
-
 async def pwa_swap_products_handler(request):
     """v103: بحث سلع للاستبدال العام — GET ?q=."""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
@@ -26085,7 +20864,7 @@ def _pwa_api_delweb(user, target_tid):
     يُلغي: اسم الدخول والرقم السري (pwa_auth) + الجلسات + رموز التذكّر
     + بريد Google المرتبط (يمنع إعادة إنشاء الحساب تلقائياً عبر جوجل).
     يُبقي صف users كاملاً: الفئة والإيقاف وكل بيانات تلغرام كما هي."""
-    if not _pwa_perm_map(user)["users"]:
+    if not _pwa_perm_map(user["role"])["users"]:
         return None
     if target_tid == user["telegram_id"]:
         return False, "لا يمكنك حذف حسابك من التطبيق — استخدم حساب مدير آخر."
@@ -26199,7 +20978,6 @@ def _pwa_api_notifications(user, after, limit):
             items = []
             for r in cur.fetchall():
                 d = dict(r)
-                d["actor"] = ""  # v116: بلا أسماء في إشعارات التطبيق — الخصوصية أولاً
                 if d.get("created_at"):
                     try:
                         d["ts"] = d["created_at"].isoformat()
@@ -27714,7 +22492,7 @@ def _pwa_api_remember_login(token):
 def _pwa_api_export_movements(user, date_from, date_to, exclude_friday,
                               product_id, mov_type):
     """نفس فلاتر سجل الحركة لكن بلا حدّ — يعيد CSV جاهزاً + عدد العمليات."""
-    if not _pwa_perm_map(user)["movements"]:
+    if not _pwa_perm_map(user["role"])["movements"]:
         return None, "ليست لديك صلاحية سجل الحركة."
     where = ["1=1"]
     params = []
@@ -28307,7 +23085,7 @@ async def pwa_product_photo_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "صور السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -28348,7 +23126,7 @@ async def pwa_admin_selfpass_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "للمدير فقط.")
     try:
         body = await request.json()
@@ -28372,7 +23150,7 @@ async def pwa_product_photo_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "صور السلع للمدراء فقط.")
     try:
         body = await request.json()
@@ -28413,7 +23191,7 @@ async def pwa_admin_selfpass_handler(request):
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if not _pwa_perm_map(user)["admin"]:
+    if not _pwa_perm_map(user["role"])["admin"]:
         return _pwa_err(403, "للمدير فقط.")
     try:
         body = await request.json()
@@ -28435,16 +23213,8 @@ async def pwa_admin_selfpass_handler(request):
 def register_pwa_routes(app):
     """تركيب مسارات PWA على خادم aiohttp الموجود (webhook أو polling+health).
     آمنة إضافياً بالكامل: لا تمس مسارات البوت ولا جداوله."""
-    # v108: كلاهما محصّن داخلياً ولا يرفع — الحارس هنا احترازي إضافي فقط:
-    # أي مفاجأة هنا لن تُسقط صعود البوت على المنصتين.
-    try:
-        _pwa_init_tables()
-    except Exception as _pit_err:
-        logging.error("[PWA][v108] جداول PWA مؤجلة: " + str(_pit_err)[:200])
-    try:
-        pwa_bootstrap_admin()
-    except Exception as _pba_err:
-        logging.error("[PWA][v108] bootstrap admin مؤجل: " + str(_pba_err)[:200])
+    _pwa_init_tables()
+    pwa_bootstrap_admin()
     app.router.add_get("/", pwa_page_handler)
     app.router.add_get("/pwa", pwa_page_handler)
     app.router.add_get("/app", pwa_page_handler)
@@ -28494,43 +23264,20 @@ def register_pwa_routes(app):
     app.router.add_post("/api/invoice/swap", pwa_invoice_swap_handler)   # v102: استبدال سلعة مباعة
     app.router.add_get("/api/swap/products", pwa_swap_products_handler)  # v103: بحث سلع للاستبدال العام
     app.router.add_post("/api/swap/general", pwa_swap_general_handler)   # v103: استبدال عام بلا فاتورة
-    app.router.add_get("/api/expenses/list", pwa_expenses_list_handler)  # v106: قائمة المصروفات
-    app.router.add_post("/api/expenses/add", pwa_expenses_add_handler)   # v106: تسجيل مصروف
-    app.router.add_post("/api/expenses/delete", pwa_expenses_delete_handler)  # v113: حذف مصروف (المسجّل نفسه أو الإدارة)
     app.router.add_get("/api/users", pwa_users_handler)
     app.router.add_post("/api/users/toggle", pwa_users_toggle_handler)
     app.router.add_post("/api/users/delweb", pwa_users_delweb_handler)   # v64: حذف حساب التطبيق دون البوت
     app.router.add_post("/api/users/webpass", pwa_users_webpass_handler)
     app.router.add_post("/api/products/create", pwa_products_create_handler)
-    # ── v115: مصانع السلع — قائمة معالج الإضافة القابلة للإضافة من طرف المدير ──
-    app.router.add_get("/api/factories", pwa_factories_list_handler)
-    app.router.add_post("/api/factories/add", pwa_factories_add_handler)
-    # ── v117: قياسات السلع — قائمة معالج الإضافة القابلة للإضافة من طرف المدير ──
-    app.router.add_get("/api/sizes", pwa_sizes_list_handler)
-    app.router.add_post("/api/sizes/add", pwa_sizes_add_handler)
-    app.router.add_post("/api/sizes/delete", pwa_sizes_delete_handler)  # v118: حذف قياس من فئة
     app.router.add_post("/api/products/photo", pwa_product_photo_handler)      # v90: صورة السلعة (رفع/إزالة)
     app.router.add_get("/api/product/{pid}/image", pwa_product_image_handler)  # v90: قراءة صورة السلعة
     app.router.add_get("/api/user/{tid}/avatar", pwa_user_avatar_handler)      # v96: الصورة الشخصية (كاش يومي)
-    app.router.add_get("/api/user/{tid}/perms", pwa_user_perms_handler)        # v107: مصفوفة صلاحيات مستخدم
-    app.router.add_post("/api/user/{tid}/perms", pwa_user_perms_set_handler)   # v107: ضبط صلاحية/إعادة ضبط
     app.router.add_post("/api/admin/selfpass", pwa_admin_selfpass_handler)     # v90: رقم سر جديد للمدير (نسيان)
     app.router.add_post("/api/products/edit", pwa_products_edit_handler)        # v41: تعديل سلعة
     app.router.add_post("/api/products/archive", pwa_products_archive_handler)  # v41: حذف/استعادة ناعمة
     app.router.add_post("/api/profile", pwa_profile_handler)                    # v41: الاسم + الصورة
     app.router.add_post("/api/profile/username", pwa_profile_username_handler)  # v41: تغيير اسم الدخول
     app.router.add_get("/api/pending", pwa_pending_handler)
-    # v119: مصروفات العمال + حذف الطلب المعلق + الحذف النهائي للمحذوفة
-    app.router.add_post("/api/pending/delete", pwa_pending_delete_handler)
-    app.router.add_post("/api/products/purge", pwa_product_purge_handler)
-    app.router.add_get("/api/workers", pwa_workers_list_handler)
-    app.router.add_get("/api/workers/summary", pwa_workers_summary_handler)
-    app.router.add_get("/api/advances", pwa_advances_list_handler)
-    app.router.add_post("/api/workers/add", pwa_worker_add_handler)
-    app.router.add_post("/api/workers/edit", pwa_worker_edit_handler)
-    app.router.add_post("/api/workers/delete", pwa_worker_delete_handler)
-    app.router.add_post("/api/advances/add", pwa_advances_add_handler)
-    app.router.add_post("/api/advances/delete", pwa_advances_delete_handler)
     app.router.add_get("/api/incoming", pwa_incoming_handler)
     # (v31) الوصل + تفاصيل السلعة — المسارات الديناميكية بعد الثابتة
     app.router.add_post("/api/incoming/receipt", pwa_receipt_upload_handler)
@@ -28567,7 +23314,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/chat/gmedia", pwa_chat_gmedia_handler)
     # ── v56: تقرير تشخيص الميكروفون (يصل للمدير في تلغرام) ──
     app.router.add_post("/api/miclog", pwa_miclog_handler)
-    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (94 مساراً)")
+    logging.info("[PWA] مسارات تطبيق الويب مسجلة: / + /api/* (89 مساراً)")
 
 
 # ═════════════════════ نهاية قسم PWA WEB ═════════════════════
@@ -28580,54 +23327,19 @@ if __name__ == "__main__":
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
-                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general + app-mic + native-ui + schema-guard + exp-home + exp-vault"
-                 + " + chips-free + mig-guard + exp-name-fix + exp-flip + pin-clean + add-wizard + prod-factory + anon-notify + prod-size + cat-sizes + pending-del + workers-sal + smart-search + purge-del) =====")
+                 + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general + app-mic + native-ui) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
     # Initialize multi-DB URLs before anything else
     _init_db_urls()
     logging.info("[DB] Active DB: #" + str(_active_db_index + 1) + "/" + str(len(_db_urls)))
+    if RESET_STOCK_PIN == "5614":
+        logging.warning("[SECURITY] RESET_STOCK_PIN لا يزال على الافتراضي 5614 — غيّره من متغيرات البيئة!")
     # init_db() calls get_connection() which lazily creates the pool via
     # init_pool(), so an explicit init_pool() here would leak the previous
     # pool's connections.
-    # v108: تهيئة المخطط لا تُسقط الإقلاع أبداً — فشلها (قاعدة نائمة، جدول
-    # غربي، أي مفاجأة) يعني إعادة محاولة في الخلفية كل 60ث حتى النجاح،
-    # والبوت يصعد ويخدم ما يمكن خدمته في الانتظار.
-    def _v108_boot_schema():
-        """زرع مخطط القاعدة + جداول PWA — True فقط إذا اكتمل كل شيء."""
-        _ok = bool(init_db())
-        try:
-            _pwa_ok = _pwa_init_tables()
-            _ok = _ok and bool(_pwa_ok)
-        except Exception as _pwa_err:
-            logging.error("[PWA][v108] جداول PWA عند الإقلاع: " + str(_pwa_err)[:200])
-            _ok = False
-        return _ok
-
-    _v108_schema_ok = False
-    try:
-        _v108_schema_ok = _v108_boot_schema()
-    except Exception as _v108_boot_err:
-        logging.error("[DB][v108] تهيئة الإقلاع رفعت استثناء: " + str(_v108_boot_err)[:200])
-
-    if not _v108_schema_ok:
-        def _v108_schema_retry():
-            _n = 0
-            while True:
-                time.sleep(60)
-                _n += 1
-                try:
-                    if _v108_boot_schema():
-                        logging.info("[DB][v108] اكتملت تهيئة المخطط بعد "
-                                     + str(_n) + " محاولة(ات) متأخرة.")
-                        return
-                except Exception as _r_err:
-                    logging.error("[DB][v108] إعادة محاولة #" + str(_n) + ": "
-                                  + str(_r_err)[:200])
-
-        threading.Thread(target=_v108_schema_retry, daemon=True,
-                         name="schema-retry-v108").start()
+    init_db()
     # v88: تسخين الشعار في الخلفية — بذرة أولى من الرابط إلى القاعدة إن لزم،
     # وإن فشل فالنظام يعمل بلا غلاف بأمان (كل المسارات fallback). لا يحجب الإقلاع.
     threading.Thread(target=_theme_logo_load, daemon=True, name="theme-logo-warm").start()

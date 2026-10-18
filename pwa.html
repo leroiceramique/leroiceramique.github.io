@@ -21,29 +21,28 @@
 })();
 </script>
 <style>
-/* ═══ v48: هوية LE ROI DE LA CÉRAMIQUE — مستخرجة من اللوغو نفسه ═══
-   بني ملكي من حروف اللوغو + ذهب التاج + ورق عتيق — بدل البرتقالي العام */
+/* ═══ v48→v120: هوية محدّثة — بني ملكي داكن + ذهب لامع + حواف أنعم ═══ */
 :root{
-  --bg:#f5ecdc; --card:#fdfaf2; --ink:#3d2b1c; --mut:#8d7357;
-  --brand:#7a3a12; --brand2:#9a4d1a; --brandsoft:#f3e4d2;
-  --gold:#a97e2f; --goldsoft:rgba(169,126,47,.12); --goldline:rgba(169,126,47,.38);
-  --ok:#1f7a45; --bad:#a02c2c; --warn:#a97e2f;
-  --oksoft:rgba(31,122,69,.09); --okline:rgba(31,122,69,.28);
-  --badsoft:rgba(160,44,44,.07); --badline:rgba(160,44,44,.30);
-  --edsoft:rgba(122,58,18,.08); --edline:rgba(122,58,18,.30); --edink:#7a3a12;
-  --line:#e8d9bd; --chip:#f3e8d2; --radius:16px;
-  --shadow:0 1px 2px rgba(61,43,28,.06), 0 2px 12px rgba(61,43,28,.05);
+  --bg:#f7f0e6; --card:#fffcf5; --ink:#2c1e10; --mut:#7a6347;
+  --brand:#6b3010; --brand2:#8c3e16; --brandsoft:#f5e6d4;
+  --gold:#c4912a; --goldsoft:rgba(196,145,42,.10); --goldline:rgba(196,145,42,.32);
+  --ok:#1a7a42; --bad:#b02828; --warn:#c4912a;
+  --oksoft:rgba(26,122,66,.08); --okline:rgba(26,122,66,.25);
+  --badsoft:rgba(176,40,40,.06); --badline:rgba(176,40,40,.26);
+  --edsoft:rgba(107,48,16,.07); --edline:rgba(107,48,16,.26); --edink:#6b3010;
+  --line:#e6d8c2; --chip:#f4ebd8; --radius:18px;
+  --shadow:0 2px 4px rgba(44,30,16,.05), 0 4px 16px rgba(44,30,16,.04);
 }
 html[data-theme="dark"]{
-  --bg:#151110; --card:#211a14; --ink:#f3ead9; --mut:#b39c7e;
-  --brand:#d9a648; --brand2:#e7bc6a; --brandsoft:#332616;
-  --gold:#d9a648; --goldsoft:rgba(217,166,72,.13); --goldline:rgba(217,166,72,.40);
-  --ok:#4fbd7a; --bad:#ef6e5e; --warn:#d9a648;
-  --oksoft:rgba(79,189,122,.13); --okline:rgba(79,189,122,.35);
-  --badsoft:rgba(239,110,94,.12); --badline:rgba(239,110,94,.38);
-  --edsoft:rgba(217,166,72,.11); --edline:rgba(217,166,72,.35); --edink:#d9a648;
-  --line:#3a2f22; --chip:#2b221a;
-  --shadow:0 1px 2px rgba(0,0,0,.4);
+  --bg:#0e0b09; --card:#1a1511; --ink:#f5eddc; --mut:#c4a97e;
+  --brand:#e0b04a; --brand2:#f0c864; --brandsoft:#2a1f12;
+  --gold:#e0b04a; --goldsoft:rgba(224,176,74,.10); --goldline:rgba(224,176,74,.32);
+  --ok:#52cc84; --bad:#f07060; --warn:#e0b04a;
+  --oksoft:rgba(82,204,132,.10); --okline:rgba(82,204,132,.28);
+  --badsoft:rgba(240,112,96,.09); --badline:rgba(240,112,96,.30);
+  --edsoft:rgba(224,176,74,.09); --edline:rgba(224,176,74,.28); --edink:#e0b04a;
+  --line:#342a1e; --chip:#241c12;
+  --shadow:0 2px 4px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.20);
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
@@ -244,7 +243,7 @@ html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b
 .tbtn.t-all.on{background:var(--brand)}
 .tbtn.t-add.on{background:var(--ok)}
 .tbtn.t-out.on{background:var(--bad)}
-.tbtn.t-rec.on{background:var(--brand)}
+/* .tbtn.t-rec.on removed — زر الجرد أُزيل */
 .daypick{display:inline-flex;align-items:center;gap:6px;background:var(--card);
   border:1.5px solid var(--line);border-radius:99px;padding:5px 12px;font-size:12.5px}
 .daypick input{border:none;background:transparent;color:var(--ink);font:inherit;
@@ -623,7 +622,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v74</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v120</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -645,7 +644,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button type="button" class="tbtn t-all on" id="msegAll">🗂️<span>الكل</span></button>
         <button type="button" class="tbtn t-add" id="msegAdd">➕<span>الإضافة</span></button>
         <button type="button" class="tbtn t-out" id="msegOut">➖<span>الإخراج</span></button>
-        <button type="button" class="tbtn t-rec" id="msegRec">⚖️<span>الجرد</span></button>
+        <!-- [removed] زر الجرد — أُزيل بطلب المستخدم -->
       </div>
       <div class="chips" id="movDayScope" style="margin-bottom:10px">
         <button class="fchip on" data-p="today">🗓 اليوم</button>
@@ -762,7 +761,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v74</p>
+      <p class="hint" id="setAbout">الإصدار v120</p>
     </section>
   </main>
   <nav class="tabs">
@@ -979,8 +978,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null,
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false, busy: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
-             remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
-             reconcile: [] },
+             remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"] },
   /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
      type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
   mov: { preset: "today", from: "", to: "", product: 0,
@@ -1524,7 +1522,7 @@ function openRowMenu(id, n) {
     if (S.perms.add_qty) h += mk("add", "➕ إضافة كمية", "soft-g");
     if (S.perms.remove) h += mk("remove", "➖ خصم كمية", "soft-r");
     if (S.perms.admin) {
-      h += mk("reconcile", "🧮 جرد وتسوية", "gray");
+      /* [removed] جرد وتسوية — أُزيل بطلب المستخدم */
       h += mk("edit", "✏️ تعديل البيانات", "soft-e");
       h += mk("del", "🗑 حذف (أرشفة)", "red");
     }
@@ -1606,7 +1604,7 @@ async function invRestore(id, name) {
 }
 
 /* ─── حوار الكمية ─── */
-const TITLES = { add: "➕ إضافة كمية", remove: "➖ إخراج كمية", reconcile: "⚖️ جرد — ضبط الكمية" };
+const TITLES = { add: "➕ إضافة كمية", remove: "➖ إخراج كمية" };
 function openQty(act, id, name) {
   S.dlg = { act, id, chip: null };
   $("#dlgTitle").textContent = TITLES[act] || act;
@@ -1623,13 +1621,13 @@ function openQty(act, id, name) {
       $("#dlgChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
       if (was) { S.dlg.chip = null; } else { b.classList.add("on"); S.dlg.chip = b.dataset.r; }
     }));
-  $("#dlgGo").textContent = act === "reconcile" ? "ضبط الكمية" : "تنفيذ";
+  $("#dlgGo").textContent = "تنفيذ";
   $("#dlg").showModal();
 }
 $("#dlgCancel").addEventListener("click", () => $("#dlg").close());
 $("#dlgGo").addEventListener("click", async () => {
   const qty = parseInt($("#dlgQty").value, 10);
-  if (isNaN(qty) || qty < 0 || (S.dlg.act !== "reconcile" && qty <= 0)) {
+  if (isNaN(qty) || qty <= 0) {
     toast("أدخل كمية صحيحة.", true); return;
   }
   const unlock = lockBtn($("#dlgGo"), "جارٍ التنفيذ…");   /* v45: لا تكرار للحركة بنقر مزدوج */
@@ -1651,8 +1649,8 @@ $("#dlgGo").addEventListener("click", async () => {
 /* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ───
    v48: 4 خانات (الكل/إضافة/إخراج/جرد) — الخانة تفلتر القائمة فقط،
    والملخص يبقى عن الفترة كاملة (النظام العام للحركة) */
-const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"], reconcile: ["n", "جرد"] };
-const MOV_SEG = { msegAll: "", msegAdd: "add", msegOut: "remove", msegRec: "reconcile" };
+const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"] };
+const MOV_SEG = { msegAll: "", msegAdd: "add", msegOut: "remove" };
 function movSetType(t) {
   if (S.mov.type === t) return;
   S.mov.type = t;
@@ -1733,20 +1731,18 @@ async function loadMovements() {
       if (S.mov.type) {
         /* v69: مع خانة نوع نشطة تظهر بطاقة واحدة واضحة لذلك النوع */
         const one = { add: ["➕ ", "إضافة", s.add_qty, s.add_cnt, "var(--ok)"],
-                      remove: ["➖ ", "إخراج", s.remove_qty, s.remove_cnt, "var(--bad)"],
-                      reconcile: ["⚖️ ", "جرد", s.rec_cnt, s.rec_cnt, "var(--brand)"] }[S.mov.type];
+                      remove: ["➖ ", "إخراج", s.remove_qty, s.remove_cnt, "var(--bad)"] }[S.mov.type];
         $("#movSum").innerHTML =
           '<div><b style="color:' + one[4] + '">' + one[0] + one[2] + '</b><span>' + one[1] + ' — ' + one[3] + ' عملية</span></div>';
       } else {
         $("#movSum").innerHTML =
           '<div><b style="color:var(--ok)">➕ ' + s.add_qty + '</b><span>إضافة (' + s.add_cnt + ')</span></div>'
           + '<div><b style="color:var(--bad)">➖ ' + s.remove_qty + '</b><span>إخراج (' + s.remove_cnt + ')</span></div>'
-          + '<div><b>⚖️ ' + s.rec_cnt + '</b><span>جرد</span></div>'
           + '<div><b>' + s.count + '</b><span>عملية</span></div>';
       }
     } else { $("#movSum").style.display = "none"; }
     if (!S.mov.data.length) {
-      const tn = { add: "الإضافة", remove: "الإخراج", reconcile: "الجرد والتسوية" }[S.mov.type];
+      const tn = { add: "الإضافة", remove: "الإخراج" }[S.mov.type];
       box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
         + (tn ? ' — خانة «' + tn + '»' : '')
         + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 اليوم / أمس أو اختر تاريخاً 📅.</span></p>';
