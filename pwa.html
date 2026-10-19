@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#6b3410">
+<meta name="theme-color" content="#5865f2">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
@@ -21,28 +21,28 @@
 })();
 </script>
 <style>
-/* ═══ v48→v120: هوية محدّثة — بني ملكي داكن + ذهب لامع + حواف أنعم ═══ */
+/* ═══ v121: هوية Discord الاحترافية — Blurple #5865F2 + رماديات داكن أنيقة ═══ */
 :root{
-  --bg:#f7f0e6; --card:#fffcf5; --ink:#2c1e10; --mut:#7a6347;
-  --brand:#6b3010; --brand2:#8c3e16; --brandsoft:#f5e6d4;
-  --gold:#c4912a; --goldsoft:rgba(196,145,42,.10); --goldline:rgba(196,145,42,.32);
-  --ok:#1a7a42; --bad:#b02828; --warn:#c4912a;
-  --oksoft:rgba(26,122,66,.08); --okline:rgba(26,122,66,.25);
-  --badsoft:rgba(176,40,40,.06); --badline:rgba(176,40,40,.26);
-  --edsoft:rgba(107,48,16,.07); --edline:rgba(107,48,16,.26); --edink:#6b3010;
-  --line:#e6d8c2; --chip:#f4ebd8; --radius:18px;
-  --shadow:0 2px 4px rgba(44,30,16,.05), 0 4px 16px rgba(44,30,16,.04);
+  --bg:#f2f3f5; --card:#ffffff; --ink:#2e3338; --mut:#6d6f78;
+  --brand:#5865f2; --brand2:#4752c4; --brandsoft:#edeffe;
+  --gold:#5865f2; --goldsoft:rgba(88,101,242,.10); --goldline:rgba(88,101,242,.32);
+  --ok:#23a55a; --bad:#d83c3e; --warn:#c78a1b;
+  --oksoft:rgba(35,165,90,.09); --okline:rgba(35,165,90,.28);
+  --badsoft:rgba(216,60,62,.07); --badline:rgba(216,60,62,.28);
+  --edsoft:rgba(88,101,242,.08); --edline:rgba(88,101,242,.28); --edink:#4752c4;
+  --line:#e3e5e8; --chip:#e9ebef; --radius:18px;
+  --shadow:0 2px 4px rgba(46,51,56,.05), 0 4px 16px rgba(46,51,56,.05);
 }
 html[data-theme="dark"]{
-  --bg:#0e0b09; --card:#1a1511; --ink:#f5eddc; --mut:#c4a97e;
-  --brand:#e0b04a; --brand2:#f0c864; --brandsoft:#2a1f12;
-  --gold:#e0b04a; --goldsoft:rgba(224,176,74,.10); --goldline:rgba(224,176,74,.32);
-  --ok:#52cc84; --bad:#f07060; --warn:#e0b04a;
-  --oksoft:rgba(82,204,132,.10); --okline:rgba(82,204,132,.28);
-  --badsoft:rgba(240,112,96,.09); --badline:rgba(240,112,96,.30);
-  --edsoft:rgba(224,176,74,.09); --edline:rgba(224,176,74,.28); --edink:#e0b04a;
-  --line:#342a1e; --chip:#241c12;
-  --shadow:0 2px 4px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.20);
+  --bg:#1e1f22; --card:#2b2d31; --ink:#f2f3f5; --mut:#949ba4;
+  --brand:#7983f5; --brand2:#5865f2; --brandsoft:#262b54;
+  --gold:#a5afff; --goldsoft:rgba(165,175,255,.12); --goldline:rgba(165,175,255,.35);
+  --ok:#2dc770; --bad:#f23f43; --warn:#f0b232;
+  --oksoft:rgba(45,199,112,.11); --okline:rgba(45,199,112,.30);
+  --badsoft:rgba(242,63,67,.10); --badline:rgba(242,63,67,.30);
+  --edsoft:rgba(121,131,245,.13); --edline:rgba(121,131,245,.30); --edink:#a5afff;
+  --line:#3d3f45; --chip:#383a40;
+  --shadow:0 2px 4px rgba(0,0,0,.40), 0 4px 16px rgba(0,0,0,.25);
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
@@ -56,7 +56,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
   background:radial-gradient(1200px 600px at 50% -10%, var(--goldsoft), transparent 60%), var(--bg)}
 #login .logo{width:92px;height:92px;border-radius:22px;object-fit:cover;
   border:1px solid var(--goldline);background:var(--card);
-  box-shadow:0 6px 24px rgba(122,58,18,.18)}
+  box-shadow:0 6px 24px rgba(88,101,242,.22)}
 #login h1{font-size:22px;margin:6px 0 2px}
 /* v48: توقيع العلامة اللاتيني بخط ملكي متباعد — من اللوغو حرفياً */
 .wm{font-family:Georgia,"Times New Roman",serif;letter-spacing:.22em;
@@ -83,20 +83,20 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .btn.soft-g{background:var(--oksoft);color:var(--ok);border:1px solid var(--okline)}
 .btn.soft-r{background:var(--badsoft);color:var(--bad);border:1px solid var(--badline)}
 .btn.soft-e{background:var(--edsoft);color:var(--edink);border:1px solid var(--edline)}
-#loginErr,#setupErr,#regErr{display:none;background:rgba(185,28,28,.1);color:var(--bad);border:1px solid rgba(185,28,28,.35);
+#loginErr,#setupErr,#regErr{display:none;background:rgba(216,60,62,.10);color:var(--bad);border:1px solid rgba(216,60,62,.35);
   padding:10px 12px;border-radius:10px;font-size:13px;margin-bottom:10px;white-space:pre-line}
 .reglink{margin:2px 0 0;font-size:13.5px;text-align:center}
 .reglink a{color:var(--brand);font-weight:800;text-decoration:none}
-.badge.g{background:rgba(21,128,61,.14);color:var(--ok)}
+.badge.g{background:rgba(35,165,90,.14);color:var(--ok)}
 .badge.b{background:var(--brandsoft);color:var(--brand)}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
-header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,#5d2c0e,#7a3a12);
+header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,#404eed,#5865f2);
   color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;
-  border-bottom:1px solid rgba(217,166,72,.55);   /* v48: خصلة ذهب ملكية */
-  box-shadow:0 2px 10px rgba(0,0,0,.12)}
-html[data-theme="dark"] header{background:#1b1410;border-bottom:1px solid var(--goldline)}
-header img{width:34px;height:34px;border-radius:9px;object-fit:cover;border:1px solid rgba(217,166,72,.5)}
+  border-bottom:1px solid rgba(255,255,255,.28);   /* v121: فاصل مضيء بلمسة Discord */
+  box-shadow:0 2px 10px rgba(64,78,237,.25)}
+html[data-theme="dark"] header{background:#111214;border-bottom:1px solid var(--goldline)}
+header img{width:34px;height:34px;border-radius:9px;object-fit:cover;border:1px solid rgba(255,255,255,.5)}
 header .t{flex:1;min-width:0}
 header .t b{display:block;font-size:15px}
 header .t span{font-size:11.5px;opacity:.85;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -121,9 +121,9 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .stat b{display:block;font-size:22px;color:var(--brand)}
 .stat span{font-size:11.5px;color:var(--mut)}
 .oilcard{border-radius:14px;padding:14px;color:#fff;margin-bottom:14px;
-  background:linear-gradient(135deg,#15803d,#166534)}
-.oilcard.warn{background:linear-gradient(135deg,#d97706,#b45309)}
-.oilcard.red{background:linear-gradient(135deg,#dc2626,#991b1b)}
+  background:linear-gradient(135deg,#23a55a,#1a7a42)}
+.oilcard.warn{background:linear-gradient(135deg,#e8a013,#b45309)}
+.oilcard.red{background:linear-gradient(135deg,#f23f43,#c03537)}
 .bar{height:8px;background:rgba(255,255,255,.25);border-radius:99px;overflow:hidden;margin-top:10px}
 .bar i{display:block;height:100%;background:#fff;border-radius:99px}
 .search{width:100%;padding:12px 14px;border:1.5px solid var(--line);border-radius:12px;
@@ -137,8 +137,8 @@ h2.vt{font-size:17px;margin:4px 0 12px}
 .row .info span{font-size:12px;color:var(--mut)}
 .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:800;
   background:var(--chip);color:var(--mut);white-space:nowrap}
-.badge.g{background:rgba(21,128,61,.14);color:var(--ok)}
-.badge.r{background:rgba(185,28,28,.12);color:var(--bad)}
+.badge.g{background:rgba(35,165,90,.14);color:var(--ok)}
+.badge.r{background:rgba(216,60,62,.12);color:var(--bad)}
 .badge.n{background:var(--brandsoft);color:var(--brand)}
 .badge.mut{background:var(--chip);color:var(--mut)}
 .row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
@@ -176,7 +176,7 @@ html[data-theme="dark"] .skl::after{background:linear-gradient(90deg,transparent
 /* حوار */
 dialog{border:none;border-radius:18px;padding:0;width:min(92vw,380px);
   box-shadow:0 20px 60px rgba(0,0,0,.3);background:var(--card);color:var(--ink)}
-dialog::backdrop{background:rgba(63,42,29,.45)}
+dialog::backdrop{background:rgba(15,16,20,.6)}
 dialog .dh{background:var(--brand);color:#fff;padding:14px 18px;font-weight:800;
   border-radius:18px 18px 0 0}
 dialog .db{padding:16px 18px}
@@ -200,14 +200,14 @@ button.chip{font-family:inherit;cursor:pointer}
 .chip.on{background:var(--brandsoft);border-color:var(--brand);color:var(--brand)}
 .chip.on b{color:var(--brand)}
 .rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:800;line-height:1.7;margin-inline-end:6px}
-.rk-admin{background:rgba(169,126,47,.16);color:#8a6420}
-html[data-theme="dark"] .rk-admin{background:rgba(202,158,68,.2);color:#e5c069}
+.rk-admin{background:rgba(240,178,50,.20);color:#8a5c00}
+html[data-theme="dark"] .rk-admin{background:rgba(240,178,50,.16);color:#f5c04a}
 .rk-manager{background:var(--brandsoft);color:var(--brand)}
 .rk-stock{background:rgba(2,132,199,.13);color:#0369a1}
 html[data-theme="dark"] .rk-stock{background:rgba(56,189,248,.16);color:#7dd3fc}
-.rk-seller{background:rgba(31,122,69,.13);color:var(--ok)}
-.rk-external{background:rgba(124,58,237,.13);color:#6d28d9}
-html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b5fd}
+.rk-seller{background:rgba(35,165,90,.13);color:var(--ok)}
+.rk-external{background:rgba(235,69,158,.12);color:#c2257f}
+html[data-theme="dark"] .rk-external{background:rgba(235,69,158,.16);color:#ff85c0}
 .rk-customer{background:var(--chip);color:var(--mut)}
 .usub{display:block;line-height:2;word-break:break-word}
 .khead{width:100%;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
@@ -258,10 +258,10 @@ html[data-theme="dark"] .rk-external{background:rgba(196,181,253,.16);color:#c4b
 .hint{font-size:12px;color:var(--mut);text-align:center;margin-top:10px;line-height:1.7}
 /* ─── الإشعارات ─── */
 .bellwrap{position:relative;flex-shrink:0}
-#nBadge{position:absolute;top:-7px;left:-7px;background:#b91c1c;color:#fff;border-radius:99px;
+#nBadge{position:absolute;top:-7px;left:-7px;background:#f23f43;color:#fff;border-radius:99px;
   min-width:18px;height:18px;font-size:11px;font-weight:800;display:none;
   align-items:center;justify-content:center;padding:0 4px;border:2px solid var(--brand);z-index:2}
-html[data-theme="dark"] #nBadge{border-color:#241d16}
+html[data-theme="dark"] #nBadge{border-color:#1e1f22}
 .nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
 .nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
 .nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
@@ -296,9 +296,9 @@ nav.tabs button{position:relative}
   border-radius:14px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
 .chatrow:active{transform:scale(.99);background:var(--brandsoft)}
 .cav{width:44px;height:44px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
-  font-weight:800;font-size:17px;color:#fff;background:linear-gradient(135deg,#9a4d1a,#7a3a12);
+  font-weight:800;font-size:17px;color:#fff;background:linear-gradient(135deg,#5865f2,#4752c4);
   border:1px solid var(--goldline)}
-html[data-theme="dark"] .cav{background:#33261a;color:var(--gold)}
+html[data-theme="dark"] .cav{background:#3a4080;color:#e0e4ff}
 .chatrow .cinfo{flex:1;min-width:0}
 .chatrow .cinfo b{display:block;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chatrow .cinfo span{display:block;font-size:12.5px;color:var(--mut);white-space:nowrap;
@@ -327,7 +327,7 @@ html[data-theme="dark"] .cav{background:#33261a;color:var(--gold)}
   background:var(--card);border:1px solid var(--line);border-start-start-radius:5px}
 .bub.me{align-self:flex-end;background:var(--brand);color:#fff;border-color:var(--brand);
   border-start-end-radius:5px}
-html[data-theme="dark"] .bub.me{background:#4a2c15}
+html[data-theme="dark"] .bub.me{background:#4752c4}
 .bub .bmeta{font-size:10px;opacity:.75;display:flex;gap:4px;justify-content:flex-end;
   align-items:center;margin-top:3px;white-space:pre-wrap}
 .bub .bimg{display:block;max-width:100%;max-height:240px;border-radius:11px;margin:2px 0;
@@ -351,7 +351,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 .cbtn:active{transform:scale(.93)}
 /* v55: زر المايك بالضغط المطول الفوري مثل واتساب */
 #chatMic{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-#chatMic.rec{background:#dc2626;color:#fff;box-shadow:0 0 0 7px rgba(220,38,38,.15)}
+#chatMic.rec{background:#f23f43;color:#fff;box-shadow:0 0 0 7px rgba(242,63,67,.18)}
 /* التسجيل الصوتي */
 .crec{display:flex;align-items:center;gap:8px;background:var(--badsoft);border:1px solid var(--badline);
   color:var(--bad);border-radius:12px;padding:7px 12px;margin-top:8px;font-size:13px;font-weight:800}
@@ -405,7 +405,7 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 #chatOlder{margin:0 auto 8px;background:var(--chip);border:1px solid var(--line);color:var(--ink);
   border-radius:99px;padding:6px 16px;font-size:12.5px;font-weight:800;cursor:pointer;display:none}
 #chatOlder.show{display:block}
-.conline{color:#16a34a;font-weight:800}
+.conline{color:#23a55a;font-weight:800}
 .csrc{font-size:10.5px;background:var(--chip);border:1px solid var(--line);border-radius:99px;
   padding:2px 8px;color:var(--mut);flex:none}
 #chatCSrch{width:100%;margin-bottom:8px}
@@ -425,10 +425,10 @@ html[data-theme="dark"] .bub.me{background:#4a2c15}
 /* اقتباس الرد داخل الفقاعة + شريط الرد فوق حقل الكتابة */
 .qte{border-inline-start:3px solid var(--gold);background:rgba(0,0,0,.07);border-radius:8px;
   padding:4px 8px;margin:2px 0 5px;cursor:pointer;overflow:hidden}
-.bub.me .qte{background:rgba(255,255,255,.16);border-inline-start-color:#ffd98a}
+.bub.me .qte{background:rgba(255,255,255,.16);border-inline-start-color:#c9d0ff}
 .qte b{display:block;font-size:11px;color:var(--gold);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
-.bub.me .qte b{color:#ffd98a}
+.bub.me .qte b{color:#c9d0ff}
 .qte span{display:block;font-size:12px;opacity:.85;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;max-width:220px}
 #chatReply{display:none;align-items:center;gap:8px;background:var(--chip);
@@ -558,7 +558,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
   </div>
   <div class="card" id="forgotCard" style="display:none">
     <div id="forgotErr"></div>
-    <div id="forgotOk" style="display:none;background:rgba(49,162,76,.12);color:var(--ok);border:1px solid rgba(49,162,76,.4);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.8;margin:0 0 10px"></div>
+    <div id="forgotOk" style="display:none;background:rgba(35,165,90,.12);color:var(--ok);border:1px solid rgba(35,165,90,.4);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.8;margin:0 0 10px"></div>
     <p style="margin:0 0 12px;font-weight:800;color:var(--brand);text-align:center;font-size:15px">🔑 نسيت كلمة المرور</p>
     <div class="fld"><label>اسم دخولك (أو بريدك إن كنت تسجل به)</label>
       <input id="fForgotUser" autocapitalize="none" placeholder="مثال: ahmed"></div>
@@ -915,7 +915,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
 <dialog id="dlgPhoto">
   <div class="dh">🖼️ وصل التوريد</div>
   <div class="db">
-    <img id="photoImg" style="width:100%;border-radius:10px;background:#0b1626" alt="وصل التوريد">
+    <img id="photoImg" style="width:100%;border-radius:10px;background:#1e1f22" alt="وصل التوريد">
     <button class="btn gray" id="dlgPhotoClose" style="margin-top:8px">إغلاق</button>
   </div>
 </dialog>
@@ -1087,7 +1087,7 @@ function lockBtn(btn, label) {
 function applyTheme(mode, save) {
   document.documentElement.setAttribute("data-theme", mode);
   const m = document.querySelector('meta[name="theme-color"]');
-  if (m) m.setAttribute("content", mode === "dark" ? "#241d16" : "#b45309");
+  if (m) m.setAttribute("content", mode === "dark" ? "#1e1f22" : "#5865f2");
   const l = $("#thLight"), d = $("#thDark");
   if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); }
   if (save) { try { localStorage.setItem("ceram_theme", mode); } catch (e) {} }

@@ -12648,7 +12648,7 @@ _PWA_GROUPS_JS = r"""/* ═══ v83: مجموعات الدردشة — يُح�
     if (G.meAdmin || G.isOwner)
       html += '<button id="g83addm" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#2563eb;color:#fff;font-weight:700">＋ إضافة أعضاء</button>';
     if (G.isOwner)
-      html += '<button id="g83delg" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#dc2626;color:#fff;font-weight:700">🗑 حذف المجموعة</button>';
+      html += '<button id="g83delg" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#d83c3e;color:#fff;font-weight:700">🗑 حذف المجموعة</button>';
     html += '<button id="g83leave" type="button" style="flex:1;border:none;border-radius:10px;padding:9px;background:#e5e7eb;color:#111;font-weight:700">🚪 مغادرة</button></div>';
     ui.c.innerHTML = html;
     ui.c.querySelector(".g83x").addEventListener("click", function () { ui.o.remove(); });
@@ -12870,16 +12870,16 @@ _PWA_UI2_CSS = r"""/* ═══════════════════�
 /* ── 0) توكنز الطبقة الجديدة ── */
 :root{
   --u2-grad:linear-gradient(135deg,var(--brand2),var(--brand));
-  --u2-grad-gold:linear-gradient(135deg,#c1913a,#8f6a24);
+  --u2-grad-gold:linear-gradient(135deg,#e8a013,#b45309);
   --u2-sheet:26px;
-  --u2-dockbg:rgba(253,250,242,.86);
-  --u2-headbg:rgba(253,250,242,.80);
-  --u2-shadow-lg:0 18px 44px rgba(61,43,28,.16);
+  --u2-dockbg:rgba(255,255,255,.88);
+  --u2-headbg:rgba(255,255,255,.82);
+  --u2-shadow-lg:0 18px 44px rgba(46,51,56,.14);
   --u2-focus:0 0 0 3px var(--goldsoft);
 }
 html[data-theme="dark"]{
-  --u2-dockbg:rgba(33,26,20,.88);
-  --u2-headbg:rgba(28,22,16,.82);
+  --u2-dockbg:rgba(24,25,28,.88);
+  --u2-headbg:rgba(20,21,24,.82);
   --u2-shadow-lg:0 18px 44px rgba(0,0,0,.5);
 }
 
@@ -12889,7 +12889,7 @@ html[data-theme="dark"]{
   backdrop-filter:blur(18px) saturate(1.4);
   -webkit-backdrop-filter:blur(18px) saturate(1.4);
   border-bottom:1px solid var(--line);
-  box-shadow:0 4px 20px rgba(61,43,28,.07);
+  box-shadow:0 4px 20px rgba(46,51,56,.07);
   padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
 }
 html[data-theme="dark"] #app header{box-shadow:0 4px 20px rgba(0,0,0,.35)}
@@ -12914,11 +12914,11 @@ html[data-theme="dark"] #app header{box-shadow:0 4px 20px rgba(0,0,0,.35)}
   border-radius:12px;transition:transform .18s ease,box-shadow .18s ease;
 }
 #app header button:active{transform:scale(.9);box-shadow:0 0 0 6px var(--goldsoft)}
-#app header img{border-radius:12px;box-shadow:0 3px 10px rgba(122,58,18,.25)}
+#app header img{border-radius:12px;box-shadow:0 3px 10px rgba(88,101,242,.25)}
 #nBadge{
   background:var(--bad);color:#fff;font-size:10px;font-weight:800;
   min-width:17px;height:17px;border-radius:9px;display:flex;align-items:center;
-  justify-content:center;padding:0 4px;box-shadow:0 2px 6px rgba(160,44,44,.4);
+  justify-content:center;padding:0 4px;box-shadow:0 2px 6px rgba(242,63,67,.35);
 }
 
 /* ── 2) شريط التنقل: Dock عائم زجاجي بحبة دواء متدرجة ── */
@@ -12929,7 +12929,7 @@ nav.tabs{
   background:var(--u2-dockbg);
   backdrop-filter:blur(22px) saturate(1.5);
   -webkit-backdrop-filter:blur(22px) saturate(1.5);
-  box-shadow:0 12px 34px rgba(61,43,28,.18);
+  box-shadow:0 12px 34px rgba(46,51,56,.18);
   padding:7px 8px calc(7px);
 }
 html[data-theme="dark"] nav.tabs{box-shadow:0 12px 34px rgba(0,0,0,.5)}
@@ -12941,9 +12941,9 @@ nav.tabs button .ic{transition:transform .22s cubic-bezier(.34,1.56,.64,1)}
 nav.tabs button:active{transform:scale(.9)}
 nav.tabs button.on{
   background:var(--u2-grad);color:#fff;font-weight:800;
-  box-shadow:0 6px 16px rgba(122,58,18,.38);
+  box-shadow:0 6px 16px rgba(88,101,242,.38);
 }
-html[data-theme="dark"] nav.tabs button.on{box-shadow:0 6px 16px rgba(217,166,72,.25)}
+html[data-theme="dark"] nav.tabs button.on{box-shadow:0 6px 16px rgba(121,131,245,.30)}
 nav.tabs button.on .ic{transform:translateY(-3px) scale(1.15)}
 nav.tabs .cnavb{z-index:2;box-shadow:0 0 0 2px var(--card)}
 
@@ -12999,7 +12999,7 @@ html[data-theme="dark"] .u2grab{background:#4a3b2a}
 .row{
   transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease;
 }
-.row:active{transform:scale(.985);box-shadow:0 2px 8px rgba(61,43,28,.1)}
+.row:active{transform:scale(.985);box-shadow:0 2px 8px rgba(46,51,56,.1)}
 .stat{
   background:linear-gradient(165deg,var(--card) 55%,var(--brandsoft));
   border:1px solid var(--goldline);position:relative;overflow:hidden;
@@ -13018,20 +13018,20 @@ html[data-theme="dark"] .u2grab{background:#4a3b2a}
 .btn{
   border-radius:14px;font-weight:800;position:relative;overflow:hidden;
   transition:transform .16s ease,box-shadow .16s ease,filter .16s ease;
-  box-shadow:0 5px 14px rgba(122,58,18,.22);
+  box-shadow:0 5px 14px rgba(88,101,242,.22);
 }
 html[data-theme="dark"] .btn{box-shadow:0 5px 14px rgba(0,0,0,.35)}
-.btn:active{transform:scale(.955);box-shadow:0 2px 6px rgba(122,58,18,.2)}
+.btn:active{transform:scale(.955);box-shadow:0 2px 6px rgba(88,101,242,.2)}
 .btn.gray,.btn.red,.gbtn{box-shadow:none}
-.btn.gold{background:var(--u2-grad-gold);box-shadow:0 5px 14px rgba(169,126,47,.3)}
-.btn.red{background:linear-gradient(135deg,#c0392b,#8f2015)}
+.btn.gold{background:var(--u2-grad-gold);box-shadow:0 5px 14px rgba(199,138,27,.32)}
+.btn.red{background:linear-gradient(135deg,#f23f43,#c03537)}
 .mbtn{border-radius:13px;transition:transform .15s ease}
 .u2rip{
   position:absolute;border-radius:50%;transform:scale(0);
   background:rgba(255,255,255,.42);pointer-events:none;
   animation:u2rip .55s ease-out forwards;
 }
-.u2rip.dark{background:rgba(122,58,18,.16)}
+.u2rip.dark{background:rgba(88,101,242,.16)}
 @keyframes u2rip{to{transform:scale(3);opacity:0}}
 
 /* ── 7) الزر الذكي العائم FAB ── */
@@ -13041,7 +13041,7 @@ html[data-theme="dark"] .btn{box-shadow:0 5px 14px rgba(0,0,0,.35)}
   width:60px;height:60px;border:none;border-radius:20px;cursor:pointer;
   background:var(--u2-grad);color:#fff;font-size:28px;line-height:1;
   display:none;align-items:center;justify-content:center;
-  box-shadow:0 12px 30px rgba(122,58,18,.45),0 2px 8px rgba(122,58,18,.3);
+  box-shadow:0 12px 30px rgba(88,101,242,.45),0 2px 8px rgba(88,101,242,.3);
   transition:transform .2s cubic-bezier(.34,1.56,.64,1);
   padding:0;
 }
@@ -13059,9 +13059,9 @@ html[data-theme="dark"] .u2fab{box-shadow:0 12px 30px rgba(0,0,0,.55),0 0 0 1px 
 .seg button{border-radius:11px;transition:all .2s ease}
 .seg button.on{
   background:var(--card);color:var(--brand);
-  box-shadow:0 2px 8px rgba(61,43,28,.14),0 0 0 1px var(--goldline);
+  box-shadow:0 2px 8px rgba(46,51,56,.14),0 0 0 1px var(--goldline);
 }
-html[data-theme="dark"] .seg button.on{background:#3a2e20;color:var(--gold)}
+html[data-theme="dark"] .seg button.on{background:#383d6d;color:var(--gold)}
 .chip,.rchip,.fchip{transition:transform .15s ease,background .2s,border-color .2s}
 .chip:active,.rchip:active,.fchip:active{transform:scale(.93)}
 
@@ -13086,7 +13086,7 @@ html[data-theme="dark"] #toast{background:rgba(58,46,32,.95);color:#f3ead9}
 }
 #login .logo{
   border-radius:26px;
-  box-shadow:0 18px 44px rgba(122,58,18,.3),0 0 0 7px var(--goldsoft);
+  box-shadow:0 18px 44px rgba(88,101,242,.3),0 0 0 7px var(--goldsoft);
 }
 #login .card{border-radius:24px;box-shadow:var(--u2-shadow-lg);border-color:var(--goldline)}
 
@@ -13094,17 +13094,17 @@ html[data-theme="dark"] #toast{background:rgba(58,46,32,.95);color:#f3ead9}
 .cbar{
   border-radius:20px;
   backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  box-shadow:0 6px 20px rgba(61,43,28,.1);
+  box-shadow:0 6px 20px rgba(46,51,56,.1);
 }
-.cbtn.go{background:var(--u2-grad);box-shadow:0 4px 12px rgba(122,58,18,.35)}
+.cbtn.go{background:var(--u2-grad);box-shadow:0 4px 12px rgba(88,101,242,.35)}
 .chatrow{transition:transform .16s ease}
 .chatrow:active{transform:scale(.985)}
-.cav{border-radius:50%;box-shadow:0 2px 8px rgba(61,43,28,.18)}
+.cav{border-radius:50%;box-shadow:0 2px 8px rgba(46,51,56,.18)}
 
 /* ── 12) بطاقات الرئيسية الملهمة (طلبات/زيت) والدرجات ── */
-.oilcard{box-shadow:0 10px 26px rgba(21,128,61,.25);border-radius:20px}
+.oilcard{box-shadow:0 10px 26px rgba(35,165,90,.25);border-radius:20px}
 .oilcard.warn{box-shadow:0 10px 26px rgba(180,83,9,.28)}
-.oilcard.red{box-shadow:0 10px 26px rgba(185,28,28,.3)}
+.oilcard.red{box-shadow:0 10px 26px rgba(242,63,67,.3)}
 
 /* ── 13) تفاصيل عامة: تمرير أنيق + انتقال ثيم سلس ── */
 ::-webkit-scrollbar{width:5px;height:5px}
@@ -14350,19 +14350,19 @@ try {
 _PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
 
 
-_PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات احترافية بأفاتار، وعمود الاسم مضمون العرض */\n.u96card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden}\n.u96card.off{opacity:.7}\n.u96top{display:flex;align-items:center;gap:11px;padding:12px 13px}\n.u96top .badge{flex:none}\n.u96avwrap{position:relative;flex:none;width:48px;height:48px}\n.u96avph{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;background:var(--u96t,#64748b);user-select:none}\n.u96avimg{position:absolute;inset:0;width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card)}\n.u96main{flex:1 1 170px;min-width:0}\n.u96nm{font-weight:800;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}\n.u96nm .conline{color:var(--ok);font-size:11px}\n.u96sub{font-size:11.5px;color:var(--mut);margin-top:3px;line-height:1.8;overflow-wrap:anywhere;word-break:break-word}\n.u96rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;margin-inline-end:6px;white-space:nowrap}\n.u96rk.rk-admin{background:rgba(217,119,6,.15);color:#d97706}\n.u96rk.rk-manager{background:rgba(14,116,144,.14);color:#0e7490}\n.u96rk.rk-stock{background:rgba(77,124,15,.15);color:#4d7c0f}\n.u96rk.rk-seller{background:rgba(185,28,28,.12);color:#dc2626}\n.u96rk.rk-external{background:rgba(124,58,237,.13);color:#7c3aed}\n.u96rk.rk-customer{background:var(--chip);color:var(--mut)}\n.u96acts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px dashed var(--line);background:var(--bg)}\n.u96req{background:var(--card);border:1px solid var(--line);border-inline-start:3px solid var(--brand);border-radius:14px;padding:11px 13px;margin-bottom:8px;box-shadow:var(--shadow)}\n.u96req .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}\n.u96sech{margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)}\n'
+_PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات احترافية بأفاتار، وعمود الاسم مضمون العرض */\n.u96card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden}\n.u96card.off{opacity:.7}\n.u96top{display:flex;align-items:center;gap:11px;padding:12px 13px}\n.u96top .badge{flex:none}\n.u96avwrap{position:relative;flex:none;width:48px;height:48px}\n.u96avph{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;background:var(--u96t,#64748b);user-select:none}\n.u96avimg{position:absolute;inset:0;width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card)}\n.u96main{flex:1 1 170px;min-width:0}\n.u96nm{font-weight:800;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}\n.u96nm .conline{color:var(--ok);font-size:11px}\n.u96sub{font-size:11.5px;color:var(--mut);margin-top:3px;line-height:1.8;overflow-wrap:anywhere;word-break:break-word}\n.u96rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;margin-inline-end:6px;white-space:nowrap}\n.u96rk.rk-admin{background:rgba(240,178,50,.20);color:#8a5c00}\n.u96rk.rk-manager{background:rgba(88,101,242,.14);color:#4752c4}\n.u96rk.rk-stock{background:rgba(2,132,199,.13);color:#0369a1}\n.u96rk.rk-seller{background:rgba(35,165,90,.13);color:#1a8b4a}\n.u96rk.rk-external{background:rgba(235,69,158,.12);color:#c2257f}\n.u96rk.rk-customer{background:var(--chip);color:var(--mut)}\n.u96acts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px dashed var(--line);background:var(--bg)}\n.u96req{background:var(--card);border:1px solid var(--line);border-inline-start:3px solid var(--brand);border-radius:14px;padding:11px 13px;margin-bottom:8px;box-shadow:var(--shadow)}\n.u96req .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}\n.u96sech{margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)}\n'
 
-_PWA_V96_JS = '/* v96: واجهة المستخدمين الاحترافية — أفاتار + صف أزرار مستقل (لا سحق لعمود الاسم) */\n(function () {\n"use strict";\nvar TINT = { admin: "#d97706", manager: "#0e7490", stock: "#4d7c0f",\n             seller: "#dc2626", external: "#7c3aed", customer: "#64748b" };\nvar RK = { admin: "rk-admin", manager: "rk-manager", stock: "rk-stock",\n           seller: "rk-seller", external: "rk-external", customer: "rk-customer" };\nfunction avHTML(u) {\n  var ch = esc(((u.name || "") + "").trim().charAt(0)) || "؟";\n  var ph = \'<div class="u96avph" style="background:\' + (TINT[u.role] || TINT.customer) + \'">\' + ch + \'</div>\';\n  if (u.has_avatar && u.telegram_id) {\n    return \'<div class="u96avwrap">\' + ph\n      + \'<img class="u96avimg" alt="" loading="lazy" src="/api/user/\' + u.telegram_id + \'/avatar?v=\'\n      + encodeURIComponent(u.avatar_v || "1") + \'" onerror="this.remove()"></div>\';\n  }\n  return \'<div class="u96avwrap">\' + ph + \'</div>\';\n}\nwindow.usrRow = function (u) {\n  const self = u.telegram_id === S.user.telegram_id;\n  const hasTg = !!u.telegram_id;\n  let acts = "";\n  if (!self && hasTg && !u.protected) {\n    acts += \'<button class="btn mini blue" data-role="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🎯 الفئة</button>\';\n    if (u.role !== "admin") {\n      acts += u.active\n        ? \'<button class="btn mini red" data-tg="\' + u.telegram_id + \'" data-to="0">🚫 إيقاف</button>\'\n        : \'<button class="btn mini green" data-tg="\' + u.telegram_id + \'" data-to="1">✅ تنشيط</button>\';\n    }\n  }\n  if (!self && !u.protected && u.web && u.telegram_id) {\n    acts += \'<button class="btn mini red" data-delweb="\' + (u.telegram_id || 0) + \'" data-n="\' + esc(u.name) + \'">🗑️ حذف من التطبيق</button>\';\n  }\n  acts += self\n    ? \'<button class="btn mini gold" data-self="1" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مروري</button>\'\n    : (hasTg ? \'<button class="btn mini gold" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مرور</button>\' : \'\');\n  const sub = [\n    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",\n    u.phone ? "📞 " + esc(u.phone) : "",\n    u.email ? "✉️ " + esc(u.email) : ""\n  ].filter(Boolean).join(" · ");\n  return \'<div class="u96card\' + (u.active ? "" : " off") + \'">\'\n    + \'<div class="u96top">\' + avHTML(u)\n    + \'<div class="u96main"><div class="u96nm">\' + esc(u.name) + usrOnline(u)\n    + (u.protected ? " 🛡" : "") + (self ? " <span class=\\"badge\\">أنت</span>" : "") + \'</div>\'\n    + \'<div class="u96sub"><span class="u96rk \' + (RK[u.role] || RK.customer) + \'">\' + esc(u.role_label) + \'</span>\'\n    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + \'</div></div>\'\n    + (u.active ? "" : \'<span class="badge r">مطرود</span>\')\n    + \'</div>\'\n    + (acts ? \'<div class="u96acts">\' + acts + \'</div>\' : \'\')\n    + \'</div>\';\n};\nwindow.renderUsers = function () {\n  if (!S.usrLast) return;\n  const box = $("#usrList");\n  const d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;\n  const q = (S.usrQ || "").trim().toLowerCase();\n  const users = d.users || [];\n  $("#cAll").textContent = d.counts.all;\n  $("#cWeb").textContent = d.counts.web;\n  $("#cKick").textContent = d.counts.kicked;\n  $("#cStaff").textContent = users.filter((u) => u.active && u.role !== "customer").length;\n  $("#cCust").textContent = users.filter((u) => u.active && u.role === "customer").length;\n  try {\n    $("#cLive").textContent = users.filter((u) => u.active && u.last_seen\n      && (Date.now() - new Date(u.last_seen).getTime() < 86400000)).length;\n  } catch (e) {}\n  let html = "";\n  if (S.usrFilter === "all") {\n    const waiting = regs.filter((w) => !q || [w.name, w.username, w.email, w.phone, w.role_label]\n      .some((v) => (v || "").toString().toLowerCase().indexOf(q) !== -1));\n    if (waiting.length) {\n      html += \'<p class="u96sech">⏳ طلبات انضمام بانتظار الموافقة (\' + waiting.length + \')</p>\';\n      html += waiting.map((w) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(w.name) + \'</div>\'\n        + \'<div class="u96sub">\' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + \'</div>\'\n        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? \'<span class="badge g" style="margin-top:7px">Google</span>\'\n          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? \'<span class="badge b" style="margin-top:7px">🔑 اسم + رقم سر</span>\' : \'<span class="badge b" style="margin-top:7px">رمز: \' + esc(w.code) + \'</span>\'))\n        + \'<div class="acts"><button class="btn mini green" data-appr=\\\'\' + esc(JSON.stringify(w)) + \'\\\'>✅ موافقة</button>\'\n        + \'<button class="btn mini red" data-reg="\' + w.id + \'">🗑 حذف</button></div>\'\n        + \'</div>\').join("");\n    }\n    const rs = resets.filter((r) => !q || (r.username || "").toLowerCase().indexOf(q) !== -1);\n    if (rs.length) {\n      html += \'<p class="u96sech" style="margin-top:12px">🔑 طلبات استعادة كلمة المرور (\' + rs.length + \')</p>\';\n      html += rs.map((r) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(r.username) + \'</div>\'\n        + \'<div class="u96sub">طالب باستعادة رقمه السري\' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + \'</div>\'\n        + \'<div class="acts"><button class="btn mini gold" data-reset="\' + r.id + \'" data-runame="\' + esc(r.username) + \'">🔑 توليد رقم سر مؤقت</button></div>\'\n        + \'</div>\').join("");\n    }\n  }\n  if (S.usrFilter === "kick") {\n    const kick = users.filter((u) => usrFilterHit(u) && usrMatch(u, q))\n      .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n    html += kick.length ? kick.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + \'</p>\';\n  } else {\n    const act = users.filter((u) => usrFilterHit(u) && usrMatch(u, q));\n    act.sort((a, b) => {\n      const sa = a.telegram_id === S.user.telegram_id ? 0 : 1;\n      const sb = b.telegram_id === S.user.telegram_id ? 0 : 1;\n      if (sa !== sb) return sa - sb;\n      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);\n      return (a.name || "").localeCompare(b.name || "", "ar");\n    });\n    html += act.length ? act.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + \'</p>\';\n    if (S.usrFilter === "all") {\n      const kick = users.filter((u) => !u.active && usrMatch(u, q))\n        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n      if (kick.length) {\n        html += \'<button type="button" class="khead\' + (S.usrKickOpen ? " open" : "") + \'" id="usrKickHead">🚫 المطرودون (\' + kick.length + \') <span class="karr">▶</span></button>\'\n          + \'<div id="usrKickList" style="display:\' + (S.usrKickOpen ? "" : "none") + \'">\' + kick.map(usrRow).join("") + \'</div>\';\n      }\n    }\n  }\n  box.innerHTML = html;\n  box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {\n    if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);\n    else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }\n    else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);\n    else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);\n    else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);\n    else if (b.dataset.self) openPass(null, b.dataset.n, true);\n    else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");\n    else openPass(+b.dataset.tg, b.dataset.n, false);\n  }));\n  const kh = box.querySelector("#usrKickHead");\n  if (kh) kh.addEventListener("click", () => { S.usrKickOpen = !S.usrKickOpen; renderUsers(); });\n};\n})();'
+_PWA_V96_JS = '/* v96: واجهة المستخدمين الاحترافية — أفاتار + صف أزرار مستقل (لا سحق لعمود الاسم) */\n(function () {\n"use strict";\nvar TINT = { admin: "#d97706", manager: "#4752c4", stock: "#0369a1",\n             seller: "#1a8b4a", external: "#c2257f", customer: "#64748b" };\nvar RK = { admin: "rk-admin", manager: "rk-manager", stock: "rk-stock",\n           seller: "rk-seller", external: "rk-external", customer: "rk-customer" };\nfunction avHTML(u) {\n  var ch = esc(((u.name || "") + "").trim().charAt(0)) || "؟";\n  var ph = \'<div class="u96avph" style="background:\' + (TINT[u.role] || TINT.customer) + \'">\' + ch + \'</div>\';\n  if (u.has_avatar && u.telegram_id) {\n    return \'<div class="u96avwrap">\' + ph\n      + \'<img class="u96avimg" alt="" loading="lazy" src="/api/user/\' + u.telegram_id + \'/avatar?v=\'\n      + encodeURIComponent(u.avatar_v || "1") + \'" onerror="this.remove()"></div>\';\n  }\n  return \'<div class="u96avwrap">\' + ph + \'</div>\';\n}\nwindow.usrRow = function (u) {\n  const self = u.telegram_id === S.user.telegram_id;\n  const hasTg = !!u.telegram_id;\n  let acts = "";\n  if (!self && hasTg && !u.protected) {\n    acts += \'<button class="btn mini blue" data-role="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🎯 الفئة</button>\';\n    if (u.role !== "admin") {\n      acts += u.active\n        ? \'<button class="btn mini red" data-tg="\' + u.telegram_id + \'" data-to="0">🚫 إيقاف</button>\'\n        : \'<button class="btn mini green" data-tg="\' + u.telegram_id + \'" data-to="1">✅ تنشيط</button>\';\n    }\n  }\n  if (!self && !u.protected && u.web && u.telegram_id) {\n    acts += \'<button class="btn mini red" data-delweb="\' + (u.telegram_id || 0) + \'" data-n="\' + esc(u.name) + \'">🗑️ حذف من التطبيق</button>\';\n  }\n  acts += self\n    ? \'<button class="btn mini gold" data-self="1" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مروري</button>\'\n    : (hasTg ? \'<button class="btn mini gold" data-tg="\' + u.telegram_id + \'" data-n="\' + esc(u.name) + \'">🔑 كلمة مرور</button>\' : \'\');\n  const sub = [\n    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",\n    u.phone ? "📞 " + esc(u.phone) : "",\n    u.email ? "✉️ " + esc(u.email) : ""\n  ].filter(Boolean).join(" · ");\n  return \'<div class="u96card\' + (u.active ? "" : " off") + \'">\'\n    + \'<div class="u96top">\' + avHTML(u)\n    + \'<div class="u96main"><div class="u96nm">\' + esc(u.name) + usrOnline(u)\n    + (u.protected ? " 🛡" : "") + (self ? " <span class=\\"badge\\">أنت</span>" : "") + \'</div>\'\n    + \'<div class="u96sub"><span class="u96rk \' + (RK[u.role] || RK.customer) + \'">\' + esc(u.role_label) + \'</span>\'\n    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + \'</div></div>\'\n    + (u.active ? "" : \'<span class="badge r">مطرود</span>\')\n    + \'</div>\'\n    + (acts ? \'<div class="u96acts">\' + acts + \'</div>\' : \'\')\n    + \'</div>\';\n};\nwindow.renderUsers = function () {\n  if (!S.usrLast) return;\n  const box = $("#usrList");\n  const d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;\n  const q = (S.usrQ || "").trim().toLowerCase();\n  const users = d.users || [];\n  $("#cAll").textContent = d.counts.all;\n  $("#cWeb").textContent = d.counts.web;\n  $("#cKick").textContent = d.counts.kicked;\n  $("#cStaff").textContent = users.filter((u) => u.active && u.role !== "customer").length;\n  $("#cCust").textContent = users.filter((u) => u.active && u.role === "customer").length;\n  try {\n    $("#cLive").textContent = users.filter((u) => u.active && u.last_seen\n      && (Date.now() - new Date(u.last_seen).getTime() < 86400000)).length;\n  } catch (e) {}\n  let html = "";\n  if (S.usrFilter === "all") {\n    const waiting = regs.filter((w) => !q || [w.name, w.username, w.email, w.phone, w.role_label]\n      .some((v) => (v || "").toString().toLowerCase().indexOf(q) !== -1));\n    if (waiting.length) {\n      html += \'<p class="u96sech">⏳ طلبات انضمام بانتظار الموافقة (\' + waiting.length + \')</p>\';\n      html += waiting.map((w) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(w.name) + \'</div>\'\n        + \'<div class="u96sub">\' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + \'</div>\'\n        + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? \'<span class="badge g" style="margin-top:7px">Google</span>\'\n          : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? \'<span class="badge b" style="margin-top:7px">🔑 اسم + رقم سر</span>\' : \'<span class="badge b" style="margin-top:7px">رمز: \' + esc(w.code) + \'</span>\'))\n        + \'<div class="acts"><button class="btn mini green" data-appr=\\\'\' + esc(JSON.stringify(w)) + \'\\\'>✅ موافقة</button>\'\n        + \'<button class="btn mini red" data-reg="\' + w.id + \'">🗑 حذف</button></div>\'\n        + \'</div>\').join("");\n    }\n    const rs = resets.filter((r) => !q || (r.username || "").toLowerCase().indexOf(q) !== -1);\n    if (rs.length) {\n      html += \'<p class="u96sech" style="margin-top:12px">🔑 طلبات استعادة كلمة المرور (\' + rs.length + \')</p>\';\n      html += rs.map((r) =>\n        \'<div class="u96req"><div class="u96nm">\' + esc(r.username) + \'</div>\'\n        + \'<div class="u96sub">طالب باستعادة رقمه السري\' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + \'</div>\'\n        + \'<div class="acts"><button class="btn mini gold" data-reset="\' + r.id + \'" data-runame="\' + esc(r.username) + \'">🔑 توليد رقم سر مؤقت</button></div>\'\n        + \'</div>\').join("");\n    }\n  }\n  if (S.usrFilter === "kick") {\n    const kick = users.filter((u) => usrFilterHit(u) && usrMatch(u, q))\n      .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n    html += kick.length ? kick.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + \'</p>\';\n  } else {\n    const act = users.filter((u) => usrFilterHit(u) && usrMatch(u, q));\n    act.sort((a, b) => {\n      const sa = a.telegram_id === S.user.telegram_id ? 0 : 1;\n      const sb = b.telegram_id === S.user.telegram_id ? 0 : 1;\n      if (sa !== sb) return sa - sb;\n      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);\n      return (a.name || "").localeCompare(b.name || "", "ar");\n    });\n    html += act.length ? act.map(usrRow).join("")\n      : \'<p class="empty">\' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + \'</p>\';\n    if (S.usrFilter === "all") {\n      const kick = users.filter((u) => !u.active && usrMatch(u, q))\n        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ar"));\n      if (kick.length) {\n        html += \'<button type="button" class="khead\' + (S.usrKickOpen ? " open" : "") + \'" id="usrKickHead">🚫 المطرودون (\' + kick.length + \') <span class="karr">▶</span></button>\'\n          + \'<div id="usrKickList" style="display:\' + (S.usrKickOpen ? "" : "none") + \'">\' + kick.map(usrRow).join("") + \'</div>\';\n      }\n    }\n  }\n  box.innerHTML = html;\n  box.querySelectorAll("button[data-tg],button[data-role],button[data-reg],button[data-appr],button[data-reset],button[data-delweb]").forEach((b) => b.addEventListener("click", () => {\n    if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);\n    else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }\n    else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);\n    else if (b.dataset.role !== undefined) openRole(+b.dataset.role, b.dataset.n);\n    else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);\n    else if (b.dataset.self) openPass(null, b.dataset.n, true);\n    else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");\n    else openPass(+b.dataset.tg, b.dataset.n, false);\n  }));\n  const kh = box.querySelector("#usrKickHead");\n  if (kh) kh.addEventListener("click", () => { S.usrKickOpen = !S.usrKickOpen; renderUsers(); });\n};\n})();'
 
 
 _PWA_V97_CSS = r'''/* v97: جسر الفواتير — عارض أصلي HTML/CSS (أندرويد لا يعرض PDF داخل iframe) + فتح خارجي + مشاركة */
-.invTag{display:inline-block;padding:1.5px 8px;border-radius:99px;font-size:10px;font-weight:800;background:#e8f0fe;color:#1d4ed8;margin-inline-start:5px;vertical-align:middle;white-space:nowrap}
-html[data-theme="dark"] .invTag{background:rgba(96,165,250,.16);color:#93c5fd}
-#ivwOv{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;background:rgba(24,15,8,.86)}
+.invTag{display:inline-block;padding:1.5px 8px;border-radius:99px;font-size:10px;font-weight:800;background:#edeffe;color:#4752c4;margin-inline-start:5px;vertical-align:middle;white-space:nowrap}
+html[data-theme="dark"] .invTag{background:rgba(121,131,245,.16);color:#a5afff}
+#ivwOv{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;background:rgba(15,16,20,.88)}
 #ivwOv .ivwbar{display:flex;gap:8px;padding:9px 10px;align-items:center;background:#1c1c1e;box-shadow:0 2px 12px rgba(0,0,0,.45);flex:0 0 auto}
 #ivwOv .ivwbar b{color:#fff;flex:1;font-size:14px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #ivwOv .ivwbody{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px 10px 22px;-webkit-overflow-scrolling:touch}
-#ivwOv .ivwload{text-align:center;color:#fde8d7;padding:28px 0;font-size:14px}
+#ivwOv .ivwload{text-align:center;color:#d5d7dc;padding:28px 0;font-size:14px}
 #ivwOv .ivwpaper{background:#fff;color:#1c1917;border-radius:14px;max-width:560px;margin:0 auto;overflow:hidden;box-shadow:0 14px 40px rgba(0,0,0,.38)}
 #ivwOv .ivwhd{padding:16px 16px 12px;text-align:center;border-bottom:2px solid #9a5b2d;background:linear-gradient(180deg,#fdf6f0,#fff)}
 #ivwOv .ivwhd img{width:46px;height:46px;border-radius:50%;object-fit:cover;border:2px solid #e7d8c7;margin-bottom:6px}
@@ -15039,14 +15039,14 @@ _PWA_V105_CSS = r'''/* ═══ v105: سكن أندرويد أصيل — يُف
    في المتصفح/الويب: السمة لا تُضبط أصلًا فلا تسري أي قاعدة من هذه الطبقة. */
 html[data-apk="1"] header{
   padding:14px 16px;border-bottom:none;
-  box-shadow:0 3px 16px rgba(61,43,28,.30)}
+  box-shadow:0 3px 16px rgba(46,51,56,.30)}
 html[data-apk="1"][data-theme="dark"] header{
-  background:linear-gradient(135deg,#191210,#241a12)}
+  background:linear-gradient(135deg,#141517,#1e1f22)}
 html[data-apk="1"] header .t b{font-size:16px;letter-spacing:.2px}
 html[data-apk="1"] header img{width:38px;height:38px;border-radius:11px}
 html[data-apk="1"] nav.tabs{
   border-top:none;padding:8px 4px calc(8px + env(safe-area-inset-bottom));
-  box-shadow:0 -6px 24px rgba(61,43,28,.16)}
+  box-shadow:0 -6px 24px rgba(46,51,56,.16)}
 html[data-apk="1"] nav.tabs button{
   background:transparent;padding:4px 2px 5px;border-radius:16px;
   transition:transform .12s ease;
@@ -15233,10 +15233,10 @@ _PWA_V106_CSS = r'''/* ═══ v106: المصروفات — لوحة بهوي�
   font-size:12.5px;color:var(--mut);line-height:2}
 .exp106row.open .exp106det{display:block}
 .exp106det b{color:var(--ink)}
-.exp106del{margin-top:8px;width:100%;border:1.5px solid #d66a5c;background:transparent;
-  color:#c0392b;font-weight:800;font-size:12.5px;border-radius:10px;padding:9px 10px;
+.exp106del{margin-top:8px;width:100%;border:1.5px solid rgba(216,60,62,.55);background:transparent;
+  color:#d83c3e;font-weight:800;font-size:12.5px;border-radius:10px;padding:9px 10px;
   cursor:pointer;font-family:inherit}
-.exp106del.armed{background:#c0392b;border-color:#c0392b;color:#fff}
+.exp106del.armed{background:#d83c3e;border-color:#d83c3e;color:#fff}
 .exp106del:disabled{opacity:.6}
 .exp106back{border:none;background:transparent;color:var(--brand);font-weight:800;font-size:13px;
   cursor:pointer;padding:2px 4px 10px;font-family:inherit}
@@ -15542,7 +15542,7 @@ _PWA_V107_CSS = r'''/* ═══ v107: صلاحيات لكل مستخدم — ل
 .u107seg{border:1px solid var(--goldline);background:var(--bg);border-radius:9px;
   min-width:34px;height:30px;font-size:13.5px;cursor:pointer;color:var(--ink);opacity:.55}
 .u107seg.on{opacity:1;background:var(--brand);color:#fff;border-color:var(--brand);
-  box-shadow:0 3px 10px rgba(217,166,72,.35)}
+  box-shadow:0 3px 10px rgba(88,101,242,.35)}
 .u107ft{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .u107msg{font-size:12.5px;color:var(--mut)}
 .u107msg.ok{color:#22a06b;font-weight:700}
@@ -16405,8 +16405,8 @@ _PWA_V118_CSS = r'''/* ═══ v118: حذف قياس من فئة — زر 🗑
 #sizeList .sizeDel{position:absolute;left:5px;top:50%;transform:translateY(-50%);
   border:none;background:transparent;font-size:15px;line-height:1;opacity:.5;
   padding:6px 8px;cursor:pointer;color:inherit;border-radius:8px}
-#sizeList .sizeDel.arm{opacity:1;color:#c0392b;font-weight:800;
-  background:rgba(192,57,43,.12)}'''
+#sizeList .sizeDel.arm{opacity:1;color:#d83c3e;font-weight:800;
+  background:rgba(216,60,62,.12)}'''
 
 
 _PWA_V119_CSS = r'''/* ═══ v119: مصروفات العمال + حذف المعلق + الحذف النهائي ═══ */
@@ -16414,8 +16414,8 @@ _PWA_V119_CSS = r'''/* ═══ v119: مصروفات العمال + حذف ال
 .pdel{border:none;background:transparent;font-size:16px;line-height:1;cursor:pointer;
   padding:6px 7px;border-radius:8px;color:var(--mut);flex:none;-webkit-tap-highlight-color:transparent}
 /* التسليح حالة ساكنة بارزة — بلا نبض متحرك (نمط v118) كي لا يفوت التأكيد الثاني */
-.pdel.arm{color:#c0392b;font-weight:800;background:rgba(192,57,43,.14);
-  box-shadow:0 0 0 2px rgba(192,57,43,.25) inset}
+.pdel.arm{color:#d83c3e;font-weight:800;background:rgba(216,60,62,.14);
+  box-shadow:0 0 0 2px rgba(216,60,62,.25) inset}
 /* قسمة سلف العمال في بطاقة نبض المخزون */
 .wk93grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;cursor:pointer}
 .wk93k{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 9px}
@@ -22059,8 +22059,8 @@ async def pwa_manifest_handler(request):
         "dir": "rtl", "lang": "ar",
         "start_url": "/", "scope": "/",
         "display": "standalone",
-        "background_color": "#fdf6f0",     # v42: هوية السيراميك
-        "theme_color": "#b45309",
+        "background_color": "#ffffff",     # ثيم Discord: أبيض نقي
+        "theme_color": "#5865f2",          # Blurple — لون شعار Discord
         "icons": [{"src": "/icon.png", "sizes": "512x512",
                    "type": "image/jpeg", "purpose": "any"},
                   {"src": "/icon.png", "sizes": "512x512",
