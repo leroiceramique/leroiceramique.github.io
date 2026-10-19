@@ -25,6 +25,7 @@
 :root{
   --bg:#f2f3f5; --card:#ffffff; --ink:#2e3338; --mut:#6d6f78;
   --brand:#5865f2; --brand2:#4752c4; --brandsoft:#edeffe;
+  --h1:#404eed; --h2:#5865f2;   /* v120: تدرج الهيدر — يتبع الثيم المؤسسي للمدير */
   --gold:#5865f2; --goldsoft:rgba(88,101,242,.10); --goldline:rgba(88,101,242,.32);
   --ok:#23a55a; --bad:#d83c3e; --warn:#c78a1b;
   --oksoft:rgba(35,165,90,.09); --okline:rgba(35,165,90,.28);
@@ -89,9 +90,18 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .reglink a{color:var(--brand);font-weight:800;text-decoration:none}
 .badge.g{background:rgba(35,165,90,.14);color:var(--ok)}
 .badge.b{background:var(--brandsoft);color:var(--brand)}
+/* v120: شبكة الثيمات المؤسسية — بطاقة اختيار المدير */
+.thgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:10px 0 12px}
+.othm{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:12px;
+  border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12.5px;
+  font-weight:700;cursor:pointer;text-align:right;font-family:inherit;min-width:0}
+.othm .dot{width:26px;height:26px;border-radius:9px;flex:none;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.28),0 1px 4px rgba(0,0,0,.15)}
+.othm .lb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.othm.on{border-color:var(--brand);background:var(--brandsoft);color:var(--brand)}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
-header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,#404eed,#5865f2);
+header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--h1),var(--h2));
   color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;
   border-bottom:1px solid rgba(255,255,255,.28);   /* v121: فاصل مضيء بلمسة Discord */
   box-shadow:0 2px 10px rgba(64,78,237,.25)}
@@ -296,7 +306,7 @@ nav.tabs button{position:relative}
   border-radius:14px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
 .chatrow:active{transform:scale(.99);background:var(--brandsoft)}
 .cav{width:44px;height:44px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
-  font-weight:800;font-size:17px;color:#fff;background:linear-gradient(135deg,#5865f2,#4752c4);
+  font-weight:800;font-size:17px;color:#fff;background:linear-gradient(135deg,var(--brand),var(--brand2));
   border:1px solid var(--goldline)}
 html[data-theme="dark"] .cav{background:#3a4080;color:#e0e4ff}
 .chatrow .cinfo{flex:1;min-width:0}
@@ -755,13 +765,20 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
           <button id="thDark">🌙 ليلي</button>
         </div>
       </div>
+      <!-- v120: الثيم المؤسسي — للمدير فقط، يُطبّق على جميع المستخدمين -->
+      <div class="card" id="orgThemeCard" style="display:none;margin-bottom:12px">
+        <p class="sect">🎨 ألوان التطبيق — للمدير</p>
+        <p class="hint" style="margin:2px 0 6px">اختر هوية لونية احترافية وطبّقها فوراً على جميع المستخدمين.</p>
+        <div id="orgThemeGrid" class="thgrid"></div>
+        <button class="btn" id="btnOrgThemeSave">✨ تطبيق على جميع المستخدمين</button>
+      </div>
       <div class="card" style="margin-bottom:12px">
         <p class="sect">🔒 الأمان والحساب</p>
         <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار v120</p>
+      <p class="hint" id="setAbout">الإصدار 01</p>
     </section>
   </main>
   <nav class="tabs">
@@ -1086,12 +1103,99 @@ function lockBtn(btn, label) {
 /* ─── v41: الوضع الليلي/النهاري ─── */
 function applyTheme(mode, save) {
   document.documentElement.setAttribute("data-theme", mode);
-  const m = document.querySelector('meta[name="theme-color"]');
-  if (m) m.setAttribute("content", mode === "dark" ? "#1e1f22" : "#5865f2");
+  /* v120: الثيم المؤسسي يُعاد تلوينه حسب الوضع — وإلا الهوية الافتراضية */
+  if (S.orgTheme) applyOrgTheme(S.orgTheme);
+  else {
+    const m0 = document.querySelector('meta[name="theme-color"]');
+    if (m0) m0.setAttribute("content", mode === "dark" ? "#1e1f22" : "#5865f2");
+  }
   const l = $("#thLight"), d = $("#thDark");
   if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); }
   if (save) { try { localStorage.setItem("ceram_theme", mode); } catch (e) {} }
 }
+
+/* ═══════════ v120: الثيم المؤسسي — المدير يختار هوية لونية احترافية ═══════════
+   يُطبّق على جميع المستخدمين عبر الخادم (app_settings → /api/me + /api/status).
+   ثيم ديسكورد مُدقّق يدوياً بنفس القيم الحرفية للـCSS — البقية مشتقة بنفس نمط الشفافيات،
+   مع أزواج تباين مدروسة (براند داكن أفتح في الليلي لتباين أعلى على البطاقات). */
+function _orgRgba(hex, a) {
+  let h = String(hex || "").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16) || 0;
+  return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+}
+function _orgDerive(bL, b2L, softL, h1L, bD, b2D, softD) {
+  return {
+    light: { brand: bL, brand2: b2L, brandsoft: softL, h1: h1L, h2: bL,
+      gold: bL, goldsoft: _orgRgba(bL, .10), goldline: _orgRgba(bL, .32),
+      edsoft: _orgRgba(bL, .08), edline: _orgRgba(bL, .28), edink: b2L },
+    dark: { brand: bD, brand2: b2D, brandsoft: softD,
+      gold: bD, goldsoft: _orgRgba(bD, .12), goldline: _orgRgba(bD, .35),
+      edsoft: _orgRgba(bD, .13), edline: _orgRgba(bD, .30), edink: bD }
+  };
+}
+const ORG_THEMES = {
+  discord: { label: "ديسكورد — بليربل",
+    light: { brand:"#5865f2", brand2:"#4752c4", brandsoft:"#edeffe", h1:"#404eed", h2:"#5865f2",
+      gold:"#5865f2", goldsoft:"rgba(88,101,242,.10)", goldline:"rgba(88,101,242,.32)",
+      edsoft:"rgba(88,101,242,.08)", edline:"rgba(88,101,242,.28)", edink:"#4752c4" },
+    dark: { brand:"#7983f5", brand2:"#5865f2", brandsoft:"#262b54",
+      gold:"#a5afff", goldsoft:"rgba(165,175,255,.12)", goldline:"rgba(165,175,255,.35)",
+      edsoft:"rgba(121,131,245,.13)", edline:"rgba(121,131,245,.30)", edink:"#a5afff" } },
+  royal:   Object.assign({ label: "أزرق ملكي" },
+             _orgDerive("#2563eb", "#1d4ed8", "#e8effe", "#1d4ed8", "#60a5fa", "#3b82f6", "#152a5e")),
+  indigo:  Object.assign({ label: "نيلي ليلي" },
+             _orgDerive("#4f46e5", "#4338ca", "#e9e9fe", "#4338ca", "#818cf8", "#6366f1", "#1e1b4b")),
+  emerald: Object.assign({ label: "زمردي فاخر" },
+             _orgDerive("#059669", "#047857", "#e2f5ec", "#047857", "#34d399", "#10b981", "#0b2e22")),
+  ocean:   Object.assign({ label: "تيل محيطي" },
+             _orgDerive("#0d9488", "#0f766e", "#dcf3f1", "#0f766e", "#2dd4bf", "#14b8a6", "#0b2f2c")),
+  violet:  Object.assign({ label: "بنفسجي ملكي" },
+             _orgDerive("#7c3aed", "#6d28d9", "#f0eafe", "#6d28d9", "#a78bfa", "#8b5cf6", "#2a1d52")),
+  rose:    Object.assign({ label: "وردي عصري" },
+             _orgDerive("#e11d48", "#be123c", "#fdeaf0", "#be123c", "#fb7185", "#f43f5e", "#4c0d20")),
+  slate:   Object.assign({ label: "رمادي احترافي" },
+             _orgDerive("#475569", "#334155", "#e8ecf2", "#334155", "#94a3b8", "#64748b", "#1e293b")),
+};
+function applyOrgTheme(name) {
+  const p = ORG_THEMES[name]; if (!p) return;
+  S.orgTheme = name;
+  try { localStorage.setItem("ceram_org_theme", name); } catch (e) {}
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const c = dark ? p.dark : p.light;
+  const r = document.documentElement.style;
+  r.setProperty("--brand", c.brand); r.setProperty("--brand2", c.brand2); r.setProperty("--brandsoft", c.brandsoft);
+  if (c.h1) { r.setProperty("--h1", c.h1); r.setProperty("--h2", c.h2); }
+  r.setProperty("--gold", c.gold); r.setProperty("--goldsoft", c.goldsoft); r.setProperty("--goldline", c.goldline);
+  r.setProperty("--edsoft", c.edsoft); r.setProperty("--edline", c.edline); r.setProperty("--edink", c.edink);
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute("content", dark ? "#1e1f22" : (p.light.h2 || p.light.brand));
+  try { if (typeof renderOrgThemeGrid === "function") renderOrgThemeGrid(); } catch (e) {}
+}
+function renderOrgThemeGrid() {
+  const g = $("#orgThemeGrid"); if (!g) return;
+  const cur = S.orgThemeSel || S.orgTheme || "discord";
+  g.innerHTML = Object.keys(ORG_THEMES).map((k) => {
+    const t = ORG_THEMES[k];
+    return '<button type="button" class="othm' + (k === cur ? " on" : "") + '" data-th="' + k + '">'
+      + '<span class="dot" style="background:linear-gradient(135deg,' + t.light.h1 + ',' + t.light.h2 + ')"></span>'
+      + '<span class="lb">' + t.label + '</span></button>';
+  }).join("");
+  g.querySelectorAll("button[data-th]").forEach((b) => b.addEventListener("click", () => {
+    S.orgThemeSel = b.dataset.th; renderOrgThemeGrid();
+  }));
+}
+$("#btnOrgThemeSave").addEventListener("click", async () => {
+  const name = S.orgThemeSel || S.orgTheme || "discord";
+  const unlock = lockBtn($("#btnOrgThemeSave"), "جارٍ التطبيق…");
+  try {
+    await api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name }) });
+    S.orgThemeSel = "";
+    applyOrgTheme(name);
+    toast("تم تطبيق «" + ORG_THEMES[name].label + "» على جميع المستخدمين ✅");
+  } catch (e) { toast(e.message, true); } finally { if (unlock) unlock(); }
+});
 function currentTheme() {
   try {
     const t = localStorage.getItem("ceram_theme");
@@ -1294,8 +1398,13 @@ function applyPerms() {
 function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
   if (S.user.role === "pending") { showGoogleWait(); return; }
+  /* v120: الثيم المؤسسي يصل مع /api/me — اختيار المدير يُطبّق على الجميع فوراً */
+  try { if (me.theme && ORG_THEMES[me.theme] && me.theme !== S.orgTheme) applyOrgTheme(me.theme); } catch (e120) {}
   $("#login").style.display = "none"; $("#app").style.display = "flex";
   applyPerms();
+  /* v120: بطاقة الثيم المؤسسي للمدير فقط */
+  const _oc = $("#orgThemeCard"); if (_oc) _oc.style.display = S.perms.admin ? "" : "none";
+  if (S.perms.admin) renderOrgThemeGrid();
   switchView("v-home");
   startNotifPolling();
   askWebNotifPerm();
@@ -2594,10 +2703,36 @@ $("#btnNotif").addEventListener("click", () => {
 $("#dlgNotifClose").addEventListener("click", () => $("#dlgNotif").close());
 
 /* ─── دخول/خروج ─── */
-/* ─── v47: تذكّر الجهاز — حسابك يظهر على شاشة الدخول ودخول بضغطة زر ─── */
-function remGet() { try { return JSON.parse(localStorage.getItem("ceram_remember") || "null"); } catch (e) { return null; } }
-function remSave(t, n) { try { localStorage.setItem("ceram_remember", JSON.stringify({ t: t, n: n })); } catch (e) {} }
-function remClear() { try { localStorage.removeItem("ceram_remember"); } catch (e) {} }
+/* ─── v120: خزنة الثقة — حصانة تامة لتسجيل الدخول ضد أي تحديث أو تغيير ───
+   رمز «تذكّرني» يُحفظ في 4 مواضع (localStorage ×3 + sessionStorage) ويُقرأ أول موقع سليم؛
+   فلا مسار واحد لفقدانه: أي «مسح كاش» أو تحديث SW أو إعادة نشر يُحيط بها جميعاً أو لا شيء.
+   المسح الكامل يتم فقط عند خروج يدوي أو رفض قاطع صريح من الخادم — لا مساس بها في دورة التحديث.
+   المفتاح القديم ceram_remember بقي أول القائمة — أجهزة المستخدمين الحالية تنجو بلا دخول جديد. */
+const _TRUST_KEYS = ["ceram_remember", "leroi_trust_bak", "leroi_trust_v2"];
+function _trustParse(raw) {
+  try { const o = JSON.parse(raw); if (o && o.t) return o; } catch (e) {}
+  return null;
+}
+function remGet() {
+  for (let i = 0; i < _TRUST_KEYS.length; i++) {
+    try { const o = _trustParse(localStorage.getItem(_TRUST_KEYS[i])); if (o) return o; } catch (e) {}
+  }
+  try { const o = _trustParse(sessionStorage.getItem(_TRUST_KEYS[0])); if (o) return o; } catch (e) {}
+  return null;
+}
+function remSave(t, n) {
+  const s = JSON.stringify({ t: t, n: n });
+  for (let i = 0; i < _TRUST_KEYS.length; i++) {
+    try { localStorage.setItem(_TRUST_KEYS[i], s); } catch (e) {}
+  }
+  try { sessionStorage.setItem(_TRUST_KEYS[0], s); } catch (e) {}
+}
+function remClear() {
+  for (let i = 0; i < _TRUST_KEYS.length; i++) {
+    try { localStorage.removeItem(_TRUST_KEYS[i]); } catch (e) {}
+  }
+  try { sessionStorage.removeItem(_TRUST_KEYS[0]); } catch (e) {}
+}
 function renderRememberCard() {
   const r = remGet();
   if (!r || !r.t) {
@@ -2608,6 +2743,10 @@ function renderRememberCard() {
   $("#rememberCard").style.display = ""; $("#passPane").style.display = "none";
 }
 async function doRememberLogin() {
+  /* v120: يمسح رمز التذكّر فقط عند الرفض القاطع من الخادم (رمز غير صالح/منتهٍ/حساب موقوف)،
+     ولا يمسحه أبداً على أخطاء الشبكة أو الخادم العابرة — جذر «ضياع المستخدمين».
+     المسح يتم داخل v94SessionLost/v94Recover عند remember_invalid فقط، ويمسح خزنة الثقة كاملة. */
+  if (window.v94Recover) { try { await window.v94Recover({ manual: true }); return; } catch (e94) { return; } }
   const r = remGet(); if (!r || !r.t) return;
   const btn = $("#btnRemember");
   const unlock = lockBtn(btn, "جارِ الدخول...");
@@ -2618,8 +2757,6 @@ async function doRememberLogin() {
     const me = await api("/api/me");
     showApp(me);
   } catch (e) {
-    /* الرمز انتهى أو أُبطل (طرد/كلمة مرور جديدة) — نمسحه ونعيد النموذج العادي */
-    remClear();
     $("#rememberCard").style.display = "none"; $("#passPane").style.display = "";
     const err = $("#loginErr");
     err.textContent = e.message; err.style.display = "block";
@@ -2679,6 +2816,8 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 /* ─── إقلاع ─── */
 (async function boot() {
   applyTheme(currentTheme(), false);
+  /* v120: الثيم المؤسسي من الكاش المحلي فوراً — قبل أي شبكة (لا وميض ألوان) */
+  try { const _ot = localStorage.getItem("ceram_org_theme"); if (_ot && ORG_THEMES[_ot]) applyOrgTheme(_ot); } catch (e) {}
   if ("serviceWorker" in navigator) {
     try { navigator.serviceWorker.register("/sw.js").catch(() => {}); } catch (e) {}
   }
@@ -2693,6 +2832,8 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
+    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل */
+    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
     $("#setAbout").textContent = "الإصدار v74" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
@@ -2742,6 +2883,8 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
   return fetch("/api/status", { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
     const v = (d && d.version) || "";
     if (v) S.serverVersion = v;
+    /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */
+    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
     const about = $("#setAbout");
     if (about) about.textContent = "الإصدار " + APP_VER + (v ? " — الخادم " + v : "");
     if (v && v !== APP_VER && v !== S.updDismissed) {
