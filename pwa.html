@@ -778,7 +778,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
         <button class="btn red" id="btnLogout2" style="margin-top:8px">🚪 تسجيل الخروج</button>
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
-      <p class="hint" id="setAbout">الإصدار 01</p>
+      <p class="hint" id="setAbout">الإصدار 02</p>
     </section>
   </main>
   <nav class="tabs">
@@ -791,6 +791,7 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
     <button data-v="v-users" id="tabUsers"><span class="ic">👥</span>المستخدمون</button>
   </nav>
 </div>
+
 
 <!-- v58: حوار محادثة جديدة يُبنى من JS (بحث + مصدر + حالة اتصال) -->
 <dialog id="chatView">
@@ -1196,6 +1197,8 @@ $("#btnOrgThemeSave").addEventListener("click", async () => {
     toast("تم تطبيق «" + ORG_THEMES[name].label + "» على جميع المستخدمين ✅");
   } catch (e) { toast(e.message, true); } finally { if (unlock) unlock(); }
 });
+
+
 function currentTheme() {
   try {
     const t = localStorage.getItem("ceram_theme");
