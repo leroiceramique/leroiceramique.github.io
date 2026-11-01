@@ -821,8 +821,11 @@ html[data-theme="light"] .bub.me .tk.rd{color:#b8f0ff}
   <div class="dh" id="dlgTitle">—</div>
   <div class="db">
     <p id="dlgProd" style="margin:0 0 12px;font-weight:800"></p>
-    <div class="fld"><label>الكمية</label>
+    <!-- v123: سطر الكمية المسجّلة + معاينة الفارق الحية — وضع «ضبط الكمية الفعلية» -->
+    <p id="dlgCur" style="display:none;margin:0 0 10px;font-size:13.5px;background:var(--bg);border-radius:10px;padding:8px 10px"></p>
+    <div class="fld"><label id="dlgQtyLabel">الكمية</label>
       <input id="dlgQty" type="number" inputmode="numeric" min="0" value=""></div>
+    <p id="dlgDiff" style="display:none;margin:0 0 10px;font-size:13.5px;font-weight:700"></p>
     <div class="fld" id="reasonChipsWrap"><label>سبب سريع (اختر)</label>
       <div class="rchips" id="dlgChips"></div></div>
     <div class="fld"><label>سبب آخر / ملاحظة (اختياري)</label>
@@ -996,7 +999,8 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   googleLogin: false, gOt: "", gName: "", gJoinRole: "stock", apprDlg: null,
   notif: { lastId: 0, unread: 0, timer: null, items: [], ready: false, busy: false },
   reasons: { add: ["🚚 وصول شاحنة", "↩️ إرجاع من زبون", "📝 تصحيح مخزون", "📦 جرد أولي"],
-             remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"] },
+             remove: ["💰 بيع لرابح", "💰 بيع لحسان", "👤 بيع لزبون", "📝 تصحيح مخزون"],
+             reconcile: ["🧮 جرد دوري", "📝 تصحيح عدّ", "📦 تالف/مفقود", "⚖️ تسوية فرق"] },
   /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
      type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
   mov: { preset: "today", from: "", to: "", product: 0,
@@ -1605,7 +1609,7 @@ async function loadInventory() {
       const canMenu = S.invTab === "arch" ? true
         : !!(S.perms.add_qty || S.perms.remove || S.perms.admin);
       const menuBtn = canMenu
-        ? '<button type="button" class="mbtn" data-menu="' + p.id + '" data-n="' + esc(p.name) + '" title="خيارات السلعة">⋮</button>'
+        ? '<button type="button" class="mbtn" data-menu="' + p.id + '" data-n="' + esc(p.name) + '" data-q="' + (+p.qty || 0) + '" data-u="' + esc(p.unit || "") + '" title="خيارات السلعة">⋮</button>'
         : "";
       return '<div class="row">' + menuBtn
         + '<div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
@@ -1616,13 +1620,13 @@ async function loadInventory() {
         + '</div>';
     }).join("");
     box.querySelectorAll("button[data-menu]").forEach((b) =>
-      b.addEventListener("click", () => openRowMenu(+b.dataset.menu, b.dataset.n)));
+      b.addEventListener("click", () => openRowMenu(+b.dataset.menu, b.dataset.n, b.dataset.q, b.dataset.u)));
     box.querySelectorAll("[data-detail]").forEach((el) =>
       el.addEventListener("click", () => openDetail(+el.dataset.detail)));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
 /* ── v45: قائمة خيارات السلعة — زر ⋮ واحد يظهر الأزرار عند الضغط ── */
-function openRowMenu(id, n) {
+function openRowMenu(id, n, q, u) {   /* v123: q/u = الكمية والوحدة لمعاينة الفارق */
   $("#dlgMenuTitle").textContent = n || "خيارات السلعة";
   const mk = (act, label, cls) =>
     '<button type="button" class="btn ' + cls + '" data-act="' + act + '" data-id="' + id + '" data-n="' + esc(n) + '">' + label + '</button>';
@@ -1634,7 +1638,8 @@ function openRowMenu(id, n) {
     if (S.perms.add_qty) h += mk("add", "➕ إضافة كمية", "soft-g");
     if (S.perms.remove) h += mk("remove", "➖ خصم كمية", "soft-r");
     if (S.perms.admin) {
-      /* [removed] جرد وتسوية — أُزيل بطلب المستخدم */
+      /* v123: عاد الجرد بصيغة أذكى — تكتب العدد الفعلي والخادم يحسب الفارق بنفسه */
+      h += mk("reconcile", "⚖️ ضبط الكمية الفعلية", "soft-g");
       h += mk("edit", "✏️ تعديل البيانات", "soft-e");
       h += mk("del", "🗑 حذف (أرشفة)", "red");
     }
@@ -1645,7 +1650,9 @@ function openRowMenu(id, n) {
     b.addEventListener("click", () => {
       try { $("#dlgMenu").close(); } catch (e) {}
       const act = b.dataset.act, mid = +b.dataset.id, mn = b.dataset.n;
-      if (act === "add" || act === "remove" || act === "reconcile") openQty(act, mid, mn);
+      /* v123: تمرير الكمية الحالية والوحدة لوضع الضبط */
+      if (act === "add" || act === "remove" || act === "reconcile")
+        openQty(act, mid, mn, (q != null && q !== "" && !isNaN(+q)) ? +q : null, u);
       else if (act === "edit") invEdit(mid);
       else if (act === "del") invDelete(mid, mn);
       else if (act === "restore") invRestore(mid, mn);
@@ -1715,13 +1722,26 @@ async function invRestore(id, name) {
   finally { opRelease("arch:" + id); }
 }
 
-/* ─── حوار الكمية ─── */
-const TITLES = { add: "➕ إضافة كمية", remove: "➖ إخراج كمية" };
-function openQty(act, id, name) {
-  S.dlg = { act, id, chip: null };
+/* ─── حوار الكمية ───
+   v123: وضع «ضبط الكمية الفعلية» (reconcile) — تكتب العدد الحقيقي الذي عدّدته
+   بيديك (مثال: 462) والتطبيق يحسب الفارق عن المسجّل (477) حياً أمامك ويحفظه
+   كحركة جرد بسبب «جرد: من 477 إلى 462» — بلا آلة حاسبة نهائياً. */
+const TITLES = { add: "➕ إضافة كمية", remove: "➖ إخراج كمية", reconcile: "⚖️ ضبط الكمية الفعلية" };
+function openQty(act, id, name, cur, unit) {
+  S.dlg = { act, id, chip: null, cur: (typeof cur === "number" && !isNaN(cur) ? cur : null),
+            unit: unit || "وحدة" };
   $("#dlgTitle").textContent = TITLES[act] || act;
   $("#dlgProd").textContent = name;
   $("#dlgQty").value = ""; $("#dlgReason").value = "";
+  /* v123: وضع الضبط — إظهار الكمية المسجّلة + تعليمة الإدخال + تصفير المعاينة */
+  const isRec = act === "reconcile", curEl = $("#dlgCur"), diffEl = $("#dlgDiff");
+  if (isRec && S.dlg.cur != null) {
+    curEl.style.display = "";
+    curEl.innerHTML = "الكمية المسجّلة حالياً: <b dir=\"ltr\">" + S.dlg.cur + "</b> " + esc(S.dlg.unit)
+      + " — اكتب العدد الفعلي والتطبيق يحسب الفارق تلقائياً.";
+  } else { curEl.style.display = "none"; curEl.innerHTML = ""; }
+  $("#dlgQtyLabel").textContent = isRec ? "العدّ الفعلي الحقيقي (ما عدّدته)" : "الكمية";
+  diffEl.style.display = "none"; diffEl.innerHTML = "";
   const chips = (S.reasons && S.reasons[act]) || [];
   const wrap = $("#reasonChipsWrap");
   wrap.style.display = chips.length ? "" : "none";
@@ -1733,13 +1753,33 @@ function openQty(act, id, name) {
       $("#dlgChips").querySelectorAll(".rchip").forEach((x) => x.classList.remove("on"));
       if (was) { S.dlg.chip = null; } else { b.classList.add("on"); S.dlg.chip = b.dataset.r; }
     }));
-  $("#dlgGo").textContent = "تنفيذ";
+  $("#dlgGo").textContent = isRec ? "💾 حفظ الكمية الفعلية" : "تنفيذ";
   $("#dlg").showModal();
 }
+/* v123: معاينة الفارق الحية — الحاسبة مدمجة في الحوار (وضع الضبط فقط) */
+$("#dlgQty").addEventListener("input", () => {
+  const d = S.dlg, el = $("#dlgDiff");
+  if (!d || d.act !== "reconcile" || d.cur == null) { el.style.display = "none"; return; }
+  const raw = $("#dlgQty").value.trim();
+  if (raw === "" || isNaN(Number(raw))) { el.style.display = "none"; return; }
+  const diff = Number(raw) - d.cur;
+  if (diff === 0) {
+    el.innerHTML = "✅ مطابق للكمية المسجّلة — لن تتغير الكمية عند الحفظ.";
+    el.style.color = "var(--ok)";
+  } else if (diff > 0) {
+    el.innerHTML = "🔺 الفارق: <b dir=\"ltr\">+" + diff + "</b> " + esc(d.unit) + " — ستُضاف إلى المخزون.";
+    el.style.color = "var(--ok)";
+  } else {
+    el.innerHTML = "🔻 الفارق: <b dir=\"ltr\">−" + Math.abs(diff) + "</b> " + esc(d.unit) + " — سيُخصم من المخزون.";
+    el.style.color = "var(--bad)";
+  }
+  el.style.display = "";
+});
 $("#dlgCancel").addEventListener("click", () => $("#dlg").close());
 $("#dlgGo").addEventListener("click", async () => {
   const qty = parseInt($("#dlgQty").value, 10);
-  if (isNaN(qty) || qty <= 0) {
+  /* v123: الضبط يقبل صفراً (العدّ الفعلي = لا شيء متبقٍ) */
+  if (isNaN(qty) || qty < 0 || (qty <= 0 && S.dlg.act !== "reconcile")) {
     toast("أدخل كمية صحيحة.", true); return;
   }
   const unlock = lockBtn($("#dlgGo"), "جارٍ التنفيذ…");   /* v45: لا تكرار للحركة بنقر مزدوج */
@@ -1761,7 +1801,7 @@ $("#dlgGo").addEventListener("click", async () => {
 /* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ───
    v48: 4 خانات (الكل/إضافة/إخراج/جرد) — الخانة تفلتر القائمة فقط،
    والملخص يبقى عن الفترة كاملة (النظام العام للحركة) */
-const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"] };
+const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"], reconcile: ["mut", "⚖️ جرد"] };   /* v123 */
 const MOV_SEG = { msegAll: "", msegAdd: "add", msegOut: "remove" };
 function movSetType(t) {
   if (S.mov.type === t) return;
@@ -2330,6 +2370,8 @@ async function openDetail(id) {
     if (!p.archived) {
       if (S.perms.add_qty) acts += '<button class="btn mini green" id="detAdd">➕ إضافة</button>';
       if (S.perms.remove) acts += '<button class="btn mini red" id="detRem">➖ إخراج</button>';
+      /* v123: ضبط الكمية الفعلية — المدير/المشرف (نفس شرط الخادم) */
+      if (S.perms.admin) acts += '<button class="btn mini gold" id="detRec">⚖️ ضبط العدد</button>';
     }
     if (S.perms.admin)
       acts += '<button class="btn mini gold" id="detEdit">✏️ تعديل</button>';
@@ -2353,6 +2395,7 @@ async function openDetail(id) {
       + histHtml;
     if (S.perms.add_qty && !p.archived) $("#detAdd").addEventListener("click", () => { $("#dlgDetail").close(); openQty("add", p.id, p.name); });
     if (S.perms.remove && !p.archived) $("#detRem").addEventListener("click", () => { $("#dlgDetail").close(); openQty("remove", p.id, p.name); });
+    if (S.perms.admin && !p.archived) $("#detRec").addEventListener("click", () => { $("#dlgDetail").close(); openQty("reconcile", p.id, p.name, p.qty, p.unit); });   /* v123 */
     if (S.perms.admin) {
       $("#detEdit").addEventListener("click", () => {
         $("#dlgDetail").close();
