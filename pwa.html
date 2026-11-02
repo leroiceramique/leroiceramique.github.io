@@ -1607,7 +1607,7 @@ async function loadInventory() {
         c.id = "invCount";
         c.style.cssText = "font-size:12.5px;color:var(--mut);margin:0 2px 8px";
         c.textContent = "🔍 " + S.invData.length + " نتيجة عن «" + S.invQ + "»"
-          + (d.smart ? " — تشمل المطابقة الموسّعة (قياس معكوس، مصنع، خطأ إملائي)" : "");
+          + (d.smart ? " — بحث دقيق: القياس يطابق قياسه فقط (بالاتجاهين) مع دعم المصانع والأخطاء الإملائية" : "");
         box.insertBefore(c, box.firstChild);
       }
     } catch (_eC) {}
