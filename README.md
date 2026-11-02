@@ -1,5 +1,11 @@
 # LE ROI DE LA CÉRAMIQUE — بوت تيليجرام + تطبيق ويب PWA
-نظام إدارة المخزون والمبيعات (ثيم Discord) — الإصدار v122 / PWA_VERSION "02"
+نظام إدارة المخزون والمبيعات (ثيم Discord) — الإصدار v125 / PWA_VERSION "04"
+
+## 🌐 العنوان الرسمي للتطبيق
+**https://leroiceramique.github.io** — الواجهة الأمامية كاملة تعيش هنا (GitHub Pages مجاني)
+بدون أي تحويل إلى Render أو فتح تبويب جديد، والخادم الخلفي (البوت + API + القاعدة) يبقى كما هو.
+الربط عبر CORS + ترويسة `X-Session-Token` (جلسات 90 يوماً و«تذكّرني» 180 يوماً كما هي
+بدون أي تغيير في قاعدة البيانات). التفاصيل: `github-pages/README-GITHUB-PAGES.md`.
 
 ## 📦 محتويات الحزمة
 | الملف | وظيفته |
@@ -7,7 +13,7 @@
 | `bot.py` | البوت + سيرفر التطبيق (ملف واحد) — يشغّل كل شيء |
 | `pwa.html` | واجهة التطبيق (يُقرأ تلقائياً من بجانب bot.py — ضعهما معاً دائماً) |
 | `requirements.txt` | المكتبات المطلوبة |
-| `github-pages/` | حزمة صفحة المشروع على `leroiceramique.github.io` + دليل النشر |
+| `github-pages/` | **الواجهة الجاهزة للنشر** على leroiceramique.github.io (index.html + manifest + sw.js + icon.jpg) + دليل النشر |
 | `*.png` | لقطات واجهة التطبيق |
 
 ## 🚀 التشغيل
@@ -26,6 +32,9 @@ python bot.py
   ولا واجهة إعلانية؛ الأدسنس غير مطلوب إطلاقاً.
 - **إصلاح خطأ الدخول**: خطأ `'str' object has no attribute 'append'` في بوابة الدخول
   مُصلَح (v121/v122) — أي حالة تالفة تُصفَّر تلقائياً بدل الانهيار.
-- **صفحة المشروع على الإنترنت**: انشر مجلد `github-pages/` كما في
-  `github-pages/README-GITHUB-PAGES.md` ليصبح الرابط `https://leroiceramique.github.io`
-  بوابة تُفتح من أي حاسوب، ومنها زر «فتح التطبيق» نحو سيرفر البوت الحي.
+- **النطاق الجديد (v125)**: انشر محتويات `github-pages/` الأربعة في مستودع
+  `leroiceramique.github.io` (حساب باسم `leroiceramique`) ← التطبيق يُفتح مباشرة من
+  `https://leroiceramique.github.io`. عند أول فتح أدخل عنوان خادم Render مرة واحدة
+  (شاشة ضبط تلقائية)، أو صدّر نسخة بعنوان مضمّن من `https://<بوتك>/api/pages/export`
+  (مدير) أو `python bot.py --export-pages --api-root https://<بوتك>`. تحديث bot.py وحده
+  لا يتطلب أي إعادة نشر على Pages — الرقع تُطبّق وقت التقديم من الخادم.

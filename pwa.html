@@ -1597,6 +1597,20 @@ async function loadInventory() {
         : (S.invTab === "low" ? (S.invQ ? "لا توجد نتائج." : "✅ لا توجد سلع منخفضة.") : "لا توجد نتائج.")) + '</p>';
       return;
     }
+    /* v124: عدّاد النتائج — يعرف المستخدم أن القائمة كاملة لا مقتطعة،
+       وأن البحث شمل المطابقة الموسّعة (قياس معكوس/مصنع/خطأ إملائي) */
+    try {
+      const __oc = document.getElementById("invCount");
+      if (__oc) __oc.remove();
+      if (S.invQ) {
+        const c = document.createElement("div");
+        c.id = "invCount";
+        c.style.cssText = "font-size:12.5px;color:var(--mut);margin:0 2px 8px";
+        c.textContent = "🔍 " + S.invData.length + " نتيجة عن «" + S.invQ + "»"
+          + (d.smart ? " — تشمل المطابقة الموسّعة (قياس معكوس، مصنع، خطأ إملائي)" : "");
+        box.insertBefore(c, box.firstChild);
+      }
+    } catch (_eC) {}
     box.innerHTML = S.invData.map((p) => {
       if (d.limited) {
         return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b></div>'
