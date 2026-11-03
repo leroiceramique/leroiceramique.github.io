@@ -2507,10 +2507,11 @@ $("#segLow").addEventListener("click", () => invSetTab("low"));
 $("#segArch").addEventListener("click", () => invSetTab("arch"));
 /* v46: وحدة القياس من اسم السلعة — نفس منطق السيرفر (_get_unit_ar) */
 function unitOf(name) {
+  /* v129: فئة 120/60 — القياس يُلحق بعد الاسم منذ v115 (roma blanc 120/60 techno ceram)
+     فالرمز يُبحث في أي موضع من الاسم — مطابق لمصنّف الخادم _is_pcs_product */
   const n = String(name || "").trim().toLowerCase();
-  return (n.startsWith("motif") || n.startsWith("plante")
-    || n.startsWith("120/60") || n.startsWith("120x60") || n.startsWith("120×60"))
-    ? "قطعة" : "كرتون";
+  if (n.startsWith("motif") || n.startsWith("plante")) return "قطعة";
+  return (/(^|\s)(120\/60|120x60|120×60)(?=\s|$)/).test(n) ? "قطعة" : "كرتون";
 }
 async function loadInventory() {
   const box = $("#invList");
@@ -3929,7 +3930,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "07";
+const APP_VER = "08";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
