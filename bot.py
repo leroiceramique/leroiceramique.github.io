@@ -19,8 +19,9 @@ import psycopg2
 import psycopg2.pool
 import psycopg2.extras
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,6 +31,33 @@ from telegram.ext import (
     ApplicationHandlerStop,
     filters,
 )
+
+# ═══════════════════════════════════════════════════════════
+#  v130: حصانة الرد على أزرار تيليجرام ضد أخطاء القِدَم
+#  «Query is too old and response timeout expired or query id is invalid»
+#  تحدث حين يتأخر answerCallbackQuery أكثر من مهلة تيليجرام (ازدحام
+#  الاتصال أو معالجة طويلة قبل الرد). كانت توقف معالج الزر في منتصف
+#  عمله وتُغرق المالك بإشعارات 🚨 زائفة. الآن: تُسجَّل تحذيراً وتُتجاهل
+#  بهدوء — فالعمل الحقيقي (قاعدة البيانات/الرسائل) يجب أن يستمر.
+#  الغلاف يشمل كل مواضع query.answer() في الملف دفعة واحدة.
+# ═══════════════════════════════════════════════════════════
+_orig_cbq_answer = CallbackQuery.answer
+
+
+async def _safe_cbq_answer(self, *args, **kwargs):
+    """v130: غلاف آمن حول CallbackQuery.answer — الزر القديم لا يُعطّل شيئاً."""
+    try:
+        return await _orig_cbq_answer(self, *args, **kwargs)
+    except BadRequest as _e:
+        _m = str(_e).lower()
+        if ("query is too old" in _m) or ("query id is invalid" in _m):
+            logging.warning("[CBQ] v130: رد على زر قديم/منتهي — تجاهل آمن دون تعطيل المعالج: %s", _e)
+            return True
+        raise
+
+
+CallbackQuery.answer = _safe_cbq_answer
+
 
 # ═══════════════════════════════════════════════════════════
 #  BRAND THEME — LE ROI DE LA CÉRAMIQUE (v88: الشعار خارج الملف)
@@ -11242,6 +11270,13 @@ async def error_handler(update, context):
         logging.warning("[BOT] Conflict detected - another instance running. Will recover automatically.")
         return
     err = context.error
+    # v130: زر قديم/منتهي الصلاحية = ضجيج لا خطأ — لا إشعار للمالك ولا رسالة للمستخدم
+    # (الغلاف أعلاه يمسكها في مسار query.answer؛ هذا مسار أمان لأي نداء آخر)
+    if isinstance(err, BadRequest):
+        _em130 = str(err).lower()
+        if ("query is too old" in _em130) or ("query id is invalid" in _em130):
+            logging.warning("[BOT ERROR] v130: callback query منتهي — تجاهل آمن بلا إشعار")
+            return
     err_type = type(err).__name__
     err_msg = str(err)[:400]
     import traceback as _tbm   # v121: مضمون في كل المسارات
@@ -11982,7 +12017,16 @@ def build_application():
             await asyncio.to_thread(_write_bot_setting, "clean_shutdown", "1")
         except Exception:
             pass
-    app = Application.builder().token(BOT_TOKEN).post_init(_on_app_post_init).post_shutdown(_on_app_post_shutdown).build()
+    # v130: توسيع مجمع اتصالات تيليجرام — الافتراضي في PTB اتصال HTTP واحد فقط!
+    # رفع نسخة احتياطية أو دفعة رسائل كان يسدّ الاتصال الواحد، فينتظر ردّ
+    # الأزرار في الطابور حتى تنتهي صلاحيتها (Query is too old). الآن 64
+    # اتصالاً متوازياً لنداءات API العادية + 8 لجلب التحديثات (long polling).
+    from telegram.request import HTTPXRequest as _HTTPXRequest
+    _tg_req = _HTTPXRequest(connection_pool_size=64)
+    _tg_upd_req = _HTTPXRequest(connection_pool_size=8)
+    app = (Application.builder().token(BOT_TOKEN)
+           .request(_tg_req).get_updates_request(_tg_upd_req)
+           .post_init(_on_app_post_init).post_shutdown(_on_app_post_shutdown).build())
 
     # ── تنظيف الشاشة: تتبع رسائل البوت الصادرة + رسائل المستخدم (تُحذف عند العودة للقائمة) ──
     _install_sweep_tracking(app.bot)
