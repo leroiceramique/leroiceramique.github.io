@@ -9,6 +9,9 @@
 <link rel="apple-touch-icon" href="/icon.jpg">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;700;800;900&display=swap">
 <title>مخزون السيراميك</title>
 <script>
 /* v42: تطبيق الوضع المحفوظ قبل الرسم — لا وميض أبيض عند فتح الوضع الليلي */
@@ -47,7 +50,7 @@ html[data-theme="dark"]{
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
-body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
+body{font-family:"Cairo","Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
   min-height:100vh; font-size:15px}
 button{font-family:inherit}
 input,select,textarea{font-family:inherit;font-size:16px}
@@ -1052,6 +1055,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
   <header>
     <img src="/icon.jpg" alt="">
     <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
+    <div class="gswrap"><span class="gsic">🔍</span><input id="gSearch" class="ginp" type="search" placeholder="ابحث عن سلعة أو مقاس… ثم Enter" autocomplete="off"></div>
     <div class="bellwrap"><button id="btnNotif" title="الإشعارات">🔔</button><span id="nBadge">0</span></div>
     <button id="btnSet" title="الإعدادات والملف الشخصي">⚙️</button>
   </header>
@@ -2436,6 +2440,8 @@ async function loadHome() {
     $("#sProd").textContent = d.stats.products;
     $("#sLow").textContent = d.stats.low;
     $("#sToday").textContent = d.stats.today;
+    const __sp128 = document.getElementById("sPend");
+    if (__sp128) __sp128.textContent = String(d.stats.pending || 0);
     const np = d.stats.pending || 0, ni = d.stats.incoming || 0;
     const ordBox = $("#homeOrd");
     if (np || ni) {
@@ -2580,12 +2586,15 @@ async function loadInventory() {
       const menuBtn = canMenu
         ? '<button type="button" class="mbtn" data-menu="' + p.id + '" data-n="' + esc(p.name) + '" data-q="' + (+p.qty || 0) + '" data-u="' + esc(p.unit || "") + '" title="خيارات السلعة">⋮</button>'
         : "";
+      const __mref = (+p.min > 0 ? (+p.min) * 8 : 60);
+      const qpw = Math.max(4, Math.min(100, Math.round(((+p.qty || 0) / __mref) * 100)));
       return '<div class="row">' + menuBtn
         + '<div class="info" data-detail="' + p.id + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وسجل حركتها"><b>' + esc(p.name) + '</b>'
         + '<span>' + (p.location == null
           ? "📜 للحركة اضغط الاسم"
           : esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + " • 📜 للحركة اضغط الاسم") + '</span></div>'
         + (S.invTab === "arch" ? '<span class="badge mut">محذوفة</span>' : qtyBadge)
+        + (S.invTab === "arch" ? "" : '<div class="qbar' + (p.low ? " low" : "") + '" aria-hidden="true"><i style="width:' + qpw + '%"></i></div>')
         + '</div>';
     }).join("");
     box.querySelectorAll("button[data-menu]").forEach((b) =>
@@ -3920,7 +3929,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "06";
+const APP_VER = "07";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -9305,5 +9314,174 @@ try { window.v119WorkersSection = v93wk; } catch (e) {}
   main{max-width:920px;margin:0 254px 0 26px;padding:22px 26px 46px}
   .grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 }</style>
+<script id="v128ui">
+/* ═══ v128: الواجهة الاحترافية — ربط العناصر الجديدة ═══ */
+(function () {
+  function kpiWrap(c) {
+    const b = c.querySelector("b"), s = c.querySelector("span");
+    if (!b || !s || b.parentElement.classList.contains("ktx")) return;
+    const w = document.createElement("div"); w.className = "ktx";
+    c.insertBefore(w, b); w.appendChild(b); w.appendChild(s);
+  }
+  function ensureKPIs() {
+    const grid = document.querySelector("#v-home .grid"); if (!grid) return;
+    [["cardProd", "📦"], ["cardLow", "⚠️"], ["cardToday", "🔁"]].forEach(function (d) {
+      const c = document.getElementById(d[0]); if (!c) return;
+      if (!c.querySelector(".kic")) { const i = document.createElement("i"); i.className = "kic"; i.textContent = d[1]; c.prepend(i); }
+      kpiWrap(c);
+    });
+    if (!document.getElementById("cardPend")) {
+      const el = document.createElement("div");
+      el.className = "stat"; el.id = "cardPend"; el.title = "اضغط لعرض الطلبات والتوريدات";
+      el.innerHTML = '<i class="kic">⏳</i><div class="ktx"><b id="sPend">—</b><span>طلبات معلقة</span></div>';
+      el.addEventListener("click", function () { try { switchView("v-ord"); } catch (_e) {} });
+      grid.appendChild(el);
+    }
+  }
+  function sbUser() {
+    const nav = document.querySelector("nav.tabs"); if (!nav) return;
+    let card = document.getElementById("sbUser");
+    if (!card) {
+      card = document.createElement("div"); card.id = "sbUser"; card.title = "الإعدادات والملف الشخصي";
+      card.innerHTML = '<div class="sav">؟</div><div class="sinfo"><b>—</b><span>—</span></div><span class="sgear">⚙️</span>';
+      card.addEventListener("click", function () { try { switchView("v-set"); } catch (_e) {} });
+      nav.appendChild(card);
+    }
+    const nm = (S.user && (S.user.name || S.user.username)) || "—";
+    const rl = (S.user && S.user.role_label) || "";
+    card.querySelector(".sav").textContent = String(nm).trim().charAt(0) || "؟";
+    card.querySelector(".sinfo b").textContent = nm;
+    card.querySelector(".sinfo span").textContent = rl || "حساب موظف";
+  }
+  let k128Doc = false;
+  function wireSearch() {
+    const inp = document.getElementById("gSearch");
+    if (inp && !inp.dataset.w128) {
+      inp.dataset.w128 = "1";
+      inp.addEventListener("keydown", function (e) {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const q = inp.value.trim();
+        try { invSetTab("all", true); } catch (_e) {}
+        S.invQ = q;
+        const qs = document.getElementById("qSearch"); if (qs) qs.value = q;
+        try { switchView("v-inv"); } catch (_e2) {}
+        try { clearTimeout(searchTimer); } catch (_e3) {}
+        loadInventory();
+      });
+    }
+    if (k128Doc) return; k128Doc = true;
+    document.addEventListener("keydown", function (e) {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (e.key !== "k" && e.key !== "K") return;
+      const g = document.getElementById("gSearch");
+      if (g && getComputedStyle(g).display !== "none") { e.preventDefault(); g.focus(); g.select(); }
+    });
+  }
+  try {
+    const _showApp128 = showApp;
+    showApp = function () {
+      const r = _showApp128.apply(this, arguments);
+      try { ensureKPIs(); sbUser(); } catch (_e) {}
+      return r;
+    };
+  } catch (_e) {}
+  try { ensureKPIs(); } catch (_e) {}
+  try { if (S.user) sbUser(); } catch (_e2) {}
+  try { wireSearch(); } catch (_e3) {}
+})();
+</script>
+<style id="v128css">/* ═══ v128: الواجهة الاحترافية — مستوحاة من أنظمة إدارة المخازن (ERP) ═══ */
+
+/* ── 1) بطاقات المؤشرات KPI — أيقونة ملوّنة + رقم كبير + شريط لوني جانبي ── */
+#v-home .grid{grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
+.stat{position:relative;display:flex;align-items:center;gap:11px;text-align:right;
+  padding:13px 14px;border-radius:16px;overflow:hidden}
+.stat::after{content:"";position:absolute;inset-inline-start:0;top:10px;bottom:10px;width:4px;
+  border-radius:99px;background:var(--brand)}
+.stat .kic{flex:0 0 42px;width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+  font-size:20px;font-style:normal;border-radius:12px;background:var(--brandsoft);
+  border:1px solid var(--edline)}
+.stat .ktx{flex:1;min-width:0}
+.stat b{display:block;font-size:23px;font-weight:900;line-height:1.15;color:var(--ink)}
+.stat span{display:block;font-size:11.5px;font-weight:700;color:var(--mut)}
+#cardProd .kic{background:var(--brandsoft);border-color:var(--edline)}
+#cardProd::after{background:var(--brand)}
+#cardLow .kic{background:var(--badsoft);border-color:var(--badline)}
+#cardLow::after{background:var(--bad)}
+#cardToday .kic{background:var(--oksoft);border-color:var(--okline)}
+#cardToday::after{background:var(--ok)}
+#cardPend .kic{background:var(--goldsoft);border-color:var(--goldline)}
+#cardPend::after{background:var(--warn)}
+
+/* ── 2) أشرطة الكمية في صفوف المخزون — قراءة فورية للحالة مثل جداول ERP ── */
+.qbar{flex:0 0 86px;height:7px;border-radius:99px;background:var(--chip);overflow:hidden}
+.qbar i{display:block;height:100%;border-radius:99px;background:var(--ok)}
+.qbar.low i{background:var(--bad)}
+@media (max-width:520px){.qbar{flex-basis:54px}}
+
+/* ── 3) صقل عام: صفوف وأزرار وشارات وعناوين ── */
+.vt{font-size:17px;font-weight:800}
+.badge{border-radius:999px;font-weight:700}
+.row{transition:transform .16s ease,box-shadow .16s ease}
+.row:hover{transform:translateY(-1px);box-shadow:0 5px 16px rgba(46,51,56,.10)}
+.btn{border-radius:12px;font-weight:800}
+.search{border-radius:14px}
+
+/* ── 4) بحث علوي عالمي + بطاقة المستخدم — تظهر على سطح المكتب فقط ── */
+.gswrap{display:none}
+#sbUser{display:none}
+
+/* ── 5) الشريط الجانبي v128 — نمط ERP: ترويسة هوية + أيقونات داخل صناديق + بطاقة مستخدم ── */
+@media (min-width:1024px){
+  #v-home .grid{grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px}
+  .stat b{font-size:25px}
+  header .t{flex:0 0 auto}
+  .gswrap{display:block;position:relative;flex:1;max-width:520px;min-width:150px;margin:0 12px}
+  .gsic{position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:13px;opacity:.75;
+    pointer-events:none}
+  .ginp{width:100%;box-sizing:border-box;border:1px solid var(--line);outline:none;
+    border-radius:12px;padding:9px 38px 9px 14px;background:var(--bg);color:var(--ink);
+    font-family:inherit;font-size:13px;font-weight:600;
+    transition:background .2s,border-color .2s,box-shadow .2s}
+  .ginp::placeholder{color:var(--mut);font-weight:600}
+  .ginp:focus{background:var(--card);border-color:var(--brand);box-shadow:0 0 0 3px var(--brandsoft)}
+  html[data-theme="dark"] .ginp{background:rgba(255,255,255,.06);border-color:var(--line);color:var(--ink)}
+  html[data-theme="dark"] .ginp::placeholder{color:var(--mut)}
+  html[data-theme="dark"] .gsic{opacity:.55}
+  html[data-theme="dark"] .ginp:focus{background:var(--card);border-color:var(--edline);box-shadow:none}
+
+  nav.tabs{width:248px;padding:16px 12px 14px;gap:4px}
+  nav.tabs::before{content:"\1F451  LE ROI\A مُخزون السيراميك";white-space:pre-line;line-height:1.5;
+    font-family:"Cairo","Segoe UI",Tahoma,sans-serif;font-size:12.5px;font-weight:800;color:var(--brand);
+    text-align:center;padding:6px 0 12px;margin:0 2px 10px;border-bottom:1px solid var(--line)}
+  nav.tabs button{flex-direction:row;align-items:center;gap:12px;padding:9px 11px;border-radius:13px;
+    font-size:13.5px;font-weight:700;color:var(--mut);text-align:right}
+  nav.tabs button .ic{width:38px;height:38px;flex:0 0 38px;display:flex;align-items:center;justify-content:center;
+    font-size:19px;line-height:1;border-radius:11px;background:var(--bg);border:1px solid var(--line);
+    transition:background .2s,border-color .2s,transform .2s}
+  nav.tabs button.on{color:var(--brand);background:var(--brandsoft);box-shadow:inset -3px 0 0 var(--brand)}
+  nav.tabs button.on .ic{transform:none;background:var(--card);border-color:var(--edline);
+    box-shadow:0 3px 10px rgba(88,101,242,.20)}
+  nav.tabs button:hover:not(.on){background:var(--bg);color:var(--ink)}
+  nav.tabs button .cnavb{top:4px}
+
+  #app header{padding-right:272px}
+  main{max-width:1100px;margin:0 272px 0 28px;padding:24px 28px 60px}
+
+  #sbUser{display:flex;margin-top:auto;flex:0 0 auto;align-items:center;gap:10px;padding:9px 11px;
+    border-radius:14px;border:1px solid var(--line);background:var(--bg);cursor:pointer;
+    transition:border-color .2s,background .2s}
+  #sbUser:hover{border-color:var(--edline);background:var(--brandsoft)}
+  #sbUser .sav{width:38px;height:38px;flex:0 0 38px;border-radius:50%;
+    background:linear-gradient(135deg,var(--h1),var(--h2));color:#fff;font-weight:800;font-size:16px;
+    display:flex;align-items:center;justify-content:center}
+  #sbUser .sinfo{flex:1;min-width:0;line-height:1.45}
+  #sbUser .sinfo b{display:block;font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
+  #sbUser .sinfo span{display:block;font-size:11px;color:var(--mut)}
+  #sbUser .sgear{font-size:15px;opacity:.7}
+}
+</style>
 </body>
 </html>
