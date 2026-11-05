@@ -1076,6 +1076,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
     <!-- المخزون -->
     <section class="view" id="v-inv">
       <div class="invhead"><h2 class="vt">المخزون</h2>
+        <button type="button" class="btn mini soft-e" id="btnInvSort" title="تبديل ترتيب القائمة: الاسم ↔ الأكثر حركة مؤخراً">🔤 حسب الاسم</button>
         <button class="btn mini gold" id="btnAddProd" style="display:none">＋ إضافة سلعة</button>
       </div>
       <input class="search" id="qSearch" placeholder="🔍 ابحث باسم السلعة...">
@@ -1088,7 +1089,9 @@ img{-webkit-user-drag:none;user-select:none}</style>
     </section>
     <!-- الحركة v69: أزرار تصنيف حسب النوع (فلترة الخادم فعلياً) + شريط اليوم — بلا لوحة فلاتر -->
     <section class="view" id="v-mov">
-      <h2 class="vt">حركة المخزون</h2>
+      <div class="invhead"><h2 class="vt">حركة المخزون</h2>
+        <button type="button" class="btn mini soft-g" id="btnRepeatOp" style="display:none" title="إعادة آخر عملية إضافة بنفس السلعة والكمية">🔁 إعادة آخر عملية</button>
+      </div>
       <div class="tgrid" id="movTypes">
         <button type="button" class="tbtn t-all on" id="msegAll">🗂️<span>الكل</span></button>
         <button type="button" class="tbtn t-add" id="msegAdd">➕<span>الإضافة</span></button>
@@ -1099,6 +1102,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
         <button class="fchip on" data-p="today">🗓 اليوم</button>
         <button class="fchip" data-p="yest">أمس</button>
         <span class="daypick">📅 <input type="date" id="movDay"></span>
+        <span class="daypick">👤 <select id="movUser"><option value="">كل الموظفين</option></select></span>
       </div>
       <button class="prodchip" id="movProdChip" style="display:none">📦 <span id="movProdName"></span> ✕</button>
       <div class="sumcard" id="movSum" style="display:none"></div>
@@ -1942,8 +1946,8 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
      type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
   mov: { preset: "today", from: "", to: "", product: 0,
-         product_name: "", type: "", data: [], summary: null },
-  invTab: "all", invData: [], serverVersion: "",
+         product_name: "", type: "", data: [], summary: null, user: "" },
+  invTab: "all", invData: [], serverVersion: "", invSort: "name",
   /* v50: حالة الرسائل — الشات الداخلي */
   chat: { peer: null, lastId: 0, readUpto: 0, timer: null, ltimer: null, busy: false,
           sending: false, total: 0, urls: {}, rec: null, recT0: 0, recTimer: null,
@@ -2355,6 +2359,7 @@ function showApp(me) {
   /* v120: الثيم المؤسسي يصل مع /api/me — اختيار المدير يُطبّق على الجميع فوراً */
   try { if (me.theme && ORG_THEMES[me.theme] && me.theme !== S.orgTheme) applyOrgTheme(me.theme); } catch (e120) {}
   $("#login").style.display = "none"; $("#app").style.display = "flex";
+  try { if (typeof _v131Welcome === "function") _v131Welcome(); } catch (e131) {}
   applyPerms();
   /* v120: بطاقة الثيم المؤسسي للمدير فقط */
   const _oc = $("#orgThemeCard"); if (_oc) _oc.style.display = S.perms.admin ? "" : "none";
@@ -2537,6 +2542,7 @@ async function loadInventory() {
       if (S.invQ) qp.push("q=" + encodeURIComponent(S.invQ));
       if (S.invTab === "arch") qp.push("archived=1");
       if (S.invTab === "low") qp.push("low=1");   /* v46: بديل للفئات بلا صلاحية low_stock */
+      if (S.invSort === "activity" && !S.invQ) qp.push("sort=activity");   /* v132: الأكثر حركة مؤخراً */
       d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
     }
     if (!fresh()) return;
@@ -2596,10 +2602,19 @@ async function loadInventory() {
           : esc(p.location || "بدون موقع") + (p.price ? " — السعر: " + p.price : "") + " • 📜 للحركة اضغط الاسم") + '</span></div>'
         + (S.invTab === "arch" ? '<span class="badge mut">محذوفة</span>' : qtyBadge)
         + (S.invTab === "arch" ? "" : '<div class="qbar' + (p.low ? " low" : "") + '" aria-hidden="true"><i style="width:' + qpw + '%"></i></div>')
+        + (S.invTab === "arch" ? "" : ((!S.perms.add_qty && !S.perms.remove) ? ""
+          : '<span class="qbtns">'
+          + (S.perms.add_qty ? '<button type="button" class="qbtn qa" data-qa="' + p.id + '" data-n="' + esc(p.name) + '" title="➕ إضافة كمية سريعة">＋</button>' : "")
+          + (S.perms.remove ? '<button type="button" class="qbtn qr" data-qr="' + p.id + '" data-n="' + esc(p.name) + '" title="➖ خصم كمية سريعة">−</button>' : "")
+          + '</span>'))
         + '</div>';
     }).join("");
     box.querySelectorAll("button[data-menu]").forEach((b) =>
       b.addEventListener("click", () => openRowMenu(+b.dataset.menu, b.dataset.n, b.dataset.q, b.dataset.u)));
+    box.querySelectorAll("button[data-qa]").forEach((b) =>
+      b.addEventListener("click", (ev) => { ev.stopPropagation(); openQty("add", +b.dataset.qa, b.dataset.n); }));   /* v132 */
+    box.querySelectorAll("button[data-qr]").forEach((b) =>
+      b.addEventListener("click", (ev) => { ev.stopPropagation(); openQty("remove", +b.dataset.qr, b.dataset.n); }));   /* v132 */
     box.querySelectorAll("[data-detail]").forEach((el) =>
       el.addEventListener("click", () => openDetail(+el.dataset.detail)));
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
@@ -2782,7 +2797,7 @@ $("#dlgGo").addEventListener("click", async () => {
 /* ─── الحركة v41: فلاتر كاملة + ملخص + تجميع بالأيام + CSV ───
    v48: 4 خانات (الكل/إضافة/إخراج/جرد) — الخانة تفلتر القائمة فقط،
    والملخص يبقى عن الفترة كاملة (النظام العام للحركة) */
-const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"], reconcile: ["mut", "⚖️ جرد"] };   /* v123 */
+const MOV_BADGE = { add: ["g", "إضافة"], remove: ["r", "إخراج"] };   /* v131: الإضافة والإخراج فقط — لا جرد ولا غيرهما */
 const MOV_SEG = { msegAll: "", msegAdd: "add", msegOut: "remove" };
 function movSetType(t) {
   if (S.mov.type === t) return;
@@ -2850,6 +2865,7 @@ async function loadMovements() {
   if (S.mov.to) q.set("to", S.mov.to);
   if (S.mov.product) q.set("product", String(S.mov.product));
   if (S.mov.type) q.set("type", S.mov.type);   /* v69: الخادم يفلتر بها فعلاً */
+  if (S.mov.user) q.set("user", String(S.mov.user));   /* v132: فلتر «من سجّل» */
   const prodChip = $("#movProdChip");
   if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
   else prodChip.style.display = "none";
@@ -2858,6 +2874,7 @@ async function loadMovements() {
     if (!fresh()) return;
     S.mov.data = d.movements || [];
     S.mov.summary = d.summary || null;
+    try { if (typeof __movUsers === "function") __movUsers(d.users); } catch (_e132) {}   /* v132 */
     const s = S.mov.summary;
     if (s && s.count) {
       $("#movSum").style.display = "flex";
@@ -3930,7 +3947,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "08";
+const APP_VER = "11";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -9483,6 +9500,182 @@ try { window.v119WorkersSection = v93wk; } catch (e) {}
   #sbUser .sinfo span{display:block;font-size:11px;color:var(--mut)}
   #sbUser .sgear{font-size:15px;opacity:.7}
 }
+</style>
+<script id="v131ui">
+/* ═══ v131: رسالة الترحيب — التنفيذ ═══ */
+window.__w131shown = false;
+function _v131Welcome() {
+  if (window.__w131shown) return;
+  window.__w131shown = true;
+  /* v133: تقليل حركة النظام لا يخفي الترحيب — يحوّله لنسخة ثابتة كاملة */
+  var _still = false;
+  try { _still = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); } catch (_rm) {}
+  const _old = document.getElementById("w131"); if (_old) _old.remove();
+  const WORK = "إدارة مخزون السيراميك — إضافة وإخراج وتتبّع دقيق";
+  const DUA = "اللهم بارك في عملنا وارزقنا من حيث لا نحتسب";
+  const el = document.createElement("div");
+  el.id = "w131";
+  if (_still) { try { el.classList.add("st"); } catch (_st) {} }   /* v133: نسخة ثابتة */
+  el.innerHTML = '<div class="w131c">'
+    + '<div class="w131crown">👑</div>'
+    + '<div class="w131brand">LE ROI DE LA CÉRAMIQUE</div>'
+    + '<div class="w131work" id="w131work"></div>'
+    + '<div class="w131dua" id="w131dua"></div>'
+    + '<div class="w131line"></div>'
+    + '<div class="w131hint">اضغط للمتابعة</div>'
+    + '</div>';
+  document.body.appendChild(el);
+  const fill = (host, txt, base) => {
+    let i = 0;
+    String(txt).split(" ").forEach((w) => {
+      const s = document.createElement("span");
+      s.className = "w131word";
+      s.style.animationDelay = (base + i * 0.14).toFixed(2) + "s";
+      s.textContent = w;
+      host.appendChild(s);
+      host.appendChild(document.createTextNode(" "));
+      i++;
+    });
+  };
+  try {
+    fill(el.querySelector("#w131work"), WORK, 0.3);
+    fill(el.querySelector("#w131dua"), DUA, 1.15);
+  } catch (_f) {}
+  let closed = false;
+  const close = () => {
+    if (closed || !document.getElementById("w131")) return;
+    closed = true;
+    try { el.classList.add("wout"); } catch (_c) {}
+    setTimeout(() => { try { el.remove(); } catch (_r) {} }, 520);
+  };
+  el.addEventListener("click", close);
+  setTimeout(close, _still ? 3400 : 4600);   /* v133: الثابتة تنتهي أسرع */
+}
+</script>
+<style id="v131css">/* ═══ v131: شاشة الترحيب المتدفقة بدعاء الرزق ═══ */
+#w131{position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;
+  background:
+    radial-gradient(1100px 560px at 75% -12%, var(--brandsoft, rgba(88,101,242,.16)), transparent 62%),
+    radial-gradient(880px 480px at 18% 112%, rgba(212,175,55,.16), transparent 60%),
+    var(--bg, #f2f3f5);
+  animation:w131in .45s ease both;cursor:pointer}
+#w131.wout{animation:w131out .5s ease both;pointer-events:none}
+.w131c{text-align:center;padding:0 26px;max-width:660px;direction:rtl}
+.w131crown{font-size:clamp(34px,7vw,46px);line-height:1;margin-bottom:10px;
+  animation:w131pop .8s cubic-bezier(.2,.9,.3,1.35) both .15s}
+.w131brand{font-family:"Cairo","Segoe UI",Tahoma,sans-serif;font-weight:900;
+  font-size:clamp(24px,5.4vw,38px);letter-spacing:.5px;line-height:1.35;
+  background:linear-gradient(90deg,var(--brand,#5865f2),var(--gold,#d4af37) 45%,var(--brand2,#4752c4));
+  background-size:220% auto;-webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:w131flow 3.2s linear infinite}
+.w131work{margin-top:14px;font-family:"Cairo","Segoe UI",Tahoma,sans-serif;
+  font-weight:700;font-size:clamp(14px,3.4vw,19px);color:var(--tx,#2b2d31);opacity:.92}
+.w131dua{margin-top:10px;font-family:"Cairo","Segoe UI",Tahoma,sans-serif;
+  font-weight:800;font-size:clamp(16px,4vw,23px);
+  color:var(--gold,#a1791f);text-shadow:0 1px 0 rgba(212,175,55,.15)}
+.w131word{display:inline-block;opacity:0;transform:translateY(16px);filter:blur(5px);
+  animation:w131word .6s cubic-bezier(.2,.7,.3,1) forwards;will-change:transform,opacity,filter}
+.w131line{height:2px;width:min(320px,64vw);margin:20px auto 0;border-radius:2px;
+  background:linear-gradient(90deg,transparent,var(--gold,#d4af37),transparent);
+  background-size:200% auto;animation:w131line 2s ease-in-out infinite .2s, w131in .6s ease both .2s}
+.w131hint{margin-top:16px;font-size:11px;color:var(--mut,#8a8d93);opacity:0;
+  animation:w131in .6s ease both 1.6s}
+@keyframes w131word{to{opacity:1;transform:translateY(0);filter:blur(0)}}
+@keyframes w131flow{to{background-position:220% center}}
+@keyframes w131line{0%,100%{background-position:200% center}50%{background-position:0% center}}
+@keyframes w131in{from{opacity:0}to{opacity:1}}
+@keyframes w131out{to{opacity:0;visibility:hidden}}
+@keyframes w131pop{from{opacity:0;transform:scale(.5) rotate(-14deg)}to{opacity:1;transform:scale(1) rotate(0)}}
+/* v133: تقليل الحركة في النظام = شاشة ثابتة كاملة بدل الإخفاء الصامت —
+   الرسالة والدعاء يظهران فوراً بلا أي حركة، فالمطلوب «لحظة الترحيب» نفسها
+   لا الرعشة؛ من يفعّل «إزالة الحركات» في هاتفه كان يفوّت الشاشة كلياً */
+#w131.st, #w131.st *{animation:none!important;transition:none!important}
+#w131.st .w131word{opacity:1;transform:none;filter:none}
+#w131.st .w131brand{background-position:50% center}
+#w131.st .w131hint{opacity:.85}
+</style>
+<script id="v132ui">
+/* ═══ v132: تسريع العمل اليومي — التنفيذ ═══ */
+try { S.mov.user = ""; } catch (_e0) {}
+try { S.invSort = S.invSort || "name"; } catch (_e0b) {}
+
+/* (2) فلتر «من سجّل» — تعبئة القائمة من الموظفين الظاهرين في الفترة الحالية */
+function __movUsers(users) {
+  const sel = document.getElementById("movUser");
+  if (!sel || !Array.isArray(users)) return;
+  const cur = String(S.mov.user || "");
+  if (cur && !users.some((u) => String(u.id) === cur)) { S.mov.user = ""; }
+  const eff = String(S.mov.user || "");
+  sel.innerHTML = '<option value="">👤 كل الموظفين</option>'
+    + users.map((u) => '<option value="' + u.id + '"' + (String(u.id) === eff ? " selected" : "") + '>'
+      + esc(u.name) + '</option>').join("");
+}
+try {
+  const _mu = document.getElementById("movUser");
+  if (_mu && !_mu.__v132) {
+    _mu.__v132 = true;
+    _mu.addEventListener("change", (e) => { S.mov.user = e.target.value || ""; loadMovements(); });
+  }
+} catch (_e1) {}
+
+/* (3) 🔁 إعادة آخر عملية — نافذة الكمية معبّأة بآخر توريد لنفس المستخدم */
+async function repeatLastOp() {
+  try {
+    const d = await api("/api/movements/last");
+    const L = d && d.last;
+    if (!L) { toast("لا توجد عملية إضافة سابقة لإعادتها.", true); return; }
+    openQty("add", L.product_id, L.product_name);
+    setTimeout(() => { try { $("#dlgQty").value = String(L.quantity); } catch (_e) {} }, 60);
+    toast("🔁 آخر توريد: " + L.product_name + " — " + L.quantity + (L.date ? " • " + L.date : ""));
+  } catch (e) { toast((e && e.message) || "تعذر جلب آخر عملية.", true); }
+}
+try {
+  const _br = document.getElementById("btnRepeatOp");
+  if (_br && !_br.__v132) { _br.__v132 = true; _br.addEventListener("click", repeatLastOp); }
+} catch (_e2) {}
+
+/* إظهار زر الإعادة حسب صلاحية الإضافة — مع كل تطبيق صلاحيات */
+try {
+  if (typeof applyPerms === "function" && !applyPerms.__v132wrapped) {
+    const _ap = applyPerms;
+    window.applyPerms = function () {
+      const r = _ap.apply(this, arguments);
+      try {
+        const _b = document.getElementById("btnRepeatOp");
+        if (_b) _b.style.display = (S.perms && S.perms.add_qty) ? "" : "none";
+      } catch (_e) {}
+      return r;
+    };
+    window.applyPerms.__v132wrapped = true;
+  }
+} catch (_e3) {}
+
+/* (4) 🔥 مبدّل ترتيب المخزون: الاسم ↔ الأكثر حركة مؤخراً */
+try {
+  const _bs = document.getElementById("btnInvSort");
+  if (_bs && !_bs.__v132) {
+    _bs.__v132 = true;
+    _bs.addEventListener("click", () => {
+      S.invSort = (S.invSort === "activity") ? "name" : "activity";
+      _bs.textContent = S.invSort === "activity" ? "🔥 حسب الحركة" : "🔤 حسب الاسم";
+      _bs.classList.toggle("on", S.invSort === "activity");
+      try { loadInventory(); } catch (_e) {}
+    });
+  }
+} catch (_e4) {}
+</script>
+<style id="v132css">/* ═══ v132: تسريع العمل اليومي ═══ */
+.qbtns{display:inline-flex;gap:5px;align-items:center;flex:0 0 auto}
+.qbtn{width:30px;height:30px;border-radius:9px;border:1px solid var(--brandsoft,rgba(88,101,242,.3));
+  background:var(--card,#fff);font-size:16px;font-weight:800;line-height:1;cursor:pointer;color:var(--ok,#1a7f37);
+  display:inline-flex;align-items:center;justify-content:center;transition:transform .12s ease,box-shadow .12s ease}
+.qbtn.qr{color:var(--bad,#c0392b)}
+.qbtn:hover{box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.qbtn:active{transform:scale(.9)}
+#movUser{border:none;background:transparent;color:var(--ink,#2b2d31);font:inherit;font-size:13px;font-weight:700;
+  outline:none;padding:0;max-width:140px;cursor:pointer}
+#btnInvSort.on{background:var(--brand,#5865f2);color:#fff;border-color:var(--brand,#5865f2)}
+@media (max-width:640px){.qbtn{width:28px;height:28px}#movUser{max-width:110px}}
 </style>
 </body>
 </html>
