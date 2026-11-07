@@ -117,14 +117,20 @@ header button{background:rgba(255,255,255,.16);border:none;color:#fff;border-rad
   padding:8px 11px;font-size:15px;font-weight:700;cursor:pointer}
 html[data-theme="dark"] header button{background:var(--chip)}
 header button:active{transform:scale(.94)}
-main{flex:1;padding:14px 14px 86px;max-width:720px;width:100%;margin:0 auto}
+main{flex:1;padding:14px 14px 104px;max-width:720px;width:100%;margin:0 auto}
+/* v135: الشريط السفلي — أزرار أعرض وأوضح بفراغات فاصلة (احتمالات الضغط الخطأ كانت عالية):
+   كل تبويب زر مستقل بارتفاع مريح للإبهام، فراغ 6px بين الأزرار، والمفتّح يحصل على
+   شريط علوي ملوّن + خلفية حبة واضحة، مع ارتداد لمسي عند الضغط */
 nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:6;background:var(--card);
-  border-top:1px solid var(--line);display:flex;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
-nav.tabs button{flex:1;background:none;border:none;color:var(--mut);font-size:10.5px;
-  display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;cursor:pointer;
-  border-radius:10px}
-nav.tabs button .ic{font-size:20px;line-height:1}
-nav.tabs button.on{color:var(--brand);background:var(--brandsoft);font-weight:800}
+  border-top:1px solid var(--line);display:flex;gap:6px;padding:9px 9px calc(9px + env(safe-area-inset-bottom))}
+nav.tabs button{flex:1 1 0;min-width:max-content;background:none;border:none;color:var(--mut);font-size:11.5px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:7px 3px;
+  min-height:58px;cursor:pointer;border-radius:13px;white-space:nowrap;
+  transition:background .15s ease,transform .12s ease,color .15s ease}
+nav.tabs button:active{transform:scale(.92)}
+nav.tabs button .ic{font-size:22px;line-height:1}
+nav.tabs button.on{color:var(--brand);background:var(--brandsoft);font-weight:800;
+  box-shadow:inset 0 3px 0 var(--brand)}
 /* ─── عناصر ─── */
 .view{display:none}.view.on{display:block}
 h2.vt{font-size:17px;margin:4px 0 12px}
@@ -3662,7 +3668,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "12";
+const APP_VER = "13";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -7282,23 +7288,27 @@ try { window.v119WorkersSection = v93wk; } catch (e) {}
   html[data-theme="dark"] .gsic{opacity:.55}
   html[data-theme="dark"] .ginp:focus{background:var(--card);border-color:var(--edline);box-shadow:none}
 
-  nav.tabs{width:248px;padding:16px 12px 14px;gap:4px}
+  /* v135: شريط جانبي أوسع وأوضح — عناصر بارتفاع مريح وفراغ 10px بينها وخط أكبر
+     (طلب يوسف: الأزرار «متلاصقة وتكاد لا تظهر» — صارت واضحة للعيان بلمس أسهل) */
+  nav.tabs{width:264px;padding:18px 14px 16px;gap:10px}
   nav.tabs::before{content:"\1F451  LE ROI\A مُخزون السيراميك";white-space:pre-line;line-height:1.5;
     font-family:"Cairo","Segoe UI",Tahoma,sans-serif;font-size:12.5px;font-weight:800;color:var(--brand);
-    text-align:center;padding:6px 0 12px;margin:0 2px 10px;border-bottom:1px solid var(--line)}
-  nav.tabs button{flex-direction:row;align-items:center;gap:12px;padding:9px 11px;border-radius:13px;
-    font-size:13.5px;font-weight:700;color:var(--mut);text-align:right}
-  nav.tabs button .ic{width:38px;height:38px;flex:0 0 38px;display:flex;align-items:center;justify-content:center;
-    font-size:19px;line-height:1;border-radius:11px;background:var(--bg);border:1px solid var(--line);
+    text-align:center;padding:6px 0 12px;margin:0 2px 12px;border-bottom:1px solid var(--line)}
+  nav.tabs button{flex-direction:row;align-items:center;gap:13px;padding:12px 14px;border-radius:14px;
+    min-height:54px;font-size:15px;font-weight:800;color:var(--mut);text-align:right;
+    transition:background .15s ease,transform .12s ease,color .15s ease}
+  nav.tabs button:active{transform:scale(.97)}
+  nav.tabs button .ic{width:42px;height:42px;flex:0 0 42px;display:flex;align-items:center;justify-content:center;
+    font-size:21px;line-height:1;border-radius:12px;background:var(--bg);border:1px solid var(--line);
     transition:background .2s,border-color .2s,transform .2s}
-  nav.tabs button.on{color:var(--brand);background:var(--brandsoft);box-shadow:inset -3px 0 0 var(--brand)}
+  nav.tabs button.on{color:var(--brand);background:var(--brandsoft);box-shadow:inset -3.5px 0 0 var(--brand)}
   nav.tabs button.on .ic{transform:none;background:var(--card);border-color:var(--edline);
     box-shadow:0 3px 10px rgba(88,101,242,.20)}
   nav.tabs button:hover:not(.on){background:var(--bg);color:var(--ink)}
-  nav.tabs button .cnavb{top:4px}
+  nav.tabs button .cnavb{top:7px}
 
-  #app header{padding-right:272px}
-  main{max-width:1100px;margin:0 272px 0 28px;padding:24px 28px 60px}
+  #app header{padding-right:288px}
+  main{max-width:1100px;margin:0 288px 0 28px;padding:24px 28px 60px}
 
   #sbUser{display:flex;margin-top:auto;flex:0 0 auto;align-items:center;gap:10px;padding:9px 11px;
     border-radius:14px;border:1px solid var(--line);background:var(--bg);cursor:pointer;
@@ -7489,6 +7499,18 @@ try {
   outline:none;padding:0;max-width:140px;cursor:pointer}
 #btnInvSort.on{background:var(--brand,#5865f2);color:#fff;border-color:var(--brand,#5865f2)}
 @media (max-width:640px){.qbtn{width:28px;height:28px}#movUser{max-width:110px}}
+</style>
+<style id="v135css">/* ═══ v135: لمسات الإحساس الذكي — ضغط أوضح وتركيز أدق في كل الواجهة ═══ */
+/* حلقة تركيز واضحة لأي تنقّل بلوحة المفاتيح (سطح المكتب) — وصولية وسرعة معاً */
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{
+  outline:2.5px solid var(--brand,#5865f2);outline-offset:2px;border-radius:10px}
+/* إحساس لمسي: بطاقات الرئيسية وصفوف القوائم ترتد بلطف عند الضغط باللمس فقط —
+   نقر الماوس على سطح المكتب لا يتأثر */
+@media (hover:none) and (pointer:coarse){
+  .row:active{transform:scale(.985)}
+  .stat:active{transform:scale(.97)}
+  .ordcard:active{transform:scale(.985)}
+}
 </style>
 </body>
 </html>
