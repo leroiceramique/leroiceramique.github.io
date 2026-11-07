@@ -114,14 +114,20 @@ header button{background:rgba(255,255,255,.16);border:none;color:#fff;border-rad
   padding:8px 11px;font-size:15px;font-weight:700;cursor:pointer}
 html[data-theme="dark"] header button{background:var(--chip)}
 header button:active{transform:scale(.94)}
-main{flex:1;padding:14px 14px 86px;max-width:720px;width:100%;margin:0 auto}
+main{flex:1;padding:14px 14px 104px;max-width:720px;width:100%;margin:0 auto}
+/* v135: الشريط السفلي — أزرار أعرض وأوضح بفراغات فاصلة (احتمالات الضغط الخطأ كانت عالية):
+   كل تبويب زر مستقل بارتفاع مريح للإبهام، فراغ 6px بين الأزرار، والمفتّح يحصل على
+   شريط علوي ملوّن + خلفية حبة واضحة، مع ارتداد لمسي عند الضغط */
 nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:6;background:var(--card);
-  border-top:1px solid var(--line);display:flex;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
-nav.tabs button{flex:1;background:none;border:none;color:var(--mut);font-size:10.5px;
-  display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;cursor:pointer;
-  border-radius:10px}
-nav.tabs button .ic{font-size:20px;line-height:1}
-nav.tabs button.on{color:var(--brand);background:var(--brandsoft);font-weight:800}
+  border-top:1px solid var(--line);display:flex;gap:6px;padding:9px 9px calc(9px + env(safe-area-inset-bottom))}
+nav.tabs button{flex:1 1 0;min-width:max-content;background:none;border:none;color:var(--mut);font-size:11.5px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:7px 3px;
+  min-height:58px;cursor:pointer;border-radius:13px;white-space:nowrap;
+  transition:background .15s ease,transform .12s ease,color .15s ease}
+nav.tabs button:active{transform:scale(.92)}
+nav.tabs button .ic{font-size:22px;line-height:1}
+nav.tabs button.on{color:var(--brand);background:var(--brandsoft);font-weight:800;
+  box-shadow:inset 0 3px 0 var(--brand)}
 /* ─── عناصر ─── */
 .view{display:none}.view.on{display:block}
 h2.vt{font-size:17px;margin:4px 0 12px}
