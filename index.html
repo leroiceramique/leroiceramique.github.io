@@ -3672,7 +3672,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "14";   /* v136: علاج انكسار أسماء السلع حرفاً فوق حرف — عمود الاسم مضمون العرض */
+const APP_VER = "16";   /* v137: الإبلاغ عن الأخطاء — زر 🐞 ثابت في كل شاشة + لوحة بلاغات للإدارة */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -7516,5 +7516,326 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   .ordcard:active{transform:scale(.985)}
 }
 </style>
+<script id="v137ui">/* ═══════════════════════════════════════════════════════════════════
+   v137+v138: الإبلاغ عن الأخطاء — زر ثابت + نافذة كتابة + لوحة إدارية + «🤖 معالجة بالذكاء»
+   كل شيء داخل IIFE معزول بـ try/catch — أي عطل يبقى بلا أثر على التطبيق.
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  function safe(fn) { try { fn(); } catch (e) {} }
+  function q(id) { return document.getElementById(id); }
+
+  /* ── 1) التقاط آخر خطأ ظهر للمستخدم — غلاف آمن فوق toast بلا مساس بمنطقه ── */
+  var lastErr = null;
+  function curView() {
+    try { var v = document.querySelector(".view.on"); return (v && v.id) || ""; }
+    catch (e) { return ""; }
+  }
+  safe(function () {
+    if (typeof window.toast !== "function" || window.toast.__v137) return;
+    var orig = window.toast;
+    window.toast = function (msg, isErr, dur) {
+      if (isErr && msg) {
+        lastErr = { msg: String(msg), view: curView(), at: Date.now() };
+      }
+      return orig.apply(this, arguments);
+    };
+    window.toast.__v137 = true;
+  });
+  function appVer() { try { return String(APP_VER || ""); } catch (e) { return ""; } }
+  function isAdmin() { try { return !!(S && S.perms && S.perms.admin); } catch (e) { return false; } }
+
+  /* ── 2) نافذة البلاغ (كتابة + لوحة الإدارة) ── */
+  var dlg = document.createElement("dialog");
+  dlg.id = "dlgBug";
+  dlg.innerHTML = '<div class="dh" id="bugDlgTitle">🐞 الإبلاغ عن خطأ</div>'
+    + '<div class="db">'
+    + '<div id="bugWritePane">'
+    + '<p class="bugctx" id="bugCtx" style="display:none"></p>'
+    + '<div class="fld"><label>اشرح الخطأ — ماذا ظهر وماذا كنت تفعل؟</label>'
+    + '<textarea id="bugText" maxlength="2000" rows="4" '
+    + 'placeholder="مثال: عند فتح المخزون تظهر أسماء السلع مكسورة حرفاً فوق حرف…"></textarea></div>'
+    + '<button type="button" class="btn" id="bugGo">📨 إرسال البلاغ</button>'
+    + '<button type="button" class="btn gray" id="bugCancel" style="margin-top:8px">إلغاء</button>'
+    + '<button type="button" class="btn soft-e" id="bugAdminBtn" style="display:none;margin-top:8px">'
+    + '📋 بلاغات المستخدمين <span id="bugN"></span></button>'
+    + '</div>'
+    + '<div id="bugListPane" style="display:none">'
+    + '<p class="bugctx" id="bugListHead">جارٍ التحميل…</p>'
+    + '<div id="bugList"></div>'
+    + '<button type="button" class="btn gray" id="bugBack" style="margin-top:8px">← رجوع للكتابة</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(dlg);
+  /* لمس الخلفية يغلق — نفس سلوك نوافذ التطبيق */
+  dlg.addEventListener("click", function (e) {
+    if (e.target === dlg) safe(function () { dlg.close(); });
+  });
+
+  /* ── 3) الزر الثابت داخل #app — يظهر مع التطبيق ويختفي معه في كل الشاشات ── */
+  var btn = document.createElement("button");
+  btn.type = "button"; btn.className = "bugfab"; btn.id = "bugFab";
+  btn.title = "الإبلاغ عن خطأ"; btn.setAttribute("aria-label", "الإبلاغ عن خطأ");
+  btn.innerHTML = '🐞<i class="bugdot" id="bugDot" style="display:none"></i>';
+  var __app = document.getElementById("app");
+  if (__app) __app.appendChild(btn); else document.body.appendChild(btn);
+
+  function hideDot() { var i = q("bugDot"); if (i) i.style.display = "none"; }
+
+  /* ── 4) شارة البلاغات المفتوحة (للإدارة فقط) ── */
+  var dotBusy = false;
+  function refreshDot() {
+    if (!isAdmin()) { hideDot(); return; }
+    if (dotBusy) return;
+    dotBusy = true;
+    api("/api/bug/list", { noCache: true }).then(function (d) {
+      dotBusy = false;
+      var n = (d && d.ok && d.open) || 0;
+      var i = q("bugDot"), ns = q("bugN");
+      if (i) { i.textContent = n > 99 ? "+99" : String(n); i.style.display = n ? "flex" : "none"; }
+      if (ns) ns.textContent = n ? "(" + n + ")" : "";
+    }).catch(function () { dotBusy = false; });
+  }
+
+  /* ── 5) فتح النافذة: تعبئة السياق تلقائياً (الشاشة + آخر خطأ + الإصدار) ── */
+  btn.addEventListener("click", function () {
+    safe(function () {
+      q("bugWritePane").style.display = "";
+      q("bugListPane").style.display = "none";
+      q("bugDlgTitle").textContent = "🐞 الإبلاغ عن خطأ";
+      var bits = [];
+      var v = curView();
+      if (v) bits.push("الشاشة: " + v.replace("v-", ""));
+      if (lastErr && Date.now() - lastErr.at < 600000) bits.push("آخر خطأ: " + lastErr.msg);
+      if (appVer()) bits.push("الإصدار " + appVer());
+      var ctx = q("bugCtx");
+      ctx.textContent = bits.length ? "📎 " + bits.join(" • ") : "";
+      ctx.style.display = bits.length ? "" : "none";
+      q("bugAdminBtn").style.display = isAdmin() ? "" : "none";
+      if (isAdmin()) refreshDot();
+      if (!dlg.open) { try { dlg.showModal(); } catch (e) {} }
+      setTimeout(function () { try { q("bugText").focus(); } catch (e) {} }, 60);
+    });
+  });
+  safe(function () {
+    q("bugCancel").addEventListener("click", function () { try { dlg.close(); } catch (e) {} });
+  });
+
+  /* ── 6) إرسال البلاغ ── */
+  safe(function () {
+    q("bugGo").addEventListener("click", async function () {
+      var b = q("bugGo"), t = q("bugText");
+      var txt = (t.value || "").trim();
+      if (txt.length < 3) { toast("اكتب وصف الخطأ أولاً (3 أحرف على الأقل).", true); return; }
+      var ctxBits = [];
+      var v = curView();
+      if (v) ctxBits.push("الشاشة: " + v.replace("v-", ""));
+      if (lastErr && Date.now() - lastErr.at < 600000) ctxBits.push("آخر خطأ ظاهر: " + lastErr.msg);
+      b.disabled = true;
+      var ob = b.textContent;
+      b.textContent = "جارٍ الإرسال…";
+      try {
+        var d = await api("/api/bug/report", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: txt, context: ctxBits.join(" • "),
+            screen: v, app_ver: appVer() }) });
+        if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر إرسال البلاغ.");
+        toast(d.message || "✅ وصل البلاغ — شكراً لك!");
+        t.value = "";
+        lastErr = null;
+        try { dlg.close(); } catch (e) {}
+        refreshDot();
+      } catch (e) {
+        toast((e && e.message) || "تعذر إرسال البلاغ.", true);
+      } finally { b.disabled = false; b.textContent = ob; }
+    });
+  });
+
+  /* ── 7) لوحة الإدارة: كل ما كُتب ── */
+  function escH(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function rel(iso) {
+    try {
+      var ms = Date.now() - new Date(iso).getTime();
+      if (ms < 60000) return "الآن";
+      if (ms < 3600000) return "قبل " + Math.floor(ms / 60000) + " د";
+      if (ms < 86400000) return "قبل " + Math.floor(ms / 3600000) + " س";
+      return "قبل " + Math.floor(ms / 86400000) + " يوم";
+    } catch (e) { return ""; }
+  }
+  /* ── v138: تحليل «🤖 معالجة» — قراءة JSON التحليل المحفوظ مع البلاغ ── */
+  function parseAI(s) {
+    try {
+      var a = JSON.parse(s);
+      if (a && (a.diagnosis || a.steps)) return a;
+    } catch (e) {}
+    if (s && String(s).length > 3) return { diagnosis: String(s), steps: [], severity: "" };
+    return null;
+  }
+  var BUG_SEV = { high: ["sev-h", "🔥 خطورة عالية"], mid: ["sev-m", "⚠️ خطورة متوسطة"],
+    low: ["sev-l", "🟢 خطورة منخفضة"] };
+  function renderList(d) {
+    var box = q("bugList");
+    var items = (d && d.items) || [];
+    q("bugListHead").textContent = "🐞 " + ((d && d.open) || 0) + " بلاغ مفتوح من أصل "
+      + ((d && d.total) || 0) + (items.length ? " — المفتوح أولاً ثم الأحدث" : "");
+    if (!items.length) {
+      box.innerHTML = '<p class="hint">لا بلاغات بعد — كل شيء سليم ✅</p>';
+      return;
+    }
+    box.innerHTML = items.map(function (r) {
+      var open = r.status !== "done";
+      /* v138: بطاقة التحليل الذكي إن وُجد تحليل محفوظ مع البلاغ */
+      var ai = parseAI(r.ai_analysis), aiHtml = "";
+      if (ai) {
+        var sv = BUG_SEV[String(ai.severity || "").toLowerCase()] || ["", "تحليل جاهز"];
+        aiHtml = '<div class="bugai ' + sv[0] + '">'
+          + '<div class="bugaih"><span class="bugsev">🤖 ' + sv[1] + '</span>'
+          + '<span class="bugmeta">'
+          + escH(ai.engine === "glm" ? ("GLM" + (ai.model ? " • " + ai.model : "")) : "تحليل محلي")
+          + (r.ai_at ? " • " + rel(r.ai_at) : "") + '</span></div>'
+          + '<div class="bugaidx">' + escH(ai.diagnosis || "") + '</div>'
+          + (ai.steps && ai.steps.length
+             ? '<ol class="bugaisteps">' + ai.steps.map(function (st) {
+                 return '<li>' + escH(st) + '</li>'; }).join("") + '</ol>' : "")
+          + (ai.note ? '<div class="bugainote">📝 ' + escH(ai.note) + '</div>' : "")
+          + '</div>';
+      }
+      return '<div class="bugcard' + (open ? "" : " done") + '">'
+        + '<div class="bugtop"><b>' + escH(r.username || "مستخدم") + '</b>'
+        + '<span class="bugst ' + (open ? "o" : "d") + '">' + (open ? "مفتوح" : "تمت المعالجة") + '</span>'
+        + '<span class="bugmeta">' + rel(r.created_at) + '</span></div>'
+        + '<div class="bugtxt">' + escH(r.text) + '</div>'
+        + (r.context ? '<div class="bugmeta bugctx2">📎 ' + escH(r.context) + '</div>' : "")
+        + aiHtml
+        + '<div class="bugacts">'
+        + '<button type="button" class="btn mini ' + (open ? "soft-g" : "gray")
+        + '" data-bugres="' + r.id + '">' + (open ? "✔️ تمت المعالجة" : "↩️ إعادة فتح") + '</button>'
+        + '<button type="button" class="btn mini soft-e" data-bugai="' + r.id + '">'
+        + (ai ? "🔄 إعادة التحليل" : "🤖 معالجة بالذكاء") + '</button>'
+        + '<button type="button" class="btn mini red" data-bugdel="' + r.id + '">🗑 حذف</button>'
+        + '</div></div>';
+    }).join("");
+    box.querySelectorAll("button[data-bugres]").forEach(function (b) {
+      b.addEventListener("click", function () { bugAct("/api/bug/resolve", b.dataset.bugres); });
+    });
+    box.querySelectorAll("button[data-bugdel]").forEach(function (b) {
+      b.addEventListener("click", function () { bugAct("/api/bug/delete", b.dataset.bugdel); });
+    });
+    /* ── v138: زر «🤖 معالجة بالذكاء» — يطلب تحليل البلاغ ويعرض التشخيص والخطوات ── */
+    box.querySelectorAll("button[data-bugai]").forEach(function (b) {
+      b.addEventListener("click", async function () {
+        var ob = b.textContent;
+        b.disabled = true; b.textContent = "⏳ جارٍ التحليل…";
+        try {
+          var d = await api("/api/bug/ai", { method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: +b.dataset.bugai }) });
+          if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر التحليل.");
+          toast(d.message || "🤖 جاهز — اقرأ التشخيص وخطوات المعالجة.");
+          loadList();
+        } catch (e) {
+          toast((e && e.message) || "تعذر التحليل.", true);
+          b.disabled = false; b.textContent = ob;
+        }
+      });
+    });
+  }
+  async function bugAct(path, id) {
+    try {
+      var d = await api(path, { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: +id }) });
+      if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر التنفيذ.");
+      toast(d.message || "✅ تم.");
+      loadList();
+    } catch (e) { toast((e && e.message) || "تعذر التنفيذ.", true); }
+  }
+  async function loadList() {
+    try {
+      var d = await api("/api/bug/list", { noCache: true });
+      if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر جلب البلاغات.");
+      renderList(d);
+    } catch (e) {
+      var h = q("bugListHead");
+      if (h) h.textContent = "⚠️ " + ((e && e.message) || "تعذر جلب البلاغات.");
+    }
+    refreshDot();
+  }
+  safe(function () {
+    q("bugAdminBtn").addEventListener("click", function () {
+      q("bugWritePane").style.display = "none";
+      q("bugListPane").style.display = "";
+      q("bugDlgTitle").textContent = "📋 بلاغات الأخطاء — كل ما كتبه المستخدمون";
+      loadList();
+    });
+    q("bugBack").addEventListener("click", function () {
+      q("bugListPane").style.display = "none";
+      q("bugWritePane").style.display = "";
+      q("bugDlgTitle").textContent = "🐞 الإبلاغ عن خطأ";
+    });
+  });
+
+  /* ── 8) تحديث الشارة مع كل تطبيق صلاحيات + كل دقيقتين ── */
+  safe(function () {
+    if (typeof window.applyPerms === "function" && !window.applyPerms.__v137wrapped) {
+      var orig = window.applyPerms;
+      window.applyPerms = function () {
+        var r = orig.apply(this, arguments);
+        safe(refreshDot);
+        return r;
+      };
+      window.applyPerms.__v137wrapped = true;
+    }
+  });
+  safe(refreshDot);
+  setInterval(function () { safe(refreshDot); }, 120000);
+})();</script>
+<style id="v137css">/* ═══ v137+v138: الإبلاغ عن الأخطاء — الزر الثابت + لوحة البلاغات + «🤖 معالجة بالذكاء» ═══ */
+.bugfab{position:fixed;z-index:8;inset-inline-start:18px;bottom:calc(96px + env(safe-area-inset-bottom));
+  width:46px;height:46px;border:1px solid var(--goldline,#e8c97a);border-radius:16px;cursor:pointer;
+  background:var(--card,#fff);color:var(--ink,#2b2d31);font-size:20px;line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 22px rgba(46,51,56,.16);transition:transform .18s ease}
+.bugfab:active{transform:scale(.9)}
+.bugdot{position:absolute;top:-6px;inset-inline-end:-6px;min-width:17px;height:17px;border-radius:9px;
+  background:var(--bad,#d83c3e);color:#fff;font-size:10px;font-weight:800;font-style:normal;
+  display:flex;align-items:center;justify-content:center;padding:0 4px;
+  box-shadow:0 2px 6px rgba(242,63,67,.4)}
+/* سطح المكتب: الشريط الجانبي يحتل البداية — يُنقل الزر فوق الزر الذكي العائم في الجهة المقابلة */
+@media (min-width:1024px){
+  .bugfab{inset-inline-start:auto;inset-inline-end:18px;
+    bottom:calc(170px + env(safe-area-inset-bottom))}
+}
+.bugctx{background:var(--bg,#f4f5f7);border-radius:10px;padding:8px 10px;font-size:12.5px;
+  color:var(--mut,#6b7280);margin:0 0 10px;word-break:break-word}
+.bugcard{background:var(--card,#fff);border:1px solid var(--line,#e5e7eb);border-radius:14px;
+  padding:11px 12px;margin-bottom:9px;box-shadow:var(--shadow,0 1px 3px rgba(0,0,0,.05))}
+.bugcard.done{opacity:.62}
+.bugtop{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}
+.bugtop b{font-size:13.5px}
+.bugst{padding:1.5px 9px;border-radius:99px;font-size:10.5px;font-weight:800;white-space:nowrap}
+.bugst.o{background:rgba(242,63,67,.12);color:var(--bad,#d83c3e)}
+.bugst.d{background:rgba(35,165,90,.14);color:var(--ok,#23a55a)}
+.bugmeta{font-size:11px;color:var(--mut,#6b7280);margin-inline-start:auto}
+.bugtxt{font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.bugctx2{margin-top:6px;margin-inline-start:0;word-break:break-word}
+.bugacts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+#bugList{max-height:46vh;overflow-y:auto;overscroll-behavior:contain}
+/* ── v138: لوحة التحليل الذكي داخل بطاقة البلاغ ── */
+.bugai{margin-top:8px;border:1px solid var(--line,#e5e7eb);border-inline-start:3px solid #8b5cf6;
+  border-radius:10px;background:rgba(139,92,246,.06);padding:8px 10px}
+.bugai.sev-h{border-inline-start-color:var(--bad,#d83c3e);background:rgba(242,63,67,.06)}
+.bugai.sev-m{border-inline-start-color:#e8a013;background:rgba(232,160,19,.08)}
+.bugai.sev-l{border-inline-start-color:var(--ok,#23a55a);background:rgba(35,165,90,.07)}
+.bugaih{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.bugsev{font-size:11px;font-weight:800;padding:1.5px 8px;border-radius:99px;
+  background:rgba(139,92,246,.14);color:#7c3aed;white-space:nowrap}
+.bugaidx{font-size:13.5px;line-height:1.55;font-weight:600;word-break:break-word}
+.bugaisteps{margin:6px 0 0;padding-inline-start:20px;font-size:13px;line-height:1.7}
+.bugainote{margin-top:6px;font-size:12px;color:var(--mut,#6b7280);word-break:break-word}</style>
 </body>
 </html>
