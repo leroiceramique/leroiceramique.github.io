@@ -454,6 +454,15 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
         <button class="btn mini gold" id="btnAddProd" style="display:none">＋ إضافة سلعة</button>
       </div>
       <input class="search" id="qSearch" placeholder="🔍 ابحث باسم السلعة...">
+      <!-- v139: فلتر الخيار — اعرض سلع خيار واحد فقط (موتيف/120/60/plante/باقي السلع) بطلب يوسف:
+           «أسجل اليوم خيار باقي السلع فيظهر ما أكتبه من سلعها فقط، وعند الذهاب لمكان موتيف أسجلهم كلهم وراء بعض» -->
+      <div class="chips" id="typeChips" style="margin-bottom:10px">
+        <button type="button" class="fchip on" data-t="all">🗂 الكل</button>
+        <button type="button" class="fchip" data-t="motif">🎨 موتيف</button>
+        <button type="button" class="fchip" data-t="12060">🎨 120/60</button>
+        <button type="button" class="fchip" data-t="plante">🌿 plante</button>
+        <button type="button" class="fchip" data-t="other">📦 باقي السلع</button>
+      </div>
       <div class="seg" id="invSeg">
         <button id="segAll" class="on">الكل</button>
         <button id="segLow">🔴 منخفضة</button>
@@ -1300,6 +1309,33 @@ function unitOf(name) {
     || n.startsWith("120/60") || n.startsWith("120x60") || n.startsWith("120×60"))
     ? "قطعة" : "كرتون";
 }
+/* ── v139: فلتر الخيار — اعرض سلع خيار واحد فقط بطلب يوسف — التصنيف مطابق للخادم:
+   بادئة motif/plante + رمز 120/60 في أي موضع من الاسم، وإلا فهو «باقي السلع» —
+   الفلتر يبقى مفعّلاً حتى مع تغييره أثناء الجلسة ويُحفظ محلياً فيجلس معه المستخدم يوماً كاملاً ── */
+const TYPE_LABEL = { all: "الكل", motif: "موتيف", "12060": "120/60", plante: "plante", other: "باقي السلع" };
+function typeOfName(name) {
+  const n = String(name || "").trim().toLowerCase();
+  if (/(^|\s)(120\/60|120x60|120×60)(?=\s|$)/.test(n)) return "12060";
+  if (n.startsWith("motif")) return "motif";
+  if (n.startsWith("plante")) return "plante";
+  return "other";
+}
+S.invType = "all";
+try {
+  const __st = localStorage.getItem("ceramInvType");
+  if (__st && ["all", "motif", "12060", "plante", "other"].indexOf(__st) >= 0) S.invType = __st;
+} catch (_stE) {}
+(function () {
+  const tbox = document.getElementById("typeChips"); if (!tbox) return;
+  const tSync = () => tbox.querySelectorAll(".fchip").forEach((b) => b.classList.toggle("on", b.dataset.t === S.invType));
+  tSync();
+  tbox.querySelectorAll(".fchip").forEach((b) =>
+    b.addEventListener("click", () => {
+      S.invType = b.dataset.t;
+      try { localStorage.setItem("ceramInvType", S.invType); } catch (_lsE) {}
+      tSync(); loadInventory();
+    }));
+})();
 async function loadInventory() {
   const box = $("#invList");
   const fresh = freshGen("inv");   /* v45: استجابة قديمة لا ترسم */
@@ -1327,27 +1363,21 @@ async function loadInventory() {
       d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
     }
     if (!fresh()) return;
+    /* v139: فلتر الخيار — القائمة تُقص على سلع الخيار المختار فقط (شامل البحث والمنخفضة والمحذوفة) */
+    if (S.invType && S.invType !== "all") {
+      const __trows = (d.products || []).filter((p) => typeOfName(p.name) === S.invType);
+      d = Object.assign({}, d, { products: __trows, total: __trows.length });
+    }
     S.invData = d.products || [];
     if (!S.invData.length) {
+      try { const __oc0 = document.getElementById("invCount"); if (__oc0) __oc0.remove(); } catch (_e1) {}
+      const __tf = S.invType && S.invType !== "all";   /* v139 */
       box.innerHTML = '<p class="empty">' + (S.invTab === "arch"
         ? "لا توجد سلع محذوفة — كل السلع حية."
-        : (S.invTab === "low" ? (S.invQ ? "لا توجد نتائج." : "✅ لا توجد سلع منخفضة.") : "لا توجد نتائج.")) + '</p>';
+        : (__tf ? "لا توجد سلع تحت خيار «" + (TYPE_LABEL[S.invType] || "") + "»" + (S.invQ ? " بهذا البحث." : ".")
+          : (S.invTab === "low" ? (S.invQ ? "لا توجد نتائج." : "✅ لا توجد سلع منخفضة.") : "لا توجد نتائج."))) + '</p>';
       return;
     }
-    /* v124: عدّاد النتائج — يعرف المستخدم أن القائمة كاملة لا مقتطعة،
-       وأن البحث شمل المطابقة الموسّعة (قياس معكوس/مصنع/خطأ إملائي) */
-    try {
-      const __oc = document.getElementById("invCount");
-      if (__oc) __oc.remove();
-      if (S.invQ) {
-        const c = document.createElement("div");
-        c.id = "invCount";
-        c.style.cssText = "font-size:12.5px;color:var(--mut);margin:0 2px 8px";
-        c.textContent = "🔍 " + S.invData.length + " نتيجة عن «" + S.invQ + "»"
-          + (d.smart ? " — بحث دقيق: القياس يطابق قياسه فقط (بالاتجاهين) مع دعم المصانع والأخطاء الإملائية" : "");
-        box.insertBefore(c, box.firstChild);
-      }
-    } catch (_eC) {}
     box.innerHTML = S.invData.map((p) => {
       if (d.limited) {
         return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b></div>'
@@ -1370,6 +1400,25 @@ async function loadInventory() {
         + (S.invTab === "arch" ? '<span class="badge mut">محذوفة</span>' : qtyBadge)
         + '</div>';
     }).join("");
+    /* v139: العدّاد يُرسم بعد الصفوف — كان يُدرج قبلها منذ v124 فمحاه innerHTML
+       فوراً ولم يظهر للمستخدم إطلاقاً (إصلاح إضافي مع الفلتر) */
+    /* v124: عدّاد النتائج — يعرف المستخدم أن القائمة كاملة لا مقتطعة،
+       وأن البحث شمل المطابقة الموسّعة (قياس معكوس/مصنع/خطأ إملائي) */
+    try {
+      const __oc = document.getElementById("invCount");
+      if (__oc) __oc.remove();
+      const __tf = S.invType && S.invType !== "all";   /* v139: عدّاد يُظهر الخيار المفعّل حتى بلا بحث */
+      if (S.invQ || __tf) {
+        const c = document.createElement("div");
+        c.id = "invCount";
+        c.style.cssText = "font-size:12.5px;color:var(--mut);margin:0 2px 8px";
+        c.textContent = (S.invQ ? "🔍 " + S.invData.length + " نتيجة عن «" + S.invQ + "»"
+            : "📦 " + S.invData.length + " سلعة")
+          + (__tf ? " — خيار «" + (TYPE_LABEL[S.invType] || "") + "» فقط" : "")
+          + (d.smart ? " — بحث دقيق: القياس يطابق قياسه فقط (بالاتجاهين) مع دعم المصانع والأخطاء الإملائية" : "");
+        box.insertBefore(c, box.firstChild);
+      }
+    } catch (_eC) {}
     box.querySelectorAll("button[data-menu]").forEach((b) =>
       b.addEventListener("click", () => openRowMenu(+b.dataset.menu, b.dataset.n, b.dataset.q, b.dataset.u)));
     box.querySelectorAll("[data-detail]").forEach((el) =>

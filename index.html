@@ -888,6 +888,15 @@ img{-webkit-user-drag:none;user-select:none}</style>
         <button class="btn mini gold" id="btnAddProd" style="display:none">＋ إضافة سلعة</button>
       </div>
       <input class="search" id="qSearch" placeholder="🔍 ابحث باسم السلعة...">
+      <!-- v139: فلتر الخيار — اعرض سلع خيار واحد فقط (موتيف/120/60/plante/باقي السلع) بطلب يوسف:
+           «أسجل اليوم خيار باقي السلع فيظهر ما أكتبه من سلعها فقط، وعند الذهاب لمكان موتيف أسجلهم كلهم وراء بعض» -->
+      <div class="chips" id="typeChips" style="margin-bottom:10px">
+        <button type="button" class="fchip on" data-t="all">🗂 الكل</button>
+        <button type="button" class="fchip" data-t="motif">🎨 موتيف</button>
+        <button type="button" class="fchip" data-t="12060">🎨 120/60</button>
+        <button type="button" class="fchip" data-t="plante">🌿 plante</button>
+        <button type="button" class="fchip" data-t="other">📦 باقي السلع</button>
+      </div>
       <div class="seg" id="invSeg">
         <button id="segAll" class="on">الكل</button>
         <button id="segLow">🔴 منخفضة</button>
@@ -2249,6 +2258,33 @@ function unitOf(name) {
   if (n.startsWith("motif") || n.startsWith("plante")) return "قطعة";
   return (/(^|\s)(120\/60|120x60|120×60)(?=\s|$)/).test(n) ? "قطعة" : "كرتون";
 }
+/* ── v139: فلتر الخيار — اعرض سلع خيار واحد فقط بطلب يوسف — التصنيف مطابق للخادم:
+   بادئة motif/plante + رمز 120/60 في أي موضع من الاسم، وإلا فهو «باقي السلع» —
+   الفلتر يبقى مفعّلاً حتى مع تغييره أثناء الجلسة ويُحفظ محلياً فيجلس معه المستخدم يوماً كاملاً ── */
+const TYPE_LABEL = { all: "الكل", motif: "موتيف", "12060": "120/60", plante: "plante", other: "باقي السلع" };
+function typeOfName(name) {
+  const n = String(name || "").trim().toLowerCase();
+  if (/(^|\s)(120\/60|120x60|120×60)(?=\s|$)/.test(n)) return "12060";
+  if (n.startsWith("motif")) return "motif";
+  if (n.startsWith("plante")) return "plante";
+  return "other";
+}
+S.invType = "all";
+try {
+  const __st = localStorage.getItem("ceramInvType");
+  if (__st && ["all", "motif", "12060", "plante", "other"].indexOf(__st) >= 0) S.invType = __st;
+} catch (_stE) {}
+(function () {
+  const tbox = document.getElementById("typeChips"); if (!tbox) return;
+  const tSync = () => tbox.querySelectorAll(".fchip").forEach((b) => b.classList.toggle("on", b.dataset.t === S.invType));
+  tSync();
+  tbox.querySelectorAll(".fchip").forEach((b) =>
+    b.addEventListener("click", () => {
+      S.invType = b.dataset.t;
+      try { localStorage.setItem("ceramInvType", S.invType); } catch (_lsE) {}
+      tSync(); loadInventory();
+    }));
+})();
 async function loadInventory() {
   const box = $("#invList");
   const fresh = freshGen("inv");   /* v45: استجابة قديمة لا ترسم */
@@ -2277,39 +2313,22 @@ async function loadInventory() {
       d = await api("/api/products" + (qp.length ? "?" + qp.join("&") : ""));
     }
     if (!fresh()) return;
+    /* v139: فلتر الخيار — القائمة تُقص على سلع الخيار المختار فقط (شامل البحث والمنخفضة والمحذوفة) */
+    if (S.invType && S.invType !== "all") {
+      const __trows = (d.products || []).filter((p) => typeOfName(p.name) === S.invType);
+      d = Object.assign({}, d, { products: __trows, total: __trows.length });
+    }
     S.invData = d.products || [];
-    try {
-      const __tot = d.total | 0, __n = (d.products || []).length;
-      const __oh = document.getElementById("invTruncHint");
-      if (__oh) __oh.remove();
-      if (__tot > __n && __n > 0) {
-        const h = document.createElement("div");
-        h.id = "invTruncHint";
-        h.style.cssText = "background:#fff7e6;border:1px solid #f0c36d;color:#8a5b00;padding:8px 10px;border-radius:10px;margin:0 0 8px;font-size:13px";
-        h.textContent = "يُعرض أول " + __n + " من أصل " + __tot + " سلعة — استخدم البحث بالاسم للوصول إلى البقية.";
-        box.insertBefore(h, box.firstChild);
-      }
-    } catch (_e) {}
     if (!S.invData.length) {
+      try { const __oh0 = document.getElementById("invTruncHint"); if (__oh0) __oh0.remove(); } catch (_e0) {}
+      try { const __oc0 = document.getElementById("invCount"); if (__oc0) __oc0.remove(); } catch (_e1) {}
+      const __tf = S.invType && S.invType !== "all";   /* v139 */
       box.innerHTML = '<p class="empty">' + (S.invTab === "arch"
         ? "لا توجد سلع محذوفة — كل السلع حية."
-        : (S.invTab === "low" ? (S.invQ ? "لا توجد نتائج." : "✅ لا توجد سلع منخفضة.") : "لا توجد نتائج.")) + '</p>';
+        : (__tf ? "لا توجد سلع تحت خيار «" + (TYPE_LABEL[S.invType] || "") + "»" + (S.invQ ? " بهذا البحث." : ".")
+          : (S.invTab === "low" ? (S.invQ ? "لا توجد نتائج." : "✅ لا توجد سلع منخفضة.") : "لا توجد نتائج."))) + '</p>';
       return;
     }
-    /* v124: عدّاد النتائج — يعرف المستخدم أن القائمة كاملة لا مقتطعة،
-       وأن البحث شمل المطابقة الموسّعة (قياس معكوس/مصنع/خطأ إملائي) */
-    try {
-      const __oc = document.getElementById("invCount");
-      if (__oc) __oc.remove();
-      if (S.invQ) {
-        const c = document.createElement("div");
-        c.id = "invCount";
-        c.style.cssText = "font-size:12.5px;color:var(--mut);margin:0 2px 8px";
-        c.textContent = "🔍 " + S.invData.length + " نتيجة عن «" + S.invQ + "»"
-          + (d.smart ? " — بحث دقيق: القياس يطابق قياسه فقط (بالاتجاهين) مع دعم المصانع والأخطاء الإملائية" : "");
-        box.insertBefore(c, box.firstChild);
-      }
-    } catch (_eC) {}
     box.innerHTML = S.invData.map((p) => {
       if (d.limited) {
         return '<div class="row"><div class="info"><b>' + esc(p.name) + '</b></div>'
@@ -2340,6 +2359,37 @@ async function loadInventory() {
           + '</span>'))
         + '</div>';
     }).join("");
+    /* v139: العدّاد وتنبيه الاقتطاع يُرسمان بعد رسم الصفوف — كانت تُدرج قبلها منذ v124
+       فمحاها innerHTML فوراً ولم تظهر للمستخدم إطلاقاً (إصلاح إضافي مع الفلتر) */
+    try {
+      const __tot = d.total | 0, __n = (d.products || []).length;
+      const __oh = document.getElementById("invTruncHint");
+      if (__oh) __oh.remove();
+      if (__tot > __n && __n > 0) {
+        const h = document.createElement("div");
+        h.id = "invTruncHint";
+        h.style.cssText = "background:#fff7e6;border:1px solid #f0c36d;color:#8a5b00;padding:8px 10px;border-radius:10px;margin:0 0 8px;font-size:13px";
+        h.textContent = "يُعرض أول " + __n + " من أصل " + __tot + " سلعة — استخدم البحث بالاسم للوصول إلى البقية.";
+        box.insertBefore(h, box.firstChild);
+      }
+    } catch (_e) {}
+    /* v124: عدّاد النتائج — يعرف المستخدم أن القائمة كاملة لا مقتطعة،
+       وأن البحث شمل المطابقة الموسّعة (قياس معكوس/مصنع/خطأ إملائي) */
+    try {
+      const __oc = document.getElementById("invCount");
+      if (__oc) __oc.remove();
+      const __tf = S.invType && S.invType !== "all";   /* v139: عدّاد يُظهر الخيار المفعّل حتى بلا بحث */
+      if (S.invQ || __tf) {
+        const c = document.createElement("div");
+        c.id = "invCount";
+        c.style.cssText = "font-size:12.5px;color:var(--mut);margin:0 2px 8px";
+        c.textContent = (S.invQ ? "🔍 " + S.invData.length + " نتيجة عن «" + S.invQ + "»"
+            : "📦 " + S.invData.length + " سلعة")
+          + (__tf ? " — خيار «" + (TYPE_LABEL[S.invType] || "") + "» فقط" : "")
+          + (d.smart ? " — بحث دقيق: القياس يطابق قياسه فقط (بالاتجاهين) مع دعم المصانع والأخطاء الإملائية" : "");
+        box.insertBefore(c, box.firstChild);
+      }
+    } catch (_eC) {}
     box.querySelectorAll("button[data-menu]").forEach((b) =>
       b.addEventListener("click", () => openRowMenu(+b.dataset.menu, b.dataset.n, b.dataset.q, b.dataset.u)));
     box.querySelectorAll("button[data-qa]").forEach((b) =>
@@ -3672,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "16";   /* v137: الإبلاغ عن الأخطاء — زر 🐞 ثابت في كل شاشة + لوحة بلاغات للإدارة */
+const APP_VER = "17";   /* v139: التنقل العمودي على الجانب في كل أحجام الويب + فلتر الخيار (موتيف/120/60/plante/باقي السلع) */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -7837,5 +7887,48 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
 .bugaidx{font-size:13.5px;line-height:1.55;font-weight:600;word-break:break-word}
 .bugaisteps{margin:6px 0 0;padding-inline-start:20px;font-size:13px;line-height:1.7}
 .bugainote{margin-top:6px;font-size:12px;color:var(--mut,#6b7280);word-break:break-word}</style>
+<style id="v139css">/* ═══ v139: التنقل العمودي على الجانب في نسخة الويب — كل الأحجام ═══
+   طلب يوسف: «أزرار التنقل في التطبيق تبدو صغيرة على الويب — خليها عمودية على الجانب».
+   الشاشات الواسعة (≥1024px) لها الشريط الجانبي الواسع منذ v127/v128، وهنا صار العمودي
+   يعمل أيضاً على الهاتف وأي عرض أصغر في نسخة الويب (github-pages): عمود أنيق على الجهة
+   اليمنى بأيقونة فوق الاسم وشارة تاج في رأسه، والشاشة تُحوَّل يسارَه بمساحة مريحة.
+   التطبيق داخل تلغرام (pwa.html) لا يتأثر إطلاقاً، ونسخة APK تحتفظ بشريطها السفلي. */
+@media (max-width:1023.98px){
+  html:not([data-apk="1"]) nav.tabs{
+    top:0;bottom:0;left:auto;right:0;width:68px;max-width:none;
+    flex-direction:column;align-items:stretch;justify-content:flex-start;gap:4px;
+    padding:calc(10px + env(safe-area-inset-top)) 4px calc(12px + env(safe-area-inset-bottom));
+    border:1px solid var(--line);border-right:none;border-top:none;border-radius:0;
+    transform:none;background:var(--card);
+    backdrop-filter:none;-webkit-backdrop-filter:none;
+    box-shadow:-12px 0 28px rgba(0,0,0,.10);
+  }
+  html:not([data-apk="1"]) nav.tabs::before{content:"👑";display:block;flex:0 0 auto;
+    font-size:15px;line-height:1;text-align:center;padding:2px 0 9px;margin:0 2px 8px;
+    border-bottom:1px solid var(--line)}
+  html:not([data-apk="1"]) nav.tabs button{
+    flex:0 0 auto;min-width:0;min-height:50px;gap:3px;padding:7px 2px;border-radius:12px;
+    font-size:9px;font-weight:800;color:var(--mut);
+  }
+  html:not([data-apk="1"]) nav.tabs button .ic{font-size:21px;line-height:1;transform:none}
+  html:not([data-apk="1"]) nav.tabs button.on{color:var(--brand);background:var(--brandsoft);
+    font-weight:800;box-shadow:inset -3px 0 0 var(--brand)}
+  html:not([data-apk="1"]) nav.tabs button.on .ic{transform:none}
+  html:not([data-apk="1"]) nav.tabs button:active{transform:scale(.93)}
+  html:not([data-apk="1"]) nav.tabs button .cnavb{top:5px}
+  html:not([data-apk="1"]) #sbUser{display:none!important}
+  html:not([data-apk="1"]) #app header{padding-right:80px;padding-left:16px}
+  html:not([data-apk="1"]) main{max-width:none;width:auto;margin:0 80px 0 0;padding:12px 10px 46px}
+  /* الأزرار العائمة تُنقل إلى الجهة المقابلة للعمود كي لا تُغطى */
+  html:not([data-apk="1"]) .bugfab{inset-inline-start:auto;inset-inline-end:16px;
+    bottom:calc(170px + env(safe-area-inset-bottom))}
+}
+/* الشاشات القصيرة (هاتف بالعرض): العمود نفسه بأزرار أكثر إحكاماً */
+@media (max-width:1023.98px) and (max-height:479px){
+  html:not([data-apk="1"]) nav.tabs button{min-height:40px;gap:1px;padding:4px 2px;font-size:8.5px}
+  html:not([data-apk="1"]) nav.tabs button .ic{font-size:17px}
+  html:not([data-apk="1"]) nav.tabs::before{padding:1px 0 6px;margin-bottom:5px}
+}
+</style>
 </body>
 </html>
