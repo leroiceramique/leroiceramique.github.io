@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "17";   /* v139: التنقل العمودي على الجانب في كل أحجام الويب + فلتر الخيار (موتيف/120/60/plante/باقي السلع) */
+const APP_VER = "18";   /* v140: إنذار وصل الشحن الأحمر الطارئ + شريط تذكير المخزون الثابت + 🛠 معالجة البلاغات مباشرة */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -7716,10 +7716,11 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
       return "قبل " + Math.floor(ms / 86400000) + " يوم";
     } catch (e) { return ""; }
   }
-  /* ── v138: تحليل «🤖 معالجة» — قراءة JSON التحليل المحفوظ مع البلاغ ── */
+  /* ── v138/v140: قراءة التحليل أو نتيجة المعالجة المباشرة المحفوظة مع البلاغ ── */
   function parseAI(s) {
     try {
       var a = JSON.parse(s);
+      if (a && a.mode === "fix" && (a.summary || a.applied)) return a;
       if (a && (a.diagnosis || a.steps)) return a;
     } catch (e) {}
     if (s && String(s).length > 3) return { diagnosis: String(s), steps: [], severity: "" };
@@ -7738,20 +7739,38 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     }
     box.innerHTML = items.map(function (r) {
       var open = r.status !== "done";
-      /* v138: بطاقة التحليل الذكي إن وُجد تحليل محفوظ مع البلاغ */
+      /* v138/v140: بطاقة التحليل الذكي أو نتيجة المعالجة المباشرة إن وُجدت محفوظة */
       var ai = parseAI(r.ai_analysis), aiHtml = "";
       if (ai) {
+        var isFix = ai.mode === "fix";
         var sv = BUG_SEV[String(ai.severity || "").toLowerCase()] || ["", "تحليل جاهز"];
-        aiHtml = '<div class="bugai ' + sv[0] + '">'
-          + '<div class="bugaih"><span class="bugsev">🤖 ' + sv[1] + '</span>'
+        var FIX_T = { resolve: "✔️ أُغلق البلاغ", notify_admins: "🔔 أُشعِرت الإدارة",
+          note: "📝 ملاحظة مسجّلة", sql: "🗄 إصلاح بيانات نُفّذ" };
+        aiHtml = '<div class="bugai ' + sv[0] + (isFix ? " fixmode" : "") + '">'
+          + '<div class="bugaih"><span class="bugsev">'
+          + (isFix ? "🛠 تمت المعالجة مباشرة" : "🤖 " + sv[1]) + '</span>'
           + '<span class="bugmeta">'
-          + escH(ai.engine === "glm" ? ("GLM" + (ai.model ? " • " + ai.model : "")) : "تحليل محلي")
+          + escH(ai.engine === "glm" ? ("GLM" + (ai.model ? " • " + ai.model : ""))
+                 : (isFix ? "المحرّك المباشر المحلي" : "تحليل محلي"))
           + (r.ai_at ? " • " + rel(r.ai_at) : "") + '</span></div>'
+          + (isFix && ai.summary ? '<div class="bugaidx">✅ ' + escH(ai.summary) + '</div>' : "")
+          + (isFix && ai.applied && ai.applied.length
+             ? '<div class="bugfixlist">' + ai.applied.map(function (ap) {
+                 var lbl = FIX_T[ap.t] || ("⚙️ " + ap.t);
+                 var extra = (ap.t === "sql" && ap.sql ? " — " + ap.sql
+                            : (ap.t === "notify_admins" && ap.message ? " — " + ap.message
+                            : (ap.t === "note" && ap.text ? " — " + ap.text : "")));
+                 return '<span class="bugfixchip">' + escH(lbl + extra) + '</span>';
+               }).join("")
+               + (ai.errors && ai.errors.length
+                  ? '<span class="bugfixchip" style="background:rgba(220,38,38,.12);color:#b91c1c;border-color:rgba(220,38,38,.35)">'
+                    + escH("⚠️ تعذّر: " + ai.errors.join("؛ ")) + '</span>' : "")
+               + '</div>' : "")
           + '<div class="bugaidx">' + escH(ai.diagnosis || "") + '</div>'
-          + (ai.steps && ai.steps.length
+          + (!isFix && ai.steps && ai.steps.length
              ? '<ol class="bugaisteps">' + ai.steps.map(function (st) {
                  return '<li>' + escH(st) + '</li>'; }).join("") + '</ol>' : "")
-          + (ai.note ? '<div class="bugainote">📝 ' + escH(ai.note) + '</div>' : "")
+          + (ai.note && !isFix ? '<div class="bugainote">📝 ' + escH(ai.note) + '</div>' : "")
           + '</div>';
       }
       return '<div class="bugcard' + (open ? "" : " done") + '">'
@@ -7765,7 +7784,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
         + '<button type="button" class="btn mini ' + (open ? "soft-g" : "gray")
         + '" data-bugres="' + r.id + '">' + (open ? "✔️ تمت المعالجة" : "↩️ إعادة فتح") + '</button>'
         + '<button type="button" class="btn mini soft-e" data-bugai="' + r.id + '">'
-        + (ai ? "🔄 إعادة التحليل" : "🤖 معالجة بالذكاء") + '</button>'
+        + (ai && ai.mode === "fix" ? "🔄 معالجة مباشرة أخرى" : "🛠 معالجة مباشرة") + '</button>'
         + '<button type="button" class="btn mini red" data-bugdel="' + r.id + '">🗑 حذف</button>'
         + '</div></div>';
     }).join("");
@@ -7775,20 +7794,20 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     box.querySelectorAll("button[data-bugdel]").forEach(function (b) {
       b.addEventListener("click", function () { bugAct("/api/bug/delete", b.dataset.bugdel); });
     });
-    /* ── v138: زر «🤖 معالجة بالذكاء» — يطلب تحليل البلاغ ويعرض التشخيص والخطوات ── */
+    /* ── v140: زر «🛠 معالجة مباشرة» — يطلب خطة إجراءات تنفيذية ويطبّقها الخادم فوراً ── */
     box.querySelectorAll("button[data-bugai]").forEach(function (b) {
       b.addEventListener("click", async function () {
         var ob = b.textContent;
-        b.disabled = true; b.textContent = "⏳ جارٍ التحليل…";
+        b.disabled = true; b.textContent = "⏳ جارٍ المعالجة المباشرة…";
         try {
-          var d = await api("/api/bug/ai", { method: "POST",
+          var d = await api("/api/bug/fix", { method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id: +b.dataset.bugai }) });
-          if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذر التحليل.");
-          toast(d.message || "🤖 جاهز — اقرأ التشخيص وخطوات المعالجة.");
+          if (!d || d.ok !== true) throw new Error((d && d.error) || "تعذّرت المعالجة.");
+          toast(d.message || "🛠 تمت المعالجة مباشرة.");
           loadList();
         } catch (e) {
-          toast((e && e.message) || "تعذر التحليل.", true);
+          toast((e && e.message) || "تعذّرت المعالجة.", true);
           b.disabled = false; b.textContent = ob;
         }
       });
@@ -7930,5 +7949,142 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   html:not([data-apk="1"]) nav.tabs::before{padding:1px 0 6px;margin-bottom:5px}
 }
 </style>
+<script id="v140ui">/* ═══════════════════════════════════════════════════════════════════
+   v140 — شريط تذكير المخزون الثابت + إنذار وصل الشحن الأحمر الطارئ
+   بطلب يوسف: «شريط ثابت بلون بارز يذكر المستخدمين بوجوب العمل على المخزون
+   لتفادي التقلبات بين التطبيق والمخزون الفعلي» + «لو بائع عمل وصل شحن
+   للزبون ولم يُخرج السلعة من تطبيق المخزون يرسل له إنذار أحمر طارئ يذكره
+   بالأمر مع تهديد بحرمانه من استعمال التطبيق أو البوت نهائياً».
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  function vsafe(f) { try { f(); } catch (e) {} }
+  function escH(s) {
+    try { var d = document.createElement("div"); d.textContent = String(s == null ? "" : s);
+      return d.innerHTML; } catch (e) { return ""; }
+  }
+
+  /* ── 1) شريط التذكير الثابت — عنصر ثابت على مستوى body يعمل مع أي بنية ── */
+  vsafe(function () {
+    if (document.querySelector(".v140remind")) return;
+    var bar = document.createElement("div");
+    bar.className = "v140remind";
+    bar.setAttribute("role", "note");
+    bar.innerHTML = '<span class="ric">📦</span>'
+      + '<span>سجّل كل حركة في التطبيق فوراً — التسجيل الفوري يمنع التقلبات بين التطبيق والمخزون الفعلي</span>';
+    document.body.insertBefore(bar, document.body.firstChild);
+    /* الإزاحة الحقيقية تحت الشريط — ولو لفّ النص سطرين على الشاشات الضيقة */
+    var setH = function () {
+      try { document.documentElement.style.setProperty("--v140remind-h",
+            Math.max(34, bar.offsetHeight) + "px"); } catch (e) {}
+    };
+    setH();
+    setTimeout(setH, 400);
+    window.addEventListener("resize", setH);
+  });
+
+  /* ── 2) إنذار وصل الشحن الأحمر الطارئ — يقرأ /api/invoice/alarm ── */
+  var alarmEl = null, hideUntil = 0;
+  function ensureAlarm() {
+    if (alarmEl) return alarmEl;
+    alarmEl = document.createElement("div");
+    alarmEl.className = "v140alarm";
+    alarmEl.innerHTML =
+      '<div class="acard">'
+      + '<div class="atitle">🚨 إنذار أحمر طارئ — وصل شحن غير مُخرَج من المخزون'
+      + '<button type="button" class="ax" title="إخفاء 10 دقائق">✕</button></div>'
+      + '<div class="abody"></div>'
+      + '<div class="athreat">⛔ سجّل إخراج السلعة من المخزون فوراً — استمرار الإهمال '
+      + 'يعرّضك للاحظار ثم <b>الحظر النهائي من استعمال التطبيق والبوت</b>.</div>'
+      + '<button type="button" class="abtn">📦 إخراج السلعة الآن</button>'
+      + '</div>';
+    document.body.appendChild(alarmEl);
+    alarmEl.querySelector(".ax").addEventListener("click", function () {
+      hideUntil = Date.now() + 10 * 60 * 1000;
+      alarmEl.classList.remove("on");
+    });
+    alarmEl.querySelector(".abtn").addEventListener("click", function () {
+      hideUntil = Date.now() + 2 * 60 * 1000;
+      alarmEl.classList.remove("on");
+      try { if (typeof switchView === "function") switchView("v-inv"); } catch (e) {}
+    });
+    return alarmEl;
+  }
+  function relWhen(iso) {
+    try {
+      var ms = Date.now() - new Date(iso).getTime();
+      if (ms < 3600000) return "قبل " + Math.max(1, Math.floor(ms / 60000)) + " د";
+      if (ms < 86400000) return "قبل " + Math.floor(ms / 3600000) + " س";
+      return "قبل " + Math.floor(ms / 86400000) + " يوم";
+    } catch (e) { return ""; }
+  }
+  async function v140poll() {
+    if (Date.now() < hideUntil) return;
+    var d = null;
+    try { d = await api("/api/invoice/alarm", { noCache: true }); } catch (e) { return; }
+    if (!d || d.ok !== true || !d.rows || !d.rows.length) {
+      if (alarmEl) alarmEl.classList.remove("on");
+      return;
+    }
+    var el = ensureAlarm();
+    var html = (d.rows || []).slice(0, 6).map(function (r) {
+      return '<div class="arow">🧾 فاتورة #' + escH(r.invoice_id)
+        + ' — الزبون: <b>' + escH(r.customer) + '</b>'
+        + (r.wname ? ' — البائع: <b>' + escH(r.wname) + '</b>' : '')
+        + ' <span style="opacity:.7">(' + escH(relWhen(r.created_at)) + ')</span><br>'
+        + '📦 ' + escH(r.product_name) + ': بالوصل <b>' + escH(r.need)
+        + '</b> — المُخرَج من المخزون <b>' + escH(r.out)
+        + '</b> — <b style="color:#fde68a">الناقص ' + escH(r.short) + '</b></div>';
+    }).join("");
+    if (d.rows.length > 6)
+      html += '<div class="arow">… و' + escH(d.rows.length - 6) + ' بند آخر — راجع فواتيرك في المخزون</div>';
+    el.querySelector(".abody").innerHTML = html;
+    el.classList.add("on");
+  }
+  vsafe(function () {
+    v140poll();
+    setInterval(v140poll, 120000);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) vsafe(v140poll);
+    });
+  });
+  try { window.__v140poll = v140poll; } catch (e) {}
+})();</script>
+<style id="v140css">/* ═══ v140: شريط تذكير المخزون الثابت + إنذار وصل الشحن الأحمر الطارئ ═══ */
+:root{--v140remind-h:34px}
+.v140remind{position:fixed;top:0;left:0;right:0;z-index:8;min-height:var(--v140remind-h);
+  display:flex;align-items:center;justify-content:center;gap:7px;padding:6px 12px;
+  background:linear-gradient(90deg,#92400e,#d97706 30%,#f59e0b 50%,#d97706 70%,#92400e);
+  color:#fff;font-size:12.5px;font-weight:700;line-height:1.45;text-align:center;
+  box-shadow:0 2px 12px rgba(146,64,14,.4)}
+.v140remind .ric{flex:none;animation:v140blink 2.4s ease-in-out infinite}
+.v140remind span:last-child{min-width:0}
+@keyframes v140blink{0%,100%{opacity:1}50%{opacity:.4}}
+html[data-theme="dark"] .v140remind{background:linear-gradient(90deg,#7c2d12,#c2410c 35%,#ea580c 55%,#c2410c 75%,#7c2d12)}
+header{top:var(--v140remind-h) !important}
+.v140alarm{position:fixed;top:calc(var(--v140remind-h) + 8px);left:10px;right:10px;z-index:9;display:none}
+.v140alarm.on{display:block}
+.v140alarm .acard{background:linear-gradient(135deg,#7f1d1d,#dc2626 45%,#ef4444);color:#fff;
+  border-radius:14px;padding:12px 14px;border:1.5px solid #fecaca;
+  animation:v140pulse 1.8s ease-in-out infinite}
+@keyframes v140pulse{0%,100%{box-shadow:0 10px 30px rgba(127,29,29,.5)}50%{box-shadow:0 10px 36px rgba(239,68,68,.8)}}
+.v140alarm .atitle{font-size:13.5px;font-weight:800;display:flex;align-items:center;gap:7px;margin-bottom:7px;line-height:1.5}
+.v140alarm .ax{margin-inline-start:auto;background:rgba(255,255,255,.18);border:0;color:#fff;
+  width:26px;height:26px;border-radius:8px;font-size:14px;cursor:pointer;flex:none}
+.v140alarm .arow{font-size:12px;background:rgba(0,0,0,.18);border-radius:9px;padding:7px 9px;margin-bottom:5px;line-height:1.7}
+.v140alarm .arow b{color:#fecaca}
+.v140alarm .athreat{font-size:11.5px;font-weight:700;background:rgba(0,0,0,.3);border-radius:9px;padding:7px 9px;margin:7px 0 8px;line-height:1.7}
+.v140alarm .abtn{width:100%;border:0;border-radius:11px;padding:11px;font-size:14px;font-weight:800;cursor:pointer;
+  background:#fff;color:#b91c1c;box-shadow:0 3px 10px rgba(0,0,0,.25)}
+.v140alarm .abtn:active{transform:scale(.97)}
+/* v140: بطاقة «تمت المعالجة مباشرة» في لوحة البلاغات */
+.bugai.fixmode{border-inline-start:4px solid #16a34a;background:linear-gradient(180deg,rgba(22,163,74,.09),transparent)}
+.bugfixlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 5px}
+.bugfixchip{font-size:11.5px;font-weight:700;background:rgba(22,163,74,.12);color:#15803d;
+  border:1px solid rgba(22,163,74,.35);border-radius:9px;padding:4px 9px;max-width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80;border-color:rgba(74,222,128,.4)}
+@media (prefers-reduced-motion:reduce){.v140remind .ric{animation:none}.v140alarm .acard{animation:none}}
+@media (min-width:1024px){.v140alarm{right:auto;width:430px}}</style>
 </body>
 </html>
