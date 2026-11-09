@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "18";   /* v140: إنذار وصل الشحن الأحمر الطارئ + شريط تذكير المخزون الثابت + 🛠 معالجة البلاغات مباشرة */
+const APP_VER = "19";   /* v141: الإنذار الأحمر تذكيراً عاماً بلا فواتير — بصلاحية من الصلاحيات ويظهر عند كل فتح جديد */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -7949,33 +7949,28 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   html:not([data-apk="1"]) nav.tabs::before{padding:1px 0 6px;margin-bottom:5px}
 }
 </style>
-<script id="v140ui">/* ═══════════════════════════════════════════════════════════════════
-   v140 — شريط تذكير المخزون الثابت + إنذار وصل الشحن الأحمر الطارئ
-   بطلب يوسف: «شريط ثابت بلون بارز يذكر المستخدمين بوجوب العمل على المخزون
-   لتفادي التقلبات بين التطبيق والمخزون الفعلي» + «لو بائع عمل وصل شحن
-   للزبون ولم يُخرج السلعة من تطبيق المخزون يرسل له إنذار أحمر طارئ يذكره
-   بالأمر مع تهديد بحرمانه من استعمال التطبيق أو البوت نهائياً».
+<script id="v141ui">/* ═══════════════════════════════════════════════════════════════════
+   v141 — شريط تذكير المخزون الثابت + الإنذار الأحمر عند كل فتح جديد
+   بطلب يوسف: «الانذار الاحمر لا يجب ان يحتوي على اشعارات فواتير المخزون
+   بل يجب ان يكون تذكيرا بوجوب اخراج السلعة المباعة من التطبيق لتفادي
+   الاخطاء والاختلالات» — يظهر لمن أصرح له المدير من خانة الصلاحيات،
+   ويظل يظهر عند كل فتح جديد للتطبيق.
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
   function vsafe(f) { try { f(); } catch (e) {} }
-  function escH(s) {
-    try { var d = document.createElement("div"); d.textContent = String(s == null ? "" : s);
-      return d.innerHTML; } catch (e) { return ""; }
-  }
 
   /* ── 1) شريط التذكير الثابت — عنصر ثابت على مستوى body يعمل مع أي بنية ── */
   vsafe(function () {
-    if (document.querySelector(".v140remind")) return;
+    if (document.querySelector(".v141remind")) return;
     var bar = document.createElement("div");
-    bar.className = "v140remind";
+    bar.className = "v141remind";
     bar.setAttribute("role", "note");
     bar.innerHTML = '<span class="ric">📦</span>'
       + '<span>سجّل كل حركة في التطبيق فوراً — التسجيل الفوري يمنع التقلبات بين التطبيق والمخزون الفعلي</span>';
     document.body.insertBefore(bar, document.body.firstChild);
-    /* الإزاحة الحقيقية تحت الشريط — ولو لفّ النص سطرين على الشاشات الضيقة */
     var setH = function () {
-      try { document.documentElement.style.setProperty("--v140remind-h",
+      try { document.documentElement.style.setProperty("--v141remind-h",
             Math.max(34, bar.offsetHeight) + "px"); } catch (e) {}
     };
     setH();
@@ -7983,108 +7978,91 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     window.addEventListener("resize", setH);
   });
 
-  /* ── 2) إنذار وصل الشحن الأحمر الطارئ — يقرأ /api/invoice/alarm ── */
-  var alarmEl = null, hideUntil = 0;
-  function ensureAlarm() {
-    if (alarmEl) return alarmEl;
-    alarmEl = document.createElement("div");
-    alarmEl.className = "v140alarm";
-    alarmEl.innerHTML =
-      '<div class="acard">'
-      + '<div class="atitle">🚨 إنذار أحمر طارئ — وصل شحن غير مُخرَج من المخزون'
-      + '<button type="button" class="ax" title="إخفاء 10 دقائق">✕</button></div>'
-      + '<div class="abody"></div>'
-      + '<div class="athreat">⛔ سجّل إخراج السلعة من المخزون فوراً — استمرار الإهمال '
-      + 'يعرّضك للاحظار ثم <b>الحظر النهائي من استعمال التطبيق والبوت</b>.</div>'
-      + '<button type="button" class="abtn">📦 إخراج السلعة الآن</button>'
+  /* ── 2) الإنذار الأحمر — تذكير عام بوجوب إخراج السلعة المباعة من التطبيق ──
+     بلا أي إشعارات فواتير: يقرأ /api/red-alert الذي يقرر الظهور من صلاحية
+     «الإنذار الأحمر» التي يتحكم بها المدير من خانة الصلاحيات لكل عضو على حدة،
+     ويظل يظهر عند كل فتح جديد للتطبيق — زر الاعتماد يخفيه حتى الفتح القادم فقط. */
+  var redEl = null, redShown = false, redDone = false;
+  function ensureRed() {
+    if (redEl) return redEl;
+    redEl = document.createElement("div");
+    redEl.className = "v141red";
+    redEl.setAttribute("role", "alert");
+    redEl.innerHTML =
+      '<div class="rcard">'
+      + '<div class="ric">🚨</div>'
+      + '<div class="rtitle">إنذار أحمر طارئ</div>'
+      + '<div class="rbody">تذكير عاجل: يجب <b>إخراج السلعة المباعة من التطبيق</b> '
+      + 'وتسجيلها في تطبيق المخزون فوراً بعد كل عملية بيع أو وصل شحن — '
+      + 'لتفادي الأخطاء والتقلبات بين التطبيق والمخزون الفعلي.</div>'
+      + '<div class="rthreat">⛔ الإهمال المتكرر في تسجيل الإخراج يعرّضك للاحظار '
+      + 'ثم <b>الحظر النهائي من استعمال التطبيق أو البوت</b>.</div>'
+      + '<button type="button" class="rbtn">فهمت — سألتزم بتحديث المخزون</button>'
       + '</div>';
-    document.body.appendChild(alarmEl);
-    alarmEl.querySelector(".ax").addEventListener("click", function () {
-      hideUntil = Date.now() + 10 * 60 * 1000;
-      alarmEl.classList.remove("on");
+    document.body.appendChild(redEl);
+    redEl.querySelector(".rbtn").addEventListener("click", function () {
+      redDone = true;
+      redEl.classList.remove("on");
     });
-    alarmEl.querySelector(".abtn").addEventListener("click", function () {
-      hideUntil = Date.now() + 2 * 60 * 1000;
-      alarmEl.classList.remove("on");
-      try { if (typeof switchView === "function") switchView("v-inv"); } catch (e) {}
-    });
-    return alarmEl;
+    return redEl;
   }
-  function relWhen(iso) {
-    try {
-      var ms = Date.now() - new Date(iso).getTime();
-      if (ms < 3600000) return "قبل " + Math.max(1, Math.floor(ms / 60000)) + " د";
-      if (ms < 86400000) return "قبل " + Math.floor(ms / 3600000) + " س";
-      return "قبل " + Math.floor(ms / 86400000) + " يوم";
-    } catch (e) { return ""; }
-  }
-  async function v140poll() {
-    if (Date.now() < hideUntil) return;
+  async function v141red() {
+    if (redShown || redDone) return;
     var d = null;
-    try { d = await api("/api/invoice/alarm", { noCache: true }); } catch (e) { return; }
-    if (!d || d.ok !== true || !d.rows || !d.rows.length) {
-      if (alarmEl) alarmEl.classList.remove("on");
-      return;
+    try { d = await api("/api/red-alert", { noCache: true }); } catch (e) { return; }
+    if (d && d.ok === true && d.show === true) {
+      redShown = true;
+      ensureRed().classList.add("on");
     }
-    var el = ensureAlarm();
-    var html = (d.rows || []).slice(0, 6).map(function (r) {
-      return '<div class="arow">🧾 فاتورة #' + escH(r.invoice_id)
-        + ' — الزبون: <b>' + escH(r.customer) + '</b>'
-        + (r.wname ? ' — البائع: <b>' + escH(r.wname) + '</b>' : '')
-        + ' <span style="opacity:.7">(' + escH(relWhen(r.created_at)) + ')</span><br>'
-        + '📦 ' + escH(r.product_name) + ': بالوصل <b>' + escH(r.need)
-        + '</b> — المُخرَج من المخزون <b>' + escH(r.out)
-        + '</b> — <b style="color:#fde68a">الناقص ' + escH(r.short) + '</b></div>';
-    }).join("");
-    if (d.rows.length > 6)
-      html += '<div class="arow">… و' + escH(d.rows.length - 6) + ' بند آخر — راجع فواتيرك في المخزون</div>';
-    el.querySelector(".abody").innerHTML = html;
-    el.classList.add("on");
   }
   vsafe(function () {
-    v140poll();
-    setInterval(v140poll, 120000);
+    v141red();
+    /* لو لم يكتمل تسجيل الدخول لحظة الفتح — محاولتان مبكرتان إضافتان */
+    setTimeout(v141red, 3000);
+    setTimeout(v141red, 9000);
     document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) vsafe(v140poll);
+      if (!document.hidden) vsafe(v141red);
     });
   });
-  try { window.__v140poll = v140poll; } catch (e) {}
+  try { window.__v141red = v141red; } catch (e) {}
 })();</script>
-<style id="v140css">/* ═══ v140: شريط تذكير المخزون الثابت + إنذار وصل الشحن الأحمر الطارئ ═══ */
-:root{--v140remind-h:34px}
-.v140remind{position:fixed;top:0;left:0;right:0;z-index:8;min-height:var(--v140remind-h);
+<style id="v141css">/* ═══ v141: شريط تذكير المخزون الثابت + الإنذار الأحمر عند كل فتح جديد ═══ */
+:root{--v141remind-h:34px}
+.v141remind{position:fixed;top:0;left:0;right:0;z-index:8;min-height:var(--v141remind-h);
   display:flex;align-items:center;justify-content:center;gap:7px;padding:6px 12px;
   background:linear-gradient(90deg,#92400e,#d97706 30%,#f59e0b 50%,#d97706 70%,#92400e);
   color:#fff;font-size:12.5px;font-weight:700;line-height:1.45;text-align:center;
   box-shadow:0 2px 12px rgba(146,64,14,.4)}
-.v140remind .ric{flex:none;animation:v140blink 2.4s ease-in-out infinite}
-.v140remind span:last-child{min-width:0}
-@keyframes v140blink{0%,100%{opacity:1}50%{opacity:.4}}
-html[data-theme="dark"] .v140remind{background:linear-gradient(90deg,#7c2d12,#c2410c 35%,#ea580c 55%,#c2410c 75%,#7c2d12)}
-header{top:var(--v140remind-h) !important}
-.v140alarm{position:fixed;top:calc(var(--v140remind-h) + 8px);left:10px;right:10px;z-index:9;display:none}
-.v140alarm.on{display:block}
-.v140alarm .acard{background:linear-gradient(135deg,#7f1d1d,#dc2626 45%,#ef4444);color:#fff;
-  border-radius:14px;padding:12px 14px;border:1.5px solid #fecaca;
-  animation:v140pulse 1.8s ease-in-out infinite}
-@keyframes v140pulse{0%,100%{box-shadow:0 10px 30px rgba(127,29,29,.5)}50%{box-shadow:0 10px 36px rgba(239,68,68,.8)}}
-.v140alarm .atitle{font-size:13.5px;font-weight:800;display:flex;align-items:center;gap:7px;margin-bottom:7px;line-height:1.5}
-.v140alarm .ax{margin-inline-start:auto;background:rgba(255,255,255,.18);border:0;color:#fff;
-  width:26px;height:26px;border-radius:8px;font-size:14px;cursor:pointer;flex:none}
-.v140alarm .arow{font-size:12px;background:rgba(0,0,0,.18);border-radius:9px;padding:7px 9px;margin-bottom:5px;line-height:1.7}
-.v140alarm .arow b{color:#fecaca}
-.v140alarm .athreat{font-size:11.5px;font-weight:700;background:rgba(0,0,0,.3);border-radius:9px;padding:7px 9px;margin:7px 0 8px;line-height:1.7}
-.v140alarm .abtn{width:100%;border:0;border-radius:11px;padding:11px;font-size:14px;font-weight:800;cursor:pointer;
-  background:#fff;color:#b91c1c;box-shadow:0 3px 10px rgba(0,0,0,.25)}
-.v140alarm .abtn:active{transform:scale(.97)}
-/* v140: بطاقة «تمت المعالجة مباشرة» في لوحة البلاغات */
+.v141remind .ric{flex:none;animation:v141blink 2.4s ease-in-out infinite}
+.v141remind span:last-child{min-width:0}
+@keyframes v141blink{0%,100%{opacity:1}50%{opacity:.4}}
+html[data-theme="dark"] .v141remind{background:linear-gradient(90deg,#7c2d12,#c2410c 35%,#ea580c 55%,#c2410c 75%,#7c2d12)}
+header{top:var(--v141remind-h) !important}
+/* v141: الإنذار الأحمر — غطاء كامل يظهر عند كل فتح جديد لمن أصرح له المدير
+   من خانة الصلاحيات — تذكير عام بلا أي إشعارات فواتير */
+.v141red{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;
+  background:rgba(40,0,0,.78);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);padding:18px}
+.v141red.on{display:flex}
+.v141red .rcard{max-width:430px;width:100%;background:linear-gradient(160deg,#7f1d1d,#b91c1c 55%,#dc2626);
+  color:#fff;border-radius:18px;padding:22px 20px 18px;border:1.5px solid #fecaca;text-align:center;
+  box-shadow:0 24px 70px rgba(0,0,0,.55);animation:v141pulse 1.8s ease-in-out infinite}
+@keyframes v141pulse{0%,100%{box-shadow:0 24px 70px rgba(0,0,0,.55)}50%{box-shadow:0 24px 84px rgba(239,68,68,.8)}}
+.v141red .ric{font-size:44px;line-height:1;animation:v141blink 1.6s ease-in-out infinite}
+.v141red .rtitle{font-size:17px;font-weight:800;margin:10px 0 8px;letter-spacing:.3px}
+.v141red .rbody{font-size:13.5px;line-height:1.9;background:rgba(0,0,0,.18);border-radius:12px;padding:11px 13px;margin-bottom:9px}
+.v141red .rbody b{color:#fecaca}
+.v141red .rthreat{font-size:12px;font-weight:700;line-height:1.8;background:rgba(0,0,0,.32);border-radius:12px;padding:9px 12px;margin-bottom:14px}
+.v141red .rthreat b{color:#fde68a}
+.v141red .rbtn{width:100%;border:0;border-radius:13px;padding:13px;font-size:14.5px;font-weight:800;cursor:pointer;
+  background:#fff;color:#b91c1c;box-shadow:0 4px 14px rgba(0,0,0,.3)}
+.v141red .rbtn:active{transform:scale(.97)}
+/* v140: بطاقة «تمت المعالجة مباشرة» في لوحة البلاغات (كما هي) */
 .bugai.fixmode{border-inline-start:4px solid #16a34a;background:linear-gradient(180deg,rgba(22,163,74,.09),transparent)}
 .bugfixlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 5px}
 .bugfixchip{font-size:11.5px;font-weight:700;background:rgba(22,163,74,.12);color:#15803d;
   border:1px solid rgba(22,163,74,.35);border-radius:9px;padding:4px 9px;max-width:100%;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80;border-color:rgba(74,222,128,.4)}
-@media (prefers-reduced-motion:reduce){.v140remind .ric{animation:none}.v140alarm .acard{animation:none}}
-@media (min-width:1024px){.v140alarm{right:auto;width:430px}}</style>
+@media (prefers-reduced-motion:reduce){.v141remind .ric,.v141red .ric,.v141red .rcard{animation:none}}</style>
 </body>
 </html>
