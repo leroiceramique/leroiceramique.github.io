@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "19";   /* v141: الإنذار الأحمر تذكيراً عاماً بلا فواتير — بصلاحية من الصلاحيات ويظهر عند كل فتح جديد */
+const APP_VER = "20";   /* v142: الإنذار الأحمر الذكي المتدرج — 4 مستويات من سلوك العضو أو تثبيت المدير، نص وأيقونة ولون وبوابة إغلاق مختلفة كل فتح */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -5861,7 +5861,17 @@ try { window.expensesOpen = openPanel; window.expensesReload = load; } catch (e7
 .u107ft{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .u107msg{font-size:12.5px;color:var(--mut)}
 .u107msg.ok{color:#22a06b;font-weight:700}
-.u107msg.err{color:#e05d4b;font-weight:700}</style>
+.u107msg.err{color:#e05d4b;font-weight:700}
+/* v142: صف حدّة الإنذار الأحمر الذكي في بطاقة الصلاحيات */
+.u107ra{margin-top:10px;border:1px solid #fecaca;border-radius:12px;
+  background:linear-gradient(180deg,rgba(220,38,38,.07),rgba(220,38,38,.02));padding:10px 12px}
+.u107rat{font-size:13px;font-weight:800;color:#b91c1c;margin-bottom:5px}
+html[data-theme="dark"] .u107rat{color:#fca5a5}
+.u107rab{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.u107rachip{border:1px solid var(--goldline);background:var(--card);color:var(--ink);border-radius:10px;
+  padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer}
+.u107rachip:disabled{opacity:.55;cursor:wait}
+.u107rachip.on{background:linear-gradient(135deg,#b91c1c,#dc2626);color:#fff;border-color:#fecaca}</style>
 <script id="v107js">
 /* v107: صلاحيات لكل مستخدم — زر 🎛️ على بطاقة المستخدم + لوحة مصفوفة
    ثلاثية الحالة (↔️ يتبع الفئة / ✅ مفعّلة دائماً / ❌ موقفة دائماً).
@@ -5994,6 +6004,56 @@ async function reload() {
     if (res.status === 200 && d.ok) paint(d);
   } catch (e) {}
 }
+/* v142: صف حدّة الإنذار الأحمر الذكي — يظهر حين تكون صلاحية الإنذار ✅ */
+var RA_MODES = [["auto", "🧠 ذكي تلقائي"], ["1", "1️⃣ هادئ"], ["2", "2️⃣ متوسط"], ["3", "3️⃣ صارم"], ["4", "4️⃣ أقصى"]];
+function paintRa(d) {
+  var body = q("u107body");
+  if (!body) return;
+  var old = q("u107ra");
+  if (old) old.remove();
+  if (!(d.effective || {}).red_alert) return;
+  var cm = d.redAlertMode || "auto";
+  var wrap = document.createElement("div");
+  wrap.id = "u107ra";
+  var chips = "";
+  RA_MODES.forEach(function (m) {
+    chips += '<button type="button" class="u107rachip' + (m[0] === cm ? " on" : "")
+      + '" data-m="' + m[0] + '">' + m[1] + "</button>";
+  });
+  wrap.innerHTML = '<div class="u107rat">🚨 حدّة الإنذار الأحمر لهذا العضو</div>'
+    + '<div class="u107hint">«ذكي تلقائي»: الحدة ترتفع كلما طالت المدة دون تسجيل عمليات مخزون وتهبط فور تسجيل أي عملية. «ثابت»: يظهر دائماً بالمستوى المختار مهما كان سلوكه.</div>'
+    + '<div class="u107rab">' + chips + "</div>";
+  body.appendChild(wrap);
+  wrap.querySelectorAll(".u107rachip").forEach(function (b) {
+    b.addEventListener("click", async function () {
+      if (b.classList.contains("on")) return;
+      var msg = q("u107msg");
+      if (msg) { msg.textContent = "جارٍ الحفظ…"; msg.className = "u107msg"; }
+      wrap.querySelectorAll(".u107rachip").forEach(function (x) { x.disabled = true; });
+      try {
+        var res = await fetch("/api/red-alert/mode", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tid: cur.tid, mode: b.getAttribute("data-m") })
+        });
+        var dd = await res.json().catch(function () { return {}; });
+        if (res.status === 200 && dd.ok) {
+          if (msg) { msg.textContent = "✅ " + (dd.message || "تم"); msg.className = "u107msg ok"; }
+          var sel = b.getAttribute("data-m");
+          wrap.querySelectorAll(".u107rachip").forEach(function (x) {
+            x.classList.toggle("on", x.getAttribute("data-m") === sel);
+          });
+        } else {
+          if (msg) { msg.textContent = (dd && dd.error) || "فشل الحفظ"; msg.className = "u107msg err"; }
+        }
+      } catch (e) {
+        if (msg) { msg.textContent = "تعذر الاتصال بالخادم."; msg.className = "u107msg err"; }
+      } finally {
+        wrap.querySelectorAll(".u107rachip").forEach(function (x) { x.disabled = false; });
+      }
+    });
+  });
+}
 function paint(d) {
   var body = q("u107body");
   if (!body) return;
@@ -6006,6 +6066,7 @@ function paint(d) {
   });
   body.innerHTML = h;
   bindRows();
+  paintRa(d);
   var msg = q("u107msg");
   if (msg) { msg.textContent = ""; }
 }
@@ -7978,55 +8039,249 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     window.addEventListener("resize", setH);
   });
 
-  /* ── 2) الإنذار الأحمر — تذكير عام بوجوب إخراج السلعة المباعة من التطبيق ──
-     بلا أي إشعارات فواتير: يقرأ /api/red-alert الذي يقرر الظهور من صلاحية
-     «الإنذار الأحمر» التي يتحكم بها المدير من خانة الصلاحيات لكل عضو على حدة،
-     ويظل يظهر عند كل فتح جديد للتطبيق — زر الاعتماد يخفيه حتى الفتح القادم فقط. */
+  /* ── 2) الإنذار الأحمر الذكي المتدرج — محرك v142 ──
+     4 مستويات يحددها الخادم من سلوك العضو (أيام منذ آخر عملية مخزون) أو من
+     مستوى يثبّته المدير من خانة الصلاحيات — نص وأيقونة وتدرج وبوابة إغلاق
+     مختلفة كل فتح (ضغطة/ضغط مطول/سحب/مسألة/جملة التزام) — وبعد أي عملية
+     مخزون ناجحة سطر أخضر «شكراً — مخزونك محدث». */
+  var ICONS = ["🚨", "📣", "⚠️", "🔔", "🛑", "📦"];
+  var LVLNAME = { 1: "هادئ", 2: "متوسط", 3: "صارم", 4: "أقصى" };
   var redEl = null, redShown = false, redDone = false;
+  function rpick(a) { return a[Math.floor(Math.random() * a.length)]; }
+  function resc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
   function ensureRed() {
     if (redEl) return redEl;
     redEl = document.createElement("div");
-    redEl.className = "v141red";
+    redEl.className = "v142red";
     redEl.setAttribute("role", "alert");
-    redEl.innerHTML =
-      '<div class="rcard">'
-      + '<div class="ric">🚨</div>'
-      + '<div class="rtitle">إنذار أحمر طارئ</div>'
-      + '<div class="rbody">تذكير عاجل: يجب <b>إخراج السلعة المباعة من التطبيق</b> '
-      + 'وتسجيلها في تطبيق المخزون فوراً بعد كل عملية بيع أو وصل شحن — '
-      + 'لتفادي الأخطاء والتقلبات بين التطبيق والمخزون الفعلي.</div>'
-      + '<div class="rthreat">⛔ الإهمال المتكرر في تسجيل الإخراج يعرّضك للاحظار '
-      + 'ثم <b>الحظر النهائي من استعمال التطبيق أو البوت</b>.</div>'
-      + '<button type="button" class="rbtn">فهمت — سألتزم بتحديث المخزون</button>'
-      + '</div>';
     document.body.appendChild(redEl);
-    redEl.querySelector(".rbtn").addEventListener("click", function () {
-      redDone = true;
-      redEl.classList.remove("on");
-    });
     return redEl;
   }
-  async function v141red() {
+  function redClose() {
+    redDone = true;
+    if (redEl) { redEl.classList.remove("on"); redEl.innerHTML = ""; }
+  }
+  /* سطر الشكر الأخضر بعد أي عملية مخزون ناجحة */
+  var gEl = null, gT = null;
+  function showGreen(msg) {
+    try {
+      if (redEl && redEl.classList.contains("on")) {
+        redDone = true;
+        redEl.classList.add("gmode");
+        redEl.innerHTML = '<div class="rcard gcard"><div class="ric">✅</div>'
+          + '<div class="rtitle">شكراً — مخزونك محدث</div>'
+          + '<div class="rbody">' + resc(msg || "سُجّلت حركتك. هكذا تبقى أرقام التطبيق مطابقة للمخزون الفعلي.") + '</div></div>';
+        setTimeout(function () {
+          if (redEl) { redEl.classList.remove("on", "gmode"); redEl.innerHTML = ""; }
+        }, 3800);
+        return;
+      }
+    } catch (e) {}
+    try {
+      if (!gEl) {
+        gEl = document.createElement("div");
+        gEl.className = "v142green";
+        document.body.appendChild(gEl);
+      }
+      gEl.innerHTML = '✅ <span>' + resc(msg || "شكراً — مخزونك محدث") + '</span>';
+      gEl.classList.add("on");
+      clearTimeout(gT);
+      gT = setTimeout(function () { if (gEl) gEl.classList.remove("on"); }, 4200);
+    } catch (e) {}
+  }
+  /* مراقبة نجاح عمليات المخزون */
+  vsafe(function () {
+    if (typeof window.api !== "function" || window.api.__v142wrapped) return;
+    var _api = window.api;
+    window.api = function (path, opts) {
+      var pr = _api.apply(this, arguments);
+      try {
+        if (path && opts && opts.method && opts.method !== "GET"
+            && /^\/api\/(qty|products\/create|invoice\/create|invoice\/swap|swap\/general)$/.test(String(path))) {
+          Promise.resolve(pr).then(function (res) {
+            if (res && res.ok === true) showGreen();
+          }).catch(function () {});
+        }
+      } catch (e) {}
+      return pr;
+    };
+    window.api.__v142wrapped = true;
+  });
+  /* بوابات الإغلاق المتغيرة — ضد العادة العضلية */
+  function gatePress(cb) {
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "rgate-btn";
+    b.textContent = "حسناً — سأتذكر";
+    b.addEventListener("click", cb);
+    return b;
+  }
+  function gateHold(seconds, cb) {
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "rgate-btn hold";
+    var lbl = (seconds === 2 ? "استمر بالضغط ثانيتين…" : "استمر بالضغط " + seconds + " ثوانٍ…");
+    b.innerHTML = '<span class="rprog"></span><span class="rlbl">' + lbl + "</span>";
+    var t0 = 0, raf = null, fin = false;
+    var prog = b.querySelector(".rprog");
+    function step() {
+      if (fin) return;
+      var p = Math.min(1, (performance.now() - t0) / (seconds * 1000));
+      if (prog) prog.style.width = (p * 100) + "%";
+      if (p >= 1) { fin = true; cb(); return; }
+      raf = requestAnimationFrame(step);
+    }
+    function start(e) {
+      if (fin) return;
+      e.preventDefault();
+      t0 = performance.now();
+      raf = requestAnimationFrame(step);
+    }
+    function stop() {
+      if (fin) return;
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      if (prog) prog.style.width = "0%";
+    }
+    b.addEventListener("pointerdown", start);
+    b.addEventListener("pointerup", stop);
+    b.addEventListener("pointerleave", stop);
+    b.addEventListener("pointercancel", stop);
+    b.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+    return b;
+  }
+  function gateSwipe(cb) {
+    var w = document.createElement("div");
+    w.className = "rswipe";
+    var h = document.createElement("div");
+    h.className = "rhandle";
+    h.innerHTML = "اسحب للتأكيد ⟵";
+    w.appendChild(h);
+    var sx = 0, dx = 0, active = false, fin = false, maxD = 1;
+    function down(e) {
+      if (fin) return;
+      active = true; sx = e.clientX;
+      maxD = Math.max(60, w.clientWidth - h.offsetWidth - 12);
+      try { h.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    }
+    function move(e) {
+      if (!active || fin) return;
+      dx = Math.max(-maxD, Math.min(maxD, e.clientX - sx));
+      h.style.transform = "translateX(" + dx + "px)";
+      if (Math.abs(dx) >= maxD * 0.82) { fin = true; cb(); }
+    }
+    function up() {
+      if (fin) return;
+      active = false;
+      h.style.transform = "translateX(0)"; dx = 0;
+    }
+    h.addEventListener("pointerdown", down);
+    h.addEventListener("pointermove", move);
+    h.addEventListener("pointerup", up);
+    h.addEventListener("pointercancel", up);
+    return w;
+  }
+  function _arDigits(v) {
+    return String(v == null ? "" : v).replace(/[٠-٩]/g, function (d) {
+      return String("٠١٢٣٤٥٦٧٨٩".indexOf(d));
+    });
+  }
+  function gateMath(cb) {
+    var a = 3 + Math.floor(Math.random() * 7), b = 2 + Math.floor(Math.random() * 8);
+    var op = Math.random() < 0.5 ? "+" : "×";
+    var ans = op === "+" ? a + b : a * b;
+    var w = document.createElement("div");
+    w.className = "rgate-math";
+    w.innerHTML = '<label>أكمل لتغلق التنبيه: <b>' + a + " " + op + " " + b + "</b> =</label>";
+    var row = document.createElement("div"); row.className = "rmrow";
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.inputMode = "numeric"; inp.autocomplete = "off"; inp.placeholder = "؟";
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.className = "rgate-btn small"; btn.textContent = "تأكيد";
+    row.appendChild(inp); row.appendChild(btn); w.appendChild(row);
+    function check() {
+      if (parseInt(_arDigits(inp.value), 10) === ans) { cb(); return; }
+      w.classList.remove("bad"); void w.offsetWidth; w.classList.add("bad");
+      inp.value = ""; try { inp.focus(); } catch (e) {}
+    }
+    btn.addEventListener("click", check);
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") check(); });
+    setTimeout(function () { try { inp.focus(); } catch (e) {} }, 300);
+    return w;
+  }
+  function gatePhrase(cb) {
+    var PH = "سألتزم بتحديث المخزون";
+    var w = document.createElement("div");
+    w.className = "rgate-math";
+    w.innerHTML = '<label>اكتب جملة الالتزام: <b>' + PH + "</b></label>";
+    var row = document.createElement("div"); row.className = "rmrow";
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.autocomplete = "off"; inp.placeholder = "اكتب الجملة هنا…";
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.className = "rgate-btn small"; btn.textContent = "تأكيد";
+    row.appendChild(inp); row.appendChild(btn); w.appendChild(row);
+    function check() {
+      if (String(inp.value || "").replace(/\s+/g, " ").trim() === PH) { cb(); return; }
+      w.classList.remove("bad"); void w.offsetWidth; w.classList.add("bad");
+      try { inp.select(); } catch (e) {}
+    }
+    btn.addEventListener("click", check);
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") check(); });
+    return w;
+  }
+  /* الرسم حسب المستوى — شكل ونص وبوابة مختلفة كل فتح */
+  function renderRed(d) {
+    var lv = Math.abs(d.level | 0) || 2;
+    if (lv < 1) lv = 1; if (lv > 4) lv = 4;
+    var el = ensureRed();
+    el.className = "v142red on l" + lv
+      + " rv" + (1 + (Math.abs((d.variant | 0) || 1) - 1) % 4)
+      + (lv === 1 ? " calm" : "");
+    var parts = [];
+    if (d.days_label) parts.push(String(d.days_label));
+    parts.push("الوضع: " + (d.mode === "fixed" ? "ثابت" : "ذكي تلقائي")
+      + " • الحدة: " + (LVLNAME[lv] || lv));
+    var card = document.createElement("div");
+    card.className = "rcard";
+    card.innerHTML =
+      '<div class="ric">' + resc(d.icon || rpick(ICONS)) + "</div>"
+      + '<div class="rtitle">' + resc(d.title || "تذكير المخزون") + "</div>"
+      + '<div class="rbody">' + resc(d.body || "") + "</div>"
+      + '<div class="rmeta">' + resc(parts.join(" • ")) + "</div>";
+    var gate = document.createElement("div");
+    gate.className = "rgate";
+    var factories;
+    if (lv === 1) factories = [gatePress];
+    else if (lv === 2) factories = [gateHold.bind(null, 2), gateSwipe];
+    else if (lv === 3) factories = [gateHold.bind(null, 3), gateSwipe, gateMath];
+    else factories = [gateMath, gatePhrase];
+    gate.appendChild(rpick(factories)(redClose));
+    card.appendChild(gate);
+    el.appendChild(card);
+  }
+  async function v142red() {
     if (redShown || redDone) return;
     var d = null;
     try { d = await api("/api/red-alert", { noCache: true }); } catch (e) { return; }
     if (d && d.ok === true && d.show === true) {
       redShown = true;
-      ensureRed().classList.add("on");
+      renderRed(d);
     }
   }
   vsafe(function () {
-    v141red();
-    /* لو لم يكتمل تسجيل الدخول لحظة الفتح — محاولتان مبكرتان إضافتان */
-    setTimeout(v141red, 3000);
-    setTimeout(v141red, 9000);
+    v142red();
+    setTimeout(v142red, 3000);
+    setTimeout(v142red, 9000);
     document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) vsafe(v141red);
+      if (!document.hidden) vsafe(v142red);
     });
   });
-  try { window.__v141red = v141red; } catch (e) {}
+  try { window.__v142red = v142red; } catch (e) {}
+  try { window.__v142green = showGreen; } catch (e) {}
 })();</script>
-<style id="v141css">/* ═══ v141: شريط تذكير المخزون الثابت + الإنذار الأحمر عند كل فتح جديد ═══ */
+<style id="v141css">/* ═══ v141: شريط تذكير المخزون الثابت (الإنذار الأحمر انتقل لمحرك v142 الذكي) ═══ */
 :root{--v141remind-h:34px}
 .v141remind{position:fixed;top:0;left:0;right:0;z-index:8;min-height:var(--v141remind-h);
   display:flex;align-items:center;justify-content:center;gap:7px;padding:6px 12px;
@@ -8038,24 +8293,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
 @keyframes v141blink{0%,100%{opacity:1}50%{opacity:.4}}
 html[data-theme="dark"] .v141remind{background:linear-gradient(90deg,#7c2d12,#c2410c 35%,#ea580c 55%,#c2410c 75%,#7c2d12)}
 header{top:var(--v141remind-h) !important}
-/* v141: الإنذار الأحمر — غطاء كامل يظهر عند كل فتح جديد لمن أصرح له المدير
-   من خانة الصلاحيات — تذكير عام بلا أي إشعارات فواتير */
-.v141red{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;
-  background:rgba(40,0,0,.78);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);padding:18px}
-.v141red.on{display:flex}
-.v141red .rcard{max-width:430px;width:100%;background:linear-gradient(160deg,#7f1d1d,#b91c1c 55%,#dc2626);
-  color:#fff;border-radius:18px;padding:22px 20px 18px;border:1.5px solid #fecaca;text-align:center;
-  box-shadow:0 24px 70px rgba(0,0,0,.55);animation:v141pulse 1.8s ease-in-out infinite}
-@keyframes v141pulse{0%,100%{box-shadow:0 24px 70px rgba(0,0,0,.55)}50%{box-shadow:0 24px 84px rgba(239,68,68,.8)}}
-.v141red .ric{font-size:44px;line-height:1;animation:v141blink 1.6s ease-in-out infinite}
-.v141red .rtitle{font-size:17px;font-weight:800;margin:10px 0 8px;letter-spacing:.3px}
-.v141red .rbody{font-size:13.5px;line-height:1.9;background:rgba(0,0,0,.18);border-radius:12px;padding:11px 13px;margin-bottom:9px}
-.v141red .rbody b{color:#fecaca}
-.v141red .rthreat{font-size:12px;font-weight:700;line-height:1.8;background:rgba(0,0,0,.32);border-radius:12px;padding:9px 12px;margin-bottom:14px}
-.v141red .rthreat b{color:#fde68a}
-.v141red .rbtn{width:100%;border:0;border-radius:13px;padding:13px;font-size:14.5px;font-weight:800;cursor:pointer;
-  background:#fff;color:#b91c1c;box-shadow:0 4px 14px rgba(0,0,0,.3)}
-.v141red .rbtn:active{transform:scale(.97)}
 /* v140: بطاقة «تمت المعالجة مباشرة» في لوحة البلاغات (كما هي) */
 .bugai.fixmode{border-inline-start:4px solid #16a34a;background:linear-gradient(180deg,rgba(22,163,74,.09),transparent)}
 .bugfixlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 5px}
@@ -8063,6 +8300,68 @@ header{top:var(--v141remind-h) !important}
   border:1px solid rgba(22,163,74,.35);border-radius:9px;padding:4px 9px;max-width:100%;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80;border-color:rgba(74,222,128,.4)}
-@media (prefers-reduced-motion:reduce){.v141remind .ric,.v141red .ric,.v141red .rcard{animation:none}}</style>
+@media (prefers-reduced-motion:reduce){.v141remind .ric{animation:none}}</style>
+<style id="v142css">/* ═══ v142: الإنذار الأحمر الذكي المتدرج ═══ */
+.v142red{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;
+  background:rgba(45,0,0,.78);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);padding:16px}
+.v142red.on{display:flex}
+.v142red.l2{background:rgba(60,0,0,.72)}
+.v142red.l3{background:rgba(55,0,0,.84)}
+.v142red.l4{background:rgba(38,0,0,.92)}
+/* المستوى الهادئ: بطاقة صغيرة أعلى الشاشة لا تحجب التطبيق وتُغلق بضغطة */
+.v142red.calm{background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;
+  pointer-events:none;align-items:flex-start;padding-top:calc(var(--v141remind-h,34px) + 10px)}
+.v142red.calm .rcard{pointer-events:auto;max-width:430px;border-width:1px;animation:none;
+  box-shadow:0 10px 34px rgba(0,0,0,.28)}
+.v142red .rcard{max-width:430px;width:100%;color:#fff;border-radius:18px;padding:20px 18px 16px;
+  border:1.5px solid #fecaca;text-align:center;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+/* 4 تدرجات لونية تتبدل عشوائياً كل فتح — لا صورة ثابتة يعود إليها العين */
+.v142red.rv1 .rcard{background:linear-gradient(160deg,#7f1d1d,#b91c1c 55%,#dc2626)}
+.v142red.rv2 .rcard{background:linear-gradient(160deg,#7c2d12,#c2410c 50%,#ea580c);border-color:#fed7aa}
+.v142red.rv3 .rcard{background:linear-gradient(160deg,#881337,#be123c 55%,#e11d48);border-color:#fda4af}
+.v142red.rv4 .rcard{background:linear-gradient(160deg,#450a0a,#991b1b 60%,#dc2626)}
+.v142red.calm .rcard{background:linear-gradient(160deg,#b91c1c,#dc2626)}
+.v142red.l2 .rcard,.v142red.l4 .rcard{animation:v142pulse 1.8s ease-in-out infinite}
+.v142red.l3 .rcard{animation:v142pulse 1.8s ease-in-out infinite,v142shake 5.5s ease-in-out infinite}
+@keyframes v142pulse{0%,100%{box-shadow:0 24px 70px rgba(0,0,0,.55)}50%{box-shadow:0 24px 84px rgba(239,68,68,.8)}}
+@keyframes v142shake{0%,88%,100%{transform:translateX(0)}90%{transform:translateX(-4px)}92%{transform:translateX(4px)}94%{transform:translateX(-3px)}96%{transform:translateX(3px)}98%{transform:translateX(-1px)}}
+.v142red .ric{font-size:42px;line-height:1}
+.v142red .rtitle{font-size:17px;font-weight:800;margin:9px 0 8px;letter-spacing:.3px}
+.v142red .rbody{font-size:13.5px;line-height:1.9;background:rgba(0,0,0,.18);border-radius:12px;padding:11px 13px}
+.v142red .rmeta{font-size:11px;font-weight:700;opacity:.88;margin-top:8px;line-height:1.7}
+.v142red .rgate{margin-top:13px}
+.rgate-btn{position:relative;width:100%;overflow:hidden;border:0;border-radius:13px;padding:13px;
+  font-size:14.5px;font-weight:800;cursor:pointer;background:#fff;color:#b91c1c;
+  box-shadow:0 4px 14px rgba(0,0,0,.3);touch-action:none;user-select:none;-webkit-user-select:none}
+.rgate-btn:active{transform:scale(.98)}
+.rgate-btn.small{width:auto;padding:11px 22px}
+.rgate-btn .rprog{position:absolute;top:0;bottom:0;left:0;width:0;
+  background:linear-gradient(90deg,#ef4444,#dc2626);opacity:.25}
+.rgate-btn .rlbl{position:relative}
+.rswipe{position:relative;height:48px;border-radius:13px;background:rgba(0,0,0,.28);
+  border:1px dashed rgba(255,255,255,.5);overflow:hidden}
+.rswipe .rhandle{position:absolute;top:4px;bottom:4px;left:4px;min-width:150px;
+  display:flex;align-items:center;justify-content:center;gap:7px;padding:0 14px;border-radius:10px;
+  background:#fff;color:#b91c1c;font-size:13.5px;font-weight:800;cursor:grab;
+  touch-action:none;user-select:none;-webkit-user-select:none;box-shadow:0 3px 10px rgba(0,0,0,.35)}
+.rgate-math{background:rgba(0,0,0,.24);border-radius:13px;padding:11px 12px}
+.rgate-math label{display:block;font-size:13px;font-weight:700;margin-bottom:8px}
+.rgate-math label b{color:#fde68a;font-size:15px}
+.rgate-math .rmrow{display:flex;gap:8px;justify-content:center}
+.rgate-math input{flex:1 1 130px;min-width:0;border:1.5px solid rgba(255,255,255,.5);border-radius:10px;
+  padding:10px 12px;font-size:15px;font-weight:800;text-align:center;background:rgba(255,255,255,.95);color:#7f1d1d}
+.rgate-math.bad{animation:v142bad .35s ease}
+@keyframes v142bad{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}50%{transform:translateX(5px)}75%{transform:translateX(-3px)}}
+/* سطر الشكر الأخضر */
+.v142red.gmode .rcard{background:linear-gradient(160deg,#14532d,#16a34a 60%,#22c55e);
+  border-color:#bbf7d0;animation:none}
+.v142red.gmode .rtitle{color:#d9f99d}
+.v142green{position:fixed;bottom:14px;left:50%;transform:translate(-50%,90px);
+  z-index:9998;display:flex;align-items:center;gap:8px;max-width:min(92vw,430px);
+  background:linear-gradient(135deg,#14532d,#16a34a);color:#fff;font-size:13px;font-weight:700;
+  border-radius:13px;padding:11px 16px;box-shadow:0 10px 30px rgba(0,0,0,.35);
+  transition:transform .35s ease;pointer-events:none}
+.v142green.on{transform:translate(-50%,0)}
+@media (prefers-reduced-motion:reduce){.v142red .rcard,.rgate-math.bad{animation:none}}</style>
 </body>
 </html>
