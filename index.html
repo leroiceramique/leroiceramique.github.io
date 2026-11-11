@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "20";   /* v142: الإنذار الأحمر الذكي المتدرج — 4 مستويات من سلوك العضو أو تثبيت المدير، نص وأيقونة ولون وبوابة إغلاق مختلفة كل فتح */
+const APP_VER = "21";   /* v143: التنبيه الجماعي من التطبيق (📣 لكل الأعضاء أو بعضهم) + إشعارات الهاتف الخارجية (🔔 Web Push) + سجل التنبيهات */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8363,5 +8363,348 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   transition:transform .35s ease;pointer-events:none}
 .v142green.on{transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){.v142red .rcard,.rgate-math.bad{animation:none}}</style>
+<style id="v143css">/* ═══ v143: التنبيه الجماعي + إشعارات الهاتف ═══ */
+.v143fab{position:fixed;z-index:9;inset-inline-start:18px;bottom:calc(154px + env(safe-area-inset-bottom));
+  width:46px;height:46px;border:1px solid rgba(245,158,11,.55);border-radius:16px;cursor:pointer;display:none;
+  background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-size:20px;line-height:1;
+  box-shadow:0 6px 16px rgba(239,68,68,.32)}
+.v143bell{position:fixed;z-index:9;inset-inline-end:14px;bottom:calc(96px + env(safe-area-inset-bottom));
+  border:none;border-radius:999px;padding:10px 16px;cursor:pointer;display:none;font-family:inherit;
+  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff;font-weight:700;font-size:13px;
+  box-shadow:0 6px 16px rgba(37,99,235,.28)}
+.v143row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
+.v143lbl{font-weight:700;font-size:13px;color:var(--muted,#8b93a2)}
+.v143chip{border:1.5px solid var(--line,#dfe3ea);background:var(--card,#fff);color:var(--text,#23272a);
+  border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.v143chip.on{background:var(--brand,#5865f2);border-color:var(--brand,#5865f2);color:#fff}
+.v143cnt{font-size:12px;color:var(--muted,#8b93a2)}
+.v143q{width:100%;padding:9px 12px;border:1.5px solid var(--line,#dfe3ea);border-radius:10px;margin:6px 0 4px;
+  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;font-size:14px}
+.v143list{max-height:230px;overflow:auto;border:1px solid var(--line,#dfe3ea);border-radius:12px;padding:4px}
+.v143u{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;cursor:pointer}
+.v143u:hover{background:rgba(88,101,242,.08)}
+.v143u input{width:18px;height:18px;accent-color:var(--brand,#5865f2)}
+.v143u .nm{flex:1;font-size:14px;font-weight:600}
+.v143u .rl{font-size:11px;color:var(--muted,#8b93a2)}
+.v143res{margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.12);
+  border:1px solid rgba(34,197,94,.4);font-size:13px;line-height:1.9}
+.v143hist{padding:9px 11px;border:1px solid var(--line,#dfe3ea);border-radius:10px;margin-bottom:7px}
+.v143hist .ht{font-size:13.5px;font-weight:600;line-height:1.6}
+.v143hist .hm{font-size:11.5px;color:var(--muted,#8b93a2);margin-top:3px}
+
+</style>
+<script id="v143ui">
+/* ═══════════════════════════════════════════════════════════════════
+   v143 — التنبيه الجماعي من التطبيق + إشعارات الهاتف الخارجية
+   بطلب يوسف: «يوجد زر تنبيه في بوت تلغرام اي شيء اكتبه يصل لكل المستخدمين
+   او لبعضهم فقط لكن هاته الخاصية لا توجد في التطبيق — اضفها واي شيء اكتبه
+   يصلهم تنبيه على بوت تلغرام او اشعار خارجي على الهاتف وليس داخلي في
+   التطبيق فقط».
+   • 📣 زر عائم لمن يملك صلاحية المستخدمين: نص + مستلمون (الكل/أعضاء) +
+     قنوات (✈️ تلغرام و/أو 🔔 إشعار الهاتف) + سجل آخر التنبيهات.
+   • 🔔 زر اشتراك إشعارات الهاتف (Web Push) لكل الأعضاء — إشعار خارجي
+     حقيقي يظهر على الهاتف حتى والتطبيق مغلق، والضغط عليه يفتح التطبيق.
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  function vsafe(f) { try { f(); } catch (e) {} }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function isAdminUser() {
+    try { return !!(S && S.perms && (S.perms.users || S.perms.admin)); } catch (e) { return false; }
+  }
+
+  /* ═══ 1) إشعارات الهاتف (Web Push) — زر لكل الأعضاء ═══ */
+  var bell = document.createElement("button");
+  bell.type = "button"; bell.id = "v143bell"; bell.className = "v143bell";
+  bell.setAttribute("aria-label", "إشعارات الهاتف");
+  document.body.appendChild(bell);
+  var stopArm = 0;
+
+  function pushSupported() {
+    try {
+      return ("serviceWorker" in navigator) && ("PushManager" in window) && (typeof Notification !== "undefined");
+    } catch (e) { return false; }
+  }
+  function pushDone() {
+    try { return localStorage.getItem("ceram_push_done") === "1"; } catch (e) { return false; }
+  }
+  function pushLater() {
+    try {
+      return (parseInt(localStorage.getItem("ceram_push_later") || "0", 10) || 0) > Date.now();
+    } catch (e) { return false; }
+  }
+  function pushLaterSet() {
+    try { localStorage.setItem("ceram_push_later", String(Date.now() + 3 * 86400000)); } catch (e) {}
+  }
+  function refreshBell() {
+    bell.style.display = (pushSupported() && !pushLater()) ? "inline-block" : "none";
+    bell.textContent = pushDone() ? "🔔 إشعارات مفعلة ✓" : "🔔 فعّل إشعارات الهاتف";
+  }
+
+  function b64ToU8(b64) {
+    var pad = "";
+    var k = (4 - (b64.length % 4)) % 4;
+    for (var q = 0; q < k; q++) pad += "=";
+    var b = (b64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+    var raw = atob(b);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  async function v143Subscribe() {
+    try {
+      if (!pushSupported()) { toast("متصفحك لا يدعم إشعارات الهاتف — اعتمد قناة تلغرام.", true); return; }
+      if (Notification.permission === "denied") {
+        pushLaterSet(); refreshBell();
+        toast("الإشعارات محظورة لهذا الموقع — فعّلها من إعدادات المتصفح ثم أعد المحاولة.", true);
+        return;
+      }
+      var perm = Notification.permission;
+      if (perm !== "granted") perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        pushLaterSet(); refreshBell();
+        toast("لم يُمنح إذن الإشعارات — يمكنك تفعيله لاحقاً من زر 🔔.", true);
+        return;
+      }
+      var reg = null;
+      try { reg = await navigator.serviceWorker.getRegistration(); } catch (e) {}
+      if (!reg) { try { reg = await navigator.serviceWorker.register("/sw.js"); } catch (e) {} }
+      if (!reg) { toast("تعذر تجهيز عامل الخدمة — أعد فتح التطبيق وحاول مجدداً.", true); return; }
+      var kr = await api("/api/push/key", { noCache: true });
+      if (!kr || !kr.ok || !kr.key) { toast((kr && kr.error) || "تعذر جلب مفاتيح الإشعارات من الخادم.", true); return; }
+      var sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToU8(kr.key)
+      });
+      var res = await api("/api/push/subscribe", {
+        method: "POST",
+        body: JSON.stringify({ subscription: sub.toJSON() })
+      });
+      if (res && res.ok) {
+        try { localStorage.setItem("ceram_push_done", "1"); } catch (e) {}
+        toast("✅ تم تفعيل إشعارات الهاتف — التنبيهات ستوصلك خارجياً حتى والتطبيق مغلق.");
+      } else {
+        toast((res && res.error) || "تعذر حفظ الاشتراك.", true);
+      }
+      refreshBell();
+    } catch (e) {
+      toast("تعذر التفعيل هنا — إن كنت داخل تلغرام افتح التطبيق من المتصفح أو أضفه للشاشة الرئيسية، أو اعتمد قناة تلغرام.", true);
+    }
+  }
+
+  async function v143Unsubscribe() {
+    try {
+      var reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        var s = await reg.pushManager.getSubscription();
+        if (s) { try { await s.unsubscribe(); } catch (e) {} }
+      }
+      await api("/api/push/unsubscribe", { method: "POST", body: "{}" });
+    } catch (e) {}
+    try { localStorage.removeItem("ceram_push_done"); } catch (e) {}
+    toast("تم إيقاف إشعارات الهاتف.");
+    refreshBell();
+  }
+
+  bell.addEventListener("click", function () {
+    if (pushDone()) {
+      var now = Date.now();
+      if (now - stopArm < 4000) { stopArm = 0; v143Unsubscribe(); }
+      else { stopArm = now; toast("اضغط مجدداً خلال 4 ثوانٍ لتأكيد إيقاف الإشعارات."); }
+      return;
+    }
+    v143Subscribe();
+  });
+
+  /* ═══ 2) التنبيه الجماعي — لمن يملك صلاحية المستخدمين ═══ */
+  var fab = document.createElement("button");
+  fab.type = "button"; fab.id = "v143fab"; fab.className = "v143fab";
+  fab.title = "تنبيه جماعي"; fab.setAttribute("aria-label", "تنبيه جماعي");
+  fab.textContent = "📣";
+  document.body.appendChild(fab);
+
+  var dlg = null, usersCache = null, picked = {}, pickMode = false, sending = false;
+
+  function updateN() {
+    var n = dlg.querySelector("#bcN");
+    if (!pickMode) { n.textContent = "سيصل لكل الأعضاء النشطين"; return; }
+    var c = 0;
+    for (var k in picked) if (picked[k]) c++;
+    n.textContent = c + " محدد";
+  }
+
+  function renderUsers(filter) {
+    var box = dlg.querySelector("#bcListBody");
+    var us = usersCache || [];
+    var f = String(filter || "").trim().toLowerCase();
+    var html = "";
+    for (var i = 0; i < us.length; i++) {
+      var u = us[i];
+      var tid = u.telegram_id;
+      if (f && String(u.name || "").toLowerCase().indexOf(f) === -1) continue;
+      html += '<label class="v143u"><input type="checkbox" data-tid="' + esc(tid) + '"'
+        + (picked[tid] ? " checked" : "")
+        + '><span class="nm">' + esc(u.name || ("#" + tid)) + (u.active === false ? " ⛔" : "") + '</span>'
+        + '<span class="rl">' + esc(u.role_label || u.role || "") + '</span></label>';
+    }
+    box.innerHTML = html || '<p style="padding:10px;color:#888">لا نتائج</p>';
+  }
+
+  async function send() {
+    if (sending) return;
+    var text = (dlg.querySelector("#bcText").value || "").trim();
+    if (text.length < 2) { toast("اكتب نص التنبيه أولاً.", true); return; }
+    var channels = [];
+    if (dlg.querySelector("#bcTg").classList.contains("on")) channels.push("tg");
+    if (dlg.querySelector("#bcPush").classList.contains("on")) channels.push("push");
+    if (!channels.length) { toast("اختر قناة واحدة على الأقل (تلغرام أو إشعار الهاتف).", true); return; }
+    var tids = null;
+    if (pickMode) {
+      tids = [];
+      for (var k in picked) if (picked[k]) tids.push(Number(k));
+      if (!tids.length) { toast("اختر المستلمين من القائمة أو ارجع إلى «الكل».", true); return; }
+    }
+    var btn = dlg.querySelector("#bcGo");
+    sending = true; btn.disabled = true; btn.textContent = "⏳ جارٍ الإرسال…";
+    var resBox = dlg.querySelector("#bcRes");
+    resBox.style.display = "none";
+    try {
+      var r = await api("/api/broadcast/send", {
+        method: "POST",
+        body: JSON.stringify({ targets: pickMode ? "list" : "all", tids: tids, channels: channels, text: text })
+      });
+      if (r && r.ok) {
+        var x = r.result || {};
+        var lines = ["✅ اكتمل الإرسال — المستلمون: " + (x.recipients || 0)];
+        if (channels.indexOf("tg") !== -1) {
+          lines.push("✈️ تلغرام: " + (x.tg_ok || 0) + " ناجح" + ((x.tg_fail || 0) ? " • " + x.tg_fail + " فشل" : ""));
+        }
+        if (channels.indexOf("push") !== -1) {
+          lines.push("🔔 إشعار الهاتف: " + (x.push_ok || 0) + " ناجح" + ((x.push_fail || 0) ? " • " + x.push_fail + " فشل" : ""));
+          if (x.push_hint) lines.push("ℹ️ " + x.push_hint);
+        }
+        if (x.failed && x.failed.length) lines.push("⚠️ فشل الإرسال لـ: " + x.failed.join("، "));
+        resBox.innerHTML = lines.map(esc).join("<br>");
+        resBox.style.display = "";
+        dlg.querySelector("#bcText").value = "";
+      } else {
+        toast((r && r.error) || "فشل الإرسال.", true);
+      }
+    } catch (e) {
+      toast((e && e.message) || "فشل الإرسال — تحقق من الاتصال.", true);
+    }
+    sending = false; btn.disabled = false; btn.textContent = "📤 إرسال التنبيه";
+  }
+
+  async function loadHist() {
+    var box = dlg.querySelector("#bcHistBox"), list = dlg.querySelector("#bcHistList");
+    box.style.display = "";
+    list.innerHTML = '<p style="padding:10px;color:#888">جارٍ التحميل…</p>';
+    try {
+      var r = await api("/api/broadcast/history", { noCache: true });
+      var items = (r && r.items) || [];
+      if (!items.length) { list.innerHTML = '<p style="padding:10px;color:#888">لا تنبيهات بعد.</p>'; return; }
+      list.innerHTML = items.map(function (it) {
+        var ch = [];
+        var cstr = String(it.channels || "");
+        if (cstr.indexOf("tg") !== -1) ch.push("✈️ " + it.tg_ok + "/" + (it.tg_ok + it.tg_fail));
+        if (cstr.indexOf("push") !== -1) ch.push("🔔 " + it.push_ok + "/" + (it.push_ok + it.push_fail));
+        return '<div class="v143hist"><div class="ht">' + esc(it.text) + '</div>'
+          + '<div class="hm">' + esc(it.at) + " • " + (it.kind === "all" ? "الكل" : (it.n + " محدد"))
+          + (ch.length ? " • " + ch.join(" • ") : "")
+          + (it.admin ? " • بواسطة " + esc(it.admin) : "") + '</div></div>';
+      }).join("");
+    } catch (e) {
+      list.innerHTML = '<p style="padding:10px;color:#888">تعذر التحميل.</p>';
+    }
+  }
+
+  function ensureDlg() {
+    if (dlg) return dlg;
+    dlg = document.createElement("dialog");
+    dlg.id = "dlgBroadcast";
+    dlg.innerHTML = '<div class="dh">📣 تنبيه جماعي</div>'
+      + '<div class="db">'
+      + '<div class="fld"><label>نص التنبيه — يصل المستلمين على بوت تلغرام و/أو كإشعار خارجي على هواتفهم:</label>'
+      + '<textarea id="bcText" maxlength="2000" rows="4" '
+      + 'placeholder="مثال: غداً صبيحة الجمعة تسليم بضاعة جديدة — جهزوا قائمة الجرد."></textarea></div>'
+      + '<div class="v143row"><span class="v143lbl">المستلمون:</span>'
+      + '<button type="button" class="v143chip on" id="bcAll">👥 الكل</button>'
+      + '<button type="button" class="v143chip" id="bcPick">👤 اختيار أعضاء…</button>'
+      + '<span class="v143cnt" id="bcN"></span></div>'
+      + '<div id="bcList" style="display:none">'
+      + '<input id="bcQ" type="text" class="v143q" placeholder="🔍 بحث بالاسم…">'
+      + '<div id="bcListBody" class="v143list"></div></div>'
+      + '<div class="v143row"><span class="v143lbl">القنوات:</span>'
+      + '<button type="button" class="v143chip on" id="bcTg">✈️ تلغرام</button>'
+      + '<button type="button" class="v143chip on" id="bcPush">🔔 إشعار الهاتف</button></div>'
+      + '<button type="button" class="btn" id="bcGo">📤 إرسال التنبيه</button>'
+      + '<div id="bcRes" class="v143res" style="display:none"></div>'
+      + '<button type="button" class="btn gray" id="bcCancel" style="margin-top:10px">إغلاق</button>'
+      + '<button type="button" class="btn soft-e" id="bcHist" style="margin-top:8px">📜 آخر التنبيهات</button>'
+      + '<div id="bcHistBox" style="display:none;margin-top:8px">'
+      + '<div id="bcHistList" class="v143list" style="max-height:260px"></div></div>'
+      + '</div>';
+    document.body.appendChild(dlg);
+    dlg.addEventListener("click", function (e) {
+      if (e.target === dlg) vsafe(function () { dlg.close(); });
+    });
+    dlg.querySelector("#bcAll").addEventListener("click", function () {
+      pickMode = false;
+      this.classList.add("on");
+      dlg.querySelector("#bcPick").classList.remove("on");
+      dlg.querySelector("#bcList").style.display = "none";
+      updateN();
+    });
+    dlg.querySelector("#bcPick").addEventListener("click", async function () {
+      pickMode = true;
+      this.classList.add("on");
+      dlg.querySelector("#bcAll").classList.remove("on");
+      dlg.querySelector("#bcList").style.display = "";
+      if (!usersCache) {
+        try {
+          var r = await api("/api/users", { noCache: true });
+          usersCache = (r && r.users) || [];
+        } catch (e) { usersCache = []; toast("تعذر جلب قائمة الأعضاء.", true); }
+      }
+      renderUsers(dlg.querySelector("#bcQ").value);
+      updateN();
+    });
+    dlg.querySelector("#bcQ").addEventListener("input", function () { renderUsers(this.value); });
+    dlg.querySelector("#bcListBody").addEventListener("change", function (e) {
+      var t = e.target;
+      if (t && t.type === "checkbox") {
+        picked[t.getAttribute("data-tid")] = t.checked;
+        updateN();
+      }
+    });
+    dlg.querySelector("#bcTg").addEventListener("click", function () { this.classList.toggle("on"); });
+    dlg.querySelector("#bcPush").addEventListener("click", function () { this.classList.toggle("on"); });
+    dlg.querySelector("#bcGo").addEventListener("click", send);
+    dlg.querySelector("#bcCancel").addEventListener("click", function () { dlg.close(); });
+    dlg.querySelector("#bcHist").addEventListener("click", loadHist);
+    return dlg;
+  }
+
+  fab.addEventListener("click", function () {
+    ensureDlg();
+    updateN();
+    try { dlg.showModal(); } catch (e) {}
+  });
+
+  function refreshFab() { fab.style.display = isAdminUser() ? "block" : "none"; }
+  vsafe(refreshFab); vsafe(refreshBell);
+  setInterval(function () { vsafe(refreshFab); vsafe(refreshBell); }, 5000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) { vsafe(refreshFab); vsafe(refreshBell); }
+  });
+})();
+
+</script>
 </body>
 </html>

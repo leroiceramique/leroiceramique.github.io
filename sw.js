@@ -1,6 +1,6 @@
 // Service Worker — نسخة GitHub Pages (leroiceramique.github.io)
 // نفس منطق نسخة الخادم: الصفحات شبكة أولاً + API مرور مباشر بلا تخزين.
-const CACHE = "ceram-pwa-gp-v14";
+const CACHE = "ceram-pwa-gp-v15";   /* v143: + معالجا push وnotificationclick لإشعارات الهاتف */
 const SHELL = ["/", "/icon.jpg", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -47,3 +47,39 @@ self.addEventListener("fetch", (e) => {
     })
   );
 });
+/* v143: إشعارات الهاتف الخارجية — استقبال التنبيه الجماعي من الإدارة
+   حتى والتطبيق مغلق، والضغط على الإشعار يفتح التطبيق. */
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) {
+    try { d = { title: "🔔 تنبيه من الإدارة", body: e.data ? e.data.text() : "" }; } catch (err2) { d = {}; }
+  }
+  const title = d.title || "🔔 تنبيه من الإدارة";
+  e.waitUntil(self.registration.showNotification(title, {
+    body: d.body || "",
+    tag: d.tag || "ceram-broadcast",
+    dir: "rtl",
+    lang: "ar",
+    icon: "/icon.jpg",
+    badge: "/icon.jpg",
+    renotify: true,
+    vibrate: [140, 70, 140],
+    data: { url: d.url || "/" }
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil((async () => {
+    let target = null;
+    try {
+      const cs = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const c of cs) {
+        try { if ("focus" in c) { target = c; break; } } catch (err) {}
+      }
+    } catch (err) {}
+    if (target) { try { return target.focus(); } catch (err) {} }
+    try { return await self.clients.openWindow(url); } catch (err) {}
+  })());
+});
+
