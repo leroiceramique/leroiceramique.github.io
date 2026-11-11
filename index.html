@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "21";   /* v143: التنبيه الجماعي من التطبيق (📣 لكل الأعضاء أو بعضهم) + إشعارات الهاتف الخارجية (🔔 Web Push) + سجل التنبيهات */
+const APP_VER = "22";   /* v144: نافذة السماح بالإشعارات القسرية — لا تُغلق حتى يوافق العضو */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8391,7 +8391,38 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
 .v143hist{padding:9px 11px;border:1px solid var(--line,#dfe3ea);border-radius:10px;margin-bottom:7px}
 .v143hist .ht{font-size:13.5px;font-weight:600;line-height:1.6}
 .v143hist .hm{font-size:11.5px;color:var(--muted,#8b93a2);margin-top:3px}
-
+/* ═══ v144: نافذة إذن الإشعارات القسرية — لا تُغلق حتى يوافق العضو ═══ */
+html.v144lock,html.v144lock body{overflow:hidden!important}
+#v144perm{position:fixed;inset:0;z-index:9450;display:none;align-items:center;justify-content:center;
+  background:rgba(2,6,23,.8);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);padding:18px;direction:rtl}
+#v144perm.on{display:flex}
+#v144perm .pw-card{width:100%;max-width:402px;background:var(--card,#fff);color:var(--text,#23272a);
+  border-radius:22px;padding:26px 22px 16px;text-align:center;box-shadow:0 24px 70px rgba(0,0,0,.5);
+  animation:v144in .45s cubic-bezier(.2,.9,.3,1.15)}
+@keyframes v144in{from{transform:translateY(28px) scale(.9);opacity:0}to{transform:none;opacity:1}}
+#v144perm .pw-ic{font-size:46px;line-height:1;animation:v144ring 3s ease-in-out infinite}
+@keyframes v144ring{0%,86%,100%{transform:rotate(0)}90%{transform:rotate(13deg)}94%{transform:rotate(-11deg)}98%{transform:rotate(6deg)}}
+#v144perm .pw-t{font-size:18px;font-weight:800;margin-top:10px;letter-spacing:.2px}
+#v144perm .pw-b{font-size:13.5px;line-height:1.95;color:var(--muted,#5b6472);margin-top:8px}
+#v144perm .pw-b b{color:var(--text,#23272a)}
+#v144perm .pw-go{display:block;width:100%;margin-top:16px;border:none;border-radius:14px;padding:14px 10px;
+  font-family:inherit;font-size:15px;font-weight:800;color:#fff;cursor:pointer;
+  background:linear-gradient(135deg,#2563eb,#5865f2);animation:v144glow 2s ease-in-out infinite}
+@keyframes v144glow{0%,100%{box-shadow:0 8px 22px rgba(37,99,235,.32)}50%{box-shadow:0 10px 32px rgba(37,99,235,.62)}}
+#v144perm .pw-go:disabled{opacity:.7;animation:none;cursor:wait}
+#v144perm .pw-hint{display:none;margin-top:11px;font-size:12.5px;font-weight:700;color:#92400e;line-height:1.85;
+  background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.42);border-radius:11px;padding:9px 11px}
+#v144perm .pw-steps{display:none;margin-top:12px;text-align:start;font-size:12.5px;line-height:2.1;
+  background:rgba(220,38,38,.07);border:1px solid rgba(220,38,38,.28);border-radius:12px;padding:10px 13px}
+#v144perm .pw-steps b{color:#b91c1c}
+#v144perm .pw-recheck{display:none;width:100%;margin-top:12px;border:1.5px solid var(--line,#dfe3ea);
+  border-radius:12px;padding:11px;font-family:inherit;font-size:13.5px;font-weight:700;cursor:pointer;
+  background:var(--card,#fff);color:var(--text,#23272a)}
+#v144perm .pw-recheck:active{transform:scale(.98)}
+#v144perm .pw-foot{margin-top:14px;min-height:16px}
+#v144perm .pw-foot a{color:var(--muted,#8b93a2);text-decoration:underline;cursor:pointer;font-size:12px}
+#v144perm .pw-card.pw-blocked{border-top:4px solid #dc2626}
+#v144perm .pw-card.pw-unsup{border-top:4px solid #f59e0b}
 </style>
 <script id="v143ui">
 /* ═══════════════════════════════════════════════════════════════════
@@ -8404,6 +8435,15 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
      قنوات (✈️ تلغرام و/أو 🔔 إشعار الهاتف) + سجل آخر التنبيهات.
    • 🔔 زر اشتراك إشعارات الهاتف (Web Push) لكل الأعضاء — إشعار خارجي
      حقيقي يظهر على الهاتف حتى والتطبيق مغلق، والضغط عليه يفتح التطبيق.
+   • v144 — طلب إذن الإشعارات القسري بطلب يوسف: «حتى يعمل زر التنبيه في
+     التطبيق يجب ان يسمح المستخدمين بذلك — قم بجعله يعمل قسرا ولا تختفي
+     نافذة السماح بالاشعارات حتى يوافق المستخدم على ذلك»: نافذة قسرية
+     تظهر تلقائياً عند كل فتح جديد لكل عضو لم يمنح إذن الإشعارات بعد —
+     بلا زر إغلاق وبلا خروج بالضغط خارجها وبلا Escape: من لم يجب بعد لا
+     مخرج له إطلاقاً إلا بالضغط «السماح» واختيار السماح في نافذة المتصفح،
+     ومن حظرها سابقاً تراه خطوات فك الحظر مع تحقق تلقائي يغلقها فور
+     الموافقة (وتعود عند كل فتح جديد حتى يوافق فعلاً)، وفور الموافقة
+     يُفعَّل اشتراك Web Push تلقائياً بلا أي خطوة إضافية.
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
@@ -8456,7 +8496,10 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     return out;
   }
 
+  var subBusy = false;   /* v144: منع اشتراك مزدوج متوازٍ (نافذة الإذن + الإصلاح التلقائي) */
   async function v143Subscribe() {
+    if (subBusy) return;
+    subBusy = true;
     try {
       if (!pushSupported()) { toast("متصفحك لا يدعم إشعارات الهاتف — اعتمد قناة تلغرام.", true); return; }
       if (Notification.permission === "denied") {
@@ -8495,6 +8538,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     } catch (e) {
       toast("تعذر التفعيل هنا — إن كنت داخل تلغرام افتح التطبيق من المتصفح أو أضفه للشاشة الرئيسية، أو اعتمد قناة تلغرام.", true);
     }
+    subBusy = false;
   }
 
   async function v143Unsubscribe() {
@@ -8700,9 +8744,172 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   function refreshFab() { fab.style.display = isAdminUser() ? "block" : "none"; }
   vsafe(refreshFab); vsafe(refreshBell);
   setInterval(function () { vsafe(refreshFab); vsafe(refreshBell); }, 5000);
+
+  /* ═══ 3) v144: نافذة إذن الإشعارات القسرية — لا تختفي حتى يوافق العضو ═══
+     بطلب يوسف: «حتى يعمل زر التنبيه في التطبيق يجب ان يسمح المستخدمين بذلك —
+     قم بجعله يعمل قسرا ولا تختفي نافذة السماح بالاشعارات حتى يوافق المستخدم
+     على ذلك».
+     • تظهر تلقائياً عند كل فتح جديد لكل عضو دخل حسابه ولم يُمنح الإذن بعد.
+     • بلا زر إغلاق — والضغط خارجها أو Escape لا يغلقها إطلاقاً.
+     • «لم يجب بعد» (default): لا مخرج إطلاقاً — زر السماح يفتح نافذة
+       المتصفح، وإن أغلقها دون موافقة تبقى الشاشة وتُنبّه أنها لن تُغلق.
+     • «محظور» (denied): خطوات فك الحظر من إعدادات المتصفح + زر تحقق +
+       فحص تلقائي عند العودة للتطبيق يغلقها فور الموافقة — و«متابعة لهذه
+       الجلسة فقط» تخفيها حتى الفتح القادم حصراً (تعود دائماً حتى يوافق).
+     • «بيئة لا تدعم» (داخل تلغرام webview / iOS بلا تثبيت): شرح فتح
+       التطبيق من متصفح حقيقي + متابعة — قناة تلغرام تعمل دائماً.
+     • فور الموافقة: تُغلق ويُفعَّل اشتراك Web Push تلقائياً (v143Subscribe).
+     • تنتظر اختفاء الإنذار الأحمر v142، ولا تظهر في تطبيق APK الأصلي. */
+  var pwin = null, pwinCur = "", sessSkipD = false, sessSkipU = false, autoSubT = 0;
+
+  function permState() {
+    try { return (typeof Notification !== "undefined") ? Notification.permission : "unsupported"; }
+    catch (e) { return "unsupported"; }
+  }
+  function envBlocked() {
+    try { return !!window.AndroidBridge; } catch (e) { return false; }
+  }
+  function loggedIn() {
+    try { return !!(S && S.user && S.user.role !== "pending"); } catch (e) { return false; }
+  }
+  function redAlertOn() {
+    try { return !!document.querySelector(".v142red.on"); } catch (e) { return false; }
+  }
+  function sessGet(k) { try { return sessionStorage.getItem(k) === "1"; } catch (e) { return false; } }
+  function sessSet(k) { try { sessionStorage.setItem(k, "1"); } catch (e) {} }
+
+  function askPerm() {
+    return new Promise(function (resolve) {
+      try {
+        var p = Notification.requestPermission(function (r) { resolve(r || permState()); });
+        if (p && typeof p.then === "function") {
+          p.then(function (r) { resolve(r || permState()); }, function () { resolve(permState()); });
+        }
+      } catch (e) { resolve(permState()); }
+    });
+  }
+
+  function buildPwin() {
+    if (pwin) return pwin;
+    pwin = document.createElement("div");
+    pwin.id = "v144perm";
+    pwin.setAttribute("role", "dialog");
+    pwin.setAttribute("aria-modal", "true");
+    pwin.innerHTML = '<div class="pw-card">'
+      + '<div class="pw-ic">🔔</div>'
+      + '<div class="pw-t" id="pwT">تفعيل إشعارات الهاتف</div>'
+      + '<div class="pw-b" id="pwB"></div>'
+      + '<button type="button" class="pw-go" id="pwGo">🔔 السماح بالإشعارات الآن</button>'
+      + '<div class="pw-hint" id="pwHint">⚠️ يجب اختيار «السماح» في نافذة المتصفح المنبثقة — لن تُغلق هذه الشاشة حتى تُفعّل الإشعارات.</div>'
+      + '<div class="pw-steps" id="pwSteps">'
+      + '<b>١.</b> اضغط أيقونة 🔒 أو ⓘ بجانب عنوان الموقع في شريط المتصفح.<br>'
+      + '<b>٢.</b> اختر «الإشعارات» ثم «السماح».<br>'
+      + '<b>٣.</b> ارجع إلى التطبيق — ستُفعَّل الإشعارات وتُغلق هذه الشاشة تلقائياً.</div>'
+      + '<button type="button" class="pw-recheck" id="pwRecheck">🔄 تحقق من الإذن الآن</button>'
+      + '<div class="pw-foot" id="pwFoot"></div>'
+      + '</div>';
+    document.body.appendChild(pwin);
+    pwin.addEventListener("click", function (e) { if (e.target === pwin) e.stopPropagation(); });
+    pwin.querySelector("#pwGo").addEventListener("click", async function () {
+      var btn = pwin.querySelector("#pwGo");
+      btn.disabled = true; btn.textContent = "⏳ بانتظار ردك في نافذة المتصفح…";
+      var r = await askPerm();
+      btn.disabled = false; btn.textContent = "🔔 السماح بالإشعارات الآن";
+      applyPwin(r, true);
+    });
+    pwin.querySelector("#pwRecheck").addEventListener("click", function () { applyPwin(permState(), false); });
+    return pwin;
+  }
+
+  function footLink(txt, fn) {
+    var f = pwin.querySelector("#pwFoot");
+    f.innerHTML = "";
+    var a = document.createElement("a");
+    a.textContent = txt;
+    a.href = "#";
+    a.addEventListener("click", function (e) { e.preventDefault(); fn(); });
+    f.appendChild(a);
+  }
+
+  function pwinHide() {
+    pwinCur = "";
+    if (pwin) pwin.classList.remove("on");
+    document.documentElement.classList.remove("v144lock");
+  }
+
+  function pwinShow(mode) {
+    buildPwin();
+    if (pwin.classList.contains("on") && pwinCur === mode) return;   /* نفس الوضع مفتوح — لا تُعد الرسم فيحذف التلميح */
+    pwinCur = mode;
+    document.documentElement.classList.add("v144lock");
+    pwin.classList.add("on");
+    var go = pwin.querySelector("#pwGo"), st = pwin.querySelector("#pwSteps"),
+        rc = pwin.querySelector("#pwRecheck"), hint = pwin.querySelector("#pwHint"),
+        t = pwin.querySelector("#pwT"), b = pwin.querySelector("#pwB"),
+        card = pwin.querySelector(".pw-card");
+    card.classList.remove("pw-blocked", "pw-unsup");
+    hint.style.display = "none";
+    st.style.display = "none"; rc.style.display = "none"; go.style.display = "";
+    pwin.querySelector("#pwFoot").innerHTML = "";
+    if (mode === "force") {
+      t.textContent = "تفعيل إشعارات الهاتف";
+      b.innerHTML = 'لكي يصلك تنبيه الإدارة <b>كإشعار خارجي على هاتفك</b> حتى والتطبيق مغلق، يجب السماح بالإشعارات لهذا الموقع.<br>اضغط الزر ثم اختر «السماح» في النافذة المنبثقة.';
+    } else if (mode === "blocked") {
+      card.classList.add("pw-blocked");
+      t.textContent = "الإشعارات محظورة من المتصفح";
+      b.innerHTML = 'حُظرت الإشعارات سابقاً لهذا الموقع — لن تصل تنبيهات الهاتف. فعّلها بالخطوات التالية وسيكتمل التفعيل والإغلاق تلقائياً:';
+      st.style.display = "block"; rc.style.display = "block";
+      footLink("متابعة لهذه الجلسة فقط — ستعود هذه الشاشة عند كل فتح جديد حتى تسمح", function () {
+        sessSkipD = true; sessSet("v144skip_d"); pwinHide();
+      });
+    } else {
+      card.classList.add("pw-unsup");
+      t.textContent = "إشعارات الهاتف غير متاحة هنا";
+      b.innerHTML = 'هذه البيئة (داخل تلغرام أو متصفح محدود) لا تتيح إذن الإشعارات.<br>افتح التطبيق من متصفح Chrome بنفس الرابط أو أضفه إلى الشاشة الرئيسية ثم سيُطلب منك السماح — وتنبيهات الإدارة تصلك دائماً على بوت تلغرام حتى هنا.';
+      go.style.display = "none";
+      footLink("متابعة", function () { sessSkipU = true; sessSet("v144skip_u"); pwinHide(); });
+    }
+  }
+
+  function applyPwin(state, afterAsk) {
+    if (state === "granted") {
+      pwinHide();
+      vsafe(v143Subscribe);
+      vsafe(refreshBell);
+      return;
+    }
+    if (state === "denied") { sessSkipD = false; pwinShow("blocked"); return; }
+    if (state === "unsupported") { pwinShow("unsupported"); return; }
+    pwinShow("force");
+    if (afterAsk) pwin.querySelector("#pwHint").style.display = "block";
+  }
+
+  function maybeShowPwin() {
+    try {
+      if (envBlocked()) return;
+      if (!loggedIn()) return;
+      if (redAlertOn()) return;
+      var st = permState();
+      if (st === "granted") {
+        pwinHide();
+        if (!pushDone() && Date.now() - autoSubT > 60000) { autoSubT = Date.now(); vsafe(v143Subscribe); }
+        return;
+      }
+      if (st === "default") { pwinShow("force"); return; }
+      if (st === "denied") {
+        if (!sessSkipD && !sessGet("v144skip_d")) pwinShow("blocked");
+        return;
+      }
+      if (!sessSkipU && !sessGet("v144skip_u")) pwinShow("unsupported");
+    } catch (e) {}
+  }
+
+  setInterval(function () { vsafe(maybeShowPwin); }, 1500);
+  setTimeout(function () { vsafe(maybeShowPwin); }, 1400);
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) { vsafe(refreshFab); vsafe(refreshBell); }
+    if (!document.hidden) { vsafe(refreshFab); vsafe(refreshBell); vsafe(maybeShowPwin); }
   });
+  window.addEventListener("focus", function () { vsafe(maybeShowPwin); });
 })();
 
 </script>
