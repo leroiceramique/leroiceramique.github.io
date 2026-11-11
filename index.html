@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "22";   /* v144: نافذة السماح بالإشعارات القسرية — لا تُغلق حتى يوافق العضو */
+const APP_VER = "23";   /* v145: أزرار فعل مباشرة — فتح متصفح الهاتف/إعدادات إشعارات التطبيق بضغطة */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8423,6 +8423,17 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
 #v144perm .pw-foot a{color:var(--muted,#8b93a2);text-decoration:underline;cursor:pointer;font-size:12px}
 #v144perm .pw-card.pw-blocked{border-top:4px solid #dc2626}
 #v144perm .pw-card.pw-unsup{border-top:4px solid #f59e0b}
+/* v145: زر الفعل الثاني (إعدادات التطبيق/فتح المتصفح) + ملاحظة النسخ */
+#v144perm .pw-go2{display:block;width:100%;margin-top:10px;border:1.5px solid var(--brand,#5865f2);
+  border-radius:14px;padding:13px 10px;font-family:inherit;font-size:14.5px;font-weight:800;cursor:pointer;
+  background:var(--card,#fff);color:var(--text,#23272a)}
+#v144perm .pw-go2:active{transform:scale(.985)}
+#v144perm .pw-go2:disabled{opacity:.7;cursor:wait}
+#v144perm .pw-go2.pw-solo{background:linear-gradient(135deg,#f59e0b,#d97706);border-color:transparent;color:#fff;
+  animation:v144amber 2s ease-in-out infinite}
+@keyframes v144amber{0%,100%{box-shadow:0 8px 22px rgba(245,158,11,.32)}50%{box-shadow:0 10px 32px rgba(245,158,11,.6)}}
+#v144perm .pw-note{display:none;margin-top:11px;font-size:12.5px;font-weight:700;color:#1d4ed8;line-height:1.9;
+  background:rgba(37,99,235,.09);border:1px solid rgba(37,99,235,.35);border-radius:11px;padding:9px 11px}
 </style>
 <script id="v143ui">
 /* ═══════════════════════════════════════════════════════════════════
@@ -8444,6 +8455,17 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
      ومن حظرها سابقاً تراه خطوات فك الحظر مع تحقق تلقائي يغلقها فور
      الموافقة (وتعود عند كل فتح جديد حتى يوافق فعلاً)، وفور الموافقة
      يُفعَّل اشتراك Web Push تلقائياً بلا أي خطوة إضافية.
+   • v145 — «الضغط يأخذك مباشرة للتفعيل» بطلب يوسف: «اشعار يتحدث عن موقع
+     ويب وتلغرام لكنه لا يفعل اشعارات من داخل تطبيق pwa — المفترض واجهة
+     تضغط عليها تأخذك مباشرة لاعدادات اشعارات التطبيق pwa وتفعيلها»:
+     كل وضع صار زراً فعّالاً — (default): زر 🔔 يفتح نافذة المتصفح فوراً؛
+     (denied): «⚙️ افتح إعدادات إشعارات التطبيق مباشرة» عبر
+     android.settings.APP_NOTIFICATION_SETTINGS باسم حزمة WebAPK من
+     getInstalledRelatedApps (بديلاً: إعدادات Chrome) مع بقاء الخطوات
+     والتحقق التلقائي؛ وداخل تلغرام/بيئة بلا إذن: «🚀 افتح التطبيق الآن
+     في متصفح الهاتف» intent:// إلى Chrome على نفس رابط التطبيق مع
+     browser_fallback_url (وiOS: نسخ الرابط بضغطة) — وعند فشل القفز
+     يُنسخ الرابط تلقائياً مع تلميح؛ وزر 🔔 العائم عند الحظر يفتح النافذة.
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
@@ -8504,7 +8526,8 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
       if (!pushSupported()) { toast("متصفحك لا يدعم إشعارات الهاتف — اعتمد قناة تلغرام.", true); return; }
       if (Notification.permission === "denied") {
         pushLaterSet(); refreshBell();
-        toast("الإشعارات محظورة لهذا الموقع — فعّلها من إعدادات المتصفح ثم أعد المحاولة.", true);
+        try { sessSkipD = false; applyPwin("denied"); } catch (eG) {}   /* v145: زر 🔔 يفتح نافذة الإذن مباشرة */
+        toast("الإشعارات محظورة لهذا الموقع — فعّلها من الإعدادات ثم أعد المحاولة.", true);
         return;
       }
       var perm = Notification.permission;
@@ -8778,6 +8801,53 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
   function sessGet(k) { try { return sessionStorage.getItem(k) === "1"; } catch (e) { return false; } }
   function sessSet(k) { try { sessionStorage.setItem(k, "1"); } catch (e) {} }
 
+  /* ═══ v145: أفعال مباشرة — فتح متصفح الهاتف / إعدادات إشعارات التطبيق بضغطة ═══ */
+  function isAndroid() {
+    try { return /Android/i.test(navigator.userAgent || ""); } catch (e) { return false; }
+  }
+  function isStandalone() {
+    try {
+      return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+             navigator.standalone === true;
+    } catch (e) { return false; }
+  }
+  function pwNav(u) {
+    try { if (window.__v145navHook && window.__v145navHook(u)) return; } catch (e) {}
+    try { window.location.href = u; } catch (e) {}
+  }
+  function pwNoteShow(txt) {
+    try {
+      var n = pwin.querySelector("#pwNote");
+      n.textContent = txt; n.style.display = "block";
+    } catch (e) {}
+  }
+  function appSettingsIntent(pkg) {
+    return "intent:#Intent;action=android.settings.APP_NOTIFICATION_SETTINGS;S.android.provider.extra.APP_PACKAGE=" + String(pkg) + ";end";
+  }
+  function chromeOpenIntent() {
+    var u = String(location.href || "");
+    var bare = u.replace(/^https?:\/\//i, "");
+    return "intent://" + bare + "#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=" + encodeURIComponent(u) + ";end";
+  }
+  var pwPkgCache = { done: false, pkg: "" };
+  async function installedAppPkg() {
+    /* v145: اسم حزمة تطبيق PWA المثبت (WebAPK) — يتطلب related_applications
+       platform=webapp في manifest، فيأخذ المستخدم مباشرة لإعدادات إشعارات التطبيق */
+    if (pwPkgCache.done) return pwPkgCache.pkg;
+    var pkg = "";
+    try {
+      if (navigator.getInstalledRelatedApps) {
+        var list = await navigator.getInstalledRelatedApps();
+        for (var i = 0; i < list.length; i++) {
+          var r = list[i];
+          if (r && r.platform === "webapp" && r.id) { pkg = r.id; break; }
+        }
+      }
+    } catch (e) {}
+    pwPkgCache = { done: true, pkg: pkg };
+    return pkg;
+  }
+
   function askPerm() {
     return new Promise(function (resolve) {
       try {
@@ -8800,6 +8870,8 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
       + '<div class="pw-t" id="pwT">تفعيل إشعارات الهاتف</div>'
       + '<div class="pw-b" id="pwB"></div>'
       + '<button type="button" class="pw-go" id="pwGo">🔔 السماح بالإشعارات الآن</button>'
+      + '<button type="button" class="pw-go2" id="pwGo2" style="display:none"></button>'
+      + '<div class="pw-note" id="pwNote"></div>'
       + '<div class="pw-hint" id="pwHint">⚠️ يجب اختيار «السماح» في نافذة المتصفح المنبثقة — لن تُغلق هذه الشاشة حتى تُفعّل الإشعارات.</div>'
       + '<div class="pw-steps" id="pwSteps">'
       + '<b>١.</b> اضغط أيقونة 🔒 أو ⓘ بجانب عنوان الموقع في شريط المتصفح.<br>'
@@ -8818,6 +8890,35 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
       applyPwin(r, true);
     });
     pwin.querySelector("#pwRecheck").addEventListener("click", function () { applyPwin(permState(), false); });
+    pwin.querySelector("#pwGo2").addEventListener("click", async function () {
+      var b2 = pwin.querySelector("#pwGo2");
+      var act = b2.getAttribute("data-act");
+      if (act === "open-browser") {
+        if (isAndroid()) {
+          b2.disabled = true;
+          pwNav(chromeOpenIntent());
+          setTimeout(async function () {
+            b2.disabled = false;
+            try {
+              if (document.visibilityState === "visible" && document.hasFocus()) {
+                try { await navigator.clipboard.writeText(String(location.href)); } catch (e2) {}
+                pwNoteShow("لم يُفتح المتصفح تلقائياً؟ نُسخ رابط التطبيق — الصقه في Chrome وستُطلب الموافقة على الإشعارات.");
+              }
+            } catch (e3) {}
+          }, 2500);
+        } else {
+          try { await navigator.clipboard.writeText(String(location.href)); pwNoteShow("📋 نُسخ رابط التطبيق — افتحه في متصفح الهاتف ثم أضِف التطبيق إلى الشاشة الرئيسية وستُطلب الموافقة."); }
+          catch (e) { pwNoteShow("انسخ رابط التطبيق من شريط العنوان وافتحه في متصفح الهاتف."); }
+        }
+      } else {
+        b2.disabled = true;
+        var pkg = await installedAppPkg();
+        if (!pkg && isAndroid()) pkg = "com.android.chrome";
+        b2.disabled = false;
+        if (pkg) pwNav(appSettingsIntent(pkg));
+        else pwNoteShow("افتح إعدادات الهاتف ← التطبيقات ← المتصفح ← الإشعارات ثم اسمح بها.");
+      }
+    });
     return pwin;
   }
 
@@ -8846,28 +8947,47 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
     var go = pwin.querySelector("#pwGo"), st = pwin.querySelector("#pwSteps"),
         rc = pwin.querySelector("#pwRecheck"), hint = pwin.querySelector("#pwHint"),
         t = pwin.querySelector("#pwT"), b = pwin.querySelector("#pwB"),
+        go2 = pwin.querySelector("#pwGo2"), noteEl = pwin.querySelector("#pwNote"),
         card = pwin.querySelector(".pw-card");
     card.classList.remove("pw-blocked", "pw-unsup");
     hint.style.display = "none";
-    st.style.display = "none"; rc.style.display = "none"; go.style.display = "";
+    st.style.display = "none"; rc.style.display = "none";
+    go2.style.display = "none"; go2.classList.remove("pw-solo"); go2.removeAttribute("data-act");
+    noteEl.style.display = "none";
+    go.style.display = "";
     pwin.querySelector("#pwFoot").innerHTML = "";
     if (mode === "force") {
       t.textContent = "تفعيل إشعارات الهاتف";
-      b.innerHTML = 'لكي يصلك تنبيه الإدارة <b>كإشعار خارجي على هاتفك</b> حتى والتطبيق مغلق، يجب السماح بالإشعارات لهذا الموقع.<br>اضغط الزر ثم اختر «السماح» في النافذة المنبثقة.';
+      b.innerHTML = 'اضغط الزر ثم اختر <b>«السماح»</b> في النافذة المنبثقة — تنبيهات الإدارة تصلك <b>إشعاراً خارجياً على هاتفك</b> حتى والتطبيق مغلق.';
     } else if (mode === "blocked") {
       card.classList.add("pw-blocked");
-      t.textContent = "الإشعارات محظورة من المتصفح";
-      b.innerHTML = 'حُظرت الإشعارات سابقاً لهذا الموقع — لن تصل تنبيهات الهاتف. فعّلها بالخطوات التالية وسيكتمل التفعيل والإغلاق تلقائياً:';
+      t.textContent = "الإشعارات محظورة — فعّلها من الإعدادات";
+      b.innerHTML = 'فعّل الإشعارات <b>من إعدادات الهاتف مباشرة</b> بالزر أدناه — أو ألغِ الحظر من متصفح Chrome بالخطوات التالية:';
+      go.style.display = "none";
+      if (isAndroid()) {
+        go2.style.display = "block";
+        go2.setAttribute("data-act", "app-settings");
+        go2.textContent = "⚙️ افتح إعدادات إشعارات التطبيق مباشرة";
+      }
       st.style.display = "block"; rc.style.display = "block";
       footLink("متابعة لهذه الجلسة فقط — ستعود هذه الشاشة عند كل فتح جديد حتى تسمح", function () {
         sessSkipD = true; sessSet("v144skip_d"); pwinHide();
       });
     } else {
       card.classList.add("pw-unsup");
-      t.textContent = "إشعارات الهاتف غير متاحة هنا";
-      b.innerHTML = 'هذه البيئة (داخل تلغرام أو متصفح محدود) لا تتيح إذن الإشعارات.<br>افتح التطبيق من متصفح Chrome بنفس الرابط أو أضفه إلى الشاشة الرئيسية ثم سيُطلب منك السماح — وتنبيهات الإدارة تصلك دائماً على بوت تلغرام حتى هنا.';
+      t.textContent = "تفعيل الإشعارات بضغطة واحدة";
       go.style.display = "none";
-      footLink("متابعة", function () { sessSkipU = true; sessSet("v144skip_u"); pwinHide(); });
+      go2.style.display = "block";
+      go2.classList.add("pw-solo");
+      go2.setAttribute("data-act", "open-browser");
+      if (isAndroid()) {
+        b.innerHTML = 'الإشعارات تُفعّل من <b>متصفح الهاتف</b> — اضغط الزر وسيُفتح التطبيق مباشرة في Chrome وستُطلب الموافقة هناك بضغطة واحدة.';
+        go2.textContent = "🚀 افتح التطبيق الآن في متصفح الهاتف";
+      } else {
+        b.innerHTML = 'الإشعارات تُفعّل من <b>متصفح الهاتف</b> — انسخ رابط التطبيق وافتحه في Safari ثم أضِفه إلى الشاشة الرئيسية وستُطلب الموافقة.';
+        go2.textContent = "📋 انسخ رابط التطبيق وافتحه في المتصفح";
+      }
+      footLink("متابعة لهذه الجلسة فقط — تعود هذه الشاشة عند كل فتح جديد حتى تُفعّل الإشعارات", function () { sessSkipU = true; sessSet("v144skip_u"); pwinHide(); });
     }
   }
 
@@ -8910,6 +9030,16 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
     if (!document.hidden) { vsafe(refreshFab); vsafe(refreshBell); vsafe(maybeShowPwin); }
   });
   window.addEventListener("focus", function () { vsafe(maybeShowPwin); });
+
+  /* v145: خطافات فحص آلية (لا تؤثر على الإنتاج) */
+  try {
+    window.__v145 = {
+      permState: permState, maybeShowPwin: maybeShowPwin, applyPwin: applyPwin,
+      pwinShow: pwinShow, pwinHide: pwinHide, isAndroid: isAndroid,
+      isStandalone: isStandalone, appSettingsIntent: appSettingsIntent,
+      chromeOpenIntent: chromeOpenIntent, installedAppPkg: installedAppPkg
+    };
+  } catch (e) {}
 })();
 
 </script>

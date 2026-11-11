@@ -21,5 +21,8 @@
       "type": "image/jpeg",
       "purpose": "maskable"
     }
+  ],
+  "related_applications": [
+    { "platform": "webapp" }
   ]
 }
