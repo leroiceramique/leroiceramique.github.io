@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "25";   /* v147: بلا نافذة تفعيل الإشعارات نهائياً + 🗑 حذف التنبيهات السابقة في نافذة التنبيه الجماعي */
+const APP_VER = "26";   /* v148: سجل الحركة نظيف — بلا زر ✕ (الإلغاء بضغطة مطوّلة) + إخفاء حركة تصحيح المخزون */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8776,15 +8776,19 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   background:rgba(245,158,11,.08);color:#b45309;width:100%;transition:.15s}
 #v146dupbar button:active{transform:scale(.985)}
 #v146empty{font-size:13px;color:var(--mut,#6b7280);text-align:center;padding:18px 8px;line-height:1.9}
-/* ✕ إلغاء بجوار كل حركة في السجل — لصاحبها أو للإدارة */
-#movList .row{position:relative}
-.v146x{flex:0 0 auto;width:27px;height:27px;margin-inline-start:2px;
-  border:1.5px solid rgba(239,68,68,.35);background:rgba(239,68,68,.06);color:#dc2626;
-  font-size:13px;font-weight:800;font-family:inherit;border-radius:8px;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;padding:0;transition:.15s}
-.v146x.armed{background:#dc2626;color:#fff;border-color:#dc2626;font-size:10.5px;
-  width:auto;padding:0 8px;animation:v146pulse 1.1s ease-in-out infinite}
-.v146x:disabled{opacity:.55;cursor:wait}
+/* v148: بلا زر ✕ في السجل بطلب يوسف («ظهور x امام كل حركة يبدو سيئا جدا») —
+   الإلغاء صار بضغطة مطوّلة على الحركة نفسها (أو نقرة يمنى) تفتح ورقة تأكيد */
+#movList .row{position:relative;transition:transform .18s ease,opacity .18s ease}
+#movList .row.v148hold{transform:scale(.975);opacity:.72}
+#v148sheet{max-width:400px;width:90%;padding:0}
+#v148box{background:rgba(127,127,127,.08);border:1px solid rgba(128,128,128,.26);
+  border-radius:12px;padding:11px 12px;margin-bottom:11px}
+#v148box p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
+#v148box p:last-child{margin-bottom:0}
+#v148box b{font-size:14px}
+#v148hint{font-size:12px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 11px}
+.v148long{display:none;font-size:11.5px;color:var(--mut,#6b7280);text-align:center;
+  margin:9px 0 0;line-height:1.8}
 /* 🗑 حذف التنبيهات المسجلة — لمن يملك صلاحية المستخدمين أو الإدارة */
 body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
 .v146ndel{position:absolute;left:7px;top:9px;width:26px;height:26px;
@@ -8802,7 +8806,6 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
 #v146nbar button:active{transform:scale(.985)}
 #v146nbar button.armed{background:#dc2626;color:#fff;border-color:#dc2626;
   animation:v146pulse 1.1s ease-in-out infinite}
-
 </style>
 <script id="v146ui">
 /* ═══════════════════════════════════════════════════════════════════
@@ -8818,7 +8821,8 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
    • العلاج بعد التسجيل: زر «⚠️ الحركات المكررة» أعلى سجل الحركة يجمع
      المتطابقة من أكثر من عضو داخل نصف ساعة (آخر 7 أيام)، وإلغاء أي منها
      حذف نظيف تام يردّ الكمية كما كانت — كأنها لم تُسجَّل قط: بلا قيد
-     إلغاء وبلا أثر في السجل، وزر ✕ بجوار كل حركة لصاحبها أو للإدارة.
+     إلغاء وبلا أثر في السجل. (v148: زر ✕ بجوار كل حركة أُزيل بطلب يوسف
+     — الإلغاء صار بضغطة مطوّلة على الحركة نفسها تفتح ورقة تأكيد).
    • التنبيهات المسجلة: زر 🗑 لكل تنبيه في جرس التطبيق + «🧹 حذف كل
      التنبيهات» بتأكيد الضغطتين — للإدارة أو من يملك صلاحية المستخدمين،
      والحذف من الخادم فيختفي عن الجميع.
@@ -8931,9 +8935,13 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     }
   } catch (e) {}
 
-  /* ═══ 3) لوحة «الحركات المكررة المحتملة» + زر ✕ في السجل ═══ */
+  /* ═══ 3) لوحة «الحركات المكررة المحتملة» + إلغاء الحركة بضغطة مطوّلة ═══
+     v148 بطلب يوسف: «ظهور x امام كل حركة يبدو سيئا جدا» — أُزيل زر ✕ عن كل
+     صف في السجل كلياً، وأصبح الإلغاء النظيف (لصاحب الحركة أو للإدارة) بضغطة
+     مطوّلة على الحركة نفسها (أو النقرة اليمنى على سطح المكتب) تفتح ورقة
+     تأكيد بعنوان الحركة وزر 🗑 بحصن الضغطتين — السجل نظيف بلا أي زوائد. */
   function cancelMovement(mid, btn, onDone) {
-    armTwoTap(btn, btn.dataset.lbl || "✕", "تأكيد؟", function () {
+    armTwoTap(btn, btn.dataset.lbl || "🗑 إلغاء", "تأكيد؟", function () {
       api("/api/movement/delete", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: mid })
@@ -9021,6 +9029,73 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     movList.parentNode.insertBefore(dupBar, movList);
     dupBar.querySelector("#v146dupBtn").addEventListener("click", openPanel);
   }
+  /* ── v148: ورقة إلغاء الحركة + الضغطة المطوّلة بدل زر ✕ ── */
+  var cxSheet = null, cxBox = null, cxBtn = null;
+  function ensureSheet() {
+    if (cxSheet) return;
+    cxSheet = document.createElement("dialog");
+    cxSheet.id = "v148sheet";
+    cxSheet.innerHTML = '<div class="dh">🗑 إلغاء حركة</div>'
+      + '<div class="db"><div id="v148box"></div>'
+      + '<p id="v148hint">ستُحذف الحركة وترجع الكمية كما كانت قبلها — كأنها لم تُسجَّل قط: بلا قيد إلغاء وبلا أي أثر في السجل.</p>'
+      + '<button type="button" class="btn" id="v148del">🗑 إلغاء هذه الحركة</button>'
+      + '<button type="button" class="btn gray" id="v148close" style="margin-top:8px">تركها — إغلاق</button></div>';
+    document.body.appendChild(cxSheet);
+    cxBox = cxSheet.querySelector("#v148box");
+    cxBtn = cxSheet.querySelector("#v148del");
+    cxBtn.dataset.lbl = "🗑 إلغاء هذه الحركة";
+    cxSheet.querySelector("#v148close").addEventListener("click", function () {
+      try { cxSheet.close(); } catch (e) {}
+    });
+    cxSheet.addEventListener("click", function (e) {
+      if (e.target === cxSheet) { try { cxSheet.close(); } catch (e2) {} }
+    });
+  }
+  function openCancelSheet(m) {
+    ensureSheet();
+    var unit = m.type === "add" ? "➕ إضافة" : "➖ إخراج";
+    cxBox.innerHTML = '<p><b>' + unit + " " + esc(m.quantity) + '</b> — 📦 ' + esc(m.product_name) + '</p>'
+      + '<p>👤 ' + esc(m.user_name || "—") + " • " + esc(String(m.date || "").slice(0, 16))
+      + (m.reason ? " • " + esc(m.reason) : "") + '</p>';
+    try { cxBtn.dataset.armed = ""; cxBtn.classList.remove("armed"); cxBtn.disabled = false; } catch (e) {}
+    cxBtn.onclick = function () {
+      cancelMovement(m.id, cxBtn, function () {
+        try { cxSheet.close(); } catch (e) {}
+      });
+    };
+    try { if (cxSheet.open) cxSheet.close(); cxSheet.showModal(); } catch (e) {}
+  }
+  function attachCancelHold(el, m) {
+    var timer = null, fired = false, sx = 0, sy = 0;
+    function fire() {
+      timer = null;
+      if (fired) return;
+      fired = true;
+      try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+      try { el.classList.add("v148hold"); } catch (e2) {}
+      setTimeout(function () { try { el.classList.remove("v148hold"); } catch (e3) {} }, 320);
+      if (m.can_del) openCancelSheet(m);
+      else toast("الإلغاء لصاحب الحركة نفسه أو للإدارة فقط.", true);
+      setTimeout(function () { fired = false; }, 450);
+    }
+    function cancel() { if (timer) { clearTimeout(timer); timer = null; } }
+    el.addEventListener("touchstart", function (e) {
+      if (!e.touches || e.touches.length !== 1) { cancel(); return; }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+      if (!timer) timer = setTimeout(fire, 480);
+    }, { passive: true });
+    el.addEventListener("touchmove", function (e) {
+      if (timer && e.touches && e.touches[0]
+          && (Math.abs(e.touches[0].clientX - sx) > 10
+              || Math.abs(e.touches[0].clientY - sy) > 10)) cancel();
+    }, { passive: true });
+    el.addEventListener("touchend", cancel);
+    el.addEventListener("touchcancel", cancel);
+    el.addEventListener("contextmenu", function (e) {
+      e.preventDefault();
+      if (!fired) fire();
+    });
+  }
   function decorateMovRows() {
     var box = $("#movList"); if (!box) return;
     var data = [];
@@ -9029,19 +9104,10 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     if (!rows.length || !data.length || rows.length !== data.length) return;
     for (var i = 0; i < rows.length; i++) {
       var m = data[i];
-      if (!m || !m.id || !m.can_del) continue;
-      if (rows[i].querySelector(".v146x")) continue;
-      (function (mid, el) {
-        var x = document.createElement("button");
-        x.type = "button"; x.className = "v146x";
-        x.dataset.lbl = "✕";
-        x.title = "إلغاء الحركة — تُحذف وتُردّ الكمية كأنها لم تُسجَّل";
-        x.textContent = "✕";
-        x.addEventListener("click", function () {
-          cancelMovement(mid, x, function () { try { el.remove(); } catch (e) {} });
-        });
-        el.appendChild(x);
-      })(m.id, rows[i]);
+      if (!m || !m.id) continue;
+      if (rows[i].dataset.v148lp) continue;
+      rows[i].dataset.v148lp = "1";
+      (function (mm, el) { attachCancelHold(el, mm); })(m, rows[i]);
     }
   }
   if (movList) {
