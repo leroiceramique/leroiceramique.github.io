@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "23";   /* v145: أزرار فعل مباشرة — فتح متصفح الهاتف/إعدادات إشعارات التطبيق بضغطة */
+const APP_VER = "24";   /* v146: الحركة المزدوجة (بطاقة القرار قبل التسجيل + الإلغاء النظيف) + حذف التنبيهات المسجلة */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8103,7 +8103,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
         if (path && opts && opts.method && opts.method !== "GET"
             && /^\/api\/(qty|products\/create|invoice\/create|invoice\/swap|swap\/general)$/.test(String(path))) {
           Promise.resolve(pr).then(function (res) {
-            if (res && res.ok === true) showGreen();
+            if (res && res.ok === true && !res.duplicate_warning) showGreen();
           }).catch(function () {});
         }
       } catch (e) {}
@@ -9040,6 +9040,401 @@ html.v144lock,html.v144lock body{overflow:hidden!important}
       chromeOpenIntent: chromeOpenIntent, installedAppPkg: installedAppPkg
     };
   } catch (e) {}
+})();
+
+</script>
+<style id="v146css">/* ═══ v146: الحركة المزدوجة + حذف التنبيهات المسجلة ═══ */
+#v146dup,#v146dupPanel{max-width:400px;width:90%;padding:0}
+#v146dupBox{background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.35);
+  border-radius:12px;padding:11px 12px;margin-bottom:12px}
+#v146dupBox p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
+#v146dupBox p:last-child{margin-bottom:0}
+#v146dupBox b{color:#b45309}
+.v146hint{font-size:12.5px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 10px}
+.v146cl{border:1px solid rgba(128,128,128,.28);border-radius:14px;padding:10px 11px;
+  margin-bottom:10px;background:rgba(127,127,127,.05)}
+.v146clh{font-weight:800;font-size:13.5px;margin-bottom:2px}
+.v146cln{font-size:11.5px;color:var(--mut,#6b7280);font-weight:700;margin-bottom:9px}
+.v146row{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 9px;border-radius:10px;background:rgba(127,127,127,.07);margin-bottom:6px}
+.v146row:last-child{margin-bottom:0}
+.v146ru{font-size:12.5px;font-weight:800;line-height:1.6;min-width:0}
+.v146ru small{display:block;color:var(--mut,#6b7280);font-weight:600;font-size:11px}
+.v146new{display:inline-block;font-size:9.5px;font-weight:800;color:#fff;
+  background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:7px;padding:1px 7px;
+  margin-inline-start:6px;vertical-align:1px}
+.v146del{flex:0 0 auto;border:1.5px solid rgba(239,68,68,.45);background:rgba(239,68,68,.08);
+  color:#dc2626;font-family:inherit;font-size:12px;font-weight:800;border-radius:9px;
+  padding:6px 10px;cursor:pointer;transition:.15s}
+.v146del:active{transform:scale(.95)}
+.v146del.armed{background:#dc2626;color:#fff;border-color:#dc2626;
+  animation:v146pulse 1.1s ease-in-out infinite}
+.v146del:disabled{opacity:.55;cursor:wait}
+@keyframes v146pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.35)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
+#v146dupbar{margin:0 0 10px}
+#v146dupbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
+  padding:10px 12px;cursor:pointer;border:1.5px dashed rgba(245,158,11,.55);
+  background:rgba(245,158,11,.08);color:#b45309;width:100%;transition:.15s}
+#v146dupbar button:active{transform:scale(.985)}
+#v146empty{font-size:13px;color:var(--mut,#6b7280);text-align:center;padding:18px 8px;line-height:1.9}
+/* ✕ إلغاء بجوار كل حركة في السجل — لصاحبها أو للإدارة */
+#movList .row{position:relative}
+.v146x{flex:0 0 auto;width:27px;height:27px;margin-inline-start:2px;
+  border:1.5px solid rgba(239,68,68,.35);background:rgba(239,68,68,.06);color:#dc2626;
+  font-size:13px;font-weight:800;font-family:inherit;border-radius:8px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;padding:0;transition:.15s}
+.v146x.armed{background:#dc2626;color:#fff;border-color:#dc2626;font-size:10.5px;
+  width:auto;padding:0 8px;animation:v146pulse 1.1s ease-in-out infinite}
+.v146x:disabled{opacity:.55;cursor:wait}
+/* 🗑 حذف التنبيهات المسجلة — لمن يملك صلاحية المستخدمين أو الإدارة */
+body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
+.v146ndel{position:absolute;left:7px;top:9px;width:26px;height:26px;
+  border:1.5px solid rgba(127,127,127,.3);background:rgba(127,127,127,.08);
+  border-radius:8px;font-size:12px;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;padding:0;font-family:inherit;transition:.15s;color:inherit}
+.v146ndel:active{transform:scale(.94)}
+.v146ndel.armed{background:#dc2626;color:#fff;border-color:#dc2626;font-size:9.5px;
+  font-weight:800;animation:v146pulse 1.1s ease-in-out infinite}
+.v146ndel:disabled{opacity:.55;cursor:wait}
+#v146nbar{margin-top:10px;display:none}
+#v146nbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
+  padding:10px 12px;cursor:pointer;width:100%;border:1.5px solid rgba(239,68,68,.4);
+  background:rgba(239,68,68,.07);color:#dc2626;transition:.15s}
+#v146nbar button:active{transform:scale(.985)}
+#v146nbar button.armed{background:#dc2626;color:#fff;border-color:#dc2626;
+  animation:v146pulse 1.1s ease-in-out infinite}
+
+</style>
+<script id="v146ui">
+/* ═══════════════════════════════════════════════════════════════════
+   v146 — الحركة المزدوجة + حذف التنبيهات المسجلة
+   بطلب يوسف: «تحدث اخطاء من بعض المستخدمين — مثلا في نظام الحركة انا اسجل
+   حركة معينة و صديقي يسجل نفس الحركة بإعتقاده انني لم اسجلها وهنا تسجل
+   مرتين — هل لديك حل سلس يجعل احداهما ملغاة دون ترك اثر لعملية نفسها»
+   + «اضف نظام حذف التنبيهات المسجلة في التطبيق في اخر تحديث قمنا به».
+   • الحماية قبل التسجيل: كل حركة إضافة/إخراج يفحصها الخادم أولاً ضد حركة
+     مطابقة (نفس السلعة + النوع + الكمية) سُجلت خلال آخر 15 دقيقة من عضو
+     آخر — إن وُجدت ظهرت بطاقة «⚠️ حركة مطابقة للتو» قبل الحفظ:
+     «✅ مختلفة — سجّلها» أو «✋ نفسها — إلغاء» فلا تُسجَّل مرتين أبداً.
+   • العلاج بعد التسجيل: زر «⚠️ الحركات المكررة» أعلى سجل الحركة يجمع
+     المتطابقة من أكثر من عضو داخل نصف ساعة (آخر 7 أيام)، وإلغاء أي منها
+     حذف نظيف تام يردّ الكمية كما كانت — كأنها لم تُسجَّل قط: بلا قيد
+     إلغاء وبلا أثر في السجل، وزر ✕ بجوار كل حركة لصاحبها أو للإدارة.
+   • التنبيهات المسجلة: زر 🗑 لكل تنبيه في جرس التطبيق + «🧹 حذف كل
+     التنبيهات» بتأكيد الضغطتين — للإدارة أو من يملك صلاحية المستخدمين،
+     والحذف من الخادم فيختفي عن الجميع.
+   العميل القديم (APK/كاش) لا يرسل check_dup فسلوكه كما هو تماماً.
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  function $(s) { try { return document.querySelector(s); } catch (e) { return null; } }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function canManageNotifs() {
+    try { return !!(S && S.perms && (S.perms.users || S.perms.admin)); } catch (e) { return false; }
+  }
+  function refMov() { try { if (typeof loadMovements === "function") loadMovements(); } catch (e) {} }
+  function refInv() { try { if (typeof loadInventory === "function") loadInventory(); } catch (e) {} }
+  function refBadge() { try { if (typeof renderBadge === "function") renderBadge(); } catch (e) {} }
+
+  /* ── حصن التأكيد المشترك: ضغطة تحضير + ضغطة تنفيذ خلال 4 ثوانٍ ── */
+  function armTwoTap(btn, label, armedLabel, fn) {
+    if (btn.dataset.armed === "1") {
+      btn.dataset.armed = ""; btn.classList.remove("armed");
+      try { btn.disabled = true; } catch (e) {}
+      setTimeout(function () { try { btn.disabled = false; } catch (e) {} }, 400);
+      fn();
+      return;
+    }
+    btn.dataset.armed = "1"; btn.classList.add("armed");
+    btn.textContent = armedLabel;
+    setTimeout(function () {
+      if (btn.dataset.armed === "1") {
+        btn.dataset.armed = ""; btn.classList.remove("armed");
+        btn.textContent = label;
+      }
+    }, 4000);
+  }
+
+  /* ═══ 1) بطاقة «حركة مطابقة للتو» — القرار قبل الحفظ ═══ */
+  var dupDlg = null, dupResolve = null;
+  function dupFin(go) {
+    try { if (dupDlg && dupDlg.open) dupDlg.close(); } catch (e) {}
+    var r = dupResolve; dupResolve = null;
+    try { if (r) r(!!go); } catch (e) {}
+  }
+  function askDup(d) {
+    try {
+      if (!dupDlg) {
+        dupDlg = document.createElement("dialog");
+        dupDlg.id = "v146dup";
+        dupDlg.innerHTML = '<div class="dh">⚠️ حركة مطابقة للتو</div>'
+          + '<div class="db"><div id="v146dupBox"></div>'
+          + '<button type="button" class="btn" id="v146dupYes">✅ حركة مختلفة — سجّلها</button>'
+          + '<button type="button" class="btn gray" id="v146dupNo" style="margin-top:8px">✋ إنها نفسها — إلغاء</button></div>';
+        document.body.appendChild(dupDlg);
+        dupDlg.querySelector("#v146dupYes").addEventListener("click", function () { dupFin(true); });
+        dupDlg.querySelector("#v146dupNo").addEventListener("click", function () { dupFin(false); });
+        dupDlg.addEventListener("cancel", function (e) {
+          try { e.preventDefault(); } catch (e2) {}
+          dupFin(false);
+        });
+        dupDlg.addEventListener("click", function (e) { if (e.target === dupDlg) dupFin(false); });
+      }
+      var unit = d && d.type === "add" ? "➕ إضافة" : "➖ إخراج";
+      dupDlg.querySelector("#v146dupBox").innerHTML =
+        '<p style="font-weight:800">' + unit + " " + esc(d && d.quantity) + " — 📦 " + esc(d && d.product_name) + '</p>'
+        + '<p>سُجلت حركة مطابقة لها <b>' + esc((d && d.minutes_label) || "قبل لحظات") + '</b> من عضو آخر (' + esc((d && d.user_name) || "—") + ').</p>'
+        + '<p style="font-size:12.5px">إن كانت حركتك مختلفة فعلاً أكمل التسجيل — وإن كانت نفسها ألغِها كي لا تُسجَّل مرتين.</p>';
+      try { if (dupDlg.open) dupDlg.close(); dupDlg.showModal(); } catch (eO) {}
+      return new Promise(function (res) { dupResolve = res; });
+    } catch (e) { return Promise.resolve(true); }   /* عند أي عطل لا نعطّل التسجيل */
+  }
+
+  /* ═══ 2) غلاف api — فحص التكرار يسبق كل /api/qty إضافة/إخراج ═══ */
+  try {
+    var _api = window.api;
+    if (typeof _api === "function" && !_api.__v146dup) {
+      window.api = function (path, opts) {
+        try {
+          if (String(path) === "/api/qty" && opts && opts.method === "POST"
+              && opts.body && !opts.__v146qty) {
+            var b1 = JSON.parse(opts.body);
+            if ((b1.type === "add" || b1.type === "remove")
+                && !b1.confirm_dup && !b1.check_dup) {
+              b1.check_dup = true;
+              var p1 = Object.assign({}, opts, { body: JSON.stringify(b1), __v146qty: 1 });
+              return Promise.resolve(_api(path, p1)).then(function (res) {
+                if (res && res.duplicate_warning) {
+                  return askDup(res.duplicate_warning).then(function (go) {
+                    if (!go) {
+                      var er = new Error("تم إلغاء العملية — لم تُسجَّل أي حركة.");
+                      er.v146cancel = true;
+                      throw er;
+                    }
+                    var b2 = JSON.parse(opts.body);
+                    b2.confirm_dup = true;
+                    var p2 = Object.assign({}, opts, { body: JSON.stringify(b2), __v146qty: 1 });
+                    return _api(path, p2);
+                  });
+                }
+                return res;
+              });
+            }
+          }
+        } catch (e) {}
+        return _api.apply(this, arguments);
+      };
+      window.api.__v146dup = true;
+    }
+  } catch (e) {}
+
+  /* ═══ 3) لوحة «الحركات المكررة المحتملة» + زر ✕ في السجل ═══ */
+  function cancelMovement(mid, btn, onDone) {
+    armTwoTap(btn, btn.dataset.lbl || "✕", "تأكيد؟", function () {
+      api("/api/movement/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: mid })
+      }).then(function (r) {
+        toast((r && r.message) || "أُلغيت الحركة — كأنها لم تُسجَّل ✓");
+        try { if (onDone) onDone(); } catch (e) {}
+        refMov(); refInv();
+      }).catch(function (e) {
+        try { btn.disabled = false; } catch (e2) {}
+        toast(e.message || "تعذر الإلغاء.", true);
+      });
+    });
+  }
+  var panel = null, panelList = null;
+  function ensurePanel() {
+    if (panel) return;
+    panel = document.createElement("dialog");
+    panel.id = "v146dupPanel";
+    panel.innerHTML = '<div class="dh">⚠️ الحركات المكررة المحتملة</div>'
+      + '<div class="db"><p class="v146hint">حركات متطابقة (نفس السلعة والنوع والكمية) من أكثر من عضو داخل نصف ساعة — آخر 7 أيام. ألغِ الزائدة فيختفي أثرها كلياً وترجع الكمية كما كانت كأنها لم تُسجَّل.</p>'
+      + '<div id="v146dupList"></div>'
+      + '<button type="button" class="btn gray" id="v146dupClose" style="margin-top:10px">إغلاق</button></div>';
+    document.body.appendChild(panel);
+    panel.querySelector("#v146dupClose").addEventListener("click", function () {
+      try { panel.close(); } catch (e) {}
+    });
+    panelList = panel.querySelector("#v146dupList");
+  }
+  function renderClusters(d) {
+    var cls = (d && d.clusters) || [];
+    if (!cls.length) {
+      panelList.innerHTML = '<p id="v146empty">👍 لا توجد حركات مكررة محتملة خلال آخر 7 أيام — كل شيء نظيف.</p>';
+      return;
+    }
+    var html = "";
+    cls.forEach(function (c, ci) {
+      var sign = c.type === "add" ? "➕ إضافة" : "➖ إخراج";
+      html += '<div class="v146cl" data-ci="' + ci + '">'
+        + '<div class="v146clh">📦 ' + esc(c.product_name) + '</div>'
+        + '<div class="v146cln">' + sign + " " + esc(c.quantity) + " • " + esc(c.count)
+        + ' حركات ' + esc(c.span_label || "") + '</div>';
+      c.movements.forEach(function (m, mi) {
+        html += '<div class="v146row"><div class="v146ru">' + esc(m.user_name)
+          + (mi === c.movements.length - 1 ? '<span class="v146new">الأحدث</span>' : "")
+          + '<small>' + esc(m.date || "") + (m.can_del ? "" : " — الإلغاء لصاحبها أو الإدارة") + '</small></div>';
+        if (m.can_del)
+          html += '<button type="button" class="v146del" data-id="' + m.id + '" data-lbl="🗑 إلغاء">🗑 إلغاء</button>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    panelList.innerHTML = html;
+    panelList.querySelectorAll(".v146del").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var mid = parseInt(b.dataset.id, 10);
+        var row = b.closest(".v146row"), card = b.closest(".v146cl");
+        cancelMovement(mid, b, function () {
+          try { row.remove(); } catch (e) {}
+          try {
+            var left = card.querySelectorAll(".v146row").length;
+            if (left < 2) {
+              card.remove();
+              if (!panelList.querySelector(".v146cl")) renderClusters({ clusters: [] });
+            }
+          } catch (e) {}
+        });
+      });
+    });
+  }
+  function openPanel() {
+    ensurePanel();
+    panelList.innerHTML = '<p id="v146empty">جارِ البحث…</p>';
+    try { panel.showModal(); } catch (e) {}
+    api("/api/movements/duplicates", { noCache: true })
+      .then(renderClusters)
+      .catch(function (e) {
+        panelList.innerHTML = '<p id="v146empty">' + esc(e.message || "تعذر الجلب.") + '</p>';
+      });
+  }
+  var movList = $("#movList");
+  if (movList && movList.parentNode && !$("#v146dupbar")) {
+    var dupBar = document.createElement("div");
+    dupBar.id = "v146dupbar";
+    dupBar.innerHTML = '<button type="button" id="v146dupBtn">⚠️ عرض الحركات المكررة المحتملة</button>';
+    movList.parentNode.insertBefore(dupBar, movList);
+    dupBar.querySelector("#v146dupBtn").addEventListener("click", openPanel);
+  }
+  function decorateMovRows() {
+    var box = $("#movList"); if (!box) return;
+    var data = [];
+    try { data = (S.mov && S.mov.data) || []; } catch (e) {}
+    var rows = box.querySelectorAll("div.row");
+    if (!rows.length || !data.length || rows.length !== data.length) return;
+    for (var i = 0; i < rows.length; i++) {
+      var m = data[i];
+      if (!m || !m.id || !m.can_del) continue;
+      if (rows[i].querySelector(".v146x")) continue;
+      (function (mid, el) {
+        var x = document.createElement("button");
+        x.type = "button"; x.className = "v146x";
+        x.dataset.lbl = "✕";
+        x.title = "إلغاء الحركة — تُحذف وتُردّ الكمية كأنها لم تُسجَّل";
+        x.textContent = "✕";
+        x.addEventListener("click", function () {
+          cancelMovement(mid, x, function () { try { el.remove(); } catch (e) {} });
+        });
+        el.appendChild(x);
+      })(m.id, rows[i]);
+    }
+  }
+  if (movList) {
+    var movMo = new MutationObserver(function () { try { decorateMovRows(); } catch (e) {} });
+    movMo.observe(movList, { childList: true });
+  }
+
+  /* ═══ 4) حذف التنبيهات المسجلة — جرس التطبيق ═══ */
+  function delNotif(nid, btn, row) {
+    armTwoTap(btn, "🗑", "تأكيد؟", function () {
+      api("/api/notifications/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: nid })
+      }).then(function () {
+        try {
+          S.notif.items = (S.notif.items || []).filter(function (n) {
+            return String(n.id) !== String(nid);
+          });
+        } catch (e) {}
+        try { if (row) row.remove(); } catch (e) {}
+        toast("حُذف التنبيه — اختفى عن الجميع ✓");
+        try { if (typeof pollNotifs === "function") pollNotifs(); } catch (e) {}
+      }).catch(function (e) {
+        try { btn.disabled = false; } catch (e2) {}
+        toast(e.message || "تعذر الحذف.", true);
+      });
+    });
+  }
+  function decorateNotifs() {
+    var box = $("#notifList"); if (!box) return;
+    var ok = canManageNotifs();
+    try { document.body.classList.toggle("v146nmanage", ok); } catch (e) {}
+    var bar = $("#v146nbar");
+    var rows = box.querySelectorAll(".nrow");
+    var items = [];
+    try { items = (S.notif && S.notif.items) || []; } catch (e) {}
+    if (bar) bar.style.display = (ok && rows.length) ? "block" : "none";
+    if (!ok) return;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].querySelector(".v146ndel")) continue;
+      var n = items[i];
+      if (!n || !n.id) continue;
+      (function (nid, el) {
+        var x = document.createElement("button");
+        x.type = "button"; x.className = "v146ndel";
+        x.title = "حذف هذا التنبيه — يختفي عن الجميع";
+        x.textContent = "🗑";
+        x.addEventListener("click", function () { delNotif(nid, x, el); });
+        el.appendChild(x);
+      })(n.id, rows[i]);
+    }
+  }
+  var notifBox = $("#notifList");
+  if (notifBox) {
+    var dlgNotif = $("#dlgNotif");
+    if (dlgNotif && !$("#v146nbar")) {
+      var bar = document.createElement("div");
+      bar.id = "v146nbar";
+      bar.innerHTML = '<button type="button" id="v146nclear">🧹 حذف كل التنبيهات المسجلة</button>';
+      var db = dlgNotif.querySelector(".db");
+      if (db) db.insertBefore(bar, notifBox.nextSibling);
+      var cbtn = bar.querySelector("#v146nclear");
+      cbtn.addEventListener("click", function () {
+        armTwoTap(cbtn, "🧹 حذف كل التنبيهات المسجلة", "⚠️ اضغط مجدداً لحذف الكل", function () {
+          api("/api/notifications/clear", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scope: "all" })
+          }).then(function () {
+            try { S.notif.items = []; S.notif.lastId = 0; S.notif.unread = 0; } catch (e) {}
+            try {
+              if (typeof renderNotifList === "function") renderNotifList();
+              else {
+                var b2 = $("#notifList");
+                if (b2) b2.innerHTML = '<p class="empty">لا إشعارات بعد.</p>';
+              }
+            } catch (e) {}
+            refBadge();
+            cbtn.dataset.armed = ""; cbtn.classList.remove("armed");
+            cbtn.textContent = "🧹 حذف كل التنبيهات المسجلة";
+            toast("حُذفت كل التنبيهات المسجلة ✓");
+            try { if (typeof pollNotifs === "function") pollNotifs(); } catch (e) {}
+          }).catch(function (e) {
+            try { cbtn.disabled = false; } catch (e2) {}
+            toast(e.message || "تعذر الحذف.", true);
+          });
+        });
+      });
+    }
+    var nbMo = new MutationObserver(function () { try { decorateNotifs(); } catch (e) {} });
+    nbMo.observe(notifBox, { childList: true });
+    setTimeout(decorateNotifs, 600);   /* أول تزيين بعد إقلاع الواجهة */
+  }
 })();
 
 </script>
