@@ -920,6 +920,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
         <button class="fchip" data-p="yest">أمس</button>
         <span class="daypick">📅 <input type="date" id="movDay"></span>
         <span class="daypick">👤 <select id="movUser"><option value="">كل الموظفين</option></select></span>
+        <button class="fchip" id="movCorr" title="عرض حركات «تصحيح مخزون» والجرد المستبعدة من السجل">📝 التصحيح</button>
       </div>
       <button class="prodchip" id="movProdChip" style="display:none">📦 <span id="movProdName"></span> ✕</button>
       <div class="sumcard" id="movSum" style="display:none"></div>
@@ -1700,7 +1701,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
      type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
   mov: { preset: "today", from: "", to: "", product: 0,
-         product_name: "", type: "", data: [], summary: null, user: "" },
+         product_name: "", type: "", correct: false, data: [], summary: null, user: "" },
   invTab: "all", invData: [], serverVersion: "", invSort: "name", };
 
 const esc = (s) => String(s == null ? "" : s)
@@ -2603,7 +2604,7 @@ function isoLocal(d) {
 }
 function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر دون تحميل مزدوج */
   S.mov.preset = p;
-  document.querySelectorAll("#movDayScope .fchip").forEach((b) =>
+  document.querySelectorAll("#movDayScope .fchip[data-p]").forEach((b) =>
     b.classList.toggle("on", b.dataset.p === p));
   const now = new Date(); let f = "", t = "";
   if (p === "today") { f = t = isoLocal(now); }
@@ -2613,14 +2614,23 @@ function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر د�
   $("#movDay").value = (f && f === t) ? f : "";   /* v68: تزامن يوم التحديد */
   if (!silent) loadMovements();
 }
-document.querySelectorAll("#movDayScope .fchip").forEach((b) =>
+document.querySelectorAll("#movDayScope .fchip[data-p]").forEach((b) =>
   b.addEventListener("click", () => movSetPreset(b.dataset.p)));
+/* v151 «سجل الحركة الصادق»: رقاقة عرض المستبعد (تصحيح مخزون + الجرد) — اختيارية
+   بلا حفظ محلي: افتراضياً يبقى السجل نظيفاً كما في v148 لكنه يخبرك بما يخفيه */
+(function () { var _mc = document.getElementById("movCorr");
+  if (_mc) _mc.addEventListener("click", function () {
+    S.mov.correct = !S.mov.correct;
+    _mc.classList.toggle("on", S.mov.correct);
+    loadMovements();
+  });
+})();
 /* v68: يوم محدد — اختيار تاريخ واحد يعرض حركة ذلك اليوم فقط */
 $("#movDay").addEventListener("change", () => {
   const v = $("#movDay").value;
   if (!v) return;
   S.mov.from = v; S.mov.to = v; S.mov.preset = "custom";
-  document.querySelectorAll("#movDayScope .fchip").forEach((b) => b.classList.remove("on"));
+  document.querySelectorAll("#movDayScope .fchip[data-p]").forEach((b) => b.classList.remove("on"));
   loadMovements();
 });
 $("#movProdChip").addEventListener("click", () => {
@@ -2646,6 +2656,7 @@ async function loadMovements() {
   if (S.mov.to) q.set("to", S.mov.to);
   if (S.mov.product) q.set("product", String(S.mov.product));
   if (S.mov.type) q.set("type", S.mov.type);   /* v69: الخادم يفلتر بها فعلاً */
+  if (S.mov.correct) q.set("show_correct", "1");   /* v151: اعرض المستبعد */
   if (S.mov.user) q.set("user", String(S.mov.user));   /* v132: فلتر «من سجّل» */
   const prodChip = $("#movProdChip");
   if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
@@ -2655,6 +2666,7 @@ async function loadMovements() {
     if (!fresh()) return;
     S.mov.data = d.movements || [];
     S.mov.summary = d.summary || null;
+    S.mov.excluded = d.excluded || null;   /* v151: ملخص المستبعد */
     try { if (typeof __movUsers === "function") __movUsers(d.users); } catch (_e132) {}   /* v132 */
     const s = S.mov.summary;
     if (s && s.count) {
@@ -2673,17 +2685,25 @@ async function loadMovements() {
       }
     } else { $("#movSum").style.display = "none"; }
     if (!S.mov.data.length) {
-      const tn = { add: "الإضافة", remove: "الإخراج" }[S.mov.type];
-      box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
-        + (tn ? ' — خانة «' + tn + '»' : '')
-        + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 اليوم / أمس أو اختر تاريخاً 📅.</span></p>';
+      const ex = S.mov.excluded;
+      if (ex && ex.count) {
+        /* v151: الفراغ الصادق — العمليات مسجلة لكنها من المستبعد من العرض */
+        box.innerHTML = '<p class="empty">✅ كل العمليات تُسجَّل في القاعدة — ضمن هذا الفلتر توجد <b>' + ex.count
+          + '</b> عملية تصحيح/جرد مخفية عن السجل (إعداد v148: «التصحيح ليس حركة عمل»).'
+          + '<br><span style="font-size:12px">اضغط رقاقة «📝 التصحيح» بالأعلى لعرضها.</span></p>';
+      } else {
+        const tn = { add: "الإضافة", remove: "الإخراج" }[S.mov.type];
+        box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
+          + (tn ? ' — خانة «' + tn + '»' : '')
+          + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 اليوم / أمس أو اختر تاريخاً 📅.</span></p>';
+      }
       return;
     }
     let html = "", lastDay = "";
     for (const m of S.mov.data) {
       const day = String(m.date || "").slice(0, 10);
       if (day && day !== lastDay) { lastDay = day; html += '<div class="dayhead">📅 ' + esc(movDayHeader(day)) + '</div>'; }
-      const b = MOV_BADGE[m.type] || ["mut", m.type];
+      const b = m.is_correct ? ["mut", "📝 تصحيح"] : (MOV_BADGE[m.type] || ["mut", m.type]);   /* v151 */
       html += '<div class="row"><div class="info"><b>' + esc(m.product_name) + '</b>'
         + '<span>' + esc(m.user_name || "—") + " • " + esc(String(m.date || "").slice(11, 16))
         + (m.reason ? " • " + esc(m.reason) : "") + '</span></div>'
@@ -2692,6 +2712,10 @@ async function loadMovements() {
     const shown = S.mov.data.length;
     if (s && s.count > shown)
       html += '<p class="hint">المعروض ' + shown + ' من ' + s.count + '.</p>';
+    /* v151: تلميح الصدق — ما يُخفى من العرض يُذكر لا يُصمت */
+    const ex = S.mov.excluded;
+    if (ex && ex.count && !S.mov.correct)
+      html += '<p class="hint">🔒 ' + ex.count + ' عملية تصحيح/جرد مستبعدة من العرض — رقاقة «📝 التصحيح» لعرضها.</p>';
     box.innerHTML = html;
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
@@ -3722,7 +3746,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "28";   /* v150: التذكير يذكر كل عمليات البحث الخمس لا الأخيرة فقط */
+const APP_VER = "30";   /* v152: الفئة والصلاحيات لكل مستخدم من التطبيق */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -9600,6 +9624,272 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
 .v150no{background:var(--bg,#f4f6fb);color:#475569;border:1.5px solid var(--line,#dfe3ea)}
 .v150lock{font-size:10.5px;color:#c2255c;font-weight:800;margin:9px 0 13px}
 @media (prefers-reduced-motion:reduce){#v150ov .v150card,#v150ov .v150shake{animation:none !important}}
+
+</style>
+<script id="v152ui">
+/* ═══ v152: «الفئة والصلاحيات لكل مستخدم» — طبقة الواجهة ═══
+   بطلب يوسف: «قمت بقبول مستخدم جديد وهو يظهر كبائع لكنني لا اجد خيارات
+   تحديد فئته او صلاحياته». التشخيص: مستخدمو التسجيل من الويب يُنشَأون بلا
+   telegram_id فكان زر «🎯 الفئة» مخفياً عنهم (شرط hasTg)، وواجهة الصلاحيات
+   لم تكن موجودة في التطبيق إطلاقاً (نقاط v107 الخادمية بلا واجهة).
+   v152: زر «🎯 الفئة» لكل مستخدم غير محمي (حتى بلا تلغرام — عبر uid)، وزر
+   «🔐 صلاحيات»: مصفوفة v107 الحية (تتبع الفئة/تشغيل/إيقاف + إعادة ضبط) لمن
+   له تلغرام، ووضع الفئة القرائي لمن لا تلغرام (الصلاحيات تتبع فئته). */
+try {
+if (!window.__v152perms) {
+window.__v152perms = true;
+
+/* ── كتالوج الفئات (نسخة عرض من ROLE_PERM_CATALOG الخادمية) ── */
+var V152_CATALOG = {
+  seller:  ["search", "add_qty", "remove", "invoice", "supply_order", "my_orders", "movements", "expenses"],
+  stock:   ["add_qty", "add_product", "remove", "edit_product", "movements", "low_stock", "pending", "expenses"],
+  external:["search"],
+  manager: "*", admin: "*", customer: [], pending: ["search"]
+};
+
+/* ── usrRow بنسخة v152: الفئة والصلاحيات لكل غير المحمي ── */
+usrRow = function (u) {
+  var self = u.telegram_id === S.user.telegram_id;
+  var hasTg = !!u.telegram_id;
+  var acts = "";
+  if (!self && !u.protected) {
+    /* v152: زر الفئة لكل مستخدم — بلا شرط تلغرام (الهدف عبر uid) */
+    acts += '<button class="btn mini blue" data-v152role="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
+    /* v152: زر الصلاحيات — حي (v107) لمن له تلغرام، وضع الفئة لمن لا تلغرام */
+    acts += '<button class="btn mini gray" data-v152perms="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-v152r="' + esc(u.role || "") + '" data-v152rl="' + esc(u.role_label || "") + '" data-n="' + esc(u.name) + '">🔐 صلاحيات</button>';
+    if (hasTg && u.role !== "admin") {
+      acts += u.active
+        ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
+        : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
+    }
+  }
+  if (!self && !u.protected && u.web && u.telegram_id) {
+    acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
+  }
+  acts += self
+    ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
+    : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
+  var sub = [
+    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",
+    u.phone ? "📞 " + esc(u.phone) : "",
+    u.email ? "✉️ " + esc(u.email) : ""
+  ].filter(Boolean).join(" · ");
+  if (!hasTg && u.web) sub += (sub ? " · " : "") + '👤 بلا حساب تلغرام';   /* v152: شفافية الهوية */
+  return '<div class="row"><div class="info"><b>' + esc(u.name) + usrOnline(u)
+    + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
+    + '<span class="usub"><span class="rk rk-' + (USR_RANK[u.role] !== undefined ? u.role : "customer") + '">' + esc(u.role_label) + '</span>'
+    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + '</span></div>'
+    + (u.active ? "" : '<span class="badge r">مطرود</span>')
+    + '<div class="acts">' + acts + '</div>'
+    + '</div>';
+};
+
+/* ── بناء حوارَي v152 مرة واحدة ── */
+function v152EnsureDialogs() {
+  if (document.getElementById("dlgRole152")) return;
+  var wrap = document.createElement("div");
+  wrap.innerHTML =
+    '<dialog id="dlgRole152">' +
+      '<div class="dh">🎯 تحديد الفئة</div>' +
+      '<div class="db">' +
+        '<p id="dlgRole152User" style="margin:0 0 12px;font-weight:800;color:var(--brand);text-align:center"></p>' +
+        '<div id="dlgRole152Chips" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:8px"></div>' +
+        '<p id="dlgRole152Hint" style="margin:0 0 12px;font-size:12px;color:var(--mut);text-align:center"></p>' +
+        '<div style="display:flex;gap:10px;justify-content:center">' +
+          '<button type="button" class="btn gray" id="dlgRole152Cancel">إلغاء</button>' +
+          '<button type="button" class="btn green" id="dlgRole152Go">💾 حفظ الفئة</button>' +
+        '</div>' +
+      '</div>' +
+    '</dialog>' +
+    '<dialog id="dlgPerms152" style="width:min(94vw,560px)">' +
+      '<div class="dh">🔐 صلاحيات المستخدم</div>' +
+      '<div class="db">' +
+        '<p id="dlgPerms152User" style="margin:0 0 4px;font-weight:800;color:var(--brand);text-align:center"></p>' +
+        '<p id="dlgPerms152Sub" style="margin:0 0 10px;font-size:12px;color:var(--mut);text-align:center"></p>' +
+        '<div id="dlgPerms152Body" style="max-height:55vh;overflow:auto"></div>' +
+        '<div id="dlgPerms152Foot" style="display:flex;gap:10px;justify-content:center;margin-top:12px">' +
+          '<button type="button" class="btn gray" id="dlgPerms152Close">إغلاق</button>' +
+          '<button type="button" class="btn red" id="dlgPerms152Reset" style="display:none">♻️ إعادة الضبط الكاملة</button>' +
+        '</div>' +
+      '</div>' +
+    '</dialog>';
+  document.body.appendChild(wrap);
+  $("#dlgRole152Cancel").addEventListener("click", function () { $("#dlgRole152").close(); });
+  $("#dlgPerms152Close").addEventListener("click", function () { $("#dlgPerms152").close(); });
+}
+
+/* ── حوار الفئة (tid أو uid) ── */
+var V152_ROLE_OPTS = [
+  ["admin", "👑 مدير النظام"], ["manager", "🧑‍💼 مدير البوت"],
+  ["stock", "📦 عامل مخزون"], ["seller", "🛍 بائع"],
+  ["external", "🌍 بائع خارجي"], ["customer", "👤 عميل"]
+];
+var V152_roleDlg = null;
+function openRole152(tid, uid, name) {
+  v152EnsureDialogs();
+  V152_roleDlg = { tid: tid || null, uid: uid || null, name: name, role: null };
+  $("#dlgRole152User").textContent = name;
+  $("#dlgRole152Hint").textContent = tid ? "" : "👤 بلا حساب تلغرام — الحفظ عبر معرّف الحساب ويعمل عادي";
+  $("#dlgRole152Chips").innerHTML = V152_ROLE_OPTS.map(function (o) {
+    return '<button type="button" class="rchip" data-v152r="' + o[0] + '">' + o[1] + '</button>';
+  }).join("");
+  Array.prototype.forEach.call($("#dlgRole152Chips").querySelectorAll(".rchip"), function (b) {
+    b.addEventListener("click", function () {
+      Array.prototype.forEach.call($("#dlgRole152Chips").querySelectorAll(".rchip"), function (x) { x.classList.remove("on"); });
+      b.classList.add("on"); V152_roleDlg.role = b.getAttribute("data-v152r");
+    });
+  });
+  $("#dlgRole152").showModal();
+}
+document.addEventListener("click", function (ev) {
+  var go = ev.target.closest ? ev.target.closest("#dlgRole152Go") : null;
+  if (!go || !V152_roleDlg) return;
+  if (!V152_roleDlg.role) { toast("اختر الفئة أولاً.", true); return; }
+  if (V152_roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;
+  try {
+    var body = { role: V152_roleDlg.role };
+    if (V152_roleDlg.tid) body.telegram_id = V152_roleDlg.tid;
+    if (V152_roleDlg.uid) body.uid = V152_roleDlg.uid;
+    api("/api/users/role", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (d) {
+        toast(d.message + " — ستظهر الصلاحيات في تطبيقه تلقائياً خلال لحظات.");
+        $("#dlgRole152").close(); loadUsers();
+      })
+      .catch(function (e) { toast(e.message, true); });
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ── حوار الصلاحيات — الوضع الحي (v107) ── */
+var V152_STATE_LBL = { track: "🧭 تتبع الفئة", on: "✅ مفعّلة", off: "⛔ موقفة" };
+function v152PermRow(p, label, st, eff, editable) {
+  var effBadge = eff
+    ? '<span class="badge g">فعّالة فعلياً</span>'
+    : '<span class="badge r">موقفة فعلياً</span>';
+  var seg = editable
+    ? '<div class="v152seg" data-p="' + p + '">' +
+        '<button type="button" class="v152opt' + (st === undefined ? " on" : "") + '" data-s="track">🧭 الفئة</button>' +
+        '<button type="button" class="v152opt' + (st === 1 || st === true ? " on" : "") + '" data-s="1">✅</button>' +
+        '<button type="button" class="v152opt' + (st === 0 || st === false ? " on" : "") + '" data-s="0">⛔</button>' +
+      '</div>'
+    : '<span class="badge mut">تتبع الفئة</span>';
+  return '<div class="v152pm"><div class="v152pminfo"><b>' + label + '</b>' + effBadge + '</div>' + seg + '</div>';
+}
+function v152RenderLive(data) {
+  var t = data.target || {};
+  $("#dlgPerms152User").textContent = (t.name || "") + " — " + (t.role_label || "");
+  $("#dlgPerms152Sub").textContent = t.protected
+    ? "🛡 حساب محمي — صلاحياته كاملة دائماً ولا تُعدَّل"
+    : "🧭 «تتبع الفئة» = يطبَّق افتراضي فئته • التجاوز الصريح هو الحاكم";
+  var editable = !t.protected;
+  var html = (data.matrix || []).map(function (p) {
+    return v152PermRow(p, (data.labels || {})[p] || p,
+      (data.states || {})[p], (data.effective || {})[p], editable);
+  }).join("");
+  if (data.redAlertMode !== undefined && data.redAlertMode !== null)
+    html += '<p class="hint">🚨 وضع الإنذار الأحمر: ' + esc(String(data.redAlertMode)) + '</p>';
+  $("#dlgPerms152Body").innerHTML = html;
+  $("#dlgPerms152Reset").style.display = editable ? "" : "none";
+  $("#dlgPerms152Reset").onclick = function () {
+    if (!confirm("إعادة ضبط كل التجاوزات؟ يعود المستخدم لتتبع فئته بالكامل.")) return;
+    api("/api/user/" + data.target.telegram_id + "/perms", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true })
+    }).then(function (d) { toast(d.message || "تم."); v152OpenLive(data.target.telegram_id, data.target.name); })
+      .catch(function (e) { toast(e.message, true); });
+  };
+  Array.prototype.forEach.call($("#dlgPerms152Body").querySelectorAll(".v152seg button"), function (b) {
+    b.addEventListener("click", function () {
+      var seg = b.parentNode, perm = seg.getAttribute("data-p");
+      var s = b.getAttribute("data-s");
+      var state = s === "1" ? 1 : (s === "0" ? 0 : null);
+      api("/api/user/" + data.target.telegram_id + "/perms", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ perm: perm, state: state })
+      }).then(function (d) {
+        var st = data.states;
+        if (state === null) delete st[perm]; else st[perm] = state;
+        data.effective = d.effective || data.effective;
+        toast(d.message || "تم الحفظ ✅");
+        v152RenderLive(data);
+      }).catch(function (e) { toast(e.message, true); });
+    });
+  });
+}
+function v152OpenLive(tid, name) {
+  v152EnsureDialogs();
+  $("#dlgPerms152User").textContent = name + " — جارٍ التحميل...";
+  $("#dlgPerms152Sub").textContent = "";
+  $("#dlgPerms152Body").innerHTML = '<p class="empty">جارِ التحميل...</p>';
+  $("#dlgPerms152Reset").style.display = "none";
+  api("/api/user/" + tid + "/perms")
+    .then(function (d) { v152RenderLive(d); $("#dlgPerms152").showModal(); })
+    .catch(function (e) {
+      $("#dlgPerms152Body").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
+      $("#dlgPerms152").showModal();
+    });
+}
+
+/* ── حوار الصلاحيات — وضع الفئة (بلا تلغرام: قراءة فقط) ── */
+function v152OpenRoleMode(u) {
+  v152EnsureDialogs();
+  var r = u.role || "customer";
+  var cat = V152_CATALOG[r];
+  $("#dlgPerms152User").textContent = (u.name || "") + " — " + (u.role_label || r);
+  $("#dlgPerms152Sub").textContent = "👤 بلا حساب تلغرام — الصلاحيات تتبع الفئة تلقائياً (قراءة فقط)";
+  var all = ["search", "add_qty", "remove", "invoice", "supply_order", "my_orders",
+             "movements", "add_product", "edit_product", "low_stock", "pending",
+             "expenses", "users", "red_alert"];
+  var labels = { search: "🔍 البحث", add_qty: "➕ إضافة كمية", remove: "➖ إخراج كمية",
+    invoice: "🧾 إنشاء فاتورة", supply_order: "📦 طلب توريد جديد", my_orders: "📋 طلباتي",
+    movements: "📋 الحركة", add_product: "📦 إضافة سلعة", edit_product: "✏️ تعديل سلعة",
+    low_stock: "📊 المخزون المنخفض", pending: "🔴 الطلبات المعلقة", expenses: "💰 المصروفات",
+    users: "⚙️ نظام المستخدمين", red_alert: "🚨 الإنذار الأحمر — تذكير المخزون" };
+  var set = (cat === "*") ? all : (cat || []);
+  $("#dlgPerms152Body").innerHTML = all.map(function (p) {
+    var on = set.indexOf(p) !== -1;
+    return '<div class="v152pm"><div class="v152pminfo"><b>' + labels[p] + '</b>'
+      + (on ? '<span class="badge g">فعّالة فعلياً</span>' : '<span class="badge r">موقفة فعلياً</span>')
+      + '</div><span class="badge mut">تتبع الفئة</span></div>';
+  }).join("") + '<p class="hint">💡 للتحكم الفردي بالصلاحيات: اربط حسابه بتلغرام (يصبح التحكم الحي متاحاً هنا) أو غيّر فئته بزر «🎯 الفئة».</p>';
+  $("#dlgPerms152Reset").style.display = "none";
+  $("#dlgPerms152").showModal();
+}
+
+/* ── التفويض الموحد لأزرار البطاقة ── */
+document.addEventListener("click", function (ev) {
+  var el = ev.target.closest ? ev.target.closest("[data-v152role],[data-v152perms]") : null;
+  if (!el) return;
+  var tid = parseInt(el.getAttribute("data-tid"), 10) || null;
+  var uid = parseInt(el.getAttribute("data-uid"), 10) || null;
+  var name = el.getAttribute("data-n") || "";
+  if (el.hasAttribute("data-v152role")) {
+    if (!tid && !uid) { toast("معرّف المستخدم مفقود.", true); return; }
+    openRole152(tid, uid, name);
+  } else if (el.hasAttribute("data-v152perms")) {
+    if (tid) v152OpenLive(tid, name);
+    else v152OpenRoleMode({ name: name, role: el.getAttribute("data-v152r"), role_label: el.getAttribute("data-v152rl") });
+  }
+});
+
+/* إعادة رسم قائمة المستخدمين إن كانت الشاشة مفتوحة */
+try { if (document.getElementById("v-users") && document.getElementById("v-users").classList.contains("on")) loadUsers(); } catch (_e) {}
+}
+} catch (_v152e) { try { console.warn("[v152] layer error:", _v152e); } catch (_e2) {} }
+
+</script>
+<style id="v152css">/* ═══ v152: أنماط بطاقة الصلاحيات — تتبع الثيم المؤسسي (متغيرات الألوان القائمة) ═══ */
+#dlgPerms152Body .v152pm{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 10px;border:1.5px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--card,transparent)}
+#dlgPerms152Body .v152pminfo{display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0}
+#dlgPerms152Body .v152pminfo b{font-size:13.5px}
+#dlgPerms152Body .v152seg{display:flex;gap:4px;flex-shrink:0}
+#dlgPerms152Body .v152opt{border:1.5px solid var(--line);background:transparent;color:var(--ink,#2b2d31);
+  font:inherit;font-size:12px;font-weight:700;padding:5px 9px;border-radius:9px;cursor:pointer}
+#dlgPerms152Body .v152opt.on{background:var(--brand);border-color:var(--brand);color:#fff}
+#dlgPerms152Body .v152pm:hover{border-color:var(--brand)}
+@media (max-width:640px){
+  #dlgPerms152Body .v152pm{flex-direction:column;align-items:stretch}
+  #dlgPerms152Body .v152seg{justify-content:flex-end}
+}
 
 </style>
 </body>

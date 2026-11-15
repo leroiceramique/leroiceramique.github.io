@@ -764,7 +764,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
      type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
   mov: { preset: "today", from: "", to: "", product: 0,
-         product_name: "", type: "", data: [], summary: null },
+         product_name: "", type: "", correct: false, data: [], summary: null },
   invTab: "all", invData: [], serverVersion: "", };
 
 const esc = (s) => String(s == null ? "" : s)
@@ -1626,7 +1626,7 @@ function isoLocal(d) {
 }
 function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر دون تحميل مزدوج */
   S.mov.preset = p;
-  document.querySelectorAll("#movDayScope .fchip").forEach((b) =>
+  document.querySelectorAll("#movDayScope .fchip[data-p]").forEach((b) =>
     b.classList.toggle("on", b.dataset.p === p));
   const now = new Date(); let f = "", t = "";
   if (p === "today") { f = t = isoLocal(now); }
@@ -1636,14 +1636,23 @@ function movSetPreset(p, silent) {  /* v45: silent = تعيين الفلتر د�
   $("#movDay").value = (f && f === t) ? f : "";   /* v68: تزامن يوم التحديد */
   if (!silent) loadMovements();
 }
-document.querySelectorAll("#movDayScope .fchip").forEach((b) =>
+document.querySelectorAll("#movDayScope .fchip[data-p]").forEach((b) =>
   b.addEventListener("click", () => movSetPreset(b.dataset.p)));
+/* v151 «سجل الحركة الصادق»: رقاقة عرض المستبعد (تصحيح مخزون + الجرد) — اختيارية
+   بلا حفظ محلي: افتراضياً يبقى السجل نظيفاً كما في v148 لكنه يخبرك بما يخفيه */
+(function () { var _mc = document.getElementById("movCorr");
+  if (_mc) _mc.addEventListener("click", function () {
+    S.mov.correct = !S.mov.correct;
+    _mc.classList.toggle("on", S.mov.correct);
+    loadMovements();
+  });
+})();
 /* v68: يوم محدد — اختيار تاريخ واحد يعرض حركة ذلك اليوم فقط */
 $("#movDay").addEventListener("change", () => {
   const v = $("#movDay").value;
   if (!v) return;
   S.mov.from = v; S.mov.to = v; S.mov.preset = "custom";
-  document.querySelectorAll("#movDayScope .fchip").forEach((b) => b.classList.remove("on"));
+  document.querySelectorAll("#movDayScope .fchip[data-p]").forEach((b) => b.classList.remove("on"));
   loadMovements();
 });
 $("#movProdChip").addEventListener("click", () => {
@@ -1669,6 +1678,7 @@ async function loadMovements() {
   if (S.mov.to) q.set("to", S.mov.to);
   if (S.mov.product) q.set("product", String(S.mov.product));
   if (S.mov.type) q.set("type", S.mov.type);   /* v69: الخادم يفلتر بها فعلاً */
+  if (S.mov.correct) q.set("show_correct", "1");   /* v151: اعرض المستبعد */
   const prodChip = $("#movProdChip");
   if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
   else prodChip.style.display = "none";
@@ -1677,6 +1687,7 @@ async function loadMovements() {
     if (!fresh()) return;
     S.mov.data = d.movements || [];
     S.mov.summary = d.summary || null;
+    S.mov.excluded = d.excluded || null;   /* v151: ملخص المستبعد */
     const s = S.mov.summary;
     if (s && s.count) {
       $("#movSum").style.display = "flex";
@@ -1694,17 +1705,25 @@ async function loadMovements() {
       }
     } else { $("#movSum").style.display = "none"; }
     if (!S.mov.data.length) {
-      const tn = { add: "الإضافة", remove: "الإخراج" }[S.mov.type];
-      box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
-        + (tn ? ' — خانة «' + tn + '»' : '')
-        + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 اليوم / أمس أو اختر تاريخاً 📅.</span></p>';
+      const ex = S.mov.excluded;
+      if (ex && ex.count) {
+        /* v151: الفراغ الصادق — العمليات مسجلة لكنها من المستبعد من العرض */
+        box.innerHTML = '<p class="empty">✅ كل العمليات تُسجَّل في القاعدة — ضمن هذا الفلتر توجد <b>' + ex.count
+          + '</b> عملية تصحيح/جرد مخفية عن السجل (إعداد v148: «التصحيح ليس حركة عمل»).'
+          + '<br><span style="font-size:12px">اضغط رقاقة «📝 التصحيح» بالأعلى لعرضها.</span></p>';
+      } else {
+        const tn = { add: "الإضافة", remove: "الإخراج" }[S.mov.type];
+        box.innerHTML = '<p class="empty">لا توجد حركة ضمن هذا الفلتر'
+          + (tn ? ' — خانة «' + tn + '»' : '')
+          + '.<br><span style="font-size:12px">جرّب يوماً آخر من 🗓 اليوم / أمس أو اختر تاريخاً 📅.</span></p>';
+      }
       return;
     }
     let html = "", lastDay = "";
     for (const m of S.mov.data) {
       const day = String(m.date || "").slice(0, 10);
       if (day && day !== lastDay) { lastDay = day; html += '<div class="dayhead">📅 ' + esc(movDayHeader(day)) + '</div>'; }
-      const b = MOV_BADGE[m.type] || ["mut", m.type];
+      const b = m.is_correct ? ["mut", "📝 تصحيح"] : (MOV_BADGE[m.type] || ["mut", m.type]);   /* v151 */
       html += '<div class="row"><div class="info"><b>' + esc(m.product_name) + '</b>'
         + '<span>' + esc(m.user_name || "—") + " • " + esc(String(m.date || "").slice(11, 16))
         + (m.reason ? " • " + esc(m.reason) : "") + '</span></div>'
@@ -1713,6 +1732,10 @@ async function loadMovements() {
     const shown = S.mov.data.length;
     if (s && s.count > shown)
       html += '<p class="hint">المعروض ' + shown + ' من ' + s.count + '.</p>';
+    /* v151: تلميح الصدق — ما يُخفى من العرض يُذكر لا يُصمت */
+    const ex = S.mov.excluded;
+    if (ex && ex.count && !S.mov.correct)
+      html += '<p class="hint">🔒 ' + ex.count + ' عملية تصحيح/جرد مستبعدة من العرض — رقاقة «📝 التصحيح» لعرضها.</p>';
     box.innerHTML = html;
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
