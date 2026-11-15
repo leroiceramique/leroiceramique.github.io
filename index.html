@@ -3746,7 +3746,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "32";   /* v154: الصلاحيات الحية لكل مستخدم — بلا تلغرام أو به */
+const APP_VER = "33";   /* v155: أزرار صادقة وتذكير يعرف حدوده */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8387,12 +8387,13 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   transition:transform .35s ease;pointer-events:none}
 .v142green.on{transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){.v142red .rcard,.rgate-math.bad{animation:none}}</style>
-<style id="v143css">/* ═══ v143: التنبيه الجماعي + إشعارات الهاتف ═══ */
-.v143fab{position:fixed;z-index:9;inset-inline-start:18px;bottom:calc(154px + env(safe-area-inset-bottom));
+<style id="v143css">
+/* ═══ v143: التنبيه الجماعي + إشعارات الهاتف ═══ */
+.v143fab{position:fixed;z-index:1200;inset-inline-start:18px;bottom:calc(154px + env(safe-area-inset-bottom));
   width:46px;height:46px;border:1px solid rgba(245,158,11,.55);border-radius:16px;cursor:pointer;display:none;
   background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-size:20px;line-height:1;
   box-shadow:0 6px 16px rgba(239,68,68,.32)}
-.v143bell{position:fixed;z-index:9;inset-inline-end:14px;bottom:calc(96px + env(safe-area-inset-bottom));
+.v143bell{position:fixed;z-index:1200;inset-inline-end:14px;bottom:calc(96px + env(safe-area-inset-bottom));
   border:none;border-radius:999px;padding:10px 16px;cursor:pointer;display:none;font-family:inherit;
   background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff;font-weight:700;font-size:13px;
   box-shadow:0 6px 16px rgba(37,99,235,.28)}
@@ -8415,6 +8416,21 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
 .v143hist{padding:9px 11px;border:1px solid var(--line,#dfe3ea);border-radius:10px;margin-bottom:7px}
 .v143hist .ht{font-size:13.5px;font-weight:600;line-height:1.6}
 .v143hist .hm{font-size:11.5px;color:var(--muted,#8b93a2);margin-top:3px}
+/* ═══ v155: حوار إرشاد إشعارات الهاتف — يتبع الثيم المؤسسي ═══ */
+.v155dlg{border:none;border-radius:18px;padding:0;max-width:340px;width:88%;
+  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;
+  box-shadow:0 24px 70px rgba(2,6,23,.4)}
+.v155dlg::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
+.v155help{padding:20px 18px 16px;text-align:right}
+.v155help .v155ic{font-size:30px;text-align:center;margin-bottom:4px}
+.v155help h3{margin:2px 0 8px;font-size:15.5px;color:var(--brand,#5865f2);text-align:center}
+.v155help p{margin:6px 0;font-size:13px;line-height:1.8;color:var(--text,#23272a)}
+.v155help ol{margin:8px 18px 8px 0;padding:0;font-size:13px;line-height:2;color:var(--text,#23272a)}
+.v155help .v155alt{font-size:12px;color:var(--muted,#8b93a2);background:var(--soft,rgba(88,101,242,.08));
+  border-radius:10px;padding:8px 10px;margin-top:8px}
+.v155help .v155btn{display:block;width:100%;margin-top:10px;border:none;border-radius:11px;
+  padding:10px 12px;font:inherit;font-weight:700;font-size:13.5px;cursor:pointer;
+  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff}
 </style>
 <script id="v143ui">
 /* ═══════════════════════════════════════════════════════════════════
@@ -8468,8 +8484,30 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   function pushLaterSet() {
     try { localStorage.setItem("ceram_push_later", String(Date.now() + 3 * 86400000)); } catch (e) {}
   }
+  /* ═══ v155: حوار الإرشاد عند حظر الإذن — وضوح كامل بدل «لا يستجيب» ═══ */
+  var v155HelpDlg = null;
+  window.__v155PushHelp = function () {
+    if (!v155HelpDlg) {
+      v155HelpDlg = document.createElement("dialog");
+      v155HelpDlg.id = "v155dlg";
+      v155HelpDlg.className = "v155dlg";
+      v155HelpDlg.innerHTML =
+        '<div class="v155help"><div class="v155ic">🔔</div>'
+        + '<h3>الإشعارات محظورة من المتصفح</h3>'
+        + '<p>رفضتَ إذن الإشعارات لهذا الموقع سابقاً، لذلك لا يظهر طلب الإذن عند الضغط — فعّلها يدوياً:</p>'
+        + '<ol><li>اضغط أيقونة 🔒 (أو ⋮) بجانب عنوان الموقع.</li>'
+        + '<li>افتح «أذونات الموقع» ← «الإشعارات».</li>'
+        + '<li>اختر «سماح / Allow» ثم أعد تحميل التطبيق واضغط زر 🔔.</li></ol>'
+        + '<p class="v155alt">💡 بديل مضمون: قناة تلغرام — التنبيهات تصلك هناك دائماً حتى والتطبيق مغلقاً.</p>'
+        + '<button type="button" class="v155btn">فهمت</button></div>';
+      document.body.appendChild(v155HelpDlg);
+      v155HelpDlg.querySelector(".v155btn").addEventListener("click", function () { try { v155HelpDlg.close(); } catch (e) {} });
+    }
+    try { v155HelpDlg.showModal(); } catch (e) {}
+  };
   function refreshBell() {
-    bell.style.display = (pushSupported() && !pushLater()) ? "inline-block" : "none";
+    /* v155: الزر لا يُخفى بعد ضغطه أبداً — الإخفاء 3 أيام كان يجعله «لا يستجيب» */
+    bell.style.display = pushSupported() ? "inline-block" : "none";
     bell.textContent = pushDone() ? "🔔 إشعارات مفعلة ✓" : "🔔 فعّل إشعارات الهاتف";
   }
 
@@ -8492,15 +8530,17 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     try {
       if (!pushSupported()) { t("متصفحك لا يدعم إشعارات الهاتف — اعتمد قناة تلغرام.", true); return; }
       if (Notification.permission === "denied") {
-        pushLaterSet(); refreshBell();
-        t("الإشعارات محظورة لهذا الموقع — فعّلها من إعدادات المتصفح ثم اضغط زر 🔔 مجدداً.", true);
+        /* v155: حوار إرشادات حقيقي بدل توست يُفقد — والزر يبقى ظاهراً */
+        if (typeof window.__v155PushHelp === "function") { window.__v155PushHelp(); }
+        else { t("الإشعارات محظورة لهذا الموقع — فعّلها من إعدادات المتصفح ثم اضغط زر 🔔 مجدداً.", true); }
         return;
       }
       var perm = Notification.permission;
       if (perm !== "granted") perm = await Notification.requestPermission();
       if (perm !== "granted") {
-        pushLaterSet(); refreshBell();
-        t("لم يُمنح إذن الإشعارات — يمكنك تفعيله لاحقاً من زر 🔔.", true);
+        /* v155: بلا إخفاء عقابي — الرفض المؤقت لا يُخفي الزر 3 أيام */
+        if (Notification.permission === "denied" && typeof window.__v155PushHelp === "function") { window.__v155PushHelp(); }
+        else { t("لم يُمنح إذن الإشعارات — يمكنك تفعيله لاحقاً من زر 🔔.", true); }
         return;
       }
       var reg = null;
@@ -8764,7 +8804,6 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   } catch (e) {}
 
 })();
-
 </script>
 <style id="v146css">/* ═══ v146: الحركة المزدوجة + حذف التنبيهات المسجلة ═══ */
 #v146dup,#v146dupPanel{max-width:400px;width:90%;padding:0}
@@ -9357,17 +9396,19 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
   if (window.__v150gate) return;
   window.__v150gate = 1;
   var KEY = "__v150sell";
+  var NEG_KEY = "__v150neg";   /* v155: ذاكرة الاعتذار — ما أُجيب عنه «لا/لاحقاً» لا يعود 7 أيام */
   var OLD_KEY = "__v149sell";
   var MAXL = 12; /* حد قائمة عمليات البحث: الأحدث فقط إن طالت */
-  var st = { c: 0, q: "", list: [], n: 0, pend: 0 };
+  var st = { c: 0, q: "", list: [], n: 0, pend: 0, neg: {} };
   /* توحيد الحالة: تنسيق v149 القديم ({q}) يتحول إلى قائمة {list} */
   function norm(p) {
-    var out = { c: 0, q: "", list: [], n: 0, pend: 0 };
+    var out = { c: 0, q: "", list: [], n: 0, pend: 0, neg: {} };
     if (p && typeof p === "object") {
       out.c = Math.max(0, +p.c | 0);
       out.q = String(p.q || "");
       out.n = Math.max(0, +p.n | 0);
       out.pend = p.pend ? 1 : 0;
+      if (p.neg && typeof p.neg === "object") { for (var nk in p.neg) { if (+p.neg[nk] > Date.now()) out.neg[nk] = +p.neg[nk]; } }   /* v155: الاعتذارات تنتهي تلقائياً */
       var src = Array.isArray(p.list) ? p.list : [p.q];
       for (var i = 0; i < src.length; i++) {
         var s = String(src[i] || "").trim();
@@ -9386,6 +9427,29 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     if (raw) st = norm(JSON.parse(raw));
   } catch (e0) {}
   function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} }
+  /* ── v155: ذاكرة الاعتذار + بوابة الصلاحيات ── */
+  function negMark(list) {
+    try {
+      var exp = Date.now() + 7 * 86400000;
+      for (var i = 0; i < (list || []).length; i++) {
+        var s = String(list[i] || "").trim();
+        if (s) st.neg[s] = exp;
+      }
+      save();
+    } catch (e) {}
+  }
+  function negFilter(list) {
+    var out = [], now = Date.now();
+    for (var i = 0; i < (list || []).length; i++) {
+      var s = String(list[i] || "");
+      if (!s) continue;
+      if (st.neg[s] && st.neg[s] > now) continue;
+      out.push(s);
+    }
+    return out;
+  }
+  /* v155: التذكير لمَن يملك صلاحية ➖ الإخراج فقط — صاحب البحث فقط لا يُسأل أصلاً */
+  function canReg() { try { return !!(typeof S !== "undefined" && S && S.perms && S.perms.remove); } catch (e) { return false; } }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -9424,6 +9488,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
   /* ── العدّ: كل تحميل مخزون بستعلام غير فارغ ومختلف = عملية بحث ── */
   function countSearch() {
     if (!logged()) return;
+    if (!canReg()) return;   /* v155: بلا صلاحية تسجيل لا عدّ ولا سؤال */
     var q = "";
     try { q = String(S.invQ || "").trim(); } catch (e) { return; }
     if (!q) { if (st.q) { st.q = ""; save(); } return; }
@@ -9434,7 +9499,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     if (st.c >= 5) {
       st.c = 0; save();
       /* v153: التحقق من المسجَّل قبل البوابة — إن كانت القائمة كلها مسجلة لا تظهر أصلاً */
-      v153Resolve(st.list, function (rem, dropped) {
+      v153Resolve(negFilter(st.list), function (rem, dropped) {
         if (rem === null) { st.pend = 1; st.n += 1; save(); schedule(1600); return; }
         st.list = rem;
         if (!st.list.length) {
@@ -9466,10 +9531,11 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
   function tryShow() {
     if (!st.pend) return;
     if (!logged()) { setTimeout(function () { tryShow(); }, 4000); return; }
+    if (!canReg()) { st.pend = 0; save(); return; }   /* v155: بلا صلاحية الإخراج لا بوابة */
     if (busy()) { if (pollN++ < 200) setTimeout(function () { tryShow(); }, 1500); return; }
     pollN = 0;
     /* v153: تحقق أخير قبل العرض — ما سجّله المستخدم أثناء غياب البوابة يُلغى */
-    v153Resolve(st.list, function (rem, dropped) {
+    v153Resolve(negFilter(st.list), function (rem, dropped) {
       if (rem === null) { show(); return; }
       if (!rem.length) { done(); try { toast("✅ سجّلتَها فعلاً — أُلغي التذكير.", false); } catch (e6) {} return; }
       if (dropped) { st.list = rem; save(); }
@@ -9511,7 +9577,10 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     if (ov) ov.style.display = "none";
     try { document.body.style.overflow = ""; } catch (e) {}
   }
-  function done() { st.pend = 0; st.c = 0; st.q = ""; st.list = []; save(); closeGate(); }
+  function done(negList) {
+    if (negList && negList.length) negMark(negList);   /* v155: حفظ الاعتذار 7 أيام */
+    st.pend = 0; st.c = 0; st.q = ""; st.list = []; save(); closeGate();
+  }
   function render() {
     var card = document.getElementById("v150card");
     if (!card) return;
@@ -9537,7 +9606,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
         '<div class="v150lock">بوابة صارمة — لا تُغلق إلا بنعم أو لا</div>';
       document.getElementById("v150yes").addEventListener("click", function () { curStep = 2; render(); });
       document.getElementById("v150no").addEventListener("click", function () {
-        done();
+        done(curList);
         try { toast("شكراً بالتوفيق 🌟", false); } catch (e) {}
       });
     } else if (curList.length <= 1) {
@@ -9550,7 +9619,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
         '<button type="button" class="v150btn v150no" id="v150later">سأسجّلها لاحقاً — شكراً</button>';
       document.getElementById("v150rec").addEventListener("click", function () { recFor(curList[0] || ""); });
       document.getElementById("v150later").addEventListener("click", function () {
-        done();
+        done(curList);
         try { toast("شكراً لك 🙏 — لا تنسَ تسجيلها.", false); } catch (e) {}
       });
     } else {
@@ -9570,7 +9639,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
         b.addEventListener("click", function () { recFor(b.getAttribute("data-q") || ""); });
       });
       document.getElementById("v150later").addEventListener("click", function () {
-        done();
+        done(curList);
         try { toast("شكراً لك 🙏 — لا تنسَ تسجيلها.", false); } catch (e) {}
       });
     }
