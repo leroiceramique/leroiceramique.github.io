@@ -3746,7 +3746,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "30";   /* v152: الفئة والصلاحيات لكل مستخدم من التطبيق */
+const APP_VER = "32";   /* v154: الصلاحيات الحية لكل مستخدم — بلا تلغرام أو به */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -9403,6 +9403,24 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     } catch (e) {}
     return false;
   }
+  /* ── v153: التحقق من المسجَّل — أي بحث له حركة مسجلة على سلعة مطابقة يُسوى ── */
+  var v153dropped = 0;
+  function v153Resolve(list, cb) {
+    try {
+      api("/api/movements/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: (list || []).slice(0) })
+      }).then(function (d) {
+        var res = (d && d.resolved) || {};
+        var rem = [], dropped = 0, i;
+        for (i = 0; i < (list || []).length; i++) {
+          if (res[list[i]]) dropped += 1; else rem.push(list[i]);
+        }
+        v153dropped = dropped;
+        cb(rem, dropped);
+      }).catch(function () { cb(null, 0); });
+    } catch (e) { cb(null, 0); }
+  }
   /* ── العدّ: كل تحميل مخزون بستعلام غير فارغ ومختلف = عملية بحث ── */
   function countSearch() {
     if (!logged()) return;
@@ -9413,8 +9431,19 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     st.q = q;
     st.c += 1;
     if (st.list.indexOf(q) < 0) { st.list.push(q); if (st.list.length > MAXL) st.list.shift(); }
-    if (st.c >= 5) { st.c = 0; st.pend = 1; st.n += 1; save(); schedule(1600); }
-    else save();
+    if (st.c >= 5) {
+      st.c = 0; save();
+      /* v153: التحقق من المسجَّل قبل البوابة — إن كانت القائمة كلها مسجلة لا تظهر أصلاً */
+      v153Resolve(st.list, function (rem, dropped) {
+        if (rem === null) { st.pend = 1; st.n += 1; save(); schedule(1600); return; }
+        st.list = rem;
+        if (!st.list.length) {
+          if (dropped) { try { toast("✅ كل بحثاتك مسجَّلة أصلاً — لا حاجة للتذكير اليوم.", false); } catch (e4) {} }
+          save(); return;
+        }
+        st.pend = 1; st.n += 1; save(); schedule(1600);
+      });
+    } else save();
   }
   function wrapLoader() {
     var f = window.loadInventory;
@@ -9439,7 +9468,13 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
     if (!logged()) { setTimeout(function () { tryShow(); }, 4000); return; }
     if (busy()) { if (pollN++ < 200) setTimeout(function () { tryShow(); }, 1500); return; }
     pollN = 0;
-    show();
+    /* v153: تحقق أخير قبل العرض — ما سجّله المستخدم أثناء غياب البوابة يُلغى */
+    v153Resolve(st.list, function (rem, dropped) {
+      if (rem === null) { show(); return; }
+      if (!rem.length) { done(); try { toast("✅ سجّلتَها فعلاً — أُلغي التذكير.", false); } catch (e6) {} return; }
+      if (dropped) { st.list = rem; save(); }
+      show();
+    });
   }
   if (st.pend) setTimeout(function () { tryShow(); }, 2600);
   /* ── الواجهة: بوابة صارمة بلا أي مخرج غير نعم أو لا ── */
@@ -9496,6 +9531,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
         (curList.length ? '<div class="v150qlist"><div class="v150qh">🔍 ' + head + '</div>' + rows + '</div>' : '') +
         '<div class="v150b">هذه <b>كل عمليات بحثك</b> منذ آخر تذكير — إن بعتَ أيّاً منها سجّله فوراً كي يبقى مخزون التطبيق مطابقاً للمخزون الفعلي.</div>' +
         '<div class="v150cnt">' + (st.n ? "التذكير رقم " + st.n + " — " : "") + "يظهر كل 5 عمليات بحث</div>" +
+        (curStep === 1 && v153dropped ? '<div class="v153ok">✅ أُهمل ' + v153dropped + ' من عمليات البحث لأنها سُجِّلت فعلاً — لن يعود التذكير عنها</div>' : '') +
         '<button type="button" class="v150btn v150yes" id="v150yes">✅ نعم، بعتُه</button>' +
         '<button type="button" class="v150btn v150no" id="v150no">✖️ لا، لم أبعِه</button>' +
         '<div class="v150lock">بوابة صارمة — لا تُغلق إلا بنعم أو لا</div>';
@@ -9580,7 +9616,6 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
   /* مفتاح فحص آلي (لا يؤثر على الإنتاج) */
   try { window.__v150gateDebug = function () { return JSON.parse(JSON.stringify(st)); }; } catch (e) {}
 })();
-
 </script>
 <style id="v150css">/* ═══ v150: بوابة «هل بعت ما بحثت عنه؟» — تذكر كل عمليات البحث لا الأخيرة فقط ═══ */
 #v150ov{position:fixed;inset:0;z-index:2147482000;display:none;align-items:center;justify-content:center;
@@ -9774,12 +9809,18 @@ function v152PermRow(p, label, st, eff, editable) {
     : '<span class="badge mut">تتبع الفئة</span>';
   return '<div class="v152pm"><div class="v152pminfo"><b>' + label + '</b>' + effBadge + '</div>' + seg + '</div>';
 }
+/* v154: عنوان نقاط المصفوفة — «u45» يعني users.id (حساب تطبيق بلا تلغرام) */
+function v154PermsUrl(k) {
+  k = String(k || "");
+  return "/api/user/" + (/^u\d+$/.test(k) ? "uid/" + k.slice(1) : k) + "/perms";
+}
 function v152RenderLive(data) {
   var t = data.target || {};
   $("#dlgPerms152User").textContent = (t.name || "") + " — " + (t.role_label || "");
+  data.target.__key = t.uid ? "u" + t.uid : String(t.telegram_id || "");   /* v154: عنوان الهدف */
   $("#dlgPerms152Sub").textContent = t.protected
     ? "🛡 حساب محمي — صلاحياته كاملة دائماً ولا تُعدَّل"
-    : "🧭 «تتبع الفئة» = يطبَّق افتراضي فئته • التجاوز الصريح هو الحاكم";
+    : (t.telegram_id ? "" : "👤 بلا حساب تلغرام — ") + "🧭 «تتبع الفئة» = يطبَّق افتراضي فئته • التجاوز الصريح هو الحاكم";
   var editable = !t.protected;
   var html = (data.matrix || []).map(function (p) {
     return v152PermRow(p, (data.labels || {})[p] || p,
@@ -9791,9 +9832,9 @@ function v152RenderLive(data) {
   $("#dlgPerms152Reset").style.display = editable ? "" : "none";
   $("#dlgPerms152Reset").onclick = function () {
     if (!confirm("إعادة ضبط كل التجاوزات؟ يعود المستخدم لتتبع فئته بالكامل.")) return;
-    api("/api/user/" + data.target.telegram_id + "/perms", {
+    api(v154PermsUrl(data.target.__key), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true })
-    }).then(function (d) { toast(d.message || "تم."); v152OpenLive(data.target.telegram_id, data.target.name); })
+    }).then(function (d) { toast(d.message || "تم."); v152OpenLive(data.target.__key, data.target.name); })
       .catch(function (e) { toast(e.message, true); });
   };
   Array.prototype.forEach.call($("#dlgPerms152Body").querySelectorAll(".v152seg button"), function (b) {
@@ -9801,7 +9842,7 @@ function v152RenderLive(data) {
       var seg = b.parentNode, perm = seg.getAttribute("data-p");
       var s = b.getAttribute("data-s");
       var state = s === "1" ? 1 : (s === "0" ? 0 : null);
-      api("/api/user/" + data.target.telegram_id + "/perms", {
+      api(v154PermsUrl(data.target.__key), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ perm: perm, state: state })
       }).then(function (d) {
@@ -9820,7 +9861,7 @@ function v152OpenLive(tid, name) {
   $("#dlgPerms152Sub").textContent = "";
   $("#dlgPerms152Body").innerHTML = '<p class="empty">جارِ التحميل...</p>';
   $("#dlgPerms152Reset").style.display = "none";
-  api("/api/user/" + tid + "/perms")
+  api(v154PermsUrl(tid))
     .then(function (d) { v152RenderLive(d); $("#dlgPerms152").showModal(); })
     .catch(function (e) {
       $("#dlgPerms152Body").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
@@ -9865,7 +9906,9 @@ document.addEventListener("click", function (ev) {
     if (!tid && !uid) { toast("معرّف المستخدم مفقود.", true); return; }
     openRole152(tid, uid, name);
   } else if (el.hasAttribute("data-v152perms")) {
-    if (tid) v152OpenLive(tid, name);
+    /* v154: المصفوفة الحية للجميع — حساب التطبيق عبر users.id (uid) */
+    if (uid) v152OpenLive("u" + uid, name);
+    else if (tid) v152OpenLive(tid, name);
     else v152OpenRoleMode({ name: name, role: el.getAttribute("data-v152r"), role_label: el.getAttribute("data-v152rl") });
   }
 });
@@ -9874,7 +9917,6 @@ document.addEventListener("click", function (ev) {
 try { if (document.getElementById("v-users") && document.getElementById("v-users").classList.contains("on")) loadUsers(); } catch (_e) {}
 }
 } catch (_v152e) { try { console.warn("[v152] layer error:", _v152e); } catch (_e2) {} }
-
 </script>
 <style id="v152css">/* ═══ v152: أنماط بطاقة الصلاحيات — تتبع الثيم المؤسسي (متغيرات الألوان القائمة) ═══ */
 #dlgPerms152Body .v152pm{display:flex;align-items:center;justify-content:space-between;gap:10px;
@@ -9890,6 +9932,11 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
   #dlgPerms152Body .v152pm{flex-direction:column;align-items:stretch}
   #dlgPerms152Body .v152seg{justify-content:flex-end}
 }
+
+</style>
+<style id="v153css">/* ═══ v153: سطر شفافية الأُهمال في بوابة «هل بعت ما بحثت عنه؟» — ما سجّلته لن يعود ═══ */
+#v150ov .v153ok{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.4);
+  color:#0f9d6a;font-weight:800;font-size:12.5px;border-radius:12px;padding:9px 12px;margin:10px 14px 0;text-align:center}
 
 </style>
 </body>
