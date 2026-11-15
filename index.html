@@ -3746,7 +3746,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "33";   /* v155: أزرار صادقة وتذكير يعرف حدوده */
+const APP_VER = "34";   /* v156: تنبيه يصل لكل حساب وقائمة تحترم الصلاحيات */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -8621,8 +8621,9 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
       var u = us[i];
       var tid = u.telegram_id;
       if (f && String(u.name || "").toLowerCase().indexOf(f) === -1) continue;
-      html += '<label class="v143u"><input type="checkbox" data-tid="' + esc(tid) + '"'
-        + (picked[tid] ? " checked" : "")
+      /* v156: التحديد بمعرّف الحساب users.id — يعمل لحسابات التطبيق بلا تلغرام */
+      html += '<label class="v143u"><input type="checkbox" data-uid="' + esc(u.id) + '"'
+        + (picked[u.id] ? " checked" : "")
         + '><span class="nm">' + esc(u.name || ("#" + tid)) + (u.active === false ? " ⛔" : "") + '</span>'
         + '<span class="rl">' + esc(u.role_label || u.role || "") + '</span></label>';
     }
@@ -8637,11 +8638,11 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     if (dlg.querySelector("#bcTg").classList.contains("on")) channels.push("tg");
     if (dlg.querySelector("#bcPush").classList.contains("on")) channels.push("push");
     if (!channels.length) { toast("اختر قناة واحدة على الأقل (تلغرام أو إشعار الهاتف).", true); return; }
-    var tids = null;
+    var uids = null;   /* v156: الإرسال بمعرّف الحساب users.id */
     if (pickMode) {
-      tids = [];
-      for (var k in picked) if (picked[k]) tids.push(Number(k));
-      if (!tids.length) { toast("اختر المستلمين من القائمة أو ارجع إلى «الكل».", true); return; }
+      uids = [];
+      for (var k in picked) if (picked[k]) uids.push(Number(k));
+      if (!uids.length) { toast("اختر المستلمين من القائمة أو ارجع إلى «الكل».", true); return; }
     }
     var btn = dlg.querySelector("#bcGo");
     sending = true; btn.disabled = true; btn.textContent = "⏳ جارٍ الإرسال…";
@@ -8650,7 +8651,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     try {
       var r = await api("/api/broadcast/send", {
         method: "POST",
-        body: JSON.stringify({ targets: pickMode ? "list" : "all", tids: tids, channels: channels, text: text })
+        body: JSON.stringify({ targets: pickMode ? "list" : "all", uids: uids, channels: channels, text: text })
       });
       if (r && r.ok) {
         var x = r.result || {};
@@ -8660,7 +8661,8 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
         }
         if (channels.indexOf("push") !== -1) {
           lines.push("🔔 إشعار الهاتف: " + (x.push_ok || 0) + " ناجح" + ((x.push_fail || 0) ? " • " + x.push_fail + " فشل" : ""));
-          if (x.push_hint) lines.push("ℹ️ " + x.push_hint);
+          if (x.no_tg_n) lines.push("ℹ️ " + x.no_tg_n + " بلا حساب تلغرام — يصلهم 🔔 إشعار الهاتف إن فعّلوه.");   /* v156 */
+        if (x.push_hint) lines.push("ℹ️ " + x.push_hint);
         }
         if (x.failed && x.failed.length) lines.push("⚠️ فشل الإرسال لـ: " + x.failed.join("، "));
         resBox.innerHTML = lines.map(esc).join("<br>");
@@ -8753,7 +8755,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     dlg.querySelector("#bcListBody").addEventListener("change", function (e) {
       var t = e.target;
       if (t && t.type === "checkbox") {
-        picked[t.getAttribute("data-tid")] = t.checked;
+        picked[t.getAttribute("data-uid")] = t.checked;   /* v156: بمعرّف الحساب */
         updateN();
       }
     });
@@ -10008,5 +10010,43 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
   color:#0f9d6a;font-weight:800;font-size:12.5px;border-radius:12px;padding:9px 12px;margin:10px 14px 0;text-align:center}
 
 </style>
+<script id="v156ui">
+/* ═══════════════════════════════════════════════════════════════════
+   v156 — قائمة تحترم الصلاحيات: تبويب «الطلبات» وقسما «المعلقة/التوريد»
+   تظهر فقط لمَن يملك الصلاحية المرتبطة بها (بطلب يوسف: مستخدم البحث فقط
+   لا يُعرف له ما لا يعمل به — «طلبات معلقة/إنشاء فاتورة» تظهر لديه بلا طاقة).
+   تبويب «فاتورة» موبوَّب من v88 لكن رؤية الفواتير صارت تحترم المصفوفة
+   خادمياً (invoice_view override-aware) فيختفي التاب تلقائياً معها.
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  if (window.__v156nav) return;
+  window.__v156nav = 1;
+  function vis(id, on) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = on ? "" : "none";
+  }
+  function apply() {
+    var P = null;
+    try { P = (typeof S !== "undefined" && S) ? S.perms : null; } catch (e) { return; }
+    if (!P || typeof P !== "object") return;
+    /* تبويب الطلبات: لمَن يملك طلب توريد أو رؤية المعلقة فقط */
+    vis("tabOrders", !!(P.supply_order || P.pending));
+    /* القسمان داخل شاشة الطلبات — كلٌّ بصلاحيته */
+    vis("segPend", !!P.pending);
+    vis("segInc", !!P.supply_order);
+    if (!P.pending && P.supply_order) {
+      try {
+        var sp = document.getElementById("segPend");
+        var si = document.getElementById("segInc");
+        if (sp && si && sp.classList.contains("on")) si.click();
+      } catch (e) {}
+    }
+  }
+  apply();
+  setInterval(apply, 3000);
+})();
+
+</script>
 </body>
 </html>
