@@ -1,6 +1,6 @@
 // Service Worker — نسخة GitHub Pages (leroiceramique.github.io)
 // نفس منطق نسخة الخادم: الصفحات شبكة أولاً + API مرور مباشر بلا تخزين.
-const CACHE = "ceram-pwa-gp-v20";   /* v148: سجل نظيف بلا ✕ + إخفاء تصحيح المخزون — تجديد الغلاف */
+const CACHE = "ceram-pwa-gp-v22";   /*  v150: التذكير يذكر كل عمليات البحث الخمس لا الأخيرة فقط — تجديد الغلاف */
 const SHELL = ["/", "/icon.jpg", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -3722,7 +3722,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "26";   /* v148: سجل الحركة نظيف — بلا زر ✕ (الإلغاء بضغطة مطوّلة) + إخفاء حركة تصحيح المخزون */
+const APP_VER = "28";   /* v150: التذكير يذكر كل عمليات البحث الخمس لا الأخيرة فقط */
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -9300,6 +9300,306 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
   background:var(--card,#fff);color:#dc2626;font-size:14px;line-height:1;padding:0 7px;font-family:inherit}
 .v147bdel.armed{background:#dc2626;border-color:#dc2626;color:#fff;font-size:11px;font-weight:800;min-width:58px}
 .v147bdel:active{transform:translateY(-50%) scale(.94)}
+
+</style>
+
+<script id="v150ui">
+/* ═══════════════════════════════════════════════════════════════════
+   v150 — «✋ هل بعت ما بحثت عنه؟» التذكير يذكر كل عمليات البحث لا الأخيرة فقط
+   بطلب يوسف («يعني من اصل 5 عمليات بحث يذكر بالاخيرة فقط! — يجب أن يذكر
+   بكل العمليات الخمسة») تطوير مباشر على بوابة v149 الصارمة نفسها:
+   1) العدّ كما هو: كل تحميل مخزون بستعلام غير فارغ ومختلف عن البحث
+      السابق (#qSearch والبحث العالمي #gSearch معاً عبر غلاف loadInventory
+      بعد مهلة التصفية 300ms) — والعدّ في localStorage فيستمر عبر إغلاق
+      التطبيق، مع ترحيل تلقائي من مفتاح v149 القديم (__v149sell) إلى
+      المفتاح الجديد (__v150sell) بلا فقد للعدّ ولا للبوابة المعلّقة.
+   2) قائمة عمليات البحث: كل بحث جديد يُضاف إلى قائمة «ما بحثت عنه منذ
+      آخر تذكير» إن لم يكن فيها أصلاً (بلا تكرار، بحد أقصى 12 الأحدث)
+      — والبوابة تعرض القائمة كاملة مرقّمة لا آخر بحث فقط.
+   3) عند البحث الخامس (بعد 1.6 ثانية لترى النتائج أولاً) البوابة
+      الصارمة نفسها: بلا ✕ ولا خروج بالضغط خارجها ولا Escape (اهتزاز
+      تحذيري) — ولا تُفتح فوق نوافذ أخرى (حوار/إنذار v142/سبلاش v94).
+   4) «✅ نعم، بعتُه»:
+      - بحث واحد → شاشة الشكر + «✍️ تسجيل الحركة الآن» كما في v149.
+      - عدة عمليات → قائمة اختيار: زر ➖ لكل سلعة بحثت عنها — الضغط
+        يفتح فوراً لوحة ➖ إخراج كمية على تلك السلعة (S.invData)؛ وإن
+        لم تُحلَّ يفتح المخزون بنفس البحث ويعيد المحاولة تلقائياً ثم يرشد.
+   5) «✖️ لا، لم أبعِه» → تجاهل كامل + «شكراً بالتوفيق 🌟» — والعدّ
+      والقائمة يبدآن من صفر بعد كل جواب، ولو أُغلق التطبيق قبل الجواب
+      تعود البوابة بكل القائمة عند أول فتح بعد الدخول والاستقرار.
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  if (window.__v150gate) return;
+  window.__v150gate = 1;
+  var KEY = "__v150sell";
+  var OLD_KEY = "__v149sell";
+  var MAXL = 12; /* حد قائمة عمليات البحث: الأحدث فقط إن طالت */
+  var st = { c: 0, q: "", list: [], n: 0, pend: 0 };
+  /* توحيد الحالة: تنسيق v149 القديم ({q}) يتحول إلى قائمة {list} */
+  function norm(p) {
+    var out = { c: 0, q: "", list: [], n: 0, pend: 0 };
+    if (p && typeof p === "object") {
+      out.c = Math.max(0, +p.c | 0);
+      out.q = String(p.q || "");
+      out.n = Math.max(0, +p.n | 0);
+      out.pend = p.pend ? 1 : 0;
+      var src = Array.isArray(p.list) ? p.list : [p.q];
+      for (var i = 0; i < src.length; i++) {
+        var s = String(src[i] || "").trim();
+        if (s && out.list.indexOf(s) < 0) out.list.push(s);
+      }
+      if (out.list.length > MAXL) out.list = out.list.slice(-MAXL);
+    }
+    return out;
+  }
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (!raw) {
+      raw = localStorage.getItem(OLD_KEY);
+      if (raw) { try { localStorage.removeItem(OLD_KEY); } catch (e2) {} }
+    }
+    if (raw) st = norm(JSON.parse(raw));
+  } catch (e0) {}
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function trunc(s, n) { s = String(s); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+  function logged() { try { return !!(typeof S !== "undefined" && S && S.user); } catch (e) { return false; } }
+  /* لا تدخّل فوق نوافذ مفتوحة: حوار <dialog> أو الإنذار الأحمر v142 أو سبلاش v94 */
+  function busy() {
+    try {
+      if (document.querySelector("dialog[open]")) return true;
+      if (document.querySelector(".v142red.on")) return true;
+      var sp = document.getElementById("v94splash");
+      if (sp && sp.style.display === "flex") return true;
+    } catch (e) {}
+    return false;
+  }
+  /* ── العدّ: كل تحميل مخزون بستعلام غير فارغ ومختلف = عملية بحث ── */
+  function countSearch() {
+    if (!logged()) return;
+    var q = "";
+    try { q = String(S.invQ || "").trim(); } catch (e) { return; }
+    if (!q) { if (st.q) { st.q = ""; save(); } return; }
+    if (q === st.q) return;
+    st.q = q;
+    st.c += 1;
+    if (st.list.indexOf(q) < 0) { st.list.push(q); if (st.list.length > MAXL) st.list.shift(); }
+    if (st.c >= 5) { st.c = 0; st.pend = 1; st.n += 1; save(); schedule(1600); }
+    else save();
+  }
+  function wrapLoader() {
+    var f = window.loadInventory;
+    if (typeof f !== "function" || f.__v150) return false;
+    var g = function () { try { countSearch(); } catch (e) {} return f.apply(this, arguments); };
+    g.__v150 = 1;
+    window.loadInventory = g;
+    return true;
+  }
+  try { wrapLoader(); } catch (e) {}
+  var wt = 0;
+  var wIv = setInterval(function () {
+    wt += 1;
+    if (wt > 100 || wrapLoader()) clearInterval(wIv);
+  }, 300);
+  setTimeout(function () { try { clearInterval(wIv); } catch (e) {} }, 45000);
+  /* ── الجدولة: تنتظر خلوّ الشاشة ثم تظهر ── */
+  var pollN = 0;
+  function schedule(delay) { setTimeout(function () { tryShow(); }, delay || 1600); }
+  function tryShow() {
+    if (!st.pend) return;
+    if (!logged()) { setTimeout(function () { tryShow(); }, 4000); return; }
+    if (busy()) { if (pollN++ < 200) setTimeout(function () { tryShow(); }, 1500); return; }
+    pollN = 0;
+    show();
+  }
+  if (st.pend) setTimeout(function () { tryShow(); }, 2600);
+  /* ── الواجهة: بوابة صارمة بلا أي مخرج غير نعم أو لا ── */
+  var ov = null, curStep = 1, curList = [];
+  function ensureOv() {
+    if (ov) return ov;
+    ov = document.createElement("div");
+    ov.id = "v150ov";
+    ov.innerHTML = '<div class="v150card" id="v150card" role="dialog" aria-modal="true"></div>';
+    ov.addEventListener("click", function (e) { if (e.target === ov) shake(); });
+    document.body.appendChild(ov);
+    return ov;
+  }
+  function shake() {
+    var c = document.getElementById("v150card");
+    if (!c) return;
+    c.classList.remove("v150shake");
+    void c.offsetWidth;
+    c.classList.add("v150shake");
+    try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) {}
+  }
+  document.addEventListener("keydown", function (e) {
+    if (!ov || ov.style.display !== "flex") return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); shake(); }
+  }, true);
+  function show() {
+    curStep = 1;
+    curList = (st.list && st.list.length) ? st.list.slice(0) : (st.q ? [st.q] : []);
+    ensureOv().style.display = "flex";
+    render();
+    try { document.body.style.overflow = "hidden"; } catch (e) {}
+  }
+  function closeGate() {
+    if (ov) ov.style.display = "none";
+    try { document.body.style.overflow = ""; } catch (e) {}
+  }
+  function done() { st.pend = 0; st.c = 0; st.q = ""; st.list = []; save(); closeGate(); }
+  function render() {
+    var card = document.getElementById("v150card");
+    if (!card) return;
+    if (curStep === 1) {
+      var rows = "", i;
+      for (i = 0; i < curList.length; i++) {
+        rows += '<div class="v150qi"><span class="v150qn">' + (i + 1) +
+          '</span><span>«' + esc(trunc(curList[i], 34)) + '»</span></div>';
+      }
+      var head = curList.length === 1
+        ? "عملية بحث واحدة منذ آخر تذكير"
+        : "عمليات بحثك منذ آخر تذكير (" + curList.length + ")";
+      card.innerHTML =
+        '<div class="v150head"><span class="v150ic">✋</span><div>' +
+        '<div class="v150t">هل بعت ما بحثت عنه؟</div>' +
+        '<div class="v150s">جوابك يحمي المخزون من التقلّب</div></div></div>' +
+        (curList.length ? '<div class="v150qlist"><div class="v150qh">🔍 ' + head + '</div>' + rows + '</div>' : '') +
+        '<div class="v150b">هذه <b>كل عمليات بحثك</b> منذ آخر تذكير — إن بعتَ أيّاً منها سجّله فوراً كي يبقى مخزون التطبيق مطابقاً للمخزون الفعلي.</div>' +
+        '<div class="v150cnt">' + (st.n ? "التذكير رقم " + st.n + " — " : "") + "يظهر كل 5 عمليات بحث</div>" +
+        '<button type="button" class="v150btn v150yes" id="v150yes">✅ نعم، بعتُه</button>' +
+        '<button type="button" class="v150btn v150no" id="v150no">✖️ لا، لم أبعِه</button>' +
+        '<div class="v150lock">بوابة صارمة — لا تُغلق إلا بنعم أو لا</div>';
+      document.getElementById("v150yes").addEventListener("click", function () { curStep = 2; render(); });
+      document.getElementById("v150no").addEventListener("click", function () {
+        done();
+        try { toast("شكراً بالتوفيق 🌟", false); } catch (e) {}
+      });
+    } else if (curList.length <= 1) {
+      card.innerHTML =
+        '<div class="v150head v150headg"><span class="v150ic">🙏</span><div>' +
+        '<div class="v150t">شكراً لك!</div>' +
+        '<div class="v150s">تسجيلها الآن يحفظ دقة المخزون كلها</div></div></div>' +
+        '<div class="v150b">سجّل ما بعتَه الآن كحركة <b>➖ إخراج</b> — التأجيل هو سبب الفرق بين مخزون التطبيق والمخزون الفعلي دائماً.</div>' +
+        '<button type="button" class="v150btn v150yes" id="v150rec">✍️ تسجيل الحركة الآن</button>' +
+        '<button type="button" class="v150btn v150no" id="v150later">سأسجّلها لاحقاً — شكراً</button>';
+      document.getElementById("v150rec").addEventListener("click", function () { recFor(curList[0] || ""); });
+      document.getElementById("v150later").addEventListener("click", function () {
+        done();
+        try { toast("شكراً لك 🙏 — لا تنسَ تسجيلها.", false); } catch (e) {}
+      });
+    } else {
+      var picks = "", j;
+      for (j = 0; j < curList.length; j++) {
+        picks += '<button type="button" class="v150btn v150pk" data-q="' + esc(curList[j]) +
+          '">➖ «' + esc(trunc(curList[j], 26)) + '»</button>';
+      }
+      card.innerHTML =
+        '<div class="v150head v150headg"><span class="v150ic">🙏</span><div>' +
+        '<div class="v150t">ممتاز!</div>' +
+        '<div class="v150s">اختر ما بعتَ لتسجيل الإخراج فوراً</div></div></div>' +
+        '<div class="v150picks">' + picks + '</div>' +
+        '<div class="v150b">اضغط على السلعة التي بعتَها ليُفتح ➖ إخراج الكمية عليها مباشرة — وكرّر لبقية ما بعت.</div>' +
+        '<button type="button" class="v150btn v150no" id="v150later">سأسجّلها لاحقاً — شكراً</button>';
+      Array.prototype.forEach.call(card.querySelectorAll("button.v150pk"), function (b) {
+        b.addEventListener("click", function () { recFor(b.getAttribute("data-q") || ""); });
+      });
+      document.getElementById("v150later").addEventListener("click", function () {
+        done();
+        try { toast("شكراً لك 🙏 — لا تنسَ تسجيلها.", false); } catch (e) {}
+      });
+    }
+  }
+  /* أفضل سلعة مطابقة لأي بحث من نتائج المخزون المحمّلة */
+  function findItem(q) {
+    try {
+      var arr = (typeof S !== "undefined" && S.invData) || [];
+      var ql = String(q || "").toLowerCase();
+      var best = null;
+      for (var i = 0; i < arr.length; i++) {
+        var nm = String((arr[i] && arr[i].name) || "").toLowerCase();
+        if (!nm) continue;
+        if (nm === ql) return arr[i];
+        if (!best && ql && nm.indexOf(ql) >= 0) best = arr[i];
+      }
+      return best;
+    } catch (e) { return null; }
+  }
+  function recFor(q) {
+    done();
+    var it = findItem(q);
+    if (it && typeof window.openQty === "function") {
+      try { window.openQty("remove", it.id, it.name); return; } catch (e) {}
+    }
+    /* لم تُحلَّ السلعة: افتح المخزون بنفس البحث وأعد المحاولة ثم ارشد */
+    try {
+      if (window.switchView) window.switchView("v-inv");
+      var inp = document.getElementById("qSearch");
+      if (inp && q) inp.value = q;
+      try { if (q) S.invQ = q; } catch (e) {}
+      if (q && typeof window.loadInventory === "function") window.loadInventory();
+      if (q) { try { toast("جارِ إحضار «" + trunc(q, 20) + "» — سجّل الإخراج بـ ➖.", false); } catch (e) {} }
+      setTimeout(function () {
+        var it2 = findItem(q);
+        if (it2 && typeof window.openQty === "function") {
+          try { window.openQty("remove", it2.id, it2.name); return; } catch (e) {}
+        }
+        try { toast(q ? "اكتب اسم السلعة في البحث ثم اضغط ➖ لإخراج ما بعت." : "افتح المخزون واضغط ➖ على السلعة التي بعتها.", false); } catch (e) {}
+      }, 1500);
+    } catch (e) {}
+  }
+  /* مفتاح فحص آلي (لا يؤثر على الإنتاج) */
+  try { window.__v150gateDebug = function () { return JSON.parse(JSON.stringify(st)); }; } catch (e) {}
+})();
+
+</script>
+<style id="v150css">/* ═══ v150: بوابة «هل بعت ما بحثت عنه؟» — تذكر كل عمليات البحث لا الأخيرة فقط ═══ */
+#v150ov{position:fixed;inset:0;z-index:2147482000;display:none;align-items:center;justify-content:center;
+  background:rgba(15,23,42,.62);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+  padding:18px;font-family:inherit}
+#v150ov .v150card{width:100%;max-width:352px;background:var(--card,#fff);border-radius:20px;overflow:hidden;
+  box-shadow:0 24px 70px rgba(2,6,23,.45);border:1px solid rgba(224,93,75,.28);
+  animation:v150in .28s ease both;text-align:center}
+#v150ov .v150shake{animation:v150shake .4s ease both !important}
+@keyframes v150in{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes v150shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}
+  45%{transform:translateX(8px)}70%{transform:translateX(-5px)}88%{transform:translateX(3px)}}
+.v150head{display:flex;align-items:center;gap:11px;padding:15px 16px 12px;text-align:start;
+  background:linear-gradient(135deg,#fff7ed,#ffedd5);border-bottom:1px solid rgba(224,93,75,.18)}
+.v150headg{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-bottom-color:rgba(26,139,74,.2)}
+.v150ic{flex:none;width:46px;height:46px;border-radius:14px;background:#e05d4b;color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:22px}
+.v150headg .v150ic{background:#1a8b4a}
+.v150t{font-weight:900;font-size:16.5px;color:#1f2937;line-height:1.4}
+.v150s{font-size:12px;color:#6b7280;margin-top:2px;font-weight:700}
+.v150qlist{margin:12px 16px 0;padding:9px 12px;border-radius:12px;background:var(--bg,#f4f6fb);
+  border:1px dashed var(--line,#dfe3ea);max-height:31vh;overflow-y:auto;text-align:start}
+.v150qh{font-size:12px;font-weight:900;color:#b45309;margin-bottom:6px}
+.v150qi{font-size:12.5px;font-weight:800;color:#334155;overflow-wrap:anywhere;line-height:1.75;
+  display:flex;align-items:flex-start;gap:6px}
+.v150qi+.v150qi{border-top:1px dashed var(--line,#dfe3ea);margin-top:5px;padding-top:5px}
+.v150qn{flex:none;min-width:17px;height:17px;padding:0 3px;border-radius:6px;background:#e05d4b;color:#fff;
+  font-size:10px;font-weight:900;display:flex;align-items:center;justify-content:center;margin-top:2px}
+.v150picks{max-height:34vh;overflow-y:auto;padding:2px 0 0}
+.v150pk{font-size:12.5px;padding:11px 10px;text-align:start;background:var(--bg,#f4f6fb);color:#1f2937;
+  border:1.5px solid var(--line,#dfe3ea);margin-top:7px}
+.v150b{padding:11px 18px 0;font-size:13px;line-height:1.9;color:#4b5563}
+.v150b b{color:#b45309}
+.v150cnt{font-size:11px;color:#9ca3af;font-weight:700;margin-top:7px}
+.v150btn{display:block;width:calc(100% - 32px);margin:9px auto 0;padding:13px 12px;border:0;
+  border-radius:14px;font-size:14.5px;font-weight:900;font-family:inherit;cursor:pointer;
+  transition:transform .15s ease}
+.v150btn:active{transform:scale(.97)}
+.v150yes{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;
+  box-shadow:0 6px 18px rgba(22,163,74,.28)}
+.v150no{background:var(--bg,#f4f6fb);color:#475569;border:1.5px solid var(--line,#dfe3ea)}
+.v150lock{font-size:10.5px;color:#c2255c;font-weight:800;margin:9px 0 13px}
+@media (prefers-reduced-motion:reduce){#v150ov .v150card,#v150ov .v150shake{animation:none !important}}
 
 </style>
 </body>
