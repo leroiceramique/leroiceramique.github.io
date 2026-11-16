@@ -1701,7 +1701,7 @@ const S = { user: null, perms: {}, installEvt: null, invQ: "", dlg: null, selfRe
   /* v69: حالة سجل الحركة — «اليوم» افتراضياً (طلب يوسف: الأزرار تعرض اليوم أو يوماً محدداً)
      type = خانة النوع ("" = الكل / add / remove / reconcile) — الفلترة صارت في الخادم فعلياً */
   mov: { preset: "today", from: "", to: "", product: 0,
-         product_name: "", type: "", correct: false, data: [], summary: null, user: "" },
+         product_name: "", type: "", correct: false, data: [], summary: null },
   invTab: "all", invData: [], serverVersion: "", invSort: "name", };
 
 const esc = (s) => String(s == null ? "" : s)
@@ -2320,8 +2320,19 @@ async function loadInventory() {
       d = Object.assign({}, d, { products: __trows, total: __trows.length });
     }
     S.invData = d.products || [];
+    try {
+      const __tot = d.total | 0, __n = (d.products || []).length;
+      const __oh = document.getElementById("invTruncHint");
+      if (__oh) __oh.remove();
+      if (__tot > __n && __n > 0) {
+        const h = document.createElement("div");
+        h.id = "invTruncHint";
+        h.style.cssText = "background:#fff7e6;border:1px solid #f0c36d;color:#8a5b00;padding:8px 10px;border-radius:10px;margin:0 0 8px;font-size:13px";
+        h.textContent = "يُعرض أول " + __n + " من أصل " + __tot + " سلعة — استخدم البحث بالاسم للوصول إلى البقية.";
+        box.insertBefore(h, box.firstChild);
+      }
+    } catch (_e) {}
     if (!S.invData.length) {
-      try { const __oh0 = document.getElementById("invTruncHint"); if (__oh0) __oh0.remove(); } catch (_e0) {}
       try { const __oc0 = document.getElementById("invCount"); if (__oc0) __oc0.remove(); } catch (_e1) {}
       const __tf = S.invType && S.invType !== "all";   /* v139 */
       box.innerHTML = '<p class="empty">' + (S.invTab === "arch"
@@ -2360,20 +2371,8 @@ async function loadInventory() {
           + '</span>'))
         + '</div>';
     }).join("");
-    /* v139: العدّاد وتنبيه الاقتطاع يُرسمان بعد رسم الصفوف — كانت تُدرج قبلها منذ v124
-       فمحاها innerHTML فوراً ولم تظهر للمستخدم إطلاقاً (إصلاح إضافي مع الفلتر) */
-    try {
-      const __tot = d.total | 0, __n = (d.products || []).length;
-      const __oh = document.getElementById("invTruncHint");
-      if (__oh) __oh.remove();
-      if (__tot > __n && __n > 0) {
-        const h = document.createElement("div");
-        h.id = "invTruncHint";
-        h.style.cssText = "background:#fff7e6;border:1px solid #f0c36d;color:#8a5b00;padding:8px 10px;border-radius:10px;margin:0 0 8px;font-size:13px";
-        h.textContent = "يُعرض أول " + __n + " من أصل " + __tot + " سلعة — استخدم البحث بالاسم للوصول إلى البقية.";
-        box.insertBefore(h, box.firstChild);
-      }
-    } catch (_e) {}
+    /* v139: العدّاد يُرسم بعد الصفوف — كان يُدرج قبلها منذ v124 فمحاه innerHTML
+       فوراً ولم يظهر للمستخدم إطلاقاً (إصلاح إضافي مع الفلتر) */
     /* v124: عدّاد النتائج — يعرف المستخدم أن القائمة كاملة لا مقتطعة،
        وأن البحث شمل المطابقة الموسّعة (قياس معكوس/مصنع/خطأ إملائي) */
     try {
@@ -2656,8 +2655,8 @@ async function loadMovements() {
   if (S.mov.to) q.set("to", S.mov.to);
   if (S.mov.product) q.set("product", String(S.mov.product));
   if (S.mov.type) q.set("type", S.mov.type);   /* v69: الخادم يفلتر بها فعلاً */
-  if (S.mov.correct) q.set("show_correct", "1");   /* v151: اعرض المستبعد */
   if (S.mov.user) q.set("user", String(S.mov.user));   /* v132: فلتر «من سجّل» */
+  if (S.mov.correct) q.set("show_correct", "1");   /* v151: اعرض المستبعد */
   const prodChip = $("#movProdChip");
   if (S.mov.product) { $("#movProdName").textContent = S.mov.product_name || ("سلعة #" + S.mov.product); prodChip.style.display = "inline-flex"; }
   else prodChip.style.display = "none";
@@ -2666,8 +2665,8 @@ async function loadMovements() {
     if (!fresh()) return;
     S.mov.data = d.movements || [];
     S.mov.summary = d.summary || null;
-    S.mov.excluded = d.excluded || null;   /* v151: ملخص المستبعد */
     try { if (typeof __movUsers === "function") __movUsers(d.users); } catch (_e132) {}   /* v132 */
+    S.mov.excluded = d.excluded || null;   /* v151: ملخص المستبعد */
     const s = S.mov.summary;
     if (s && s.count) {
       $("#movSum").style.display = "flex";
@@ -3746,7 +3745,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "34";   /* v156: تنبيه يصل لكل حساب وقائمة تحترم الصلاحيات */
+const APP_VER = "35";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -6109,6 +6108,8 @@ window.openPerms107 = async function (tid, name) {
     + '<div class="u107sub" id="u107sub">…</div>'
     + '<div class="u107hint">↔️ يتبع فئته • ✅ مفعّلة دائماً • ❌ موقفة دائماً — '
     + "التغيير يسري في البوت فوراً وفي التطبيق خلال دقيقة كحد أقصى.</div>"
+    + '<div class="u107hint">💡 المنح = الإنشاء: منح «فاتورة» يعني إنشاءها ورؤيتها معاً — '
+    + "ومَن ضُبطت صلاحياته يدوياً (↔️ بدل ❌) تُقرأ صلاحياته فعلياً فلا يرى إلا ما مُنح.</div>"
     + '<div id="u107body"><p class="empty">جارِ التحميل…</p></div>'
     + '<div class="u107ft"><button type="button" class="btn soft-e" id="u107reset">↩️ إعادة ضبط لتتبع الفئة</button>'
     + '<span class="u107msg" id="u107msg"></span></div>'
@@ -7651,7 +7652,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   .ordcard:active{transform:scale(.985)}
 }
 </style>
-<script id="v137ui">/* ═══════════════════════════════════════════════════════════════════
+<script id="v137ui">
+/* ═══════════════════════════════════════════════════════════════════
    v137+v138: الإبلاغ عن الأخطاء — زر ثابت + نافذة كتابة + لوحة إدارية + «🤖 معالجة بالذكاء»
    كل شيء داخل IIFE معزول بـ try/catch — أي عطل يبقى بلا أثر على التطبيق.
    ═══════════════════════════════════════════════════════════════════ */
@@ -7947,7 +7949,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   });
   safe(refreshDot);
   setInterval(function () { safe(refreshDot); }, 120000);
-})();</script>
+})();
+</script>
 <style id="v137css">/* ═══ v137+v138: الإبلاغ عن الأخطاء — الزر الثابت + لوحة البلاغات + «🤖 معالجة بالذكاء» ═══ */
 .bugfab{position:fixed;z-index:8;inset-inline-start:18px;bottom:calc(96px + env(safe-area-inset-bottom));
   width:46px;height:46px;border:1px solid var(--goldline,#e8c97a);border-radius:16px;cursor:pointer;
@@ -7990,62 +7993,19 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   background:rgba(139,92,246,.14);color:#7c3aed;white-space:nowrap}
 .bugaidx{font-size:13.5px;line-height:1.55;font-weight:600;word-break:break-word}
 .bugaisteps{margin:6px 0 0;padding-inline-start:20px;font-size:13px;line-height:1.7}
-.bugainote{margin-top:6px;font-size:12px;color:var(--mut,#6b7280);word-break:break-word}</style>
-<style id="v139css">/* ═══ v139: التنقل العمودي على الجانب في نسخة الويب — كل الأحجام ═══
-   طلب يوسف: «أزرار التنقل في التطبيق تبدو صغيرة على الويب — خليها عمودية على الجانب».
-   الشاشات الواسعة (≥1024px) لها الشريط الجانبي الواسع منذ v127/v128، وهنا صار العمودي
-   يعمل أيضاً على الهاتف وأي عرض أصغر في نسخة الويب (github-pages): عمود أنيق على الجهة
-   اليمنى بأيقونة فوق الاسم وشارة تاج في رأسه، والشاشة تُحوَّل يسارَه بمساحة مريحة.
-   التطبيق داخل تلغرام (pwa.html) لا يتأثر إطلاقاً، ونسخة APK تحتفظ بشريطها السفلي. */
-@media (max-width:1023.98px){
-  html:not([data-apk="1"]) nav.tabs{
-    top:0;bottom:0;left:auto;right:0;width:68px;max-width:none;
-    flex-direction:column;align-items:stretch;justify-content:flex-start;gap:4px;
-    padding:calc(10px + env(safe-area-inset-top)) 4px calc(12px + env(safe-area-inset-bottom));
-    border:1px solid var(--line);border-right:none;border-top:none;border-radius:0;
-    transform:none;background:var(--card);
-    backdrop-filter:none;-webkit-backdrop-filter:none;
-    box-shadow:-12px 0 28px rgba(0,0,0,.10);
-  }
-  html:not([data-apk="1"]) nav.tabs::before{content:"👑";display:block;flex:0 0 auto;
-    font-size:15px;line-height:1;text-align:center;padding:2px 0 9px;margin:0 2px 8px;
-    border-bottom:1px solid var(--line)}
-  html:not([data-apk="1"]) nav.tabs button{
-    flex:0 0 auto;min-width:0;min-height:50px;gap:3px;padding:7px 2px;border-radius:12px;
-    font-size:9px;font-weight:800;color:var(--mut);
-  }
-  html:not([data-apk="1"]) nav.tabs button .ic{font-size:21px;line-height:1;transform:none}
-  html:not([data-apk="1"]) nav.tabs button.on{color:var(--brand);background:var(--brandsoft);
-    font-weight:800;box-shadow:inset -3px 0 0 var(--brand)}
-  html:not([data-apk="1"]) nav.tabs button.on .ic{transform:none}
-  html:not([data-apk="1"]) nav.tabs button:active{transform:scale(.93)}
-  html:not([data-apk="1"]) nav.tabs button .cnavb{top:5px}
-  html:not([data-apk="1"]) #sbUser{display:none!important}
-  html:not([data-apk="1"]) #app header{padding-right:80px;padding-left:16px}
-  html:not([data-apk="1"]) main{max-width:none;width:auto;margin:0 80px 0 0;padding:12px 10px 46px}
-  /* الأزرار العائمة تُنقل إلى الجهة المقابلة للعمود كي لا تُغطى */
-  html:not([data-apk="1"]) .bugfab{inset-inline-start:auto;inset-inline-end:16px;
-    bottom:calc(170px + env(safe-area-inset-bottom))}
-}
-/* الشاشات القصيرة (هاتف بالعرض): العمود نفسه بأزرار أكثر إحكاماً */
-@media (max-width:1023.98px) and (max-height:479px){
-  html:not([data-apk="1"]) nav.tabs button{min-height:40px;gap:1px;padding:4px 2px;font-size:8.5px}
-  html:not([data-apk="1"]) nav.tabs button .ic{font-size:17px}
-  html:not([data-apk="1"]) nav.tabs::before{padding:1px 0 6px;margin-bottom:5px}
-}
+.bugainote{margin-top:6px;font-size:12px;color:var(--mut,#6b7280);word-break:break-word}
 </style>
-<script id="v141ui">/* ═══════════════════════════════════════════════════════════════════
-   v141 — شريط تذكير المخزون الثابت + الإنذار الأحمر عند كل فتح جديد
-   بطلب يوسف: «الانذار الاحمر لا يجب ان يحتوي على اشعارات فواتير المخزون
-   بل يجب ان يكون تذكيرا بوجوب اخراج السلعة المباعة من التطبيق لتفادي
-   الاخطاء والاختلالات» — يظهر لمن أصرح له المدير من خانة الصلاحيات،
-   ويظل يظهر عند كل فتح جديد للتطبيق.
+<script id="v141ui">
+/* ═══════════════════════════════════════════════════════════════════
+   v141 — شريط تذكير المخزون الثابت (الإنذار الأحمر انتقل لمحرك v142 الذكي)
+   بطلب يوسف: «ضع شريط ثابت بلون بارز يذكر المستخدمين بوجوب العمل على
+   المخزون لتفادي التقلبات بين التطبيق والمخزون الفعلي».
    ═══════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
   function vsafe(f) { try { f(); } catch (e) {} }
 
-  /* ── 1) شريط التذكير الثابت — عنصر ثابت على مستوى body يعمل مع أي بنية ── */
+  /* ── شريط التذكير الثابت — عنصر ثابت على مستوى body يعمل مع أي بنية ── */
   vsafe(function () {
     if (document.querySelector(".v141remind")) return;
     var bar = document.createElement("div");
@@ -8062,45 +8022,82 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     setTimeout(setH, 400);
     window.addEventListener("resize", setH);
   });
+})();
+</script>
+<style id="v141css">/* ═══ v141: شريط تذكير المخزون الثابت + الإنذار الأحمر عند كل فتح جديد ═══ */
+:root{--v141remind-h:34px}
+.v141remind{position:fixed;top:0;left:0;right:0;z-index:8;min-height:var(--v141remind-h);
+  display:flex;align-items:center;justify-content:center;gap:7px;padding:6px 12px;
+  background:linear-gradient(90deg,#92400e,#d97706 30%,#f59e0b 50%,#d97706 70%,#92400e);
+  color:#fff;font-size:12.5px;font-weight:700;line-height:1.45;text-align:center;
+  box-shadow:0 2px 12px rgba(146,64,14,.4)}
+.v141remind .ric{flex:none;animation:v141blink 2.4s ease-in-out infinite}
+.v141remind span:last-child{min-width:0}
+@keyframes v141blink{0%,100%{opacity:1}50%{opacity:.4}}
+html[data-theme="dark"] .v141remind{background:linear-gradient(90deg,#7c2d12,#c2410c 35%,#ea580c 55%,#c2410c 75%,#7c2d12)}
+header{top:var(--v141remind-h) !important}
+/* v141: الإنذار الأحمر الثابت انتقل لمحرك v142 الذكي (طبقة v142css) */
+/* v140: بطاقة «تمت المعالجة مباشرة» في لوحة البلاغات (كما هي) */
+.bugai.fixmode{border-inline-start:4px solid #16a34a;background:linear-gradient(180deg,rgba(22,163,74,.09),transparent)}
+.bugfixlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 5px}
+.bugfixchip{font-size:11.5px;font-weight:700;background:rgba(22,163,74,.12);color:#15803d;
+  border:1px solid rgba(22,163,74,.35);border-radius:9px;padding:4px 9px;max-width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80;border-color:rgba(74,222,128,.4)}
+@media (prefers-reduced-motion:reduce){.v141remind .ric{animation:none}}
+</style>
+<script id="v142ui">
+/* ═══════════════════════════════════════════════════════════════════
+   v142 — الإنذار الأحمر الذكي المتدرج (SMART ADAPTIVE RED ALERT)
+   بطلب يوسف: «يكون ذكيا كل مرة ومختلف في حدته وذلك لجعل العقل يعمل كل مرة
+   ولا يتفاداه بضغطة زر كأنه عادة متكررة».
+   • 4 مستويات يحددها الخادم من سلوك العضو الحقيقي (أيام منذ آخر عملية
+     مخزون) أو من مستوى يثبّته المدير من خانة الصلاحيات.
+   • كل فتح جديد مختلف: نص من بنك الحدة + أيقونة وتدرج لوني عشوائيان.
+   • طريقة الإغلاق تتبدل عشوائياً: ضغطة / ضغط مطول بدائرة عدّ / سحب
+     للتأكيد / مسألة حسابية / جملة التزام — فلا تتكوّن عادة عضلية.
+   • بعد أي عملية مخزون ناجحة: سطر أخضر «شكراً — مخزونك محدث».
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+  function vsafe(f) { try { f(); } catch (e) {} }
+  function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
 
-  /* ── 2) الإنذار الأحمر الذكي المتدرج — محرك v142 ──
-     4 مستويات يحددها الخادم من سلوك العضو (أيام منذ آخر عملية مخزون) أو من
-     مستوى يثبّته المدير من خانة الصلاحيات — نص وأيقونة وتدرج وبوابة إغلاق
-     مختلفة كل فتح (ضغطة/ضغط مطول/سحب/مسألة/جملة التزام) — وبعد أي عملية
-     مخزون ناجحة سطر أخضر «شكراً — مخزونك محدث». */
   var ICONS = ["🚨", "📣", "⚠️", "🔔", "🛑", "📦"];
-  var LVLNAME = { 1: "هادئ", 2: "متوسط", 3: "صارم", 4: "أقصى" };
-  var redEl = null, redShown = false, redDone = false;
-  function rpick(a) { return a[Math.floor(Math.random() * a.length)]; }
-  function resc(s) {
+  var LEVEL_NAME = { 1: "هادئ", 2: "متوسط", 3: "صارم", 4: "أقصى" };
+  var root = null, shown = false, done = false;
+
+  function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-  function ensureRed() {
-    if (redEl) return redEl;
-    redEl = document.createElement("div");
-    redEl.className = "v142red";
-    redEl.setAttribute("role", "alert");
-    document.body.appendChild(redEl);
-    return redEl;
+
+  function ensure() {
+    if (root) return root;
+    root = document.createElement("div");
+    root.className = "v142red";
+    root.setAttribute("role", "alert");
+    document.body.appendChild(root);
+    return root;
   }
-  function redClose() {
-    redDone = true;
-    if (redEl) { redEl.classList.remove("on"); redEl.innerHTML = ""; }
+  function close() {
+    done = true;               /* إظهار واحد لكل فتح — يخفى حتى الفتح القادم */
+    if (root) { root.classList.remove("on"); root.innerHTML = ""; }
   }
-  /* سطر الشكر الأخضر بعد أي عملية مخزون ناجحة */
+
+  /* ── سطر الشكر الأخضر بعد أي عملية مخزون ناجحة ── */
   var gEl = null, gT = null;
   function showGreen(msg) {
     try {
-      if (redEl && redEl.classList.contains("on")) {
-        redDone = true;
-        redEl.classList.add("gmode");
-        redEl.innerHTML = '<div class="rcard gcard"><div class="ric">✅</div>'
+      if (root && root.classList.contains("on")) {
+        done = true;
+        root.classList.add("gmode");
+        root.innerHTML = '<div class="rcard gcard"><div class="ric">✅</div>'
           + '<div class="rtitle">شكراً — مخزونك محدث</div>'
-          + '<div class="rbody">' + resc(msg || "سُجّلت حركتك. هكذا تبقى أرقام التطبيق مطابقة للمخزون الفعلي.") + '</div></div>';
+          + '<div class="rbody">' + esc(msg || "سُجّلت حركتك. هكذا تبقى أرقام التطبيق مطابقة للمخزون الفعلي.") + '</div></div>';
         setTimeout(function () {
-          if (redEl) { redEl.classList.remove("on", "gmode"); redEl.innerHTML = ""; }
+          if (root) { root.classList.remove("on", "gmode"); root.innerHTML = ""; }
         }, 3800);
         return;
       }
@@ -8111,13 +8108,14 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
         gEl.className = "v142green";
         document.body.appendChild(gEl);
       }
-      gEl.innerHTML = '✅ <span>' + resc(msg || "شكراً — مخزونك محدث") + '</span>';
+      gEl.innerHTML = '✅ <span>' + esc(msg || "شكراً — مخزونك محدث") + '</span>';
       gEl.classList.add("on");
       clearTimeout(gT);
       gT = setTimeout(function () { if (gEl) gEl.classList.remove("on"); }, 4200);
     } catch (e) {}
   }
-  /* مراقبة نجاح عمليات المخزون */
+
+  /* مراقبة نجاح عمليات المخزون (إضافة/إخراج/جرد/سلعة جديدة/فاتورة/استبدال) */
   vsafe(function () {
     if (typeof window.api !== "function" || window.api.__v142wrapped) return;
     var _api = window.api;
@@ -8135,7 +8133,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     };
     window.api.__v142wrapped = true;
   });
-  /* بوابات الإغلاق المتغيرة — ضد العادة العضلية */
+
+  /* ── 1) بوابات الإغلاق — تتغير عشوائياً ضد العادة العضلية ── */
   function gatePress(cb) {
     var b = document.createElement("button");
     b.type = "button"; b.className = "rgate-btn";
@@ -8255,25 +8254,26 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     inp.addEventListener("keydown", function (e) { if (e.key === "Enter") check(); });
     return w;
   }
-  /* الرسم حسب المستوى — شكل ونص وبوابة مختلفة كل فتح */
-  function renderRed(d) {
+
+  /* ── 2) الرسم حسب المستوى — شكل ونص وبوابة مختلفة كل فتح ── */
+  function render(d) {
     var lv = Math.abs(d.level | 0) || 2;
     if (lv < 1) lv = 1; if (lv > 4) lv = 4;
-    var el = ensureRed();
+    var el = ensure();
     el.className = "v142red on l" + lv
       + " rv" + (1 + (Math.abs((d.variant | 0) || 1) - 1) % 4)
       + (lv === 1 ? " calm" : "");
     var parts = [];
     if (d.days_label) parts.push(String(d.days_label));
     parts.push("الوضع: " + (d.mode === "fixed" ? "ثابت" : "ذكي تلقائي")
-      + " • الحدة: " + (LVLNAME[lv] || lv));
+      + " • الحدة: " + (LEVEL_NAME[lv] || lv));
     var card = document.createElement("div");
     card.className = "rcard";
     card.innerHTML =
-      '<div class="ric">' + resc(d.icon || rpick(ICONS)) + "</div>"
-      + '<div class="rtitle">' + resc(d.title || "تذكير المخزون") + "</div>"
-      + '<div class="rbody">' + resc(d.body || "") + "</div>"
-      + '<div class="rmeta">' + resc(parts.join(" • ")) + "</div>";
+      '<div class="ric">' + esc(d.icon || pick(ICONS)) + "</div>"
+      + '<div class="rtitle">' + esc(d.title || "تذكير المخزون") + "</div>"
+      + '<div class="rbody">' + esc(d.body || "") + "</div>"
+      + '<div class="rmeta">' + esc(parts.join(" • ")) + "</div>";
     var gate = document.createElement("div");
     gate.className = "rgate";
     var factories;
@@ -8281,21 +8281,23 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
     else if (lv === 2) factories = [gateHold.bind(null, 2), gateSwipe];
     else if (lv === 3) factories = [gateHold.bind(null, 3), gateSwipe, gateMath];
     else factories = [gateMath, gatePhrase];
-    gate.appendChild(rpick(factories)(redClose));
+    gate.appendChild(pick(factories)(close));
     card.appendChild(gate);
     el.appendChild(card);
   }
+
   async function v142red() {
-    if (redShown || redDone) return;
+    if (shown || done) return;
     var d = null;
     try { d = await api("/api/red-alert", { noCache: true }); } catch (e) { return; }
     if (d && d.ok === true && d.show === true) {
-      redShown = true;
-      renderRed(d);
+      shown = true;
+      render(d);
     }
   }
   vsafe(function () {
     v142red();
+    /* لو لم يكتمل تسجيل الدخول لحظة الفتح — محاولتان مبكرتان إضافتان */
     setTimeout(v142red, 3000);
     setTimeout(v142red, 9000);
     document.addEventListener("visibilitychange", function () {
@@ -8304,27 +8306,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-v
   });
   try { window.__v142red = v142red; } catch (e) {}
   try { window.__v142green = showGreen; } catch (e) {}
-})();</script>
-<style id="v141css">/* ═══ v141: شريط تذكير المخزون الثابت (الإنذار الأحمر انتقل لمحرك v142 الذكي) ═══ */
-:root{--v141remind-h:34px}
-.v141remind{position:fixed;top:0;left:0;right:0;z-index:8;min-height:var(--v141remind-h);
-  display:flex;align-items:center;justify-content:center;gap:7px;padding:6px 12px;
-  background:linear-gradient(90deg,#92400e,#d97706 30%,#f59e0b 50%,#d97706 70%,#92400e);
-  color:#fff;font-size:12.5px;font-weight:700;line-height:1.45;text-align:center;
-  box-shadow:0 2px 12px rgba(146,64,14,.4)}
-.v141remind .ric{flex:none;animation:v141blink 2.4s ease-in-out infinite}
-.v141remind span:last-child{min-width:0}
-@keyframes v141blink{0%,100%{opacity:1}50%{opacity:.4}}
-html[data-theme="dark"] .v141remind{background:linear-gradient(90deg,#7c2d12,#c2410c 35%,#ea580c 55%,#c2410c 75%,#7c2d12)}
-header{top:var(--v141remind-h) !important}
-/* v140: بطاقة «تمت المعالجة مباشرة» في لوحة البلاغات (كما هي) */
-.bugai.fixmode{border-inline-start:4px solid #16a34a;background:linear-gradient(180deg,rgba(22,163,74,.09),transparent)}
-.bugfixlist{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 5px}
-.bugfixchip{font-size:11.5px;font-weight:700;background:rgba(22,163,74,.12);color:#15803d;
-  border:1px solid rgba(22,163,74,.35);border-radius:9px;padding:4px 9px;max-width:100%;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80;border-color:rgba(74,222,128,.4)}
-@media (prefers-reduced-motion:reduce){.v141remind .ric{animation:none}}</style>
+})();
+</script>
 <style id="v142css">/* ═══ v142: الإنذار الأحمر الذكي المتدرج ═══ */
 .v142red{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;
   background:rgba(45,0,0,.78);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);padding:16px}
@@ -8386,51 +8369,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   border-radius:13px;padding:11px 16px;box-shadow:0 10px 30px rgba(0,0,0,.35);
   transition:transform .35s ease;pointer-events:none}
 .v142green.on{transform:translate(-50%,0)}
-@media (prefers-reduced-motion:reduce){.v142red .rcard,.rgate-math.bad{animation:none}}</style>
-<style id="v143css">
-/* ═══ v143: التنبيه الجماعي + إشعارات الهاتف ═══ */
-.v143fab{position:fixed;z-index:1200;inset-inline-start:18px;bottom:calc(154px + env(safe-area-inset-bottom));
-  width:46px;height:46px;border:1px solid rgba(245,158,11,.55);border-radius:16px;cursor:pointer;display:none;
-  background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-size:20px;line-height:1;
-  box-shadow:0 6px 16px rgba(239,68,68,.32)}
-.v143bell{position:fixed;z-index:1200;inset-inline-end:14px;bottom:calc(96px + env(safe-area-inset-bottom));
-  border:none;border-radius:999px;padding:10px 16px;cursor:pointer;display:none;font-family:inherit;
-  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff;font-weight:700;font-size:13px;
-  box-shadow:0 6px 16px rgba(37,99,235,.28)}
-.v143row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
-.v143lbl{font-weight:700;font-size:13px;color:var(--muted,#8b93a2)}
-.v143chip{border:1.5px solid var(--line,#dfe3ea);background:var(--card,#fff);color:var(--text,#23272a);
-  border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
-.v143chip.on{background:var(--brand,#5865f2);border-color:var(--brand,#5865f2);color:#fff}
-.v143cnt{font-size:12px;color:var(--muted,#8b93a2)}
-.v143q{width:100%;padding:9px 12px;border:1.5px solid var(--line,#dfe3ea);border-radius:10px;margin:6px 0 4px;
-  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;font-size:14px}
-.v143list{max-height:230px;overflow:auto;border:1px solid var(--line,#dfe3ea);border-radius:12px;padding:4px}
-.v143u{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;cursor:pointer}
-.v143u:hover{background:rgba(88,101,242,.08)}
-.v143u input{width:18px;height:18px;accent-color:var(--brand,#5865f2)}
-.v143u .nm{flex:1;font-size:14px;font-weight:600}
-.v143u .rl{font-size:11px;color:var(--muted,#8b93a2)}
-.v143res{margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.12);
-  border:1px solid rgba(34,197,94,.4);font-size:13px;line-height:1.9}
-.v143hist{padding:9px 11px;border:1px solid var(--line,#dfe3ea);border-radius:10px;margin-bottom:7px}
-.v143hist .ht{font-size:13.5px;font-weight:600;line-height:1.6}
-.v143hist .hm{font-size:11.5px;color:var(--muted,#8b93a2);margin-top:3px}
-/* ═══ v155: حوار إرشاد إشعارات الهاتف — يتبع الثيم المؤسسي ═══ */
-.v155dlg{border:none;border-radius:18px;padding:0;max-width:340px;width:88%;
-  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;
-  box-shadow:0 24px 70px rgba(2,6,23,.4)}
-.v155dlg::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
-.v155help{padding:20px 18px 16px;text-align:right}
-.v155help .v155ic{font-size:30px;text-align:center;margin-bottom:4px}
-.v155help h3{margin:2px 0 8px;font-size:15.5px;color:var(--brand,#5865f2);text-align:center}
-.v155help p{margin:6px 0;font-size:13px;line-height:1.8;color:var(--text,#23272a)}
-.v155help ol{margin:8px 18px 8px 0;padding:0;font-size:13px;line-height:2;color:var(--text,#23272a)}
-.v155help .v155alt{font-size:12px;color:var(--muted,#8b93a2);background:var(--soft,rgba(88,101,242,.08));
-  border-radius:10px;padding:8px 10px;margin-top:8px}
-.v155help .v155btn{display:block;width:100%;margin-top:10px;border:none;border-radius:11px;
-  padding:10px 12px;font:inherit;font-weight:700;font-size:13.5px;cursor:pointer;
-  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff}
+@media (prefers-reduced-motion:reduce){.v142red .rcard,.rgate-math.bad{animation:none}}
 </style>
 <script id="v143ui">
 /* ═══════════════════════════════════════════════════════════════════
@@ -8623,7 +8562,8 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
       if (f && String(u.name || "").toLowerCase().indexOf(f) === -1) continue;
       /* v156: التحديد بمعرّف الحساب users.id — يعمل لحسابات التطبيق بلا تلغرام */
       html += '<label class="v143u"><input type="checkbox" data-uid="' + esc(u.id) + '"'
-        + (picked[u.id] ? " checked" : "")
+        + (picked[u.id] && u.active !== false ? " checked" : "")
+        + (u.active === false ? " disabled" : "")   /* v157: المطرودون غير قابلين للتحديد */
         + '><span class="nm">' + esc(u.name || ("#" + tid)) + (u.active === false ? " ⛔" : "") + '</span>'
         + '<span class="rl">' + esc(u.role_label || u.role || "") + '</span></label>';
     }
@@ -8668,6 +8608,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
         resBox.innerHTML = lines.map(esc).join("<br>");
         resBox.style.display = "";
         dlg.querySelector("#bcText").value = "";
+        picked = {}; renderUsers(""); updateN();   /* v157: فتح نظيف — لا اختيارات شبح بعد الإرسال */
       } else {
         toast((r && r.error) || "فشل الإرسال.", true);
       }
@@ -8769,6 +8710,11 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
 
   fab.addEventListener("click", function () {
     ensureDlg();
+    /* v157: فتح نظيف — تصفير الاختيارات القديمة والعودة إلى «الكل» */
+    picked = {}; pickMode = false;
+    dlg.querySelector("#bcAll").classList.add("on");
+    dlg.querySelector("#bcPick").classList.remove("on");
+    dlg.querySelector("#bcList").style.display = "none";
     updateN();
     try { dlg.showModal(); } catch (e) {}
   });
@@ -8806,71 +8752,52 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   } catch (e) {}
 
 })();
+
 </script>
-<style id="v146css">/* ═══ v146: الحركة المزدوجة + حذف التنبيهات المسجلة ═══ */
-#v146dup,#v146dupPanel{max-width:400px;width:90%;padding:0}
-#v146dupBox{background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.35);
-  border-radius:12px;padding:11px 12px;margin-bottom:12px}
-#v146dupBox p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
-#v146dupBox p:last-child{margin-bottom:0}
-#v146dupBox b{color:#b45309}
-.v146hint{font-size:12.5px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 10px}
-.v146cl{border:1px solid rgba(128,128,128,.28);border-radius:14px;padding:10px 11px;
-  margin-bottom:10px;background:rgba(127,127,127,.05)}
-.v146clh{font-weight:800;font-size:13.5px;margin-bottom:2px}
-.v146cln{font-size:11.5px;color:var(--mut,#6b7280);font-weight:700;margin-bottom:9px}
-.v146row{display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:7px 9px;border-radius:10px;background:rgba(127,127,127,.07);margin-bottom:6px}
-.v146row:last-child{margin-bottom:0}
-.v146ru{font-size:12.5px;font-weight:800;line-height:1.6;min-width:0}
-.v146ru small{display:block;color:var(--mut,#6b7280);font-weight:600;font-size:11px}
-.v146new{display:inline-block;font-size:9.5px;font-weight:800;color:#fff;
-  background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:7px;padding:1px 7px;
-  margin-inline-start:6px;vertical-align:1px}
-.v146del{flex:0 0 auto;border:1.5px solid rgba(239,68,68,.45);background:rgba(239,68,68,.08);
-  color:#dc2626;font-family:inherit;font-size:12px;font-weight:800;border-radius:9px;
-  padding:6px 10px;cursor:pointer;transition:.15s}
-.v146del:active{transform:scale(.95)}
-.v146del.armed{background:#dc2626;color:#fff;border-color:#dc2626;
-  animation:v146pulse 1.1s ease-in-out infinite}
-.v146del:disabled{opacity:.55;cursor:wait}
-@keyframes v146pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.35)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
-#v146dupbar{margin:0 0 10px}
-#v146dupbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
-  padding:10px 12px;cursor:pointer;border:1.5px dashed rgba(245,158,11,.55);
-  background:rgba(245,158,11,.08);color:#b45309;width:100%;transition:.15s}
-#v146dupbar button:active{transform:scale(.985)}
-#v146empty{font-size:13px;color:var(--mut,#6b7280);text-align:center;padding:18px 8px;line-height:1.9}
-/* v148: بلا زر ✕ في السجل بطلب يوسف («ظهور x امام كل حركة يبدو سيئا جدا») —
-   الإلغاء صار بضغطة مطوّلة على الحركة نفسها (أو نقرة يمنى) تفتح ورقة تأكيد */
-#movList .row{position:relative;transition:transform .18s ease,opacity .18s ease}
-#movList .row.v148hold{transform:scale(.975);opacity:.72}
-#v148sheet{max-width:400px;width:90%;padding:0}
-#v148box{background:rgba(127,127,127,.08);border:1px solid rgba(128,128,128,.26);
-  border-radius:12px;padding:11px 12px;margin-bottom:11px}
-#v148box p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
-#v148box p:last-child{margin-bottom:0}
-#v148box b{font-size:14px}
-#v148hint{font-size:12px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 11px}
-.v148long{display:none;font-size:11.5px;color:var(--mut,#6b7280);text-align:center;
-  margin:9px 0 0;line-height:1.8}
-/* 🗑 حذف التنبيهات المسجلة — لمن يملك صلاحية المستخدمين أو الإدارة */
-body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
-.v146ndel{position:absolute;left:7px;top:9px;width:26px;height:26px;
-  border:1.5px solid rgba(127,127,127,.3);background:rgba(127,127,127,.08);
-  border-radius:8px;font-size:12px;cursor:pointer;display:flex;align-items:center;
-  justify-content:center;padding:0;font-family:inherit;transition:.15s;color:inherit}
-.v146ndel:active{transform:scale(.94)}
-.v146ndel.armed{background:#dc2626;color:#fff;border-color:#dc2626;font-size:9.5px;
-  font-weight:800;animation:v146pulse 1.1s ease-in-out infinite}
-.v146ndel:disabled{opacity:.55;cursor:wait}
-#v146nbar{margin-top:10px;display:none}
-#v146nbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
-  padding:10px 12px;cursor:pointer;width:100%;border:1.5px solid rgba(239,68,68,.4);
-  background:rgba(239,68,68,.07);color:#dc2626;transition:.15s}
-#v146nbar button:active{transform:scale(.985)}
-#v146nbar button.armed{background:#dc2626;color:#fff;border-color:#dc2626;
-  animation:v146pulse 1.1s ease-in-out infinite}
+<style id="v143css">/* ═══ v143: التنبيه الجماعي + إشعارات الهاتف ═══ */
+.v143fab{position:fixed;z-index:1200;inset-inline-start:18px;bottom:calc(154px + env(safe-area-inset-bottom));
+  width:46px;height:46px;border:1px solid rgba(245,158,11,.55);border-radius:16px;cursor:pointer;display:none;
+  background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-size:20px;line-height:1;
+  box-shadow:0 6px 16px rgba(239,68,68,.32)}
+.v143bell{position:fixed;z-index:1200;inset-inline-end:14px;bottom:calc(96px + env(safe-area-inset-bottom));
+  border:none;border-radius:999px;padding:10px 16px;cursor:pointer;display:none;font-family:inherit;
+  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff;font-weight:700;font-size:13px;
+  box-shadow:0 6px 16px rgba(37,99,235,.28)}
+.v143row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
+.v143lbl{font-weight:700;font-size:13px;color:var(--muted,#8b93a2)}
+.v143chip{border:1.5px solid var(--line,#dfe3ea);background:var(--card,#fff);color:var(--text,#23272a);
+  border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.v143chip.on{background:var(--brand,#5865f2);border-color:var(--brand,#5865f2);color:#fff}
+.v143cnt{font-size:12px;color:var(--muted,#8b93a2)}
+.v143q{width:100%;padding:9px 12px;border:1.5px solid var(--line,#dfe3ea);border-radius:10px;margin:6px 0 4px;
+  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;font-size:14px}
+.v143list{max-height:230px;overflow:auto;border:1px solid var(--line,#dfe3ea);border-radius:12px;padding:4px}
+.v143u{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;cursor:pointer}
+.v143u:hover{background:rgba(88,101,242,.08)}
+.v143u input{width:18px;height:18px;accent-color:var(--brand,#5865f2)}
+.v143u .nm{flex:1;font-size:14px;font-weight:600}
+.v143u .rl{font-size:11px;color:var(--muted,#8b93a2)}
+.v143res{margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.12);
+  border:1px solid rgba(34,197,94,.4);font-size:13px;line-height:1.9}
+.v143hist{padding:9px 11px;border:1px solid var(--line,#dfe3ea);border-radius:10px;margin-bottom:7px}
+.v143hist .ht{font-size:13.5px;font-weight:600;line-height:1.6}
+.v143hist .hm{font-size:11.5px;color:var(--muted,#8b93a2);margin-top:3px}
+/* ═══ v155: حوار إرشاد إشعارات الهاتف — يتبع الثيم المؤسسي ═══ */
+.v155dlg{border:none;border-radius:18px;padding:0;max-width:340px;width:88%;
+  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;
+  box-shadow:0 24px 70px rgba(2,6,23,.4)}
+.v155dlg::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
+.v155help{padding:20px 18px 16px;text-align:right}
+.v155help .v155ic{font-size:30px;text-align:center;margin-bottom:4px}
+.v155help h3{margin:2px 0 8px;font-size:15.5px;color:var(--brand,#5865f2);text-align:center}
+.v155help p{margin:6px 0;font-size:13px;line-height:1.8;color:var(--text,#23272a)}
+.v155help ol{margin:8px 18px 8px 0;padding:0;font-size:13px;line-height:2;color:var(--text,#23272a)}
+.v155help .v155alt{font-size:12px;color:var(--muted,#8b93a2);background:var(--soft,rgba(88,101,242,.08));
+  border-radius:10px;padding:8px 10px;margin-top:8px}
+.v155help .v155btn{display:block;width:100%;margin-top:10px;border:none;border-radius:11px;
+  padding:10px 12px;font:inherit;font-weight:700;font-size:13.5px;cursor:pointer;
+  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff}
+
 </style>
 <script id="v146ui">
 /* ═══════════════════════════════════════════════════════════════════
@@ -9268,6 +9195,72 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
 })();
 
 </script>
+<style id="v146css">/* ═══ v146: الحركة المزدوجة + حذف التنبيهات المسجلة ═══ */
+#v146dup,#v146dupPanel{max-width:400px;width:90%;padding:0}
+#v146dupBox{background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.35);
+  border-radius:12px;padding:11px 12px;margin-bottom:12px}
+#v146dupBox p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
+#v146dupBox p:last-child{margin-bottom:0}
+#v146dupBox b{color:#b45309}
+.v146hint{font-size:12.5px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 10px}
+.v146cl{border:1px solid rgba(128,128,128,.28);border-radius:14px;padding:10px 11px;
+  margin-bottom:10px;background:rgba(127,127,127,.05)}
+.v146clh{font-weight:800;font-size:13.5px;margin-bottom:2px}
+.v146cln{font-size:11.5px;color:var(--mut,#6b7280);font-weight:700;margin-bottom:9px}
+.v146row{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 9px;border-radius:10px;background:rgba(127,127,127,.07);margin-bottom:6px}
+.v146row:last-child{margin-bottom:0}
+.v146ru{font-size:12.5px;font-weight:800;line-height:1.6;min-width:0}
+.v146ru small{display:block;color:var(--mut,#6b7280);font-weight:600;font-size:11px}
+.v146new{display:inline-block;font-size:9.5px;font-weight:800;color:#fff;
+  background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:7px;padding:1px 7px;
+  margin-inline-start:6px;vertical-align:1px}
+.v146del{flex:0 0 auto;border:1.5px solid rgba(239,68,68,.45);background:rgba(239,68,68,.08);
+  color:#dc2626;font-family:inherit;font-size:12px;font-weight:800;border-radius:9px;
+  padding:6px 10px;cursor:pointer;transition:.15s}
+.v146del:active{transform:scale(.95)}
+.v146del.armed{background:#dc2626;color:#fff;border-color:#dc2626;
+  animation:v146pulse 1.1s ease-in-out infinite}
+.v146del:disabled{opacity:.55;cursor:wait}
+@keyframes v146pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.35)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
+#v146dupbar{margin:0 0 10px}
+#v146dupbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
+  padding:10px 12px;cursor:pointer;border:1.5px dashed rgba(245,158,11,.55);
+  background:rgba(245,158,11,.08);color:#b45309;width:100%;transition:.15s}
+#v146dupbar button:active{transform:scale(.985)}
+#v146empty{font-size:13px;color:var(--mut,#6b7280);text-align:center;padding:18px 8px;line-height:1.9}
+/* v148: بلا زر ✕ في السجل بطلب يوسف («ظهور x امام كل حركة يبدو سيئا جدا») —
+   الإلغاء صار بضغطة مطوّلة على الحركة نفسها (أو نقرة يمنى) تفتح ورقة تأكيد */
+#movList .row{position:relative;transition:transform .18s ease,opacity .18s ease}
+#movList .row.v148hold{transform:scale(.975);opacity:.72}
+#v148sheet{max-width:400px;width:90%;padding:0}
+#v148box{background:rgba(127,127,127,.08);border:1px solid rgba(128,128,128,.26);
+  border-radius:12px;padding:11px 12px;margin-bottom:11px}
+#v148box p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
+#v148box p:last-child{margin-bottom:0}
+#v148box b{font-size:14px}
+#v148hint{font-size:12px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 11px}
+.v148long{display:none;font-size:11.5px;color:var(--mut,#6b7280);text-align:center;
+  margin:9px 0 0;line-height:1.8}
+/* 🗑 حذف التنبيهات المسجلة — لمن يملك صلاحية المستخدمين أو الإدارة */
+body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
+.v146ndel{position:absolute;left:7px;top:9px;width:26px;height:26px;
+  border:1.5px solid rgba(127,127,127,.3);background:rgba(127,127,127,.08);
+  border-radius:8px;font-size:12px;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;padding:0;font-family:inherit;transition:.15s;color:inherit}
+.v146ndel:active{transform:scale(.94)}
+.v146ndel.armed{background:#dc2626;color:#fff;border-color:#dc2626;font-size:9.5px;
+  font-weight:800;animation:v146pulse 1.1s ease-in-out infinite}
+.v146ndel:disabled{opacity:.55;cursor:wait}
+#v146nbar{margin-top:10px;display:none}
+#v146nbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
+  padding:10px 12px;cursor:pointer;width:100%;border:1.5px solid rgba(239,68,68,.4);
+  background:rgba(239,68,68,.07);color:#dc2626;transition:.15s}
+#v146nbar button:active{transform:scale(.985)}
+#v146nbar button.armed{background:#dc2626;color:#fff;border-color:#dc2626;
+  animation:v146pulse 1.1s ease-in-out infinite}
+
+</style>
 <script id="v147ui">
 /* ═══════════════════════════════════════════════════════════════════
    v147 — حذف التنبيهات السابقة من سجل التنبيه الجماعي
@@ -9367,7 +9360,6 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
 .v147bdel:active{transform:translateY(-50%) scale(.94)}
 
 </style>
-
 <script id="v150ui">
 /* ═══════════════════════════════════════════════════════════════════
    v150 — «✋ هل بعت ما بحثت عنه؟» التذكير يذكر كل عمليات البحث لا الأخيرة فقط
@@ -9687,6 +9679,7 @@ body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
   /* مفتاح فحص آلي (لا يؤثر على الإنتاج) */
   try { window.__v150gateDebug = function () { return JSON.parse(JSON.stringify(st)); }; } catch (e) {}
 })();
+
 </script>
 <style id="v150css">/* ═══ v150: بوابة «هل بعت ما بحثت عنه؟» — تذكر كل عمليات البحث لا الأخيرة فقط ═══ */
 #v150ov{position:fixed;inset:0;z-index:2147482000;display:none;align-items:center;justify-content:center;
@@ -9988,6 +9981,7 @@ document.addEventListener("click", function (ev) {
 try { if (document.getElementById("v-users") && document.getElementById("v-users").classList.contains("on")) loadUsers(); } catch (_e) {}
 }
 } catch (_v152e) { try { console.warn("[v152] layer error:", _v152e); } catch (_e2) {} }
+
 </script>
 <style id="v152css">/* ═══ v152: أنماط بطاقة الصلاحيات — تتبع الثيم المؤسسي (متغيرات الألوان القائمة) ═══ */
 #dlgPerms152Body .v152pm{display:flex;align-items:center;justify-content:space-between;gap:10px;
@@ -10043,8 +10037,12 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
       } catch (e) {}
     }
   }
+  /* v157: بولينج حدثي — الأحداث أولًا (تركيز/عودة للصفحة/رؤية) واحتياط كل 15 ثانية بدل حلقة كل 3 ثوانٍ الدائمة */
   apply();
-  setInterval(apply, 3000);
+  window.addEventListener("focus", apply);
+  window.addEventListener("pageshow", apply);
+  document.addEventListener("visibilitychange", apply);
+  setInterval(apply, 15000);
 })();
 
 </script>

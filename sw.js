@@ -1,6 +1,6 @@
 // Service Worker — نسخة GitHub Pages (leroiceramique.github.io)
-// نفس منطق نسخة الخادم: الصفحات شبكة أولاً + API مرور مباشر بلا تخزين.
-const CACHE = "ceram-pwa-gp-v28";   /*  v156: تنبيه يصل لكل حساب وقائمة تحترم الصلاحيات — تجديد الغلاف */
+// مولَّد آلياً من نسخة الخادم عبر scripts/build_pages.py — لا تعدّله يدوياً
+const CACHE = "ceram-pwa-gp-v29";   /*  */;   /*  v157: تدعيم من المراجعة الفنية — تجديد الكاش */
 const SHELL = ["/", "/icon.jpg", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -13,7 +13,11 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET") return;
-  /* تنزيل فاتورة PDF يُسلَّم للمتصفح الأصلي (أنبوب التنزيل المضمون — v100) */
+  /* v100: تنزيل فاتورة PDF لا يمر عبر السِوِس ووركر إطلاقاً — نسلّم الطلب
+     للمتصفح الأصلي (return بلا respondWith) فيتولى مدير التنزيل الملف من
+     ترويسة Content-Disposition: attachment عبر أنبوبه المضمون (إشعار +
+     مجلد التنزيلات). مرور التنزيل عبر أنبوب الـSW كان يفسدها صامتاً في
+     نافذة التطبيق standalone — بلاغ يوسف: «الملف المحمل لا يوجد في الجهاز». */
   if (url.pathname === "/api/invoice/pdf") return;
   if (url.pathname.startsWith("/api/")) {
     e.respondWith(fetch(e.request).catch(() =>
@@ -21,8 +25,10 @@ self.addEventListener("fetch", (e) => {
         {status: 503, headers: {"Content-Type": "application/json"}})));
     return;
   }
-  // صفحات التطبيق: شبكة أولاً دائماً — التحديثات تظهر من أول تحديث، وعند الانقطاع آخر نسخة.
-  if (e.request.mode === "navigate" || url.pathname === "/") {
+  // صفحات التطبيق: شبكة أولاً دائماً — التحديثات تظهر من أول فتح،
+  // وعند انقطاع الشبكة نرجع لآخر نسخة مخزنة.
+  if (e.request.mode === "navigate" || url.pathname === "/"
+     ) {
     e.respondWith(
       fetch(e.request).then((res) => {
         if (res && res.status === 200 && url.origin === location.origin) {
