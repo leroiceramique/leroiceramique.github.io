@@ -1,6 +1,6 @@
 // Service Worker — نسخة GitHub Pages (leroiceramique.github.io)
 // مولَّد آلياً من نسخة الخادم عبر scripts/build_pages.py — لا تعدّله يدوياً
-const CACHE = "ceram-pwa-gp-v29";   /*  */;   /*  v157: تدعيم من المراجعة الفنية — تجديد الكاش */
+const CACHE = "ceram-pwa-gp-v30";   /*  */;   /*  v158: انسحاب بوابة «هل بعت ما بحثت عنه؟» نهائياً — تجديد الكاش */
 const SHELL = ["/", "/icon.jpg", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
