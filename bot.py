@@ -25568,6 +25568,41 @@ async def pwa_icon_handler(request):
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
+# ── v157: التحديث الذاتي لتطبيق أندرويد الأصيل ──
+# ملفان بجانب bot.py في مجلد النشر على Render:
+#   app_version.json  → بيان أحدث نسخة {"ok":true,"versionCode":N,"versionName":"N.0","apk":"...","notes":"..."}
+#   app_latest.apk    → حزمة APK الموقّعة للأحدث
+# نقاط عامة بلا مصادقة: الفحص يجري قبل الدخول، والملفان لا يكشفان أي بيانات حساسة.
+_APP_UPDATE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+async def app_update_manifest_handler(request):
+    path = os.path.join(_APP_UPDATE_DIR, "app_version.json")
+    try:
+        body = await asyncio.to_thread(
+            lambda: open(path, "rb").read() if os.path.exists(path) else None)
+    except Exception:
+        body = None
+    if not body:
+        return web.json_response({"ok": False, "error": "لا يوجد بيان تحديث"}, status=404)
+    return web.Response(body=body, content_type="application/json",
+                        headers={"Cache-Control": "no-store"})
+
+
+async def app_update_apk_handler(request):
+    path = os.path.join(_APP_UPDATE_DIR, "app_latest.apk")
+    try:
+        body = await asyncio.to_thread(
+            lambda: open(path, "rb").read() if os.path.exists(path) else None)
+    except Exception:
+        body = None
+    if not body:
+        raise web.HTTPNotFound()
+    return web.Response(body=body, content_type="application/vnd.android.package-archive",
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": 'attachment; filename="leroi-update.apk"'})
+
+
 def _pwa_cookie_flags(request):
     """v125: أعلام الكوكي حسب السياق.
     نفس الأصل (تطبيق البوت/تلغرام): Lax كما هو دائماً.
@@ -32274,6 +32309,8 @@ def register_pwa_routes(app):
     app.router.add_get("/sw.js", pwa_page_handler)
     app.router.add_get("/manifest.webmanifest", pwa_manifest_handler)
     app.router.add_get("/icon.png", pwa_icon_handler)
+    app.router.add_get("/app/version.json", app_update_manifest_handler)  # v157: التحديث الذاتي — بيان النسخة
+    app.router.add_get("/app/latest.apk", app_update_apk_handler)         # v157: التحديث الذاتي — حزمة APK
     app.router.add_options("/api/{tail:.*}", pwa_cors_preflight_handler)  # v125: CORS
     app.router.add_post("/api/login", pwa_login_handler)
     app.router.add_post("/api/auth/google/ot", pwa_google_ot_handler)   # v125: عودة Google من Pages
