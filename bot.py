@@ -13028,6 +13028,12 @@ CREATE TABLE IF NOT EXISTS pwa_pass_resets (
     ip         VARCHAR(64)
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_resets_status ON pwa_pass_resets (status, created_at DESC);
+-- ═══ v159: إدارة حسابات Google — أعمدة إضافية فقط (بلا أي تغيير على البيانات القائمة) ═══
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_login_disabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_linked_at TIMESTAMPTZ;
+ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS picture TEXT;
+ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS decided_by VARCHAR(200);
+ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS pwa_otp (
     id         SERIAL PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -25899,7 +25905,10 @@ async def callback_pwreg_handler(update, context):
         return
     if action == "ok":
         role = parts[3] if len(parts) > 3 else ""
-        ok, msg = await asyncio.to_thread(_pwa_api_registration_approve, reg_id, role)
+        # v159: حفظ اسم المدير صاحب القرار (ينعكس في لوحة إدارة Google بالتطبيق)
+        _admin = str(getattr(query.from_user, "first_name", "") or
+                     getattr(query.from_user, "username", "") or "مدير")
+        ok, msg = await asyncio.to_thread(_pwa_api_registration_approve, reg_id, role, _admin)
         await asyncio.to_thread(_audit_log, "pwreg_approve" if ok else "pwreg_approve_fail",
                                 None, details=str(msg)[:120])
         try:
@@ -25908,7 +25917,10 @@ async def callback_pwreg_handler(update, context):
             pass
     elif action == "del":
         # v158: طلب Google (بريد بلا رقم سر) ← رفض محفوظ؛ غيره ← حذف كما في v39
-        is_g, ok, msg = await asyncio.to_thread(_pwa_api_registration_reject_or_delete, reg_id)
+        _admin = str(getattr(query.from_user, "first_name", "") or
+                     getattr(query.from_user, "username", "") or "مدير")
+        is_g, ok, msg = await asyncio.to_thread(_pwa_api_registration_reject_or_delete,
+                                                reg_id, _admin)
         await asyncio.to_thread(_audit_log,
                                 ("pwreg_reject" if is_g else "pwreg_delete") + ("" if ok else "_fail"),
                                 None, details=str(msg)[:120])
@@ -26199,7 +26211,8 @@ async def _google_exchange_code(code, redirect_uri):
 
 
 def _pwa_google_find_user(email):
-    """بريد Google → مستخدم فريق نشط (غير زبون/منتظر) — بلا اشتراط تلغرام."""
+    """بريد Google → مستخدم فريق نشط (غير زبون/منتظر) — بلا اشتراط تلغرام.
+    v159: يستثني الحسابات المعلّق دخولها عبر Google (google_login_disabled)."""
     email = str(email or "").strip().lower()
     if not email:
         return None
@@ -26211,6 +26224,7 @@ def _pwa_google_find_user(email):
                 "u.role, u.active, a.username AS web_username "
                 "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "WHERE u.active = TRUE AND u.role NOT IN (%s, %s) "
+                "AND COALESCE(u.google_login_disabled, FALSE) = FALSE "
                 "AND lower(u.email) = %s LIMIT 1",
                 (ROLE_CUSTOMER, ROLE_PENDING, email))
             row = cur.fetchone()
@@ -26351,10 +26365,11 @@ def _pwa_google_add_registration(email, name, role, ip):
         release_connection(conn)
 
 
-def _pwa_api_registration_approve(reg_id, role):
+def _pwa_api_registration_approve(reg_id, role, decided_by=None):
     """تفعيل طلب انضمام من التطبيق (للمدير): إنشاء/تحديث حساب المستخدم وتأكيد الطلب.
     v39: بلا بريد — اسم الدخول والرقم السري اللذان اختارهما العميل يُحفظان في
     pwa_auth ويدخل بهما فوراً بعد الموافقة. بلا إشعارات SMTP إطلاقاً.
+    v159: يحفظ اسم المدير وتاريخ القرار، ويحفظ صورة Google ووقت الربط عند وجود بريد.
     يعيد (ok, msg)."""
     try:
         reg_id = int(reg_id)
@@ -26366,13 +26381,13 @@ def _pwa_api_registration_approve(reg_id, role):
     reg_pass = None
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT full_name, email, username, role, password_hash "
+            cur.execute("SELECT full_name, email, username, role, password_hash, picture "
                         "FROM pwa_registrations WHERE id = %s AND status = 'waiting'", (reg_id,))
             reg = cur.fetchone()
             if not reg:
                 return False, "الطلب غير موجود أو مُفعَّل مسبقاً."
-            full_name, reg_email, reg_username, reg_role, reg_pass = \
-                reg[0], (reg[1] or "").strip().lower(), (reg[2] or "").strip(), reg[3], reg[4]
+            full_name, reg_email, reg_username, reg_role, reg_pass, reg_picture = \
+                reg[0], (reg[1] or "").strip().lower(), (reg[2] or "").strip(), reg[3], reg[4], reg[5]
             final_role = role if role != ROLE_CUSTOMER else reg_role
             # v52: هل الاسم مطابق لحساب تلجرام موجود؟ اربط به بدل إنشاء صف مكرر
             # (حساب واحد لكل شخص — لا دمج في حساب مدير حمايةً من خداع الصلاحيات)
@@ -26400,8 +26415,12 @@ def _pwa_api_registration_approve(reg_id, role):
                 cur.execute(
                     "UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
                     "first_name = COALESCE(NULLIF(first_name, ''), %s), "
-                    "email = COALESCE(email, %s) WHERE id = %s",
-                    (_erole if _keep_role else final_role, full_name, (reg_email or None), uid))
+                    "email = COALESCE(email, %s), "
+                    "avatar = COALESCE(avatar, %s), "
+                    "google_linked_at = CASE WHEN %s IS NOT NULL AND google_linked_at IS NULL "
+                    "THEN NOW() ELSE google_linked_at END WHERE id = %s",
+                    (_erole if _keep_role else final_role, full_name, (reg_email or None),
+                     reg_picture, (reg_email or None), uid))
                 if _keep_role:
                     _applied_role = _erole
                     _role_note = (" — أُبقيت فئته الحالية («" + ROLE_LABELS.get(_erole, _erole)
@@ -26414,9 +26433,12 @@ def _pwa_api_registration_approve(reg_id, role):
                 _erole2 = _ematch[1] if _ematch else None
                 _keep2 = _erole2 not in (None, ROLE_PENDING, ROLE_CUSTOMER)
                 cur.execute("UPDATE users SET role = %s, active = TRUE, identity_verified = TRUE, "
-                            "first_name = COALESCE(NULLIF(first_name, ''), %s) "
+                            "first_name = COALESCE(NULLIF(first_name, ''), %s), "
+                            "avatar = COALESCE(avatar, %s), "
+                            "google_linked_at = CASE WHEN google_linked_at IS NULL THEN NOW() "
+                            "ELSE google_linked_at END "
                             "WHERE lower(email) = %s RETURNING id",
-                            (_erole2 if _keep2 else final_role, full_name, reg_email))
+                            (_erole2 if _keep2 else final_role, full_name, reg_picture, reg_email))
                 if _keep2:
                     _applied_role = _erole2
                     _role_note = (" — أُبقيت فئته الحالية («" + ROLE_LABELS.get(_erole2, _erole2)
@@ -26424,9 +26446,10 @@ def _pwa_api_registration_approve(reg_id, role):
                 uid = cur.fetchone()
                 if not uid:
                     cur.execute(
-                        "INSERT INTO users (first_name, email, role, active, identity_verified) "
-                        "VALUES (%s, %s, %s, TRUE, TRUE) RETURNING id",
-                        (full_name, reg_email, final_role))
+                        "INSERT INTO users (first_name, email, role, active, identity_verified, "
+                        "avatar, google_linked_at) "
+                        "VALUES (%s, %s, %s, TRUE, TRUE, %s, NOW()) RETURNING id",
+                        (full_name, reg_email, final_role, reg_picture))
                     uid = cur.fetchone()
             else:
                 cur.execute(
@@ -26448,8 +26471,9 @@ def _pwa_api_registration_approve(reg_id, role):
                     "ON CONFLICT (user_id) DO UPDATE SET pass_hash = EXCLUDED.pass_hash, "
                     "username = EXCLUDED.username, updated_at = NOW()",
                     (uid, auth_name, reg_pass))
-            cur.execute("UPDATE pwa_registrations SET status = 'confirmed', confirmed_at = NOW() "
-                        "WHERE id = %s", (reg_id,))
+            cur.execute("UPDATE pwa_registrations SET status = 'confirmed', confirmed_at = NOW(), "
+                        "decided_by = %s, decided_at = NOW() WHERE id = %s",
+                        (decided_by, reg_id))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -26707,11 +26731,11 @@ async def pwa_google_link_handler(request):
                     "url": base + "/api/auth/google/start?app=1&link=" + _uparse.quote(ot)})
 
 
-def _pwa_api_registration_reject_or_delete(reg_id):
+def _pwa_api_registration_reject_or_delete(reg_id, decided_by=None):
     """v158: رفض طلب انضمام من إشعار المدير: طلبات Google (بريد بلا رقم سر)
     تُحفظ بحالة cancelled فيُمنع صاحبها من الدخول أو إعادة الطلب بنفس البريد؛
     طلبات الاسم/الرقم السري تُحذف كما في v39 دون تغيير سلوكها.
-    يعيد (is_google, ok, msg)."""
+    v159: يحفظ اسم المدير وتاريخ الرفض. يعيد (is_google, ok, msg)."""
     try:
         reg_id = int(reg_id)
     except (TypeError, ValueError):
@@ -26726,8 +26750,9 @@ def _pwa_api_registration_reject_or_delete(reg_id):
                 return False, False, "الطلب غير موجود أو مُفعَّل مسبقاً."
             is_google = bool(str(row[0] or "").strip()) and not row[1]
             if is_google:
-                cur.execute("UPDATE pwa_registrations SET status = 'cancelled' "
-                            "WHERE id = %s", (reg_id,))
+                cur.execute("UPDATE pwa_registrations SET status = 'cancelled', "
+                            "decided_by = %s, decided_at = NOW() WHERE id = %s",
+                            (decided_by, reg_id))
                 msg = ("تم رفض طلب Google وحفظ حالة الرفض — لن يستطيع الدخول "
                        "أو إعادة الطلب بهذا البريد.")
             else:
@@ -26741,6 +26766,294 @@ def _pwa_api_registration_reject_or_delete(reg_id):
         return False, False, "خطأ في الخادم."
     finally:
         release_connection(conn)
+
+
+# ═══════════ v159: لوحة إدارة حسابات Google — للمدير الرئيسي وحده ═══════════
+# نفس قاعدة البيانات نفسها: users وpwa_registrations — بلا أي بنية موازية،
+# وكل قرار (من اللوحة أو تلغرام) يُخزَّن في نفس الصفوف وينعكس في الجهتين فوراً.
+
+_PWA_GEMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
+
+def _pwa_google_admin_overview():
+    """v159: بيانات لوحة إدارة Google — إحصائيات + طلبات معلقة + حسابات مرتبطة
+    + قائمة مستخدمي النظام (للاختيار في الربط اليدوي). يعيد dict أو None."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM users WHERE email IS NOT NULL")
+            linked = int(cur.fetchone()["n"])
+            cur.execute("SELECT COUNT(*) AS n FROM users WHERE email IS NOT NULL "
+                        "AND active = TRUE AND COALESCE(google_login_disabled, FALSE) = FALSE")
+            approved = int(cur.fetchone()["n"])
+            cur.execute("SELECT COUNT(*) AS n FROM users WHERE email IS NOT NULL "
+                        "AND COALESCE(google_login_disabled, FALSE) = TRUE")
+            suspended = int(cur.fetchone()["n"])
+            cur.execute("SELECT COUNT(*) AS n FROM pwa_registrations "
+                        "WHERE status = 'waiting' AND email IS NOT NULL "
+                        "AND created_at > NOW() - INTERVAL '"
+                        + str(_PWA_REG_EXPIRE_HOURS) + " hours'")
+            pending = int(cur.fetchone()["n"])
+            cur.execute("SELECT COUNT(*) AS n FROM pwa_registrations "
+                        "WHERE status = 'cancelled' AND email IS NOT NULL")
+            rejected = int(cur.fetchone()["n"])
+            cur.execute(
+                "SELECT id, code, full_name, email, picture, role, "
+                "created_at::text AS created_at, ip FROM pwa_registrations "
+                "WHERE status = 'waiting' AND email IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT 50")
+            requests = cur.fetchall()
+            cur.execute(
+                "SELECT u.id, COALESCE(NULLIF(u.display_name, ''), u.first_name, u.username) AS name, "
+                "u.username AS tg_username, a.username AS web_username, u.email, u.role, "
+                "u.active, COALESCE(u.google_login_disabled, FALSE) AS gdis, "
+                "u.google_linked_at::text AS linked_at, u.last_seen::text AS last_seen, u.avatar "
+                "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                "WHERE u.email IS NOT NULL "
+                "ORDER BY u.google_linked_at DESC NULLS LAST, u.id DESC LIMIT 100")
+            linked_rows = cur.fetchall()
+            cur.execute(
+                "SELECT id, COALESCE(NULLIF(display_name, ''), first_name, username) AS name, "
+                "role, (email IS NOT NULL) AS has_email FROM users "
+                "WHERE active = TRUE ORDER BY id LIMIT 200")
+            users = cur.fetchall()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] google admin overview failed: " + str(e))
+        return None
+    finally:
+        release_connection(conn)
+    return {
+        "stats": {"linked": linked, "approved": approved, "suspended": suspended,
+                  "pending": pending, "rejected": rejected},
+        "requests": [
+            {"id": r["id"], "code": r["code"], "name": r["full_name"],
+             "email": r["email"], "picture": r.get("picture"), "role": r["role"],
+             "role_label": ROLE_LABELS.get(r["role"], r["role"]),
+             "created_at": (r.get("created_at") or "")[:16], "ip": r.get("ip")}
+            for r in requests],
+        "linked": [
+            {"id": r["id"], "name": r.get("name") or "", "tg_username": r.get("tg_username"),
+             "web_username": r.get("web_username"), "email": r["email"], "role": r["role"],
+             "role_label": ROLE_LABELS.get(r["role"], r["role"]), "active": r["active"],
+             "gdis": r["gdis"], "linked_at": (r.get("linked_at") or "")[:16],
+             "last_seen": (r.get("last_seen") or "")[:16], "avatar": r.get("avatar")}
+            for r in linked_rows],
+        "users": [
+            {"id": r["id"], "name": r.get("name") or ("u" + str(r["id"])),
+             "role_label": ROLE_LABELS.get(r["role"], r["role"]), "has_email": r["has_email"]}
+            for r in users],
+    }
+
+
+def _pwa_google_admin_link_manual(uid, email, requester_uid=None):
+    """v159: ربط يدوي من المدير — بلا حساب مكرر ولا كتابة فوق بريد حساب آخر.
+    حساب المدير لا يُربط من هنا إلا بطلبه هو (لديه زر الربط الذاتي في الإعدادات)."""
+    email = str(email or "").strip().lower()
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        return False, "مستخدم غير صالح."
+    if not _PWA_GEMAIL_RE.match(email or ""):
+        return False, "صيغة البريد غير صحيحة."
+    conn = get_connection()
+    ok, msg = False, "خطأ في الخادم."
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role FROM users WHERE id = %s", (uid,))
+            row = cur.fetchone()
+            if not row:
+                msg = "المستخدم غير موجود."
+            elif row[0] == ROLE_ADMIN and requester_uid != uid:
+                msg = ("لا يمكن ربط بريد بحساب المدير الرئيسي من هنا — "
+                       "المدير يربط بريده من الإعدادات بجلسته الخاصة.")
+            else:
+                cur.execute("SELECT id FROM users WHERE lower(email) = %s AND id <> %s LIMIT 1",
+                            (email, uid))
+                other = cur.fetchone()
+                if other:
+                    msg = "البريد مرتبط مسبقاً بحساب آخر — لم يتم الربط."
+                else:
+                    cur.execute(
+                        "UPDATE users SET email = %s, identity_verified = TRUE, "
+                        "google_login_disabled = FALSE, "
+                        "google_linked_at = CASE WHEN google_linked_at IS NULL THEN NOW() "
+                        "ELSE google_linked_at END WHERE id = %s", (email, uid))
+                    ok = True
+                    msg = "تم ربط " + email + " بالحساب — الدخول عبر Google مفعّل له."
+        if ok:
+            conn.commit()
+            _users_cache_clear()
+        else:
+            conn.rollback()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] google manual link failed: " + str(e))
+        ok, msg = False, "خطأ في الخادم."
+    finally:
+        release_connection(conn)
+    return ok, msg
+
+
+def _pwa_google_admin_user_action(uid, action):
+    """v159: تعطيل/تفعيل الدخول عبر Google أو إلغاء الربط — بلا مساس بالحساب
+    الأساسي ولا كلمة المرور ولا الفئة. حساب المدير الرئيسي محمي من هذه الإجراءات."""
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        return False, "مستخدم غير صالح."
+    conn = get_connection()
+    ok, msg = False, "إجراء غير معروف."
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role FROM users WHERE id = %s", (uid,))
+            row = cur.fetchone()
+            if not row:
+                msg = "المستخدم غير موجود."
+            elif row[0] == ROLE_ADMIN:
+                msg = "لا يمكن تعديل دخول Google لحساب المدير الرئيسي من هنا."
+            elif action == "suspend":
+                cur.execute("UPDATE users SET google_login_disabled = TRUE WHERE id = %s", (uid,))
+                ok = True
+                msg = "عُطّل الدخول عبر Google مؤقتاً — الحساب وكلمة المرور كما هما."
+            elif action == "reactivate":
+                cur.execute("UPDATE users SET google_login_disabled = FALSE WHERE id = %s", (uid,))
+                ok = True
+                msg = "أُعيد تفعيل الدخول عبر Google لهذا الحساب."
+            elif action == "unlink":
+                cur.execute("UPDATE users SET email = NULL, google_linked_at = NULL, "
+                            "google_login_disabled = FALSE WHERE id = %s", (uid,))
+                ok = True
+                msg = "أُلغي ربط Google — لن يدخل عبره حتى ربط جديد بموافقة الإدارة."
+        if ok:
+            conn.commit()
+            _users_cache_clear()
+        else:
+            conn.rollback()
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] google user action failed: " + str(e))
+        ok, msg = False, "خطأ في الخادم."
+    finally:
+        release_connection(conn)
+    return ok, msg
+
+
+def _pwa_google_admin_gate(user):
+    """v159: بوابة قسم إدارة Google — المدير الرئيسي وحده (فحص في الخادم دائماً)."""
+    return bool(user) and user.get("role") == ROLE_ADMIN
+
+
+async def pwa_google_admin_overview_handler(request):
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_google_admin_gate(user):
+        return _pwa_err(403, "إدارة حسابات Google للمدير الرئيسي وحده.")
+    data = await _pwa_run(_pwa_google_admin_overview)
+    if data is None:
+        return _pwa_err(500, "تعذر جلب البيانات — أعد المحاولة.")
+    return _pwa_jr({"ok": True, **data})
+
+
+async def pwa_google_admin_approve_handler(request):
+    """قبول طلب Google من اللوحة — نفس دالة الموافقة الحالية: نفس الفئات
+    ونفس قواعد الربط وحماية الفئات القائمة، والقرار من هنا أو من تلغرام يعمل على نفس الصف."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_google_admin_gate(user):
+        return _pwa_err(403, "إدارة حسابات Google للمدير الرئيسي وحده.")
+    try:
+        body = await request.json()
+        reg_id = int(body.get("id", 0))
+        role = str(body.get("role", "")).strip()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    admin_name = str(user.get("first_name") or user.get("web_username") or "مدير اللوحة")
+    ok, msg = await _pwa_run(_pwa_api_registration_approve, reg_id, role, admin_name)
+    await _pwa_run(_audit_log, "google_admin_approve" if ok else "google_admin_approve_fail",
+                   user, details=str(msg)[:120], ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    db_insert_notification("reg", "✅ قبول طلب Google من اللوحة", str(msg)[:180],
+                           actor=admin_name, source="app")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_google_admin_reject_handler(request):
+    """رفض طلب Google من اللوحة — نفس آلية الرفض المحفوظ (cancelled + الاسم والتاريخ)."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_google_admin_gate(user):
+        return _pwa_err(403, "إدارة حسابات Google للمدير الرئيسي وحده.")
+    try:
+        body = await request.json()
+        reg_id = int(body.get("id", 0))
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    admin_name = str(user.get("first_name") or user.get("web_username") or "مدير اللوحة")
+    is_g, ok, msg = await _pwa_run(_pwa_api_registration_reject_or_delete, reg_id, admin_name)
+    await _pwa_run(_audit_log, "google_admin_reject" if ok else "google_admin_reject_fail",
+                   user, details=("google" if is_g else "non-google") + " | " + str(msg)[:100],
+                   ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    if not is_g:
+        return _pwa_err(400, "هذا ليس طلب Google — استخدم شاشة طلبات التسجيل العادية.")
+    db_insert_notification("reg", "🚫 رفض طلب Google من اللوحة", str(msg)[:180],
+                           actor=admin_name, source="app")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_google_admin_link_manual_handler(request):
+    """ربط Gmail يدوياً بحساب قائم — بلا حسابات مكررة وبلا تجاوز."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_google_admin_gate(user):
+        return _pwa_err(403, "إدارة حسابات Google للمدير الرئيسي وحده.")
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        email = str(body.get("email", "")).strip()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_google_admin_link_manual, uid, email, user.get("id"))
+    await _pwa_run(_audit_log, "google_admin_link_manual" if ok else "google_admin_link_manual_fail",
+                   user, details="uid=" + str(uid) + " email=" + email[:60] + " | " + str(msg)[:60],
+                   ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    db_insert_notification("reg", "🔗 ربط Gmail يدوي", str(msg)[:180],
+                           actor=str(user.get("first_name") or "مدير اللوحة"), source="app")
+    return _pwa_jr({"ok": True, "message": msg})
+
+
+async def pwa_google_admin_user_action_handler(request):
+    """تعطيل/تفعيل الدخول عبر Google أو إلغاء الربط — الحساب الأساسي لا يُمس."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    if not _pwa_google_admin_gate(user):
+        return _pwa_err(403, "إدارة حسابات Google للمدير الرئيسي وحده.")
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        action = str(body.get("action", "")).strip()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    ok, msg = await _pwa_run(_pwa_google_admin_user_action, uid, action)
+    await _pwa_run(_audit_log, "google_admin_action" if ok else "google_admin_action_fail",
+                   user, details="uid=" + str(uid) + " action=" + action + " | " + str(msg)[:80],
+                   ip=request.remote or "؟")
+    if not ok:
+        return _pwa_err(400, msg)
+    db_insert_notification("reg", "⚙️ إجراء على دخول Google", str(msg)[:180],
+                           actor=str(user.get("first_name") or "مدير اللوحة"), source="app")
+    return _pwa_jr({"ok": True, "message": msg})
 
 
 async def pwa_registration_approve_handler(request):
@@ -32508,6 +32821,12 @@ def register_pwa_routes(app):
     app.router.add_post("/api/login", pwa_login_handler)
     app.router.add_post("/api/auth/google/ot", pwa_google_ot_handler)   # v125: عودة Google من Pages
     app.router.add_post("/api/auth/google/link", pwa_google_link_handler)  # v158: ربط بريد بحساب قائم
+    # v159: لوحة إدارة حسابات Google — المدير الرئيسي وحده (فحص الصلاحية في الخادم)
+    app.router.add_get("/api/admin/google/overview", pwa_google_admin_overview_handler)
+    app.router.add_post("/api/admin/google/approve", pwa_google_admin_approve_handler)
+    app.router.add_post("/api/admin/google/reject", pwa_google_admin_reject_handler)
+    app.router.add_post("/api/admin/google/link_manual", pwa_google_admin_link_manual_handler)
+    app.router.add_post("/api/admin/google/user_action", pwa_google_admin_user_action_handler)
     app.router.add_get("/api/pages/export", pwa_pages_export_handler)   # v125: تصدير نسخة Pages
     # ── v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ──
     app.router.add_post("/api/register", pwa_register_handler)
