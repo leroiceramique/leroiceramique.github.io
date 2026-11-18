@@ -3854,13 +3854,25 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
     setupMode = !!(d && d.setup);
     S.selfRegister = !!(d && d.self_register);
     S.serverVersion = (d && d.version) || "";
+    /* v168: التحديث الذاتي عند الإقلاع — قبل فتح أي شاشة: إن كان إصدار الخادم
+       أحدث من إصدار الواجهة (نسخة Pages مجمدة) استُبدلت نفسها فوراً بالنسخة
+       الحية. حمايات: إصدار الخادم يجب أن يكون أحدث حرفياً (لا هبوط للنسخة)،
+       ولا تحويل عند عودة Google/SSO (تُستهلك أولاً)، ومحاولة واحدة لكل إصدار
+       في التبويب (sessionStorage) ضد أي حلقة. النجاح يعيد الإقلاع من الصفحة
+       الجلية التي تطابق الخادم فلا يمر من هنا ثانية. */
+    if (window.CERAM_PAGES && d && d.version && !/[?&](sso|google)=/.test(location.search)
+        && (parseFloat(d.version) || 0) > (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) {
+      var _swp = "";
+      try { _swp = sessionStorage.getItem("ceram_swap_" + d.version) || ""; } catch (_spe) {}
+      if (!_swp && pagesLiveSwap(d.version)) return;
+    }
     if (d && d.reasons) S.reasons = d.reasons;
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
     /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل */
     if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
-    $("#setAbout").textContent = "الإصدار " + APP_VER + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
+    $("#setAbout").textContent = "الإصدار " + (S.serverVersion || APP_VER) + (S.serverVersion && S.serverVersion !== APP_VER ? " — واجهة " + APP_VER + " (تُحدَّث تلقائياً)" : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
   if (q.get("google")) {
@@ -3884,8 +3896,37 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "43";
+const APP_VER = "45";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
+/* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
+   نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
+   خادم أحدث تجلب هذه الدالة الواجهة الحية من الخادم وتستبدل الصفحة نفسها بها.
+   الجلسة تنجو بلا تسجيل خروج: ceram_sess في localStorage تُرسل مع كل طلب عبر
+   ترويسة X-Session-Token (طبقة v125) — وسكربت الحقن أعلى الصفحة يعيد ضبط
+   CERAM_API_ROOT/CERAM_PAGES للنسخة الجلية. نسخة الخادم حية أصلاً فلا تدخل
+   هذا المسار أبداً (CERAM_PAGES غير معرفة عندها). */
+function pagesLiveSwap(v) {
+  try {
+    var root = window.CERAM_API_ROOT || "";
+    if (!root) { location.reload(); return true; }
+    try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
+    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+      .then(function (html) {
+        html = String(html);
+        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");
+        var cfg = "<script>window.CERAM_API_ROOT=" + JSON.stringify(root) + ";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</" + "script>";
+        if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + cfg; });
+        else html = cfg + html;
+        document.open(); document.write(html); document.close();
+      })
+      .catch(function () {
+        toast("تعذر التحديث التلقائي — سأكمل على النسخة الحالية، وجرّب «فحص التحديث» لاحقاً.", true);
+        setTimeout(function () { try { location.reload(); } catch (_re) {} }, 700);
+      });
+    return true;
+  } catch (_ple) { return false; }
+}
 function swCleanup() {
   try {
     if ("caches" in window && caches.keys) {
@@ -3904,6 +3945,7 @@ function swCleanup() {
 function doAppUpdate() {
   try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}
   toast("جارٍ التحديث…");
+  if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }
   swCleanup();
   const v = S.serverVersion || String(Date.now());
   setTimeout(() => {
@@ -3919,8 +3961,8 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
     /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */
     if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
     const about = $("#setAbout");
-    if (about) about.textContent = "الإصدار " + APP_VER + (v ? " — الخادم " + v : "");
-    if (!(window.CERAM_PAGES) && v && v !== APP_VER && v !== S.updDismissed) {
+    if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");
+    if (v && v !== APP_VER && v !== S.updDismissed) {
       const dlg = $("#dlgUpd");
       if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
       return true;
@@ -9815,6 +9857,307 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
 })();
 
 </script>
+<script id="v167ui">
+/* ═══ v167: فصل حسابات تلغرام + حيوية النشاط + تفاصيل + حذف نهائي ═══ */
+try {
+if (!window.__v167users) {
+window.__v167users = true;
+
+function v167IsApp(u) { return u.telegram_id == null || !!u.web || !!u.email; }
+function v167IsTg(u) { return u.telegram_id != null && !u.web && !u.email; }
+
+/* ── 1) الفلترة: «📱 التطبيق» افتراضياً — حسابات تلغرام الخالصة مخفية دون مساس بعملها ── */
+var _oldUFH = window.usrFilterHit;
+window.usrFilterHit = function (u) {
+  if (S.usrFilter === "app") return v167IsApp(u);
+  if (S.usrFilter === "tg") return v167IsTg(u);
+  return _oldUFH ? _oldUFH(u) : true;
+};
+S.usrFilter = "app";
+
+function v167AddChips() {
+  var kc = document.getElementById("cKick");
+  var bar = kc ? kc.parentElement : null;
+  if (!bar || document.getElementById("cApp")) return;
+  var appChip = document.createElement("button");
+  appChip.type = "button"; appChip.className = "chip"; appChip.setAttribute("data-f", "app");
+  appChip.innerHTML = '📱 التطبيق <b id="cApp">0</b>';
+  var tgChip = document.createElement("button");
+  tgChip.type = "button"; tgChip.className = "chip"; tgChip.setAttribute("data-f", "tg");
+  tgChip.innerHTML = '📨 تلغرام <b id="cTg">0</b>';
+  var first = bar.querySelector(".chip");
+  bar.insertBefore(appChip, first ? first.nextSibling : null);
+  bar.insertBefore(tgChip, appChip.nextSibling);
+  [appChip, tgChip].forEach(function (c) {
+    c.addEventListener("click", function () {
+      S.usrFilter = c.getAttribute("data-f");
+      window.renderUsers();
+    });
+  });
+}
+function v167SyncChips() {
+  var kc = document.getElementById("cKick");
+  var bar = kc ? kc.parentElement : null;
+  if (!bar) return;
+  Array.prototype.forEach.call(bar.querySelectorAll(".chip"), function (c) {
+    c.classList.toggle("on", c.getAttribute("data-f") === S.usrFilter);
+  });
+}
+v167AddChips();
+
+/* ── 2) عرض القائمة: نسخة v167 — الطلبات المعلقة تظهر في «التطبيق» و«الكل» ── */
+window.renderUsers = function () {
+  if (!S.usrLast) return;
+  var box = $("#usrList");
+  var d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;
+  var q = (S.usrQ || "").trim().toLowerCase();
+  var users = d.users || [];
+  $("#cAll").textContent = d.counts.all;
+  $("#cWeb").textContent = d.counts.web;
+  $("#cKick").textContent = d.counts.kicked;
+  $("#cStaff").textContent = users.filter(function (u) { return u.active && u.role !== "customer"; }).length;
+  $("#cCust").textContent = users.filter(function (u) { return u.active && u.role === "customer"; }).length;
+  try {
+    $("#cApp").textContent = users.filter(function (u) { return u.active && v167IsApp(u); }).length;
+    $("#cTg").textContent = users.filter(function (u) { return v167IsTg(u); }).length;
+    $("#cLive").textContent = users.filter(function (u) { return u.active && u.last_seen
+      && (Date.now() - new Date(u.last_seen).getTime() < 86400000); }).length;
+  } catch (e) {}
+  v167SyncChips();
+  var html = "";
+  if (S.usrFilter === "all" || S.usrFilter === "app") {
+    var waiting = regs.filter(function (w) { return !q || [w.name, w.username, w.email, w.phone, w.role_label]
+      .some(function (v) { return (v || "").toString().toLowerCase().indexOf(q) !== -1; }); });
+    if (waiting.length) {
+      html += '<p class="u96sech">⏳ طلبات انضمام بانتظار الموافقة (' + waiting.length + ')</p>';
+      html += waiting.map(function (w) {
+        return '<div class="u96req"><div class="u96nm">' + esc(w.name) + '</div>'
+          + '<div class="u96sub">' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + '</div>'
+          + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g" style="margin-top:7px">Google</span>'
+            : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? '<span class="badge b" style="margin-top:7px">🔑 اسم + رقم سر</span>' : '<span class="badge b" style="margin-top:7px">رمز: ' + esc(w.code) + '</span>'))
+          + '<div class="acts"><button class="btn mini green" data-appr=\'' + esc(JSON.stringify(w)) + '\'>✅ موافقة</button>'
+          + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
+          + '</div>';
+      }).join("");
+    }
+    var rs = resets.filter(function (r) { return !q || (r.username || "").toLowerCase().indexOf(q) !== -1; });
+    if (rs.length) {
+      html += '<p class="u96sech" style="margin-top:12px">🔑 طلبات استعادة كلمة المرور (' + rs.length + ')</p>';
+      html += rs.map(function (r) {
+        return '<div class="u96req"><div class="u96nm">' + esc(r.username) + '</div>'
+          + '<div class="u96sub">طالب باستعادة رقمه السري' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + '</div>'
+          + '<div class="acts"><button class="btn mini gold" data-reset="' + r.id + '" data-runame="' + esc(r.username) + '">🔑 توليد رقم سر مؤقت</button></div>'
+          + '</div>';
+      }).join("");
+    }
+  }
+  if (S.usrFilter === "kick") {
+    var kick = users.filter(function (u) { return usrFilterHit(u) && usrMatch(u, q); })
+      .sort(function (a, b) { return (a.name || "").localeCompare(b.name || "", "ar"); });
+    html += kick.length ? kick.map(usrRow).join("") : '<p class="empty">' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + '</p>';
+  } else {
+    var act = users.filter(function (u) { return usrFilterHit(u) && usrMatch(u, q); });
+    act.sort(function (a, b) {
+      var sa = a.telegram_id === S.user.telegram_id ? 0 : 1;
+      var sb = b.telegram_id === S.user.telegram_id ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);
+      return (a.name || "").localeCompare(b.name || "", "ar");
+    });
+    html += act.length ? act.map(usrRow).join("") : '<p class="empty">' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + '</p>';
+    if (S.usrFilter === "all") {
+      var kick2 = users.filter(function (u) { return !u.active && usrMatch(u, q); })
+        .sort(function (a, b) { return (a.name || "").localeCompare(b.name || "", "ar"); });
+      if (kick2.length) {
+        html += '<button type="button" class="khead' + (S.usrKickOpen ? " open" : "") + '" id="usrKickHead">🚫 المطرودون (' + kick2.length + ') <span class="karr">▶</span></button>'
+          + '<div id="usrKickList" style="display:' + (S.usrKickOpen ? "" : "none") + '">' + kick2.map(usrRow).join("") + '</div>';
+      }
+    }
+  }
+  box.innerHTML = html;
+  /* أزرار v152 (الفئة/الصلاحيات) يربطها مستند مركزي خاص بها — لا تُربط هنا تفادياً للتشغيل المزدوج */
+  box.querySelectorAll("button[data-tg],button[data-reg],button[data-appr],button[data-reset],button[data-delweb],button[data-v167det],button[data-v167purge]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
+      else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
+      else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);
+      else if (b.dataset.v167det !== undefined) v167Details(+b.dataset.uid || null, +b.dataset.tid || null, b.dataset.n);
+      else if (b.dataset.v167purge !== undefined) v167Purge(+b.dataset.uid || null, +b.dataset.tid || null, b.dataset.n);
+      else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);
+      else if (b.dataset.self) openPass(null, b.dataset.n, true);
+      else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
+      else openPass(+b.dataset.tg, b.dataset.n, false);
+    });
+  });
+  var kh = box.querySelector("#usrKickHead");
+  if (kh) kh.addEventListener("click", function () { S.usrKickOpen = !S.usrKickOpen; window.renderUsers(); });
+};
+
+/* ── 3) بطاقة المستخدم: حيوية النشاط + أصل الحساب + زرا التفاصيل والحذف النهائي ── */
+window.usrRow = function (u) {
+  var self = u.telegram_id === S.user.telegram_id;
+  var hasTg = !!u.telegram_id;
+  var acts = "";
+  if (!self && !u.protected) {
+    acts += '<button class="btn mini blue" data-v152role="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
+    acts += '<button class="btn mini gray" data-v152perms="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-v152r="' + esc(u.role || "") + '" data-v152rl="' + esc(u.role_label || "") + '" data-n="' + esc(u.name) + '">🔐 صلاحيات</button>';
+    if (hasTg && u.role !== "admin") {
+      acts += u.active
+        ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
+        : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
+    }
+    if (S.user && S.user.role === "admin") {
+      acts += '<button class="btn mini red" data-v167purge="1" data-uid="' + (u.id || "") + '" data-tid="' + (u.telegram_id || "") + '" data-n="' + esc(u.name) + '">🗑️ حذف نهائي</button>';
+    }
+  }
+  if (!self && !u.protected && u.web && u.telegram_id) {
+    acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
+  }
+  acts += '<button class="btn mini" data-v167det="1" data-uid="' + (u.id || "") + '" data-tid="' + (u.telegram_id || "") + '" data-n="' + esc(u.name) + '">ℹ️ التفاصيل</button>';
+  acts += self
+    ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
+    : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
+  var sub = [
+    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",
+    u.phone ? "📞 " + esc(u.phone) : "",
+    u.email ? "✉️ " + esc(u.email) : ""
+  ].filter(Boolean).join(" · ");
+  if (!hasTg && u.web) sub += (sub ? " · " : "") + '👤 بلا حساب تلغرام';
+  var seenCls = "v167never";
+  if (u.last_seen_days != null) {
+    seenCls = u.last_seen_days < 1 ? "v167fresh" : (u.last_seen_days > 30 ? "v167stale" : "v167seen");
+  }
+  sub += (sub ? " · " : "") + '<span class="' + seenCls + '">⏱ ' + esc(u.last_seen_rel || "—") + '</span>'
+    + (u.origin === "telegram" ? ' <span class="badge mut">📨 تلغرام</span>' : '');
+  return '<div class="row"><div class="info"><b>' + esc(u.name) + usrOnline(u)
+    + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
+    + '<span class="usub"><span class="rk rk-' + (USR_RANK[u.role] !== undefined ? u.role : "customer") + '">' + esc(u.role_label) + '</span>'
+    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + '</span></div>'
+    + (u.active ? "" : '<span class="badge r">مطرود</span>')
+    + '<div class="acts">' + acts + '</div>'
+    + '</div>';
+};
+
+/* ── 4) حوارا التفاصيل والحذف النهائي ── */
+function v167EnsureDialogs() {
+  if (document.getElementById("dlgDet167")) return;
+  var wrap = document.createElement("div");
+  wrap.innerHTML = '<dialog id="dlgDet167" class="v167dlg">'
+    + '<h3 id="d167T">تفاصيل الحساب</h3>'
+    + '<div id="d167Body" class="v167body">⏳ جارٍ الجلب...</div>'
+    + '<div class="v167dlgacts"><button type="button" class="btn" id="d167Close">إغلاق</button></div>'
+    + '</dialog>'
+    + '<dialog id="dlgPurge167" class="v167dlg">'
+    + '<h3>🗑️ حذف نهائي كامل</h3>'
+    + '<div id="p167Body" class="v167body">⏳ حساب أثر الحذف...</div>'
+    + '<label class="v167lbl">اكتب اسم الحساب <b id="p167Name"></b> حرفياً للتأكيد:</label>'
+    + '<input type="text" id="p167Confirm" autocomplete="off" placeholder="اسم الحساب حرفياً">'
+    + '<div class="v167dlgacts"><button type="button" class="btn red" id="p167Go">🗑️ حذف نهائي لا رجعة فيه</button>'
+    + '<button type="button" class="btn" id="p167Cancel">إلغاء</button></div>'
+    + '</dialog>';
+  document.body.appendChild(wrap);
+  $("#d167Close").addEventListener("click", function () { $("#dlgDet167").close(); });
+  $("#p167Cancel").addEventListener("click", function () { $("#dlgPurge167").close(); });
+}
+
+function v167SeenCls(days) {
+  if (days == null) return "v167never";
+  return days < 1 ? "v167fresh" : (days > 30 ? "v167stale" : "v167seen");
+}
+
+window.v167Details = function (uid, tid, name) {
+  v167EnsureDialogs();
+  $("#d167T").textContent = "تفاصيل الحساب — " + name;
+  $("#d167Body").innerHTML = "⏳ جارٍ الجلب...";
+  var qs = [];
+  if (uid) qs.push("uid=" + encodeURIComponent(uid));
+  if (tid) qs.push("tid=" + encodeURIComponent(tid));
+  api("/api/users/details?" + qs.join("&"), { noCache: true })
+    .then(function (d) {
+      var c = d.counts || {};
+      var row = function (k, v) { return '<div class="v167row"><span>' + k + '</span><b>' + v + '</b></div>'; };
+      $("#d167Body").innerHTML = ""
+        + row("نوع الحساب", esc(d.origin_label || ""))
+        + row("الفئة", esc(d.role_label || ""))
+        + row("الحالة", (d.active ? "✅ نشط" : "🚫 مطرود") + (d.banned ? " · ⛔ محظور نهائياً" : "") + (d.archived ? " · 📦 مؤرشف" : ""))
+        + row("أُنشئ الحساب", esc(d.created_rel || "—"))
+        + row("آخر نشاط", '<span class="' + v167SeenCls(d.last_seen_days) + '">⏱ ' + esc(d.last_seen_rel || "—") + '</span>')
+        + row("حساب تلغرام", d.telegram_id ? esc("@" + (d.tg_username || "") + " · " + d.telegram_id) : "— لا يوجد (حساب تطبيق خالص)")
+        + row("اسم دخول التطبيق", d.web_username ? esc(d.web_username) : "—")
+        + row("بريد Google", d.email ? esc(d.email) + (d.email_verified ? " ✅" : "") + " · رُبط " + esc(d.google_linked_rel || "—") : "—")
+        + row("الهاتف", d.phone ? esc(d.phone) : "—")
+        + row("جلسات نشطة الآن", c.sess || 0)
+        + '<div class="v167sech">ما يرتبط بالحساب (يُحذف معه عند الحذف النهائي)</div>'
+        + row("حركات مخزون", c.txn || 0)
+        + row("أوامر توريد", c.supply || 0)
+        + row("طلبات سحب", c.extr || 0)
+        + row("فواتير بصفته منفذاً (تبقى وتُنزع نسبته)", c.inv_worker || 0)
+        + row("فواتير بصفته مديراً", c.inv_admin || 0)
+        + row("سجلات عمليات", c.audit || 0)
+        + row("طلبات تسجيل بنفس بريده", c.regs || 0);
+    })
+    .catch(function (e) { $("#d167Body").textContent = "تعذر الجلب: " + e.message; });
+  $("#dlgDet167").showModal();
+};
+
+var V167_purgeT = null;
+window.v167Purge = function (uid, tid, name) {
+  v167EnsureDialogs();
+  V167_purgeT = { uid: uid || null, tid: tid || null, name: name };
+  $("#p167Body").innerHTML = "⏳ حساب أثر الحذف...";
+  $("#p167Confirm").value = "";
+  $("#p167Name").textContent = name;
+  $("#dlgPurge167").showModal();
+  api("/api/users/purge", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uid: uid || undefined, telegram_id: tid || undefined }) })
+    .then(function (d) {
+      var im = d.impact || {};
+      var li = function (k, v) { return "<li>" + k + ": <b>" + v + "</b></li>"; };
+      $("#p167Body").innerHTML = '<p>سيُحذف <b>نهائياً ولا رجعة فيه</b> كل ما يلي لهذا الحساب:</p><ul class="v167imp">'
+        + li("حركات مخزون", im.txn || 0) + li("أوامر توريد", im.supply || 0)
+        + li("طلبات سحب", im.extr || 0) + li("فواتير بصفته مديراً", im.inv_admin || 0)
+        + li("سجلات عمليات", im.audit || 0) + li("طلبات تسجيل ببريده", im.regs || 0)
+        + "</ul><p>فواتيره بصفته منفذاً (" + (im.inv_worker || 0) + ") تبقى في السجل المالي وتُنزع نسبته منها فقط.</p>";
+    })
+    .catch(function (e) { $("#p167Body").textContent = "تعذر حساب الأثر: " + e.message; });
+};
+
+document.addEventListener("click", function (ev) {
+  var go = ev.target.closest ? ev.target.closest("#p167Go") : null;
+  if (!go || !V167_purgeT) return;
+  var val = ($("#p167Confirm").value || "").trim();
+  if (val !== V167_purgeT.name) { toast("اكتب اسم الحساب مطابقاً حرفياً للتأكيد.", true); return; }
+  api("/api/users/purge", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uid: V167_purgeT.uid || undefined, telegram_id: V167_purgeT.tid || undefined, confirm_name: val }) })
+    .then(function (d) {
+      toast(d.message || "تم الحذف النهائي.");
+      $("#dlgPurge167").close();
+      if (window.loadUsers) loadUsers();
+    })
+    .catch(function (e) { toast(e.message, true); });
+});
+
+}
+} catch (e) { try { console.error("v167 init", e); } catch (e2) {} }
+</script>
+<style id="v167css">
+.v167seen{font-weight:700;color:#0369a1}
+.v167fresh{font-weight:700;color:#15803d}
+.v167stale{font-weight:700;color:#b91c1c}
+.v167never{color:#94a3b8}
+.v167row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 2px;border-bottom:1px dashed #e2e8f0;font-size:13px}
+.v167row span{color:#475569}
+.v167row b{color:#0f172a;text-align:left}
+.v167sech{margin:12px 0 4px;font-weight:700;color:#1B6B7A;font-size:13px}
+.v167imp{padding-inline-start:20px;margin:6px 0}
+.v167imp li{margin:3px 0;font-size:13px}
+.v167dlg{border:none;border-radius:14px;padding:16px;max-width:430px;width:92%;direction:rtl}
+.v167dlg h3{margin:0 0 10px}
+.v167dlgacts{display:flex;gap:8px;justify-content:flex-start;margin-top:14px}
+.v167lbl{display:block;margin-top:12px;font-size:13px}
+#p167Confirm{width:100%;margin-top:6px;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;box-sizing:border-box}
+
+</style>
 <script id="v158clean">try{localStorage.removeItem("__v150sell");localStorage.removeItem("__v149sell");localStorage.removeItem("__v150neg");}catch(e){}</script>
 <script id="v160ui">
 /* ═══ v160: إدارة حسابات Google داخل شاشة المستخدمين نفسها — بلا شاشة منفصلة ═══
