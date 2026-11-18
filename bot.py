@@ -20280,7 +20280,14 @@ _PWA_V160_JS = r'''/* ═══ v160: إدارة حسابات Google داخل ش
     + '#v160gbox .gmeta{font-size:11px;opacity:.75;margin:4px 0 2px}';
   document.head.appendChild(st);
 
-  function isAdmin() { try { return !!(S && S.user && S.user.role === "admin"); } catch (e) { return false; } }
+  /* v160b: الصلاحية تُحسم من الخادم نفسه — إن كان الدور غير معروف نجرّب
+     ونكتشف الرفض، فلا اعتماد على شكل S.user إطلاقاً */
+  var gAdminFlag = null;   /* null = غير معروف، true = مدير، false = غير مخوّل */
+  function isAdmin() {
+    if (gAdminFlag !== null) return gAdminFlag;
+    try { if (S && S.user && S.user.role) return (S.user.role === "admin"); } catch (e) {}
+    return true;
+  }
   function esc2(s) { return (typeof esc === "function") ? esc(s) : String(s == null ? "" : s); }
 
   function ensureBox() {
@@ -20307,8 +20314,10 @@ _PWA_V160_JS = r'''/* ═══ v160: إدارة حسابات Google داخل ش
 
   var gData = null, loading = false;
 
+  function dropBox() { var b = document.getElementById("v160gbox"); if (b) b.remove(); }
+
   async function load(force) {
-    if (!isAdmin()) { var b0 = document.getElementById("v160gbox"); if (b0) b0.remove(); return; }
+    if (gAdminFlag === false || !isAdmin()) { dropBox(); return; }
     var box = ensureBox();
     if (!box || loading) return;
     if (gData && !force) { render(box); return; }
@@ -20317,13 +20326,25 @@ _PWA_V160_JS = r'''/* ═══ v160: إدارة حسابات Google داخل ش
     try {
       var d = await api("/api/admin/google/overview", { noCache: true });
       if (!d || !d.ok) throw new Error((d && d.error) || "غير متاح");
+      gAdminFlag = true;
       gData = d;
       render(box);
     } catch (e) {
-      box.innerHTML = '<div class="ghead"><p class="u96sech" style="margin:0">🔗 حسابات Google — الإدارة</p></div>'
-        + '<p class="empty">' + esc2(e.message || "تعذر الجلب") + '</p>';
+      var m = String((e && e.message) || "");
+      /* رفض الصلاحية = لسنا مديراً — يُزال القسم نهائياً بهدوء */
+      if (/403|المدير|صلاحية/.test(m)) { gAdminFlag = false; dropBox(); }
+      else {
+        /* خطأ عابر — يبقى القسم ويعيد المحاولة تلقائياً لاحقاً */
+        gAdminFlag = null;
+        box.innerHTML = '<div class="ghead"><p class="u96sech" style="margin:0">🔗 حسابات Google — الإدارة</p></div>'
+          + '<p class="empty">' + esc2(m || "تعذر الجلب") + '</p>';
+      }
     } finally { loading = false; }
   }
+
+  /* v160b: مشغّل احتياطي دوري يضمن ظهور القسم حتى لو تغيّر مسار العرض —
+     رخيص: يعود فوراً إن كانت البيانات جاهزة أو الصلاحية محسومة */
+  setInterval(function () { try { load(); } catch (e) {} }, 12000);
 
   function stat(label, n) {
     return '<span class="gstat">' + label + ' <b>' + esc2(n) + '</b></span>';
