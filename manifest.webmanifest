@@ -23,6 +23,8 @@
     }
   ],
   "related_applications": [
-    { "platform": "webapp" }
+    {
+      "platform": "webapp"
+    }
   ]
 }
