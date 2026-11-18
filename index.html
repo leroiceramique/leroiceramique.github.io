@@ -3745,7 +3745,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "39";
+const APP_VER = "40";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
@@ -9677,7 +9677,6 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
 
 </script>
 <script id="v158clean">try{localStorage.removeItem("__v150sell");localStorage.removeItem("__v149sell");localStorage.removeItem("__v150neg");}catch(e){}</script>
-
 <script id="v160ui">
 /* ═══ v160: إدارة حسابات Google داخل شاشة المستخدمين نفسها — بلا شاشة منفصلة ═══
    للمدير الرئيسي فقط (الخادم يفحص دائماً): شريط إحصائيات + الحسابات المرتبطة
@@ -9770,6 +9769,43 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
     return '<span class="gstat">' + label + ' <b>' + esc2(n) + '</b></span>';
   }
 
+  /* v163: دمج حالة Google داخل بطاقات القائمة المألوفة نفسها — المطابقة بالبريد
+     (فريد إجبارياً على الخادم: لا يُكتب فوق حساب آخر) من بيانات overview،
+     والحقن يزيل ما أضافه سابقاً أولاً (.gaugx) فلا يتضاعف أبداً عند كل تحديث. */
+  function augmentCards() {
+    if (!gData || gAdminFlag === false || !isAdmin()) return;
+    var box = document.getElementById("usrList");
+    if (!box) return;
+    var map = {};
+    (gData.linked || []).forEach(function (u) {
+      if (u.email) map[String(u.email).toLowerCase()] = u;
+    });
+    box.querySelectorAll(".u96card").forEach(function (card) {
+      card.querySelectorAll(".gaugx").forEach(function (el) { el.remove(); });
+      var sub = card.querySelector(".u96sub");
+      if (!sub) return;
+      var m = (sub.textContent || "").match(/✉️\s*([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)/);
+      if (!m) return;
+      var rec = map[m[1].toLowerCase()];
+      if (!rec) return;
+      var badge = (!rec.active) ? '<span class="badge r gaugx">🚫 الحساب موقوف</span>'
+        : (rec.gdis ? '<span class="badge b gaugx">⛔ Google معطل</span>'
+                    : '<span class="badge g gaugx">✅ Google فعّال</span>');
+      var top = card.querySelector(".u96top");
+      if (top) top.insertAdjacentHTML("beforeend", badge);
+      var acts = card.querySelector(".u96acts");
+      if (!acts) { acts = document.createElement("div"); acts.className = "u96acts"; card.appendChild(acts); }
+      var b1 = rec.gdis
+        ? '<button type="button" class="btn mini green gaugx">▶️ تفعيل Google</button>'
+        : '<button type="button" class="btn mini blue gaugx">⏸ تعطيل Google</button>';
+      var b2 = '<button type="button" class="btn mini red gaugx">🔓 إلغاء الربط</button>';
+      acts.insertAdjacentHTML("beforeend", b1 + b2);
+      var btns = acts.querySelectorAll("button.gaugx");
+      if (btns[0]) btns[0].addEventListener("click", function () { act(rec.gdis ? "reactivate" : "suspend", rec.id, rec.name || ""); });
+      if (btns[1]) btns[1].addEventListener("click", function () { act("unlink", rec.id, rec.name || ""); });
+    });
+  }
+
   function render(box) {
     var s = (gData && gData.stats) || {};
     var linked = (gData && gData.linked) || [];
@@ -9786,27 +9822,13 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
     if (!selfEmail()) {
       html += '<div class="u96card"><div class="u96main"><div class="u96nm">حسابك غير مرتبط ببريد Google بعد</div>'
         + '<div class="gmeta">اربط بريدك لتدخل بحساب جوجل مباشرة دون اسم مستخدم ورقم سر.</div></div>'
-        + '<div class="u96acts"><button type="button" class="btn gold" style="flex:1;font-size:14px;padding:11px 14px" data-gself="1">🔗 ربط حسابي بحساب Google</button></div></div>';
+        + '<div class="u96acts" style="display:flex"><button type="button" class="btn gold" style="flex:1;font-size:14px;padding:11px 14px" data-gself="1">🔗 ربط حسابي بحساب Google</button></div></div>';
     }
-    if (!linked.length) {
-      html += '<p class="empty">لا حسابات مرتبطة بعد — تظهر هنا عند قبول طلبات Google أو الربط اليدوي.</p>';
-    } else {
-      html += linked.map(function (u) {
-        var b = (!u.active) ? '<span class="badge r">🚫 الحساب موقوف</span>'
-          : (u.gdis ? '<span class="badge b">⛔ Google معطل</span>'
-                    : '<span class="badge g">✅ مصرح — Google فعّال</span>');
-        var acts = '';
-        if (u.gdis) acts += '<button type="button" class="btn mini green" data-gact="reactivate" data-uid="' + u.id + '" data-n="' + esc2(u.name) + '">▶️ إعادة تفعيل Google</button>';
-        else acts += '<button type="button" class="btn mini blue" data-gact="suspend" data-uid="' + u.id + '" data-n="' + esc2(u.name) + '">⏸ تعطيل Google مؤقتاً</button>';
-        acts += '<button type="button" class="btn mini red" data-gact="unlink" data-uid="' + u.id + '" data-n="' + esc2(u.name) + '">🔓 إلغاء الربط</button>';
-        return '<div class="u96card"><div class="u96top">'
-          + '<div class="u96main"><div class="u96nm">' + esc2(u.name) + '</div>'
-          + '<div class="u96sub"><span class="u96rk rk-' + esc2(u.role) + '">' + esc2(u.role_label) + '</span> '
-          + '✉️ ' + esc2(u.email) + ' · ربط: ' + esc2(u.linked_at || "—")
-          + ' · آخر دخول: ' + esc2(u.last_seen || "—") + '</div></div>'
-          + b + '</div><div class="u96acts">' + acts + '</div></div>';
-      }).join("");
-    }
+    /* v163 (قرار المالك): قائمة «الحسابات المرتبطة» حُذفت من هنا — كانت تكرر
+       اسم المستخدم مرتين (بطاقة Google فوق بطاقة القائمة المألوفة). حالة Google
+       وشاراتها وأزرار التعطيل/التفعيل/إلغاء الربط صارت مدموجة على بطاقة كل
+       مستخدم في القائمة أدناه نفسها (augmentCards) — شخص واحد = بطاقة واحدة. */
+    html += '<p class="gmeta">حالة Google وأزرارها تظهر على بطاقة كل مستخدم في القائمة أدناه — بلا أي قائمة مكررة.</p>';
     box.innerHTML = html;
     box.querySelectorAll("button[data-gref],button[data-gmanual],button[data-gself],button[data-gact]").forEach(function (b) {
       b.addEventListener("click", function () {
@@ -9816,6 +9838,7 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
         else if (b.dataset.gact !== undefined) act(b.dataset.gact, +b.dataset.uid, b.dataset.n);
       });
     });
+    try { augmentCards(); } catch (e2) {}
   }
 
   async function act(action, uid, name) {
@@ -9892,6 +9915,7 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
   var orig = window.renderUsers;
   window.renderUsers = function () {
     var r = orig ? orig.apply(this, arguments) : undefined;
+    try { augmentCards(); } catch (e) {}
     try { load(); } catch (e) {}
     return r;
   };
