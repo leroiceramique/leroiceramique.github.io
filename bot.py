@@ -12809,7 +12809,8 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "45"  # v168 = «التحديث الذاتي الدائم — نهاية تعارض «الإصدار قديم والخادم جديد»: واجهة Pages تستبدل نفسها تلقائياً بالواجهة الحية من الخادم عند الإقلاع وعند «تحديث الآن» (الجلسة تنجو عبر ceram_sess وترويسة X-Session-Token)، حوار «تحديث جديد» يعمل على كل النسخ بعد إلغاء كبت Pages، اسم كاش سجل الخدمة ديناميكي فيتجدد مع كل نشر، وشاشة الإعدادات تعرض إصدار الخادم الحقيقي دائماً» — السجل في CHANGELOG.md
+PWA_VERSION = "46"  # v169 = «إصلاح بطاقة تفاصيل المستخدم والحذف النهائي — نهاية «تعذر حساب الأثر: لا يوجد اتصال بالخادم»: فهارس عند الإقلاع على كل أعمدة العدّادات (كان العد تسلسلياً على جداول ضخمة فتجاوز مهلة العميل 25 ث)، وتصحيح قراءة نتيجة العدّادات تحت RealDictCursor (كانت KeyError ترمي 500)، وهبوط آمن لعدّاد لكل جدول عند أي فشل، وتمييز انتهاء المهلة في رسائل العميل بمهلة 60 ث لهذين النداءين» — السجل في CHANGELOG.md
+# (v168 = «التحديث الذاتي الدائم — نهاية تعارض «الإصدار قديم والخادم جديد»: واجهة Pages تستبدل نفسها تلقائياً بالواجهة الحية من الخادم عند الإقلاع وعند «تحديث الآن» (الجلسة تنجو عبر ceram_sess وترويسة X-Session-Token)، حوار «تحديث جديد» يعمل على كل النسخ بعد إلغاء كبت Pages، اسم كاش سجل الخدمة ديناميكي فيتجدد مع كل نشر، وشاشة الإعدادات تعرض إصدار الخادم الحقيقي دائماً» — السجل في CHANGELOG.md
 # (v167 = «خانة المستخدمين: فصل حسابات تلغرام عن قائمة التطبيق (إخفاء فقط دون المساس بعمل البوت)، عرض مدة النشاط الأخير لكل حساب (نبض تلغرام + دخول + جلسات، كل 300 ثانية)، بطاقة تفاصيل كاملة لكل حساب، وحذف نهائي كامل للبيانات بخطوتين وتأكيد باسم الحساب (admin فقط)» — السجل الكامل في CHANGELOG.md
 # ⚠️ قاعدة حصانة الجلسات: لا تربط أبداً أي جلسة/كوكي/رمز تذكّر برقم PWA_VERSION —
 # الجلسات في القاعدة تنجو من كل تحديث وإعادة نشر، وأي ربط بالإصدار يسجّل خروج الجميع.
@@ -12989,6 +12990,19 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip        VARCHAR(64)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
+-- ═══ v169: فهارس عدّادات بطاقة التفاصيل/الحذف النهائي — كانت عمليات العد تسلسلية
+-- على جداول ضخمة (audit_log/transactions/invoices/…) فتجاوز مهلة العميل 25 ثانية
+-- فيظهر «لا يوجد اتصال بالخادم» خطأً. IF NOT EXISTS = بلا أثر بعد أول إقلاع.
+DO $$ BEGIN
+    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log (user_id);
+    CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions (user_id);
+    CREATE INDEX IF NOT EXISTS idx_incoming_orders_requester ON incoming_orders (requester_id);
+    CREATE INDEX IF NOT EXISTS idx_extraction_requests_requester ON extraction_requests (requester_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_worker ON invoices (worker_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_admin ON invoices (admin_id);
+    CREATE INDEX IF NOT EXISTS idx_pwa_registrations_email_lc ON pwa_registrations (lower(email));
+EXCEPTION WHEN OTHERS THEN RAISE NOTICE '[schema] v169 indexes skipped: % (%)', SQLERRM, SQLSTATE;
+END $$;
 -- ═══ v32: الهوية (إيميل/هاتف) + التسجيل الذاتي + الرمز السري ═══
 DO $$ BEGIN
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
@@ -20301,6 +20315,8 @@ _PWA_HTML_PATCHES = (
      '$("#setAbout").textContent = "الإصدار " + (S.serverVersion || APP_VER) + (S.serverVersion && S.serverVersion !== APP_VER ? " — واجهة " + APP_VER + " (تُحدَّث تلقائياً)" : "");'),
     ('    if (about) about.textContent = "الإصدار " + APP_VER + (v ? " — الخادم " + v : "");',
      '    if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");'),
+    ('throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة.");',
+     'if (e && (e.name === "AbortError" || e.code === 20)) throw new Error("انتهت مهلة الطلب — الخادم بطيء أو مثقل؛ أعد المحاولة.");\n    throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة.");'),
 )
 
 
@@ -21347,7 +21363,7 @@ window.v167Details = function (uid, tid, name) {
   var qs = [];
   if (uid) qs.push("uid=" + encodeURIComponent(uid));
   if (tid) qs.push("tid=" + encodeURIComponent(tid));
-  api("/api/users/details?" + qs.join("&"), { noCache: true })
+  api("/api/users/details?" + qs.join("&"), { noCache: true, timeout: 60000 })
     .then(function (d) {
       var c = d.counts || {};
       var row = function (k, v) { return '<div class="v167row"><span>' + k + '</span><b>' + v + '</b></div>'; };
@@ -21384,7 +21400,7 @@ window.v167Purge = function (uid, tid, name) {
   $("#p167Name").textContent = name;
   $("#dlgPurge167").showModal();
   api("/api/users/purge", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ uid: uid || undefined, telegram_id: tid || undefined }) })
+    body: JSON.stringify({ uid: uid || undefined, telegram_id: tid || undefined }), timeout: 60000 })
     .then(function (d) {
       var im = d.impact || {};
       var li = function (k, v) { return "<li>" + k + ": <b>" + v + "</b></li>"; };
@@ -26509,22 +26525,71 @@ def _pwa_user_origin(r):
 
 
 def _pwa_user_impact_counts(cur, uid, email):
-    """v167: أعداد كل ما يرتبط بالمستخدم — تظهر في بطاقة التفاصيل وفي تأكيد الحذف النهائي."""
-    cur.execute(
-        "SELECT "
-        "(SELECT COUNT(*) FROM transactions WHERE user_id = %s) AS txn, "
-        "(SELECT COUNT(*) FROM incoming_orders WHERE requester_id = %s) AS supply, "
-        "(SELECT COUNT(*) FROM extraction_requests WHERE requester_id = %s) AS extr, "
-        "(SELECT COUNT(*) FROM pending_deliveries WHERE user_id = %s) AS deliv, "
-        "(SELECT COUNT(*) FROM invoices WHERE worker_id = %s) AS inv_worker, "
-        "(SELECT COUNT(*) FROM invoices WHERE admin_id = %s) AS inv_admin, "
-        "(SELECT COUNT(*) FROM audit_log WHERE user_id = %s) AS audit, "
-        "(SELECT COUNT(*) FROM pwa_sessions WHERE user_id = %s AND expires_at > NOW()) AS sess, "
-        "(SELECT COUNT(*) FROM pwa_registrations WHERE lower(email) = %s) AS regs",
-        (uid, uid, uid, uid, uid, uid, uid, uid, (email or "").lower()))
-    row = cur.fetchone()
+    """v167: أعداد كل ما يرتبط بالمستخدم — تظهر في بطاقة التفاصيل وفي تأكيد الحذف النهائي.
+    v169: الاستعلام المدمج أولاً (بالفهارس الجديدة = ميلي ثانية)، وعند أي فشل
+    (جدول غائب/قاعدة منشغلة) هبوط آمن لعدّاد لكل جدول على حدة — البطاقة تُعرض
+    دائماً ولا يُرفع استثناء أبداً. القراءة بالاسم والموضع معاً (RealDictCursor
+    يعيد قاموساً بأسماء الأعمدة — القراءة الموضعية القديمة كانت ترمي KeyError)."""
     keys = ("txn", "supply", "extr", "deliv", "inv_worker", "inv_admin", "audit", "sess", "regs")
-    return {k: int(row[i] or 0) for i, k in enumerate(keys)} if row else {k: 0 for k in keys}
+    try:
+        cur.execute(
+            "SELECT "
+            "(SELECT COUNT(*) FROM transactions WHERE user_id = %s) AS txn, "
+            "(SELECT COUNT(*) FROM incoming_orders WHERE requester_id = %s) AS supply, "
+            "(SELECT COUNT(*) FROM extraction_requests WHERE requester_id = %s) AS extr, "
+            "(SELECT COUNT(*) FROM pending_deliveries WHERE user_id = %s) AS deliv, "
+            "(SELECT COUNT(*) FROM invoices WHERE worker_id = %s) AS inv_worker, "
+            "(SELECT COUNT(*) FROM invoices WHERE admin_id = %s) AS inv_admin, "
+            "(SELECT COUNT(*) FROM audit_log WHERE user_id = %s) AS audit, "
+            "(SELECT COUNT(*) FROM pwa_sessions WHERE user_id = %s AND expires_at > NOW()) AS sess, "
+            "(SELECT COUNT(*) FROM pwa_registrations WHERE lower(email) = %s) AS regs",
+            (uid, uid, uid, uid, uid, uid, uid, uid, (email or "").lower()))
+        row = cur.fetchone()
+        if row is not None:
+            vals = list(row.values()) if isinstance(row, dict) else list(row)
+            return {k: int(vals[i] or 0) for i, k in enumerate(keys)}
+    except Exception as _cnt_err:
+        try:
+            logging.warning("[users][v169] العدّاد المدمج فشل — هبوط آمن لكل جدول: "
+                            + str(_cnt_err)[:160])
+        except Exception:
+            pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+    specs = (("txn", "transactions", "user_id"),
+             ("supply", "incoming_orders", "requester_id"),
+             ("extr", "extraction_requests", "requester_id"),
+             ("deliv", "pending_deliveries", "user_id"),
+             ("inv_worker", "invoices", "worker_id"),
+             ("inv_admin", "invoices", "admin_id"),
+             ("audit", "audit_log", "user_id"),
+             ("sess", "pwa_sessions", "user_id"))
+    out = {}
+    for k, tbl, col in specs:
+        try:
+            cur.execute("SELECT COUNT(*) AS c FROM " + tbl + " WHERE " + col + " = %s", (uid,))
+            _r = cur.fetchone()
+            out[k] = int((list(_r.values())[0] if isinstance(_r, dict) else (_r or [0])[0]) or 0)
+        except Exception:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+            out[k] = 0
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM pwa_registrations WHERE lower(email) = %s",
+                    ((email or "").lower(),))
+        _r = cur.fetchone()
+        out["regs"] = int((list(_r.values())[0] if isinstance(_r, dict) else (_r or [0])[0]) or 0)
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        out["regs"] = 0
+    return out
 
 
 def _pwa_api_user_details(user, uid=None, tid=None):
