@@ -25823,27 +25823,47 @@ async def pwa_registration_delete_handler(request):
     return _pwa_jr({"ok": True, "message": msg})
 
 
-async def _notify_admins_pwa_registration(reg_id, full_name, username, role_label):
+async def _notify_admins_pwa_registration(reg_id, full_name, username, role_label, via_google=False):
     """v39: إشعار فوري للمدراء في تلغرام بطلب انضمام جديد من التطبيق
     مع أزرار سريعة: تفعيل كبائع / تفعيل كعامل مخزون / حذف الطلب.
-    بلا بريد — اسم الدخول والرقم السري محفوظان منذ التسجيل."""
+    بلا بريد — اسم الدخول والرقم السري محفوظان منذ التسجيل.
+    v158: via_google=True ← طلب انضمام ببريد Google: نص مختلف وزر رفض
+    يحفظ الحالة — سلوك طلبات الاسم/الرقم السري لم يتغير."""
     if TG_APP is None:
         return
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛍 تفعيل كبائع",
-                              callback_data="pwreg_ok_" + str(reg_id) + "_seller"),
-         InlineKeyboardButton("📦 تفعيل كعامل مخزون",
-                              callback_data="pwreg_ok_" + str(reg_id) + "_stock")],
-        [InlineKeyboardButton("🗑 حذف الطلب", callback_data="pwreg_del_" + str(reg_id))],
-    ])
-    lines = [
-        "🔔 طلب انضمام جديد من التطبيق:",
-        "👤 " + str(full_name or ""),
-        "🔑 اسم الدخول: " + str(username or ""),
-        "🎯 الفئة المطلوبة: " + str(role_label or ""),
-        "",
-        "اضغط موافقة ليدخل التطبيق فوراً باسم الدخول ورقمه السري — بلا موافقة يبقى معلقاً.",
-    ]
+    if via_google:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛍 تفعيل كبائع",
+                                  callback_data="pwreg_ok_" + str(reg_id) + "_seller"),
+             InlineKeyboardButton("📦 تفعيل كعامل مخزون",
+                                  callback_data="pwreg_ok_" + str(reg_id) + "_stock")],
+            [InlineKeyboardButton("🚫 رفض الطلب", callback_data="pwreg_del_" + str(reg_id))],
+        ])
+        lines = [
+            "🔔 طلب انضمام جديد عبر Google:",
+            "👤 " + str(full_name or ""),
+            "✉️ بريد Google: " + str(username or ""),
+            "🎯 الفئة المقترحة: " + str(role_label or ""),
+            "",
+            "الموافقة تربط البريد بالحساب ويدخل بجوجل مباشرة بنفس الفئة والصلاحيات —",
+            "الرفض يحفظ الحالة ويمنع الدخول بهذا البريد.",
+        ]
+    else:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛍 تفعيل كبائع",
+                                  callback_data="pwreg_ok_" + str(reg_id) + "_seller"),
+             InlineKeyboardButton("📦 تفعيل كعامل مخزون",
+                                  callback_data="pwreg_ok_" + str(reg_id) + "_stock")],
+            [InlineKeyboardButton("🗑 حذف الطلب", callback_data="pwreg_del_" + str(reg_id))],
+        ])
+        lines = [
+            "🔔 طلب انضمام جديد من التطبيق:",
+            "👤 " + str(full_name or ""),
+            "🔑 اسم الدخول: " + str(username or ""),
+            "🎯 الفئة المطلوبة: " + str(role_label or ""),
+            "",
+            "اضغط موافقة ليدخل التطبيق فوراً باسم الدخول ورقمه السري — بلا موافقة يبقى معلقاً.",
+        ]
     text = "\n".join(lines)
     seen = set()
     for admin_id in list(ADMIN_IDS) + list(OWNER_IDS or []):
@@ -25887,11 +25907,16 @@ async def callback_pwreg_handler(update, context):
         except Exception:
             pass
     elif action == "del":
-        ok, msg = await asyncio.to_thread(_pwa_api_registration_delete, None, reg_id)
-        await asyncio.to_thread(_audit_log, "pwreg_delete" if ok else "pwreg_delete_fail",
+        # v158: طلب Google (بريد بلا رقم سر) ← رفض محفوظ؛ غيره ← حذف كما في v39
+        is_g, ok, msg = await asyncio.to_thread(_pwa_api_registration_reject_or_delete, reg_id)
+        await asyncio.to_thread(_audit_log,
+                                ("pwreg_reject" if is_g else "pwreg_delete") + ("" if ok else "_fail"),
                                 None, details=str(msg)[:120])
         try:
-            await query.edit_message_text(("🗑 " if ok else "❌ ") + str(msg))
+            if ok:
+                await query.edit_message_text(("🚫 " if is_g else "🗑 ") + str(msg))
+            else:
+                await query.edit_message_text("❌ " + str(msg))
         except Exception:
             pass
 
@@ -26103,12 +26128,13 @@ def _google_redirect_uri():
     return ""
 
 
-def _google_state_new(apk, pg=False):
+def _google_state_new(apk, pg=False, link_user=None):
     state = secrets.token_urlsafe(24)
     now = time.time()
     for k in [k for k, v in _google_oauth_states.items() if v["exp"] < now]:
         _google_oauth_states.pop(k, None)
-    _google_oauth_states[state] = {"exp": now + _GOOGLE_STATE_TTL, "apk": apk, "pg": pg}
+    _google_oauth_states[state] = {"exp": now + _GOOGLE_STATE_TTL, "apk": apk, "pg": pg,
+                                   "link_user": link_user}
     return state
 
 
@@ -26211,6 +26237,71 @@ def _pwa_google_find_any_user(email):
             row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        release_connection(conn)
+
+
+def _pwa_google_find_rejected(email):
+    """v158: طلب Google سابق بهذا البريد رُفض؟ (حالة الرفض محفوظة — الدخول ممنوع)"""
+    email = str(email or "").strip().lower()
+    if not email:
+        return False
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pwa_registrations "
+                        "WHERE status = 'cancelled' AND lower(email) = %s LIMIT 1", (email,))
+            row = cur.fetchone()
+        conn.commit()
+        return row is not None
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        release_connection(conn)
+
+
+def _pwa_google_do_link(uid, email):
+    """v158: ربط بريد Google الموثق بحساب قائم — بلا حساب مكرر وبلا تجاوز:
+    المستخدم موثق بجلسته الحالية، والبريد لا يُكتب فوق حساب آخر."""
+    email = str(email or "").strip().lower()
+    if not email:
+        return False, "بريد غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE lower(email) = %s AND id <> %s LIMIT 1",
+                        (email, uid))
+            other = cur.fetchone()
+            if other:
+                return False, "هذا البريد مرتبط مسبقاً بحساب آخر — راجع الإدارة."
+            cur.execute("UPDATE users SET email = %s, identity_verified = TRUE "
+                        "WHERE id = %s", (email, uid))
+        conn.commit()
+        _users_cache_clear()
+        return True, "تم الربط."
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] google link failed: " + str(e))
+        return False, "خطأ في الخادم، أعد المحاولة."
+    finally:
+        release_connection(conn)
+
+
+def _pwa_google_user_brief(uid):
+    """v158: ملخص مستخدم بنفس شكل جلسة Google (id/name/role) لرمز العودة."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, first_name, username, role FROM users WHERE id = %s", (uid,))
+            row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return None
+        return {"id": row[0], "name": row[1] or row[2] or "", "role": row[3]}
     except Exception:
         conn.rollback()
         return None
@@ -26393,7 +26484,15 @@ async def pwa_google_start_handler(request):
         return _pwa_err(503, "لم يُضبط عنوان العودة (GOOGLE_REDIRECT_URI / RENDER_EXTERNAL_URL).")
     apk = request.query.get("app", "") == "1"
     pg = request.query.get("pg", "") == "1"
-    state = _google_state_new(apk, pg)
+    # v158: وضع الربط — رمز link صادر لجلسة موثقة داخل التطبيق (مرت مع الرابط)
+    link_user = None
+    _lot = str(request.query.get("link", "") or "").strip()
+    if _lot:
+        _lrec = _google_ot_take(_lot)
+        if not _lrec or _lrec.get("kind") != "link" or not _lrec.get("user_id"):
+            return _pwa_err(400, "طلب الربط منتهٍ أو مستهلك — ابدأ الربط من الإعدادات من جديد.")
+        link_user = _lrec.get("user_id")
+    state = _google_state_new(apk, pg, link_user)
     url = (_GOOGLE_AUTH_URL + "?client_id=" + _uparse.quote(GOOGLE_CLIENT_ID)
            + "&redirect_uri=" + _uparse.quote(redirect_uri)
            + "&response_type=code&scope=" + _uparse.quote("openid email profile")
@@ -26422,9 +26521,35 @@ async def pwa_google_callback_handler(request):
     email = str(payload.get("email") or "").strip().lower()
     if not email:
         return _pwa_err(502, "لم يُرجع Google بريداً صالحاً.")
+    # v158: اشتراط بريد موثّق من Google (email_verified) قبل أي دخول أو ربط
+    if payload.get("email_verified") is False:
+        return _pwa_err(403, "بريد Google غير موثّق — أكمل توثيق البريد في حساب Google ثم أعد المحاولة.")
     name = str(payload.get("name") or email.split("@")[0])[:120]
     base = _pwa_base_url(request)
     apk = bool(st.get("apk"))
+    # v158: ربط بريد Google بحساب قائم (طلب من جلسة موثقة داخل التطبيق) —
+    # بلا إنشاء حساب مكرر؛ الملكية موثقة بالجلسة والبريد لا يُكتب فوق حساب آخر
+    link_uid = st.get("link_user")
+    if link_uid:
+        _lok, _lmsg = await _pwa_run(_pwa_google_do_link, link_uid, email)
+        if not _lok:
+            _ot = _google_ot_new("link_taken", {"email": email})
+            if apk:
+                _google_return_redirect(base, True,
+                                        base + "/api/auth/google/exchange?ot=" + _uparse.quote(_ot))
+            return _pwa_err(409, _lmsg or "البريد مرتبط مسبقاً بحساب آخر.")
+        _token = await _pwa_run(_pwa_create_session, link_uid)
+        _urow = await _pwa_run(_pwa_google_user_brief, link_uid)
+        await _pwa_run(_audit_log, "google_link_done", _urow, details=email, ip=ip)
+        _ot = _google_ot_new("session", {"token": _token, "user": _urow or {}})
+        if apk:
+            _google_return_redirect(base, True,
+                                    base + "/api/auth/google/exchange?ot=" + _uparse.quote(_ot))
+        _cs_same, _cs_secure = _pwa_cookie_flags(request)
+        resp = web.HTTPFound(base + "/")
+        resp.set_cookie(PWA_COOKIE, _token, max_age=PWA_SESSION_DAYS * 86400,
+                        httponly=True, samesite=_cs_same, secure=_cs_secure, path="/")
+        raise resp
     found = await _pwa_run(_pwa_google_find_user, email)
     if found:
         token = await _pwa_run(_pwa_create_session, found["id"])
@@ -26452,6 +26577,14 @@ async def pwa_google_callback_handler(request):
                        details=email + " — الفئة: " + str(any_row.get("role")), ip=ip)
         _google_return_redirect(base, apk,
                                 (PWA_PAGES_URL if st.get("pg") else base) + "/?google=wait")
+    # v158: طلب Google سابق بهذا البريد رُفض؟ الحالة محفوظة — الدخول ممنوع
+    if await _pwa_run(_pwa_google_find_rejected, email):
+        _ot = _google_ot_new("rejected", {"email": email})
+        if apk:
+            _google_return_redirect(base, True,
+                                    base + "/api/auth/google/exchange?ot=" + _uparse.quote(_ot))
+        _google_return_redirect(base, False,
+                                (PWA_PAGES_URL if st.get("pg") else base) + "/?google=rejected")
     if not _pwa_self_register_enabled():
         return _pwa_err(403, "التسجيل الذاتي معطّل حالياً — راجع إدارة المؤسسة.")
     ot = _google_ot_new("join", {"email": email, "name": name})
@@ -26514,6 +26647,11 @@ async def pwa_google_ot_handler(request):
         ot2 = _google_ot_new("join", {"email": rec.get("email", ""), "name": rec.get("name", "")})
         return _pwa_jr({"ok": True, "join": True, "ot": ot2,
                         "name": rec.get("name", ""), "email": rec.get("email", "")})
+    # v158: حالات واضحة للتطبيق — رفض محفوظ أو بريد مرتبط بحساب آخر
+    if rec["kind"] == "rejected":
+        return _pwa_jr({"ok": True, "rejected": True, "email": rec.get("email", "")})
+    if rec["kind"] == "link_taken":
+        return _pwa_jr({"ok": True, "link_taken": True, "email": rec.get("email", "")})
     return _pwa_err(400, "رمز غير معروف.")
 
 
@@ -26544,10 +26682,65 @@ async def pwa_google_join_handler(request):
     # v34: إشعار فوري للمدراء في تلغرام بأزرار الموافقة/الحذف
     if isinstance(res, int):
         asyncio.create_task(_notify_admins_pwa_registration(
-            res, rec.get("name", ""), rec["email"], ROLE_LABELS.get(role, role)))
+            res, rec.get("name", ""), rec["email"], ROLE_LABELS.get(role, role),
+            via_google=True))
     return _pwa_jr({"ok": True,
                     "message": "تم استلام طلبك — عضويتك في انتظار تفعيل الإدارة. "
                                "سجّل الدخول بجوجل مجدداً بعد التفعيل."})
+
+
+async def pwa_google_link_handler(request):
+    """v158: بدء ربط بريد Google بالحساب الحالي (جلسة مطلوبة — ملكية موثقة).
+    يعيد رابط بدء الربط للتطبيق؛ الرمز صالح مرة واحدة ومدة قصيرة."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    ip = request.remote or "؟"
+    try:
+        await _pwa_run(_pwa_login_gate, "glink|" + ip)
+    except PwaLocked as lk:
+        return _pwa_err(429, "محاولات كثيرة — انتظر قليلاً ثم أعد المحاولة.")
+    ot = _google_ot_new("link", {"user_id": user["id"]})
+    base = _pwa_base_url(request)
+    await _pwa_run(_audit_log, "google_link_start", user, ip=ip)
+    return _pwa_jr({"ok": True,
+                    "url": base + "/api/auth/google/start?app=1&link=" + _uparse.quote(ot)})
+
+
+def _pwa_api_registration_reject_or_delete(reg_id):
+    """v158: رفض طلب انضمام من إشعار المدير: طلبات Google (بريد بلا رقم سر)
+    تُحفظ بحالة cancelled فيُمنع صاحبها من الدخول أو إعادة الطلب بنفس البريد؛
+    طلبات الاسم/الرقم السري تُحذف كما في v39 دون تغيير سلوكها.
+    يعيد (is_google, ok, msg)."""
+    try:
+        reg_id = int(reg_id)
+    except (TypeError, ValueError):
+        return False, False, "معرّف غير صالح."
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT email, password_hash FROM pwa_registrations "
+                        "WHERE id = %s AND status = 'waiting'", (reg_id,))
+            row = cur.fetchone()
+            if not row:
+                return False, False, "الطلب غير موجود أو مُفعَّل مسبقاً."
+            is_google = bool(str(row[0] or "").strip()) and not row[1]
+            if is_google:
+                cur.execute("UPDATE pwa_registrations SET status = 'cancelled' "
+                            "WHERE id = %s", (reg_id,))
+                msg = ("تم رفض طلب Google وحفظ حالة الرفض — لن يستطيع الدخول "
+                       "أو إعادة الطلب بهذا البريد.")
+            else:
+                cur.execute("DELETE FROM pwa_registrations WHERE id = %s", (reg_id,))
+                msg = "تم حذف الطلب."
+        conn.commit()
+        return is_google, True, msg
+    except Exception as e:
+        conn.rollback()
+        logging.error("[PWA] registration reject/delete failed: " + str(e))
+        return False, False, "خطأ في الخادم."
+    finally:
+        release_connection(conn)
 
 
 async def pwa_registration_approve_handler(request):
@@ -32314,6 +32507,7 @@ def register_pwa_routes(app):
     app.router.add_options("/api/{tail:.*}", pwa_cors_preflight_handler)  # v125: CORS
     app.router.add_post("/api/login", pwa_login_handler)
     app.router.add_post("/api/auth/google/ot", pwa_google_ot_handler)   # v125: عودة Google من Pages
+    app.router.add_post("/api/auth/google/link", pwa_google_link_handler)  # v158: ربط بريد بحساب قائم
     app.router.add_get("/api/pages/export", pwa_pages_export_handler)   # v125: تصدير نسخة Pages
     # ── v32: التسجيل الذاتي + الرمز السري + إدارة الفئات ──
     app.router.add_post("/api/register", pwa_register_handler)
