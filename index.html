@@ -3700,10 +3700,15 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 (async function pagesGoogleReturn() {
   try {
     const q = new URLSearchParams(location.search);
-    if ((q.get("google") || "") !== "ot") return;
-    const ot = q.get("ot") || "";
-    try { history.replaceState(null, "", location.pathname); } catch (eH) {}
+    /* v166: الإصلاح الجذري — الخادم يعيد برمز «?google=ot=XXX» وURLSearchParams
+    يقرأ القيمة «ot=XXX» كاملة، فكان الفحص القديم (=== "ot") يفشل دائماً ويُهمل
+    الرمز صامتاً → عودة لشاشة الدخول بدل الفتح المباشر. الآن كل الصيغ تعمل */
+    var gRaw = q.get("google") || "";
+    var ot = "";
+    if (gRaw.indexOf("ot=") === 0) ot = gRaw.slice(3);
+    else if (gRaw === "ot") ot = q.get("ot") || "";
     if (!ot) return;
+    try { history.replaceState(null, "", location.pathname); } catch (eH) {}
     const d = await api("/api/auth/google/ot", { noKick: true, method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ot: ot }) });
     if (d.join) { showGoogleJoin(d.name || "", d.email || "", d.ot || ""); return; }
@@ -3879,7 +3884,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "42";
+const APP_VER = "43";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
