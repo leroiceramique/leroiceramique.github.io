@@ -3720,6 +3720,120 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
   }
 })();
 
+/* ─── v165: نافذة Google الثانية — ربط حساب قائم بإثبات الملكية أو طلب انضمام جديد ─── */
+window.showGoogleJoin = function (gName, gEmail, gOt) {
+  try { history.replaceState(null, "", location.pathname); } catch (eH3) {}
+  var old = document.getElementById("gjoinOverlay"); if (old) old.remove();
+  var busy = false;
+  var ov = document.createElement("div"); ov.id = "gjoinOverlay";
+  ov.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147482000;background:rgba(15,18,25,.55);display:flex;align-items:center;justify-content:center;padding:16px;direction:rtl";
+  var card = document.createElement("div");
+  card.style.cssText = "background:var(--card,#fff);color:var(--tx,#23272f);border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.35);max-width:430px;width:100%;padding:22px;font-family:inherit;max-height:92vh;overflow:auto";
+  var errEl = document.createElement("div");
+  errEl.style.cssText = "color:#d83a3a;font-weight:700;font-size:13px;margin-top:10px;display:none;white-space:pre-wrap";
+  function showErr(m) { errEl.textContent = m || ""; errEl.style.display = m ? "block" : "none"; }
+  function mkBtn(txt, bg, fg) {
+    var b = document.createElement("button"); b.type = "button"; b.textContent = txt;
+    b.style.cssText = "display:block;width:100%;border:0;border-radius:12px;padding:12px 16px;margin-top:10px;font-size:14px;font-weight:800;color:" + fg + ";background:" + bg + ";font-family:inherit;cursor:pointer;text-align:center";
+    return b;
+  }
+  function mkInp(ph, type) {
+    var i = document.createElement("input"); i.type = type || "text"; i.placeholder = ph; i.autocomplete = "off";
+    i.style.cssText = "display:block;width:100%;box-sizing:border-box;border:1px solid rgba(120,120,120,.35);border-radius:10px;padding:11px 12px;margin-top:10px;font-size:14px;font-family:inherit;background:var(--bg,#f4f6fb);color:var(--tx,#23272f)";
+    return i;
+  }
+  var root = (window.CERAM_API_ROOT || "");
+  var title = document.createElement("div"); title.textContent = "🔗 ربط أو انضمام بحساب Google";
+  title.style.cssText = "font-size:17px;font-weight:900";
+  var mail = document.createElement("div");
+  mail.textContent = "البريد: " + (gEmail || "") + (gName ? " — " + gName : "");
+  mail.style.cssText = "font-size:13px;opacity:.75;margin-top:4px";
+  var lead = document.createElement("div"); lead.textContent = "هل لديك حساب سابق في Le Roi Ceramique؟ اربط بريدك بحسابك الحقيقي، أو أرسل طلب انضمام جديد."; lead.style.cssText = "font-size:13.5px;line-height:1.7;margin-top:10px";
+  card.appendChild(title); card.appendChild(mail); card.appendChild(lead);
+  var linkBox = document.createElement("div"); linkBox.style.display = "none";
+  var uInp = mkInp("اسم الدخول القديم (اسم المستخدم)"), pInp = mkInp("كلمة المرور القديمة", "password");
+  var bClaim = mkBtn("تحقق واربط وادخل", "#e05d4b", "#fff");
+  linkBox.appendChild(uInp); linkBox.appendChild(pInp); linkBox.appendChild(bClaim);
+  var roleBox = document.createElement("div"); roleBox.style.display = "none";
+  var ROLES = [["seller", "🛍 بائع"], ["stock", "📦 عامل مخزون"], ["external", "🚚 بائع خارجي"], ["customer", "🤝 عميل"]];
+  ROLES.forEach(function (r) {
+    var b = mkBtn(r[1], "rgba(88,101,242,.14)", "var(--tx,#23272f)");
+    b.addEventListener("click", function () {
+      if (busy) return; busy = true; showErr("");
+      fetch(root + "/api/auth/google/join", { method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ot: gOt, role: r[0] }) })
+        .then(function (x) { return x.json(); })
+        .then(function (d) {
+          busy = false;
+          if (d && d.ok) {
+            card.textContent = "";
+            var ok1 = document.createElement("div");
+            ok1.textContent = "✅ " + (d.message || "تم استلام طلبك — بانتظار موافقة الإدارة.");
+            ok1.style.cssText = "font-size:14px;font-weight:800;line-height:1.9";
+            var ok2 = document.createElement("div");
+            ok2.textContent = "بعد موافقة الإدارة اضغط «دخول بحساب Google» من جديد وستدخل مباشرة.";
+            ok2.style.cssText = "font-size:12.5px;opacity:.8;margin-top:8px;line-height:1.8";
+            card.appendChild(ok1); card.appendChild(ok2);
+            var ok3 = mkBtn("حسناً", "#5865f2", "#fff");
+            ok3.addEventListener("click", function () { ov.remove(); });
+            card.appendChild(ok3);
+          } else showErr((d && d.error) || "تعذّر إرسال الطلب — أعد المحاولة.");
+        })
+        .catch(function () { busy = false; showErr("تعذّر الاتصال بالخادم — تحقق من الشبكة."); });
+    });
+    roleBox.appendChild(b);
+  });
+  var bLink = mkBtn("عندي حساب سابق — اربط بريدك بحسابك الحقيقي", "#5865f2", "#fff");
+  var bJoin = mkBtn("ليس لدي حساب — طلب انضمام جديد", "rgba(88,101,242,.14)", "var(--tx,#23272f)");
+  bLink.addEventListener("click", function () {
+    roleBox.style.display = "none"; bJoin.style.display = "none";
+    linkBox.style.display = "block"; bLink.style.display = "none"; uInp.focus();
+  });
+  bJoin.addEventListener("click", function () {
+    linkBox.style.display = "none"; bLink.style.display = "none";
+    roleBox.style.display = "block"; bJoin.style.display = "none";
+  });
+  bClaim.addEventListener("click", function () {
+    if (busy) return; busy = true; showErr("");
+    fetch(root + "/api/auth/google/claim", { method: "POST", credentials: "omit",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ot: gOt, username: uInp.value, password: pInp.value }) })
+      .then(function (x) { return x.json(); })
+      .then(function (d) {
+        if (d && d.ok && d.sess) {
+          try { localStorage.setItem("ceram_sess", String(d.sess)); } catch (eS) {}
+          return api("/api/me", { noCache: true }).then(function (me) {
+            ov.remove(); showApp(me);
+          }, function () { busy = false; showErr("تم الربط لكن تعذّر إكمال الدخول — أعد المحاولة."); });
+        }
+        busy = false; showErr((d && d.error) || "تعذّر الربط — تأكد من البيانات.");
+      })
+      .catch(function () { busy = false; showErr("تعذّر الاتصال بالخادم — تحقق من الشبكة."); });
+  });
+  card.appendChild(bLink); card.appendChild(bJoin); card.appendChild(linkBox); card.appendChild(roleBox); card.appendChild(errEl);
+  ov.addEventListener("click", function (e) { if (e.target === ov) ov.remove(); });
+  ov.appendChild(card); document.body.appendChild(ov);
+};
+(async function pagesGoogleJoinParam() {
+  try {
+    var q = new URLSearchParams(location.search);
+    var g = q.get("google") || "";
+    if (g === "join") { window.showGoogleJoin(q.get("name") || "", q.get("email") || "", q.get("ot") || ""); return; }
+    var msgMap = { wait: "هذا الحساب موقوف أو معلّق — راجع إدارة المؤسسة.",
+                   rejected: "طلب سابق بهذا البريد مرفوض — راجع الإدارة.",
+                   expired: "انتهت صلاحية طلب Google — اضغط زر الدخول بحساب Google من جديد." };
+    if (msgMap[g]) {
+      try { history.replaceState(null, "", location.pathname); } catch (eH4) {}
+      try {
+        showLogin(false);
+        var errE = document.getElementById("loginErr");
+        if (errE) { errE.textContent = msgMap[g]; errE.style.display = "block"; }
+      } catch (eM) {}
+    }
+  } catch (eP) {}
+})();
+
 /* ─── إقلاع ─── */
 (async function boot() {
   applyTheme(currentTheme(), false);
@@ -3765,7 +3879,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "41";
+const APP_VER = "42";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
