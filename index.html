@@ -650,6 +650,10 @@ img{-webkit-user-drag:none;user-select:none}</style>
 (function () {
   window.CERAM_PAGES = 1;
   window.CERAM_API_ROOT = "";
+  /* v164 (واجهة 41): جسر الدخول الموحد SSO — رمز التطبيق الأصلي يُلتقط هنا
+     أولاً قبل أي replaceState يزيل معاملات العنوان */
+  var ssoOt = "";
+  try { ssoOt = (new URLSearchParams(location.search).get("sso") || "").trim(); } catch (eSsoQ) {}
   function norm(v) {
     v = (v || "").trim().replace(/\/+$/, "");
     if (v && !/^https?:\/\//i.test(v)) v = "https://" + v;
@@ -671,6 +675,22 @@ img{-webkit-user-drag:none;user-select:none}</style>
       showSetup();
     }
   } catch (e) {}
+  /* v164 (واجهة 41): جسر الدخول الموحد SSO — التطبيق الأصلي يمرر رمزاً أحادي
+     الاستخدام عبر ?sso= بعد نجاح دخول Google؛ نستبدله بجلسة ويب كاملة في
+     ceram_sess ثم نعيد التحميل بلا المعامل — لا شاشة دخول ثانية أبداً. */
+  if (ssoOt && ssoOt.length <= 128) {
+    try { history.replaceState(null, "", location.pathname); } catch (eS0) {}
+    fetch((window.CERAM_API_ROOT || "") + "/api/auth/sso/consume", {
+      method: "POST", credentials: "omit",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ot: ssoOt })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok && d.sess) {
+        try { localStorage.setItem("ceram_sess", String(d.sess)); } catch (eS1) {}
+      }
+    }).catch(function () {}).then(function () { location.reload(); });
+    return;
+  }
   function showSetup() {
     var wait = setInterval(function () {
       if (!document.body) return;
@@ -3745,7 +3765,7 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "40";
+const APP_VER = "41";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 function swCleanup() {
   try {
