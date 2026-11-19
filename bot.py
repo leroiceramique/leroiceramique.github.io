@@ -12809,7 +12809,8 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "48"  # v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
+PWA_VERSION = "49"  # v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
+# (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
 # (v169 = «إصلاح بطاقة تفاصيل المستخدم والحذف النهائي — نهاية «تعذر حساب الأثر: لا يوجد اتصال بالخادم»: فهارس عند الإقلاع على كل أعمدة العدّادات (كان العد تسلسلياً على جداول ضخمة فتجاوز مهلة العميل 25 ث)، وتصحيح قراءة نتيجة العدّادات تحت RealDictCursor (كانت KeyError ترمي 500)، وهبوط آمن لعدّاد لكل جدول عند أي فشل، وتمييز انتهاء المهلة في رسائل العميل بمهلة 60 ث لهذين النداءين» — السجل في CHANGELOG.md
 # (v168 = «التحديث الذاتي الدائم — نهاية تعارض «الإصدار قديم والخادم جديد»: واجهة Pages تستبدل نفسها تلقائياً بالواجهة الحية من الخادم عند الإقلاع وعند «تحديث الآن» (الجلسة تنجو عبر ceram_sess وترويسة X-Session-Token)، حوار «تحديث جديد» يعمل على كل النسخ بعد إلغاء كبت Pages، اسم كاش سجل الخدمة ديناميكي فيتجدد مع كل نشر، وشاشة الإعدادات تعرض إصدار الخادم الحقيقي دائماً» — السجل في CHANGELOG.md
@@ -19796,73 +19797,18 @@ _PWA_V171_CSS = r'''/* ═══ v171: القياسات والمصانع متق�
 }'''
 
 
-_PWA_V171_JS = r'''/* ═══ v171: تبويب «⏳ المعلقة» الثابت في صف التبويبات ═══
-   بلاغ المالك: زر الطلبات المعلقة يُطلب ثابتاً مثل الرئيسية والمخزون
-   والفاتورة والمستخدمين — فصار تبويباً دائماً في nav.tabs بجوار «الطلبات»:
-   يفتح شاشة الطلبات على مقطع «المعلقة» مباشرة، وبصلاحية admin/pending/
-   supply_order فقط، وبإضاءة مستقلة عن تبويب الطلبات رغم اشتراكهما
-   في نفس الشاشة (data-v واحد). */
+_PWA_V171_JS = r'''/* ═══ v171→v172: أُلغي تبويب «المعلقة» الثاني بطلب المالك ═══
+   توضيح المالك: طلبه كان تثبيت زر «الطلبات المعلقة» الموجود (البطاقة في
+   الرئيسية) كي لا يختفي عند فتح التطبيق — وليس إنشاء زر ثانٍ لنفس الخدمة
+   إلى جوار تبويب «الطلبات». التثبيت حاصل في طبقة v170: البطاقة تُرسم فوراً
+   عند الإقلاع من القيمة المخزّنة (__pendVal) وتُعاد بعد كل رسم للرئيسية
+   (مراقب DOM + تغليف loadHome) ولا تختفي حتى مع صفر طلبات.
+   يبقى من v171: شبكة القياسات والمصانع المتقابلة (CSS) فقط.
+   هذا الحارس يمنع حقن أي نسخة قديمة من طبقة الزر المحذوف. */
 (function () {
   "use strict";
   if (window.__v171always) return;
   window.__v171always = 1;
-  function q(id) { return document.getElementById(id); }
-  function pendVis() {
-    var t = q("tabPend"); if (!t) return;
-    var P = null;
-    try { P = (typeof S !== "undefined" && S) ? (S.perms || {}) : null; } catch (e) {}
-    var show = !!(P && (P.admin || P.pending || P.supply_order));
-    t.style.display = show ? "" : "none";
-  }
-  var nav = document.querySelector("nav.tabs");
-  if (nav) {
-    var tP = q("tabPend");
-    if (!tP) {
-      tP = document.createElement("button");
-      tP.id = "tabPend";
-      tP.dataset.v = "v-ord";
-      tP.title = "الطلبات المعلقة";
-      tP.innerHTML = '<span class="ic">⏳</span>المعلقة';
-      var tO = q("tabOrders");
-      if (tO && tO.parentNode) tO.parentNode.insertBefore(tP, tO.nextSibling);
-      else nav.appendChild(tP);
-    }
-    /* التقاط قبل مستمع الأساس: نحفظ مصدر الضغطة ونضبط مقطع «المعلقة»
-       قبل أن يجلب switchView شاشة الطلبات (بلا نداء مزدوج) */
-    nav.addEventListener("click", function (e) {
-      var b = (e.target && e.target.closest) ? e.target.closest("button") : null;
-      try { window.__v171lastNav = b || null; } catch (e2) {}
-      if (b && b.id === "tabPend") {
-        try { S.ordSeg = "pend"; } catch (e3) {}
-        try {
-          var a = q("segPend"), c = q("segInc");
-          if (a) a.classList.add("on");
-          if (c) c.classList.remove("on");
-        } catch (e4) {}
-      }
-    }, true);
-    try {
-      var _sv = window.switchView;
-      if (typeof _sv === "function") {
-        window.switchView = function (id) {
-          var r = _sv.apply(this, arguments);
-          try {
-            if (id === "v-ord") {
-              var tO2 = q("tabOrders"), tP2 = q("tabPend");
-              if (tO2 && tP2) {
-                if (window.__v171lastNav === tP2) tO2.classList.remove("on");
-                else tP2.classList.remove("on");
-              }
-            }
-          } catch (e5) {}
-          try { pendVis(); } catch (e6) {}
-          return r;
-        };
-      }
-    } catch (e) {}
-    try { pendVis(); } catch (e7) {}
-    setInterval(function () { try { pendVis(); } catch (e8) {} }, 30000);
-  }
 })();'''
 
 
@@ -20503,6 +20449,13 @@ _PWA_HTML_PATCHES = (
     #     ذيل الرقع بعد رقعة v170 عاد </script></body> فالمرساة الكلاسيكية تعمل
     ('</script>\n</body>',
      '</script>\n<style id="v171css">' + _PWA_V171_CSS + '</style>\n<script id="v171js">\n' + _PWA_V171_JS + '\n</script>\n</body>'),
+    # 92) v172: كبت دائم لحوار «تحديث جديد» — «لاحقاً» يُحفظ في localStorage
+    #     بدل الذاكرة الجلسية، فلا يعود الحوار عند كل عودة للتطبيق
+    ('if (v && v !== APP_VER && v !== S.updDismissed) {',
+     'if (v && v !== APP_VER && v !== S.updDismissed\n        && v !== (function () { try { return localStorage.getItem("ceram_upd_dis") || ""; } catch (e) { return ""; } })()) {'),
+    # 93) v172: زر «لاحقاً» يسجل النسخة المرفوضة محلياً بشكل دائم
+    ('S.updDismissed = S.serverVersion || "";',
+     'S.updDismissed = S.serverVersion || "";\n        try { localStorage.setItem("ceram_upd_dis", S.updDismissed); } catch (e) {}'),
 )
 
 

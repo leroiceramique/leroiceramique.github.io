@@ -3912,7 +3912,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "48";
+const APP_VER = "49";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -3978,7 +3978,8 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
     if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
     const about = $("#setAbout");
     if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");
-    if (v && v !== APP_VER && v !== S.updDismissed) {
+    if (v && v !== APP_VER && v !== S.updDismissed
+        && v !== (function () { try { return localStorage.getItem("ceram_upd_dis") || ""; } catch (e) { return ""; } })()) {
       const dlg = $("#dlgUpd");
       if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
       return true;
@@ -4000,6 +4001,7 @@ $("#btnChkUpd").addEventListener("click", () => {
 });
 $("#btnUpdLater").addEventListener("click", () => {
   S.updDismissed = S.serverVersion || "";
+        try { localStorage.setItem("ceram_upd_dis", S.updDismissed); } catch (e) {}
   try { localStorage.setItem("pwa_upd_seen", S.updDismissed); } catch (e) {}
   try { $("#dlgUpd").close(); } catch (e) {}
 });
@@ -8665,73 +8667,18 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     grid-template-columns:repeat(auto-fill,minmax(118px,1fr)) }
 }</style>
 <script id="v171js">
-/* ═══ v171: تبويب «⏳ المعلقة» الثابت في صف التبويبات ═══
-   بلاغ المالك: زر الطلبات المعلقة يُطلب ثابتاً مثل الرئيسية والمخزون
-   والفاتورة والمستخدمين — فصار تبويباً دائماً في nav.tabs بجوار «الطلبات»:
-   يفتح شاشة الطلبات على مقطع «المعلقة» مباشرة، وبصلاحية admin/pending/
-   supply_order فقط، وبإضاءة مستقلة عن تبويب الطلبات رغم اشتراكهما
-   في نفس الشاشة (data-v واحد). */
+/* ═══ v171→v172: أُلغي تبويب «المعلقة» الثاني بطلب المالك ═══
+   توضيح المالك: طلبه كان تثبيت زر «الطلبات المعلقة» الموجود (البطاقة في
+   الرئيسية) كي لا يختفي عند فتح التطبيق — وليس إنشاء زر ثانٍ لنفس الخدمة
+   إلى جوار تبويب «الطلبات». التثبيت حاصل في طبقة v170: البطاقة تُرسم فوراً
+   عند الإقلاع من القيمة المخزّنة (__pendVal) وتُعاد بعد كل رسم للرئيسية
+   (مراقب DOM + تغليف loadHome) ولا تختفي حتى مع صفر طلبات.
+   يبقى من v171: شبكة القياسات والمصانع المتقابلة (CSS) فقط.
+   هذا الحارس يمنع حقن أي نسخة قديمة من طبقة الزر المحذوف. */
 (function () {
   "use strict";
   if (window.__v171always) return;
   window.__v171always = 1;
-  function q(id) { return document.getElementById(id); }
-  function pendVis() {
-    var t = q("tabPend"); if (!t) return;
-    var P = null;
-    try { P = (typeof S !== "undefined" && S) ? (S.perms || {}) : null; } catch (e) {}
-    var show = !!(P && (P.admin || P.pending || P.supply_order));
-    t.style.display = show ? "" : "none";
-  }
-  var nav = document.querySelector("nav.tabs");
-  if (nav) {
-    var tP = q("tabPend");
-    if (!tP) {
-      tP = document.createElement("button");
-      tP.id = "tabPend";
-      tP.dataset.v = "v-ord";
-      tP.title = "الطلبات المعلقة";
-      tP.innerHTML = '<span class="ic">⏳</span>المعلقة';
-      var tO = q("tabOrders");
-      if (tO && tO.parentNode) tO.parentNode.insertBefore(tP, tO.nextSibling);
-      else nav.appendChild(tP);
-    }
-    /* التقاط قبل مستمع الأساس: نحفظ مصدر الضغطة ونضبط مقطع «المعلقة»
-       قبل أن يجلب switchView شاشة الطلبات (بلا نداء مزدوج) */
-    nav.addEventListener("click", function (e) {
-      var b = (e.target && e.target.closest) ? e.target.closest("button") : null;
-      try { window.__v171lastNav = b || null; } catch (e2) {}
-      if (b && b.id === "tabPend") {
-        try { S.ordSeg = "pend"; } catch (e3) {}
-        try {
-          var a = q("segPend"), c = q("segInc");
-          if (a) a.classList.add("on");
-          if (c) c.classList.remove("on");
-        } catch (e4) {}
-      }
-    }, true);
-    try {
-      var _sv = window.switchView;
-      if (typeof _sv === "function") {
-        window.switchView = function (id) {
-          var r = _sv.apply(this, arguments);
-          try {
-            if (id === "v-ord") {
-              var tO2 = q("tabOrders"), tP2 = q("tabPend");
-              if (tO2 && tP2) {
-                if (window.__v171lastNav === tP2) tO2.classList.remove("on");
-                else tP2.classList.remove("on");
-              }
-            }
-          } catch (e5) {}
-          try { pendVis(); } catch (e6) {}
-          return r;
-        };
-      }
-    } catch (e) {}
-    try { pendVis(); } catch (e7) {}
-    setInterval(function () { try { pendVis(); } catch (e8) {} }, 30000);
-  }
 })();
 </script>
 <script id="v143ui">
