@@ -12809,7 +12809,8 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "46"  # v169 = «إصلاح بطاقة تفاصيل المستخدم والحذف النهائي — نهاية «تعذر حساب الأثر: لا يوجد اتصال بالخادم»: فهارس عند الإقلاع على كل أعمدة العدّادات (كان العد تسلسلياً على جداول ضخمة فتجاوز مهلة العميل 25 ث)، وتصحيح قراءة نتيجة العدّادات تحت RealDictCursor (كانت KeyError ترمي 500)، وهبوط آمن لعدّاد لكل جدول عند أي فشل، وتمييز انتهاء المهلة في رسائل العميل بمهلة 60 ث لهذين النداءين» — السجل في CHANGELOG.md
+PWA_VERSION = "47"  # v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
+# (v169 = «إصلاح بطاقة تفاصيل المستخدم والحذف النهائي — نهاية «تعذر حساب الأثر: لا يوجد اتصال بالخادم»: فهارس عند الإقلاع على كل أعمدة العدّادات (كان العد تسلسلياً على جداول ضخمة فتجاوز مهلة العميل 25 ث)، وتصحيح قراءة نتيجة العدّادات تحت RealDictCursor (كانت KeyError ترمي 500)، وهبوط آمن لعدّاد لكل جدول عند أي فشل، وتمييز انتهاء المهلة في رسائل العميل بمهلة 60 ث لهذين النداءين» — السجل في CHANGELOG.md
 # (v168 = «التحديث الذاتي الدائم — نهاية تعارض «الإصدار قديم والخادم جديد»: واجهة Pages تستبدل نفسها تلقائياً بالواجهة الحية من الخادم عند الإقلاع وعند «تحديث الآن» (الجلسة تنجو عبر ceram_sess وترويسة X-Session-Token)، حوار «تحديث جديد» يعمل على كل النسخ بعد إلغاء كبت Pages، اسم كاش سجل الخدمة ديناميكي فيتجدد مع كل نشر، وشاشة الإعدادات تعرض إصدار الخادم الحقيقي دائماً» — السجل في CHANGELOG.md
 # (v167 = «خانة المستخدمين: فصل حسابات تلغرام عن قائمة التطبيق (إخفاء فقط دون المساس بعمل البوت)، عرض مدة النشاط الأخير لكل حساب (نبض تلغرام + دخول + جلسات، كل 300 ثانية)، بطاقة تفاصيل كاملة لكل حساب، وحذف نهائي كامل للبيانات بخطوتين وتأكيد باسم الحساب (admin فقط)» — السجل الكامل في CHANGELOG.md
 # ⚠️ قاعدة حصانة الجلسات: لا تربط أبداً أي جلسة/كوكي/رمز تذكّر برقم PWA_VERSION —
@@ -19183,6 +19184,7 @@ _PWA_V146_JS = r'''/* ═══════════════════�
       timer = null;
       if (fired) return;
       fired = true;
+      try { el.dataset.v148fired = String(Date.now()); } catch (_vfe) {}   /* v170 */
       try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
       try { el.classList.add("v148hold"); } catch (e2) {}
       setTimeout(function () { try { el.classList.remove("v148hold"); } catch (e3) {} }, 320);
@@ -19695,6 +19697,84 @@ _PWA_V152_CSS = r'''/* ═══ v152: أنماط بطاقة الصلاحيات 
 
 
 
+_PWA_V170_JS = r'''/* ═══ v170: اللازمة الدائمة — بطاقة «طلبات معلقة» لا تختفي + تحديث مباشر عند العودة ═══
+   بلاغ المالك: البطاقة تختفي دقائق بعد الدخول ثم تعود. أي طبقة قد تعيد بناء
+   الرئيسية مستقبلاً — فالحل الذاتي: مراقب DOM يعيد البطاقة فوراً إن غابت،
+   ويحفظ آخر قيمة لها لتظهر بالرقم الصحيح لا «—».
+   وأيضاً: فحص إصدار الخادم عند كل عودة للتطبيق/تركيز (بخنقة 60 ثانية) —
+   إن وُجد إصدار أحدث استُبدلت الواجهة ذاتياً بنفس آلية v168 — فتصل التحديثات
+   القادمة كلها مباشرة دون تحميل نسخة APK جديدة. */
+(function () {
+  "use strict";
+  if (window.__v170always) return;
+  window.__v170always = 1;
+  function pendAllowed() {
+    try {
+      var P = (typeof S !== "undefined" && S) ? (S.perms || {}) : null;
+      if (!P) return false;
+      return !!(P.admin || P.pending || P.supply_order);
+    } catch (e) { return false; }
+  }
+  function pendFix() {
+    var grid = document.querySelector("#v-home .grid");
+    if (!grid) return;
+    if (document.getElementById("cardPend")) return;
+    if (!pendAllowed()) return;
+    var el = document.createElement("div");
+    el.className = "stat"; el.id = "cardPend";
+    el.title = "اضغط لعرض الطلبات والتوريدات";
+    el.innerHTML = '<i class="kic">⏳</i><div class="ktx"><b id="sPend">'
+      + (window.__pendVal || "—") + '</b><span>طلبات معلقة</span></div>';
+    el.addEventListener("click", function () { try { switchView("v-ord"); } catch (e) {} });
+    grid.appendChild(el);
+  }
+  var pendT = null;
+  function pendSoon() {
+    if (pendT) return;
+    pendT = setTimeout(function () { pendT = null; try { pendFix(); } catch (e) {} }, 60);
+  }
+  try {
+    var _home = document.getElementById("v-home");
+    if (_home && typeof MutationObserver !== "undefined") {
+      new MutationObserver(pendSoon).observe(_home, { childList: true, subtree: true });
+    }
+  } catch (e) {}
+  try {
+    var _olh = window.loadHome;
+    if (typeof _olh === "function") {
+      window.loadHome = function () {
+        var r = _olh.apply(this, arguments);
+        try { setTimeout(pendFix, 90); } catch (e) {}
+        return r;
+      };
+    }
+  } catch (e) {}
+  setTimeout(function () { try { pendFix(); } catch (e2) {} }, 300);
+  /* ── التحديث المباشر عند العودة للتطبيق — لا نسخة APK أبداً ── */
+  var vLast = 0;
+  function liveChk() {
+    try {
+      if (!window.CERAM_PAGES) return;                    /* نسخة الخادم حية أصلاً */
+      if (typeof S === "undefined" || !S.user) return;    /* بعد الدخول فقط */
+      var now = Date.now();
+      if (now - vLast < 60000) return;
+      vLast = now;
+      api("/api/status", { noCache: true }).then(function (d) {
+        var v = (d && d.version) || "";
+        if (v && (parseFloat(v) || 0) > (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)
+            && typeof pagesLiveSwap === "function"
+            && !/[?&](sso|google)=/.test(location.search)) {
+          pagesLiveSwap(v);
+        }
+      }).catch(function () {});
+    } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) liveChk(); });
+  window.addEventListener("focus", liveChk);
+  window.addEventListener("pageshow", liveChk);
+})();'''
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -20159,7 +20239,8 @@ _PWA_HTML_PATCHES = (
     ('$("#sToday").textContent = d.stats.today;',
      '$("#sToday").textContent = d.stats.today;\n'
      '    const __sp128 = document.getElementById("sPend");\n'
-     '    if (__sp128) __sp128.textContent = String(d.stats.pending || 0);'),
+     '    if (__sp128) __sp128.textContent = String(d.stats.pending || 0);\n'
+     '    try { window.__pendVal = String(d.stats.pending || 0); } catch (_pvE) {}'),
     # 86) v128: مرجع شريط الكمية لكل سلعة — 8 أضعاف الحد الأدنى (سقف 100%)
     ('      return \'<div class="row">\' + menuBtn',
      '      const __mref = (+p.min > 0 ? (+p.min) * 8 : 60);\n'
@@ -20317,10 +20398,20 @@ _PWA_HTML_PATCHES = (
      '    if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");'),
     ('throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة.");',
      'if (e && (e.name === "AbortError" || e.code === 20)) throw new Error("انتهت مهلة الطلب — الخادم بطيء أو مثقل؛ أعد المحاولة.");\n    throw new Error("لا يوجد اتصال بالخادم — تحقق من الشبكة.");'),
+    # 88) v170: سجل الحركة — اسم السلعة يحمل رابط بطاقة التفاصيل
+    ('      html += \'<div class="row"><div class="info"><b>\' + esc(m.product_name) + \'</b>\'',
+     '      html += \'<div class="row"><div class="info"\'\n        + (m.product_id ? \' data-detail="\' + m.product_id\n          + \'" style="cursor:pointer" title="اضغط لتفاصيل السلعة وحركاتها"\' : "")\n        + \'><b>\' + esc(m.product_name) + \'</b>\''),
+    # 89) v170: ربط النقر بعد رسم الصفوف + قمع النقرة التي تلي المطوّلة
+    ('    box.innerHTML = html;\n  } catch (e) { box.innerHTML = \'<p class="empty">\' + esc(e.message) + \'</p>\'; }\n}\n\n/* ─── الزيت ─── */',
+     '    box.innerHTML = html;\n    /* v170: الضغط على اسم السلعة يفتح بطاقة تفاصيلها — كما في المخزون،\n       مع قمع النقرة التي تلي الضغطة المطوّلة (المطوّلة = إلغاء الحركة فقط) */\n    try {\n      box.querySelectorAll("[data-detail]").forEach((el) =>\n        el.addEventListener("click", function () {\n          var _row = el.closest(".row");\n          var _f = _row ? parseInt(_row.dataset.v148fired || "0", 10) : 0;\n          if (_f && Date.now() - _f < 900) return;\n          openDetail(+el.dataset.detail);\n        }));\n    } catch (_eD) {}\n  } catch (e) { box.innerHTML = \'<p class="empty">\' + esc(e.message) + \'</p>\'; }\n}\n\n/* ─── الزيت ─── */'),
+    # 90) v170: اللازمة الدائمة — بطاقة المعلقة الذاتية + التحديث المباشر عند العودة
+    #     المرساة الذيل الحقيقي وقت التطبيق: آخر طبقات CSS-only تركت الذيل </style></body>
+    ('</style>\n</body>',
+     '</style>\n<script id="v170js">\n' + _PWA_V170_JS + '\n</script>\n</body>'),
 )
 
 
-_PWA_V156_JS = '/* ═══════════════════════════════════════════════════════════════════\n   v156 — قائمة تحترم الصلاحيات: تبويب «الطلبات» وقسما «المعلقة/التوريد»\n   تظهر فقط لمَن يملك الصلاحية المرتبطة بها (بطلب يوسف: مستخدم البحث فقط\n   لا يُعرف له ما لا يعمل به — «طلبات معلقة/إنشاء فاتورة» تظهر لديه بلا طاقة).\n   تبويب «فاتورة» موبوَّب من v88 لكن رؤية الفواتير صارت تحترم المصفوفة\n   خادمياً (invoice_view override-aware) فيختفي التاب تلقائياً معها.\n   ═══════════════════════════════════════════════════════════════════ */\n(function () {\n  "use strict";\n  if (window.__v156nav) return;\n  window.__v156nav = 1;\n  function vis(id, on) {\n    var el = document.getElementById(id);\n    if (el) el.style.display = on ? "" : "none";\n  }\n  function apply() {\n    var P = null;\n    try { P = (typeof S !== "undefined" && S) ? S.perms : null; } catch (e) { return; }\n    if (!P || typeof P !== "object") return;\n    /* تبويب الطلبات: لمَن يملك طلب توريد أو رؤية المعلقة فقط */\n    vis("tabOrders", !!(P.supply_order || P.pending));\n    /* القسمان داخل شاشة الطلبات — كلٌّ بصلاحيته */\n    vis("segPend", !!P.pending);\n    vis("segInc", !!P.supply_order);\n    if (!P.pending && P.supply_order) {\n      try {\n        var sp = document.getElementById("segPend");\n        var si = document.getElementById("segInc");\n        if (sp && si && sp.classList.contains("on")) si.click();\n      } catch (e) {}\n    }\n  }\n  /* v157: بولينج حدثي — الأحداث أولًا (تركيز/عودة للصفحة/رؤية) واحتياط كل 15 ثانية بدل حلقة كل 3 ثوانٍ الدائمة */\n  apply();\n  window.addEventListener("focus", apply);\n  window.addEventListener("pageshow", apply);\n  document.addEventListener("visibilitychange", apply);\n  setInterval(apply, 15000);\n})();\n'
+_PWA_V156_JS = '/* ═══════════════════════════════════════════════════════════════════\n   v156 — قائمة تحترم الصلاحيات: تبويب «الطلبات» وقسما «المعلقة/التوريد»\n   تظهر فقط لمَن يملك الصلاحية المرتبطة بها (بطلب يوسف: مستخدم البحث فقط\n   لا يُعرف له ما لا يعمل به — «طلبات معلقة/إنشاء فاتورة» تظهر لديه بلا طاقة).\n   تبويب «فاتورة» موبوَّب من v88 لكن رؤية الفواتير صارت تحترم المصفوفة\n   خادمياً (invoice_view override-aware) فيختفي التاب تلقائياً معها.\n   ═══════════════════════════════════════════════════════════════════ */\n(function () {\n  "use strict";\n  if (window.__v156nav) return;\n  window.__v156nav = 1;\n  function vis(id, on) {\n    var el = document.getElementById(id);\n    if (el) el.style.display = on ? "" : "none";\n  }\n  function apply() {\n    var P = null;\n    try { P = (typeof S !== "undefined" && S) ? S.perms : null; } catch (e) { return; }\n    if (!P || typeof P !== "object") return;\n    /* تبويب الطلبات: لمَن يملك طلب توريد أو رؤية المعلقة فقط */\n    vis("tabOrders", !!(P.admin || P.supply_order || P.pending));   /* v170: المالك لا يفقده أبداً */\n    /* القسمان داخل شاشة الطلبات — كلٌّ بصلاحيته */\n    vis("segPend", !!(P.admin || P.pending));   /* v170: المالك لا يفقده أبداً */\n    vis("segInc", !!P.supply_order);\n    if (!P.pending && P.supply_order) {\n      try {\n        var sp = document.getElementById("segPend");\n        var si = document.getElementById("segInc");\n        if (sp && si && sp.classList.contains("on")) si.click();\n      } catch (e) {}\n    }\n  }\n  /* v157: بولينج حدثي — الأحداث أولًا (تركيز/عودة للصفحة/رؤية) واحتياط كل 15 ثانية بدل حلقة كل 3 ثوانٍ الدائمة */\n  apply();\n  window.addEventListener("focus", apply);\n  window.addEventListener("pageshow", apply);\n  document.addEventListener("visibilitychange", apply);\n  setInterval(apply, 15000);\n})();\n'
 
 _PWA_V161_JS = r'''/* ═══ v161: قسم «إدارة المستخدمين والصلاحيات» — إعادة تصميم كاملة على
    البنية القائمة نفسها (نفس مسارات الخادم والصلاحيات — بلا نظام موازٍ):
@@ -21489,6 +21580,10 @@ def _pwa_inject_floating_layers(out):
         if 'id="v167ui"' not in html:
             add += ('<script id="v167ui">\n' + _PWA_V167_JS + '\n</script>\n'
                     '<style id="v167css">' + _PWA_V167_CSS + '\n</style>\n')
+        # v170: حصن الحقن — طبقة اللازمة الدائمة (بطاقة المعلقة + التحديث المباشر)
+        # تُحقن دائماً إن غابت عن الصفحة مهما تغيّر ذيل الرقع
+        if '__v170always' not in html:
+            add += ('<script id="v170ui">\n' + _PWA_V170_JS + '\n</script>\n')
         if 'id="v158clean"' not in html:
             add += ('<script id="v158clean">'
                     'try{localStorage.removeItem("__v150sell");'

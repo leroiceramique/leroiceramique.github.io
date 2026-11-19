@@ -2209,6 +2209,7 @@ async function loadHome() {
     $("#sToday").textContent = d.stats.today;
     const __sp128 = document.getElementById("sPend");
     if (__sp128) __sp128.textContent = String(d.stats.pending || 0);
+    try { window.__pendVal = String(d.stats.pending || 0); } catch (_pvE) {}
     const np = d.stats.pending || 0, ni = d.stats.incoming || 0;
     const ordBox = $("#homeOrd");
     if (np || ni) {
@@ -2724,7 +2725,10 @@ async function loadMovements() {
       const day = String(m.date || "").slice(0, 10);
       if (day && day !== lastDay) { lastDay = day; html += '<div class="dayhead">📅 ' + esc(movDayHeader(day)) + '</div>'; }
       const b = m.is_correct ? ["mut", "📝 تصحيح"] : (MOV_BADGE[m.type] || ["mut", m.type]);   /* v151 */
-      html += '<div class="row"><div class="info"><b>' + esc(m.product_name) + '</b>'
+      html += '<div class="row"><div class="info"'
+        + (m.product_id ? ' data-detail="' + m.product_id
+          + '" style="cursor:pointer" title="اضغط لتفاصيل السلعة وحركاتها"' : "")
+        + '><b>' + esc(m.product_name) + '</b>'
         + '<span>' + esc(m.user_name || "—") + " • " + esc(String(m.date || "").slice(11, 16))
         + (m.reason ? " • " + esc(m.reason) : "") + '</span></div>'
         + '<span class="badge ' + b[0] + '">' + b[1] + " " + m.quantity + '</span></div>';
@@ -2737,6 +2741,17 @@ async function loadMovements() {
     if (ex && ex.count && !S.mov.correct)
       html += '<p class="hint">🔒 ' + ex.count + ' عملية تصحيح/جرد مستبعدة من العرض — رقاقة «📝 التصحيح» لعرضها.</p>';
     box.innerHTML = html;
+    /* v170: الضغط على اسم السلعة يفتح بطاقة تفاصيلها — كما في المخزون،
+       مع قمع النقرة التي تلي الضغطة المطوّلة (المطوّلة = إلغاء الحركة فقط) */
+    try {
+      box.querySelectorAll("[data-detail]").forEach((el) =>
+        el.addEventListener("click", function () {
+          var _row = el.closest(".row");
+          var _f = _row ? parseInt(_row.dataset.v148fired || "0", 10) : 0;
+          if (_f && Date.now() - _f < 900) return;
+          openDetail(+el.dataset.detail);
+        }));
+    } catch (_eD) {}
   } catch (e) { box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
 }
 
@@ -3897,7 +3912,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "46";
+const APP_VER = "47";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -8553,6 +8568,84 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
 .v142green.on{transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){.v142red .rcard,.rgate-math.bad{animation:none}}
 </style>
+<script id="v170js">
+/* ═══ v170: اللازمة الدائمة — بطاقة «طلبات معلقة» لا تختفي + تحديث مباشر عند العودة ═══
+   بلاغ المالك: البطاقة تختفي دقائق بعد الدخول ثم تعود. أي طبقة قد تعيد بناء
+   الرئيسية مستقبلاً — فالحل الذاتي: مراقب DOM يعيد البطاقة فوراً إن غابت،
+   ويحفظ آخر قيمة لها لتظهر بالرقم الصحيح لا «—».
+   وأيضاً: فحص إصدار الخادم عند كل عودة للتطبيق/تركيز (بخنقة 60 ثانية) —
+   إن وُجد إصدار أحدث استُبدلت الواجهة ذاتياً بنفس آلية v168 — فتصل التحديثات
+   القادمة كلها مباشرة دون تحميل نسخة APK جديدة. */
+(function () {
+  "use strict";
+  if (window.__v170always) return;
+  window.__v170always = 1;
+  function pendAllowed() {
+    try {
+      var P = (typeof S !== "undefined" && S) ? (S.perms || {}) : null;
+      if (!P) return false;
+      return !!(P.admin || P.pending || P.supply_order);
+    } catch (e) { return false; }
+  }
+  function pendFix() {
+    var grid = document.querySelector("#v-home .grid");
+    if (!grid) return;
+    if (document.getElementById("cardPend")) return;
+    if (!pendAllowed()) return;
+    var el = document.createElement("div");
+    el.className = "stat"; el.id = "cardPend";
+    el.title = "اضغط لعرض الطلبات والتوريدات";
+    el.innerHTML = '<i class="kic">⏳</i><div class="ktx"><b id="sPend">'
+      + (window.__pendVal || "—") + '</b><span>طلبات معلقة</span></div>';
+    el.addEventListener("click", function () { try { switchView("v-ord"); } catch (e) {} });
+    grid.appendChild(el);
+  }
+  var pendT = null;
+  function pendSoon() {
+    if (pendT) return;
+    pendT = setTimeout(function () { pendT = null; try { pendFix(); } catch (e) {} }, 60);
+  }
+  try {
+    var _home = document.getElementById("v-home");
+    if (_home && typeof MutationObserver !== "undefined") {
+      new MutationObserver(pendSoon).observe(_home, { childList: true, subtree: true });
+    }
+  } catch (e) {}
+  try {
+    var _olh = window.loadHome;
+    if (typeof _olh === "function") {
+      window.loadHome = function () {
+        var r = _olh.apply(this, arguments);
+        try { setTimeout(pendFix, 90); } catch (e) {}
+        return r;
+      };
+    }
+  } catch (e) {}
+  setTimeout(function () { try { pendFix(); } catch (e2) {} }, 300);
+  /* ── التحديث المباشر عند العودة للتطبيق — لا نسخة APK أبداً ── */
+  var vLast = 0;
+  function liveChk() {
+    try {
+      if (!window.CERAM_PAGES) return;                    /* نسخة الخادم حية أصلاً */
+      if (typeof S === "undefined" || !S.user) return;    /* بعد الدخول فقط */
+      var now = Date.now();
+      if (now - vLast < 60000) return;
+      vLast = now;
+      api("/api/status", { noCache: true }).then(function (d) {
+        var v = (d && d.version) || "";
+        if (v && (parseFloat(v) || 0) > (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)
+            && typeof pagesLiveSwap === "function"
+            && !/[?&](sso|google)=/.test(location.search)) {
+          pagesLiveSwap(v);
+        }
+      }).catch(function () {});
+    } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) liveChk(); });
+  window.addEventListener("focus", liveChk);
+  window.addEventListener("pageshow", liveChk);
+})();
+</script>
 <script id="v143ui">
 /* ═══════════════════════════════════════════════════════════════════
    v143 — التنبيه الجماعي من التطبيق + إشعارات الهاتف الخارجية
@@ -9245,6 +9338,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
       timer = null;
       if (fired) return;
       fired = true;
+      try { el.dataset.v148fired = String(Date.now()); } catch (_vfe) {}   /* v170 */
       try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
       try { el.classList.add("v148hold"); } catch (e2) {}
       setTimeout(function () { try { el.classList.remove("v148hold"); } catch (e3) {} }, 320);
@@ -9837,9 +9931,9 @@ try { if (document.getElementById("v-users") && document.getElementById("v-users
     try { P = (typeof S !== "undefined" && S) ? S.perms : null; } catch (e) { return; }
     if (!P || typeof P !== "object") return;
     /* تبويب الطلبات: لمَن يملك طلب توريد أو رؤية المعلقة فقط */
-    vis("tabOrders", !!(P.supply_order || P.pending));
+    vis("tabOrders", !!(P.admin || P.supply_order || P.pending));   /* v170: المالك لا يفقده أبداً */
     /* القسمان داخل شاشة الطلبات — كلٌّ بصلاحيته */
-    vis("segPend", !!P.pending);
+    vis("segPend", !!(P.admin || P.pending));   /* v170: المالك لا يفقده أبداً */
     vis("segInc", !!P.supply_order);
     if (!P.pending && P.supply_order) {
       try {
