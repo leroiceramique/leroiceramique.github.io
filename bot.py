@@ -13052,6 +13052,10 @@ CREATE INDEX IF NOT EXISTS idx_pwa_resets_status ON pwa_pass_resets (status, cre
 -- ═══ v159: إدارة حسابات Google — أعمدة إضافية فقط (بلا أي تغيير على البيانات القائمة) ═══
 ALTER TABLE users ADD COLUMN IF NOT EXISTS google_login_disabled BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS google_linked_at TIMESTAMPTZ;
+-- v175: ترحيل الربط التاريخي — كل حساب ببريد موثّق الملكية يُختم كمرتبط بـ Google
+-- (مسار الربط v158 كان يضبط البريد الموثق دون الختم) — معاملة آمنة ومتكررة بلا أثر
+UPDATE users SET google_linked_at = NOW()
+ WHERE COALESCE(email, '') <> '' AND identity_verified IS TRUE AND google_linked_at IS NULL;
 ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS picture TEXT;
 ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS decided_by VARCHAR(200);
 ALTER TABLE pwa_registrations ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ;
@@ -22878,7 +22882,7 @@ def _pwa_session_user(request):
                 "u.role, u.active, u.display_name, u.avatar, a.username AS web_username, "
                 "u.banned, u.email, u.notify_user, u.archived, "
                 # v173: حالة ربط Google الحقيقية تصل مع /api/me لكل مستخدم
-                "u.google_linked_at, u.last_seen "
+                "u.google_linked_at, u.identity_verified, u.last_seen "  # v175: البريد الموثق يدخل في حساب الربط
                 "FROM pwa_sessions s JOIN users u ON u.id = s.user_id "
                 "LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "WHERE s.token_hash = %s AND s.expires_at > NOW()",
@@ -23161,7 +23165,11 @@ def _pwa_api_me(user):
         "avatar": user.get("avatar") or "",          # v41: صورة الحساب الشخصي
         "telegram_id": user.get("telegram_id"),
         "email": user.get("email"),                  # v161: بريد الحساب للعرض في «حسابي»
-        "google_linked": bool(user.get("google_linked_at")),  # v173: مرتبط فعلاً في قاعدة البيانات — لا مجرد دخول
+        # v175: الربط الحقيقي = google_linked_at، أو بريد موثّق الملكية
+        # (identity_verified) — مسار الربط الرسمي v158 كان يضبط البريد الموثق
+        # دون ختم google_linked_at فلا تراه الواجهة رغم نجاح الربط.
+        "google_linked": bool(user.get("google_linked_at")
+                              or (user.get("email") and user.get("identity_verified"))),
         "google_email": (user.get("email") or ""),   # v173: بريد Google المرتبط بهذا المستخدم وحده
         "pending": user.get("role") == ROLE_PENDING,  # v161: وضع الاطلاع فقط
     }, "perms": _pwa_perm_map(user),
@@ -28110,7 +28118,9 @@ def _pwa_google_do_link(uid, email):
             other = cur.fetchone()
             if other:
                 return False, "هذا البريد مرتبط مسبقاً بحساب آخر — راجع الإدارة."
-            cur.execute("UPDATE users SET email = %s, identity_verified = TRUE "
+            cur.execute("UPDATE users SET email = %s, identity_verified = TRUE, "
+                        "google_linked_at = CASE WHEN google_linked_at IS NULL THEN NOW() "
+                        "ELSE google_linked_at END "  # v175: ختم الربط فور تمامه
                         "WHERE id = %s", (email, uid))
         conn.commit()
         _users_cache_clear()
