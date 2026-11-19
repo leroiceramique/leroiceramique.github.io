@@ -885,7 +885,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
     <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
     <div class="gswrap"><span class="gsic">🔍</span><input id="gSearch" class="ginp" type="search" placeholder="ابحث عن سلعة أو مقاس… ثم Enter" autocomplete="off"></div>
     <div class="bellwrap"><button id="btnNotif" title="الإشعارات">🔔</button><span id="nBadge">0</span></div>
-    <!-- v173: زر الإعدادات أُلغي بطلب المالك — كل وظائفه في الرئيسية وبطاقة الهوية -->
+    <button id="btnSet" title="الإعدادات والملف الشخصي">⚙️</button>
   </header>
   <main>
     <!-- الرئيسية -->
@@ -2185,11 +2185,11 @@ function switchView(id) {
   if (id === "v-oil") loadInvoice();
   if (id === "v-users") loadUsers();
   if (id === "v-home") loadHome();
-  if (id === "v-set") { setTimeout(function () { try { switchView("v-home"); } catch (eV173) {} }, 0); }   /* v173: الصفحة أُلغيت */
+  if (id === "v-set") renderProfile();
 }
 document.querySelectorAll("nav.tabs button").forEach((b) =>
   b.addEventListener("click", () => switchView(b.dataset.v)));
-/* v173: مدخل صفحة الإعدادات أُلغي نهائياً — لا يبقى لها مدخل */ void 0;
+$("#btnSet").addEventListener("click", () => switchView("v-set"));
 /* ── v45: بطاقات الرئيسية تعمل بالضغط — كل السلع / المنخفضة / حركة اليوم ── */
 $("#cardProd").addEventListener("click", () => { invSetTab("all", true); switchView("v-inv"); });
 $("#cardLow").addEventListener("click", () => { invSetTab("low", true); switchView("v-inv"); });
@@ -3066,7 +3066,7 @@ $("#dlgPassGo").addEventListener("click", async () => {
           const me = await api("/api/me");
           showApp(me);
           toast("🔑 تم التغيير وبقيت داخل التطبيق ✅");
-          switchView("v-home");   /* v173: صفحة الإعدادات أُلغيت */
+          switchView("v-set");
         }
       } catch (e2) { showLogin(false); }
       return;
@@ -3912,7 +3912,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "50";
+const APP_VER = "51";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -7519,8 +7519,8 @@ try { window.v119WorkersSection = v93wk; } catch (e) {}
     let card = document.getElementById("sbUser");
     if (!card) {
       card = document.createElement("div"); card.id = "sbUser"; card.title = "الإعدادات والملف الشخصي";
-      card.innerHTML = '<div class="sav">؟</div><div class="sinfo"><b>—</b><span>—</span></div>';
-      card.addEventListener("click", function () { try { window.v173prof && window.v173prof(); } catch (_e) {} });
+      card.innerHTML = '<div class="sav">؟</div><div class="sinfo"><b>—</b><span>—</span></div><span class="sgear">⚙️</span>';
+      card.addEventListener("click", function () { try { switchView("v-set"); } catch (_e) {} });
       nav.appendChild(card);
     }
     const nm = (S.user && (S.user.name || S.user.username)) || "—";
@@ -8681,90 +8681,66 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
   window.__v171always = 1;
 })();
 </script>
-<style id="v173css">/* ═══ v173: إعدادات الرئيسية — بطاقات متناسقة + لوحة الحساب المنبثقة ═══ */
-#v173set .card { margin: 0 0 12px }
-#v173set .sect { margin: 0 0 8px }
-#gHomeOk { margin-top: 4px }
-#v173ov { position: fixed; inset: 0; z-index: 95 }
-#v173bk { position: absolute; inset: 0; background: rgba(5,8,16,.62) }
-#v173pn { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-  width: min(440px, 92vw); max-height: 86vh; overflow: auto;
-  background: var(--card, #171a24); border: 1.5px solid var(--line);
-  border-radius: var(--radius, 16px); padding: 14px }
-.v173ph { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px }
-#v173x { border: none; background: none; color: var(--mut); font-size: 18px;
-  cursor: pointer; padding: 4px 8px }
-@media (max-width: 480px) { #v173pn { width: 94vw } }</style>
-<script id="v173js">
-/* ═══ v173: واجهة واحدة — الثيمات وحساب Google وفحص التحديث في الرئيسية ═══
-   بطلب المالك: إلغاء صفحة الإعدادات المنفصلة نهائياً بلا أي مدخل، ونقل
-   الثيمات ثم حساب Google ثم فحص التحديث إلى لوحة التحكم الرئيسية.
-   حالة ربط Google حقيقية من الخادم (google_linked_at لكل مستخدم على حدة —
-   ليست مجرد تسجيل دخول)، تُجلب عند الفتح وعند العودة للتطبيق، وتتحدث فوراً
-   بعد عودة OAuth، وفشل الربط لا يغيّر الحالة أبداً. زر الربط يسلك مسار
-   /api/auth/google/link الرسمي نفسه دون أي نظام جديد. بيانات الملف الشخصي
-   (الصورة/الاسم/كلمة المرور/الخروج) في لوحة بطاقة الهوية المنبثقة. */
+<style id="v174css">/* ═══ v174: قسم «حساب Google» داخل صفحة الإعدادات — بنفس بطاقات الصفحة ═══ */
+#gsetCard { margin-bottom: 12px }
+#gsetOk { margin-top: 4px }</style>
+<script id="v174js">
+/* ═══ v174: قسم «حساب Google» داخل صفحة الإعدادات — أسفل الثيمات مباشرة ═══
+   بطلب المالك (تصحيح v173): زر الإعدادات ⚙️ بجانب التنبيهات وصفحة
+   الإعدادات بكامل وظائفها تبقى كما هي. قسم Google يُضاف داخل صفحة
+   الإعدادات أسفل قسم الثيمات، وفحص التحديث أسفل قسم Google بنفس الزر
+   والوظيفة الحالية بلا أي تكرار. الحالة حقيقية من الخادم
+   (google_linked_at لكل مستخدم — ليست مجرد تسجيل دخول)، تُجلب عند الفتح
+   وعند كل عودة للتطبيق، وتتحدث فوراً بعد عودة OAuth بلا إعادة تشغيل،
+   وفشل الربط لا يغيّرها (لا نجاح وهمي). زر الربط يسلك المسار الرسمي
+   نفسه /api/auth/google/link دون أي نظام جديد. */
 (function () {
   "use strict";
-  if (window.__v173always) return;
-  window.__v173always = 1;
+  if (window.__v174always) return;
+  window.__v174always = 1;
   function q(id) { return document.getElementById(id); }
-  var home = q("v-home");
-  var grid = home ? home.querySelector(".grid") : null;
   var vs = q("v-set");
-  if (!home || !grid || !vs) return;
+  if (!vs) return;
 
-  /* ── 1) الثيمات أولاً: نقل عقد v-set كما هي فتبقى مستمعاتها وأداؤها ── */
-  var wrap = document.createElement("div");
-  wrap.id = "v173set";
-  var look = null, org = q("orgThemeCard");
-  Array.prototype.forEach.call(vs.querySelectorAll(".card"), function (c) {
-    if (c.querySelector("#thLight") && c.querySelector("#thDark")) look = c;
-  });
-  if (look) {
-    var ls = look.querySelector(".sect");
-    if (ls) ls.textContent = "🎨 الثيمات والمظهر";
-    wrap.appendChild(look);
-  }
-  if (org) wrap.appendChild(org);
-
-  /* ── 2) بطاقة «حساب Google» أسفل الثيمات مباشرة ── */
+  /* ── 1) بطاقة «حساب Google» أسفل قسم الثيمات مباشرة ── */
   var gc = document.createElement("div");
-  gc.className = "card"; gc.id = "gHomeCard";
+  gc.className = "card"; gc.id = "gsetCard";
   gc.innerHTML = '<p class="sect">🔗 حساب Google</p>'
-    + '<p class="hint" id="gHomeState" style="margin:2px 0 10px">جارٍ التحقق من حالة الربط…</p>'
-    + '<button class="btn gold" id="gHomeLink" style="width:100%">🔗 ربط حسابي بحساب Google</button>'
-    + '<div id="gHomeOk" style="display:none;align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<p class="hint" id="gsetState" style="margin:2px 0 10px">جارٍ التحقق من حالة الربط…</p>'
+    + '<button class="btn gold" id="gsetLink" style="width:100%">🔗 ربط حسابي بحساب Google</button>'
+    + '<div id="gsetOk" style="display:none;align-items:center;gap:10px;flex-wrap:wrap">'
     + '<span class="badge g">✅ تم ربط حسابك بـ Google</span>'
-    + '<span class="hint" id="gHomeEmail" style="margin:0"></span></div>';
-  wrap.appendChild(gc);
+    + '<span class="hint" id="gsetEmail" style="margin:0"></span></div>';
+  var anchor = q("orgThemeCard");
+  if (!anchor || anchor.parentNode !== vs) {
+    anchor = null;
+    Array.prototype.forEach.call(vs.querySelectorAll(".card"), function (c) {
+      if (!anchor && c.querySelector("#thLight") && c.querySelector("#thDark")) anchor = c;
+    });
+  }
+  if (!anchor) anchor = vs.querySelector(".setprof");
+  if (anchor && anchor.parentNode === vs) vs.insertBefore(gc, anchor.nextSibling);
+  else vs.appendChild(gc);
 
-  /* ── 3) بطاقة التحديث: نفس زر الفحص وآليته الحالية بلا أي تكرار ── */
-  var uc = document.createElement("div");
-  uc.className = "card"; uc.id = "updHomeCard";
-  uc.innerHTML = '<p class="sect">🔄 التحديث</p>';
+  /* ── 2) فحص التحديث أسفل قسم Google — نفس الزر وآليته بلا أي تكرار ── */
   var bck = q("btnChkUpd"), abt = q("setAbout");
   if (bck) {
     bck.textContent = "🔄 فحص وجود تحديث جديد";
-    bck.style.width = "100%"; bck.style.margin = "0";
-    uc.appendChild(bck);
+    vs.insertBefore(bck, gc.nextSibling);
   }
-  if (abt) { abt.style.margin = "8px 0 0"; uc.appendChild(abt); }
-  wrap.appendChild(uc);
+  if (abt) vs.insertBefore(abt, bck ? bck.nextSibling : gc.nextSibling);
 
-  grid.parentNode.insertBefore(wrap, grid.nextSibling);
-
-  /* ── 4) حالة Google: زر الربط أو شارة التمام — من الخادم حصراً ── */
+  /* ── 3) الحالة الحقيقية: زر الربط أو شارة التمام — من الخادم حصراً ── */
   function gState() {
     var u = (typeof S !== "undefined" && S && S.user) ? S.user : null;
-    var st = q("gHomeState"), lk = q("gHomeLink"), ok = q("gHomeOk");
+    var st = q("gsetState"), lk = q("gsetLink"), ok = q("gsetOk");
     if (!st || !lk || !ok) return;
     var linked = !!(u && (u.google_linked === true
       || (u.google_linked === undefined && (u.google_linked_rel || u.google_linked_at))));
     if (linked) {
       st.textContent = "حسابك مرتبط — يمكنك الدخول بضغطة واحدة عبر Google.";
       lk.style.display = "none"; ok.style.display = "flex";
-      var em = q("gHomeEmail");
+      var em = q("gsetEmail");
       if (em) em.textContent = (u.google_email || u.email || "");
     } else {
       st.textContent = u
@@ -8773,7 +8749,7 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
       lk.style.display = ""; ok.style.display = "none";
     }
   }
-  window.__v173gState = gState;
+  window.__v174gState = gState;
   try { gState(); } catch (e) {}
   try {
     var _rm = window.refreshMe;
@@ -8796,8 +8772,8 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
     try { window.refreshMe && window.refreshMe(); } catch (e6) {}
   });
 
-  /* ── 5) زر الربط: نفس المسار الرسمي حرفياً — الفشل لا يغيّر الحالة ── */
-  var gl = q("gHomeLink");
+  /* ── 4) زر الربط: نفس المسار الرسمي حرفياً — الفشل لا يغيّر الحالة ── */
+  var gl = q("gsetLink");
   if (gl) gl.addEventListener("click", function () {
     var b = gl;
     b.disabled = true; b.textContent = "جارِ التحضير…";
@@ -8816,32 +8792,6 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
         try { gState(); } catch (e2) {}
       });
   });
-
-  /* ── 6) لوحة الحساب المنبثقة: الصورة/الاسم/كلمة المرور/الخروج ── */
-  var ov = document.createElement("div");
-  ov.id = "v173ov"; ov.style.display = "none";
-  ov.innerHTML = '<div id="v173bk"></div>'
-    + '<div id="v173pn"><div class="v173ph"><b>الحساب والملف الشخصي</b>'
-    + '<button type="button" id="v173x" title="إغلاق">✕</button></div>'
-    + '<div id="v173body"></div></div>';
-  document.body.appendChild(ov);
-  var pbody = q("v173body");
-  var prof = vs.querySelector(".setprof");
-  var sec = null;
-  Array.prototype.forEach.call(vs.querySelectorAll(".card"), function (c) {
-    if (c.querySelector("#btnMyPass") || c.querySelector("#btnLogout2")) sec = c;
-  });
-  if (prof) pbody.appendChild(prof);
-  if (sec) pbody.appendChild(sec);
-  vs.remove();   /* صفحة الإعدادات انتهت — لا تبقى لها مدخل في الواجهة */
-  function v173prof() {
-    ov.style.display = (ov.style.display === "none") ? "" : "none";
-    try { renderProfile(); } catch (e) {}
-  }
-  window.v173prof = v173prof;
-  var bk = q("v173bk"), x = q("v173x");
-  if (bk) bk.addEventListener("click", function () { ov.style.display = "none"; });
-  if (x) x.addEventListener("click", function () { ov.style.display = "none"; });
 })();
 </script>
 <script id="v143ui">
