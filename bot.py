@@ -12809,7 +12809,8 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "47"  # v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
+PWA_VERSION = "48"  # v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
+# (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
 # (v169 = «إصلاح بطاقة تفاصيل المستخدم والحذف النهائي — نهاية «تعذر حساب الأثر: لا يوجد اتصال بالخادم»: فهارس عند الإقلاع على كل أعمدة العدّادات (كان العد تسلسلياً على جداول ضخمة فتجاوز مهلة العميل 25 ث)، وتصحيح قراءة نتيجة العدّادات تحت RealDictCursor (كانت KeyError ترمي 500)، وهبوط آمن لعدّاد لكل جدول عند أي فشل، وتمييز انتهاء المهلة في رسائل العميل بمهلة 60 ث لهذين النداءين» — السجل في CHANGELOG.md
 # (v168 = «التحديث الذاتي الدائم — نهاية تعارض «الإصدار قديم والخادم جديد»: واجهة Pages تستبدل نفسها تلقائياً بالواجهة الحية من الخادم عند الإقلاع وعند «تحديث الآن» (الجلسة تنجو عبر ceram_sess وترويسة X-Session-Token)، حوار «تحديث جديد» يعمل على كل النسخ بعد إلغاء كبت Pages، اسم كاش سجل الخدمة ديناميكي فيتجدد مع كل نشر، وشاشة الإعدادات تعرض إصدار الخادم الحقيقي دائماً» — السجل في CHANGELOG.md
 # (v167 = «خانة المستخدمين: فصل حسابات تلغرام عن قائمة التطبيق (إخفاء فقط دون المساس بعمل البوت)، عرض مدة النشاط الأخير لكل حساب (نبض تلغرام + دخول + جلسات، كل 300 ثانية)، بطاقة تفاصيل كاملة لكل حساب، وحذف نهائي كامل للبيانات بخطوتين وتأكيد باسم الحساب (admin فقط)» — السجل الكامل في CHANGELOG.md
@@ -19775,6 +19776,96 @@ _PWA_V170_JS = r'''/* ═══ v170: اللازمة الدائمة — بطاق
 })();'''
 
 
+_PWA_V171_CSS = r'''/* ═══ v171: القياسات والمصانع متقابلة — شبكة بدل القائمة الطويلة ═══
+   بلاغ المالك: عند إضافة سلعة جديدة، قائمة القياسات/المصانع طويلة عمودياً —
+   الشبكة المتقابلة تغني البطاقات وتقصر التمرير: هاتف 2-3 بالسطر، سطح 4-5. */
+#facList.facList, #sizeList.facList { display:grid !important;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px;
+  margin:0 0 10px }
+#facList .facRow, #sizeList .facRow { flex-direction:column; align-items:center;
+  justify-content:center; text-align:center; gap:4px; padding:10px 6px; min-height:54px }
+#facList .facRow b, #sizeList .facRow b { font-size:13.5px; line-height:1.35 }
+#facList .facRow span, #sizeList .facRow span { font-size:15px }
+/* زر 🗑 حذف القياس (v118) في زاوية الخلية العلوية بدل منتصف الحافة */
+#sizeList .facRow { padding:24px 8px 8px }
+#sizeList .sizeDel { top:2px; left:2px; transform:none }
+#facList .facLoad, #sizeList .facLoad { grid-column:1/-1 }
+@media (max-width:420px) {
+  #facList.facList, #sizeList.facList {
+    grid-template-columns:repeat(auto-fill,minmax(118px,1fr)) }
+}'''
+
+
+_PWA_V171_JS = r'''/* ═══ v171: تبويب «⏳ المعلقة» الثابت في صف التبويبات ═══
+   بلاغ المالك: زر الطلبات المعلقة يُطلب ثابتاً مثل الرئيسية والمخزون
+   والفاتورة والمستخدمين — فصار تبويباً دائماً في nav.tabs بجوار «الطلبات»:
+   يفتح شاشة الطلبات على مقطع «المعلقة» مباشرة، وبصلاحية admin/pending/
+   supply_order فقط، وبإضاءة مستقلة عن تبويب الطلبات رغم اشتراكهما
+   في نفس الشاشة (data-v واحد). */
+(function () {
+  "use strict";
+  if (window.__v171always) return;
+  window.__v171always = 1;
+  function q(id) { return document.getElementById(id); }
+  function pendVis() {
+    var t = q("tabPend"); if (!t) return;
+    var P = null;
+    try { P = (typeof S !== "undefined" && S) ? (S.perms || {}) : null; } catch (e) {}
+    var show = !!(P && (P.admin || P.pending || P.supply_order));
+    t.style.display = show ? "" : "none";
+  }
+  var nav = document.querySelector("nav.tabs");
+  if (nav) {
+    var tP = q("tabPend");
+    if (!tP) {
+      tP = document.createElement("button");
+      tP.id = "tabPend";
+      tP.dataset.v = "v-ord";
+      tP.title = "الطلبات المعلقة";
+      tP.innerHTML = '<span class="ic">⏳</span>المعلقة';
+      var tO = q("tabOrders");
+      if (tO && tO.parentNode) tO.parentNode.insertBefore(tP, tO.nextSibling);
+      else nav.appendChild(tP);
+    }
+    /* التقاط قبل مستمع الأساس: نحفظ مصدر الضغطة ونضبط مقطع «المعلقة»
+       قبل أن يجلب switchView شاشة الطلبات (بلا نداء مزدوج) */
+    nav.addEventListener("click", function (e) {
+      var b = (e.target && e.target.closest) ? e.target.closest("button") : null;
+      try { window.__v171lastNav = b || null; } catch (e2) {}
+      if (b && b.id === "tabPend") {
+        try { S.ordSeg = "pend"; } catch (e3) {}
+        try {
+          var a = q("segPend"), c = q("segInc");
+          if (a) a.classList.add("on");
+          if (c) c.classList.remove("on");
+        } catch (e4) {}
+      }
+    }, true);
+    try {
+      var _sv = window.switchView;
+      if (typeof _sv === "function") {
+        window.switchView = function (id) {
+          var r = _sv.apply(this, arguments);
+          try {
+            if (id === "v-ord") {
+              var tO2 = q("tabOrders"), tP2 = q("tabPend");
+              if (tO2 && tP2) {
+                if (window.__v171lastNav === tP2) tO2.classList.remove("on");
+                else tP2.classList.remove("on");
+              }
+            }
+          } catch (e5) {}
+          try { pendVis(); } catch (e6) {}
+          return r;
+        };
+      }
+    } catch (e) {}
+    try { pendVis(); } catch (e7) {}
+    setInterval(function () { try { pendVis(); } catch (e8) {} }, 30000);
+  }
+})();'''
+
+
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -20408,6 +20499,10 @@ _PWA_HTML_PATCHES = (
     #     المرساة الذيل الحقيقي وقت التطبيق: آخر طبقات CSS-only تركت الذيل </style></body>
     ('</style>\n</body>',
      '</style>\n<script id="v170js">\n' + _PWA_V170_JS + '\n</script>\n</body>'),
+    # 91) v171: تبويب «المعلقة» الثابت + شبكة القياسات والمصانع — CSS ثم JS
+    #     ذيل الرقع بعد رقعة v170 عاد </script></body> فالمرساة الكلاسيكية تعمل
+    ('</script>\n</body>',
+     '</script>\n<style id="v171css">' + _PWA_V171_CSS + '</style>\n<script id="v171js">\n' + _PWA_V171_JS + '\n</script>\n</body>'),
 )
 
 
@@ -21584,6 +21679,10 @@ def _pwa_inject_floating_layers(out):
         # تُحقن دائماً إن غابت عن الصفحة مهما تغيّر ذيل الرقع
         if '__v170always' not in html:
             add += ('<script id="v170ui">\n' + _PWA_V170_JS + '\n</script>\n')
+        # v171: حصن الحقن — تبويب «المعلقة» الثابت + شبكة القياسات والمصانع
+        if '__v171always' not in html:
+            add += ('<style id="v171css">' + _PWA_V171_CSS + '</style>\n'
+                    '<script id="v171ui">\n' + _PWA_V171_JS + '\n</script>\n')
         if 'id="v158clean"' not in html:
             add += ('<script id="v158clean">'
                     'try{localStorage.removeItem("__v150sell");'
