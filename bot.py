@@ -12811,7 +12811,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "52"  # v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "53"  # v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -14394,6 +14394,121 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   try { renderCart(); } catch (_e84) {}
   try { renderCustChips(); } catch (_e85) {}
 })();"""
+
+
+_PWA_MIGRATE_JS = r"""/* ═══ v177: واجهة الترحيل المؤقت — تظهر مرة واحدة لمن يستعمل الويب (PWA)
+   التشجيع على التطبيق الأصلي (أندرويد) بتحميل مباشر من gofile + طلب حذف
+   النسخة القديمة بعد التثبيت + عرض مميزات النسخة الجديدة.
+   لا تظهر إطلاقاً داخل التطبيق الأصلي (UA الويبفيو يحمل ; wv)) — ومن يضغط
+   أي زر تُختم «مرة واحدة» في localStorage فلا تعاود الظهور أبداً. */
+(function () {
+  "use strict";
+  if (window.__v177migrate) return;
+  window.__v177migrate = 1;
+  var KEY = "leroi_app_migration_seen";
+  var APK_GOFILE = "https://gofile.io/d/G2lAKZ06";   /* التحميل المباشر من gofile */
+  function inApp() {
+    try {
+      var ua = navigator.userAgent || "";
+      if (/; wv\)/i.test(ua)) return true;           /* WebView التطبيق الأصلي */
+      return false;
+    } catch (e) { return false; }
+  }
+  function seen() {
+    try { return localStorage.getItem(KEY) === "1"; } catch (e) { return true; }
+  }
+  function mark() { try { localStorage.setItem(KEY, "1"); } catch (e) {} }
+  function apkServer() {
+    try {
+      return ((window.CERAM_API_ROOT || "").replace(/\/+$/, "") || location.origin) + "/app_latest.apk";
+    } catch (e) { return "/app_latest.apk"; }
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function close() {
+    mark();
+    var ov = document.getElementById("migrateOv");
+    if (ov) ov.remove();
+  }
+  function build() {
+    if (document.getElementById("migrateOv")) return;
+    var phone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+    var feats = [
+      ["\\uD83E\\uDDFA", "إنشاء الفاتورة أصبح سهلاً: حساب بالعلب، سلع يدوية، تعديل السلة بلمسة، مسودة محفوظة"],
+      ["\\u26A0\\uFE0F", "تحذير المخزون قبل الإضافة + زبائن أخيرون بضغطة واحدة"],
+      ["\\uD83D\\uDCE5", "تنزيل فواتير PDF مباشرة إلى الجهاز مع إشعار التحميل"],
+      ["\\uD83D\\uDD14", "إشعارات فورية بالطلبات والتنبيهات المهمة"],
+      ["\\uD83D\\uDD10", "تسجيل دخول بحساب Google + استعادة الجلسة تلقائياً"],
+      ["\\u26A1", "أسرع وأثبت مع التحديث الذاتي — بلا إعادة تثبيت يدوي"]
+    ];
+    var oldNote = phone
+      ? "\\uD83D\\uDCF1 أيقونة الموقع القديمة (PWA): اضغط مطولاً عليها ثم اختر «إزالة» أو «إزالة الاختصار».<br>"
+        + "\\uD83D\\uDCF1 تطبيق قديم مثبت: ثبّت الجديد فوقه أو ألغِ تثبيته من إعدادات الجهاز."
+      : "\\uD83D\\uDCBB احذف «التطبيق المثبت» من قائمة تطبيقات متصفحك بعد تثبيت النسخة الجديدة.";
+    var ov = document.createElement("div");
+    ov.id = "migrateOv";
+    ov.style.cssText = "position:fixed;inset:0;z-index:2147482000;display:flex;align-items:center;justify-content:center;"
+      + "background:linear-gradient(160deg,#15120e 0%,#221c14 55%,#0d271f 100%);padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom));overflow:auto";
+    ov.innerHTML =
+      '<div id="migrateCard" style="background:#fffdf8;border-radius:22px;box-shadow:0 18px 60px rgba(0,0,0,.45);'
+      + 'max-width:440px;width:min(94vw,440px);max-height:calc(100vh - 28px);overflow:auto;padding:clamp(18px,4vw,26px);'
+      + 'text-align:center;font-family:inherit;box-sizing:border-box">'
+      + '<div style="font-size:clamp(30px,9vw,40px);line-height:1">\\uD83D\\uDCE6</div>'
+      + '<h2 style="margin:8px 0 4px;font-size:clamp(19px,5.4vw,23px);font-weight:900;color:#231a08">التطبيق الأحدث متوفر</h2>'
+      + '<p style="margin:0 0 12px;font-size:clamp(12.5px,3.4vw,14px);color:#6b5b45;font-weight:700">'
+      + 'نسخة أندرويد أصلية كاملة — بدل واجهة الويب (PWA)</p>'
+      + '<div style="text-align:start;background:#f7f2e7;border:1px solid #eadfc8;border-radius:14px;padding:12px 14px;margin-bottom:12px">'
+      + '<div style="font-size:12.5px;font-weight:900;color:#8a5b00;margin-bottom:6px">\\u2728 مميزات النسخة الجديدة</div>'
+      + feats.map(function (f) {
+          return '<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0">'
+            + '<span style="flex:none;line-height:1.5">' + f[0] + '</span>'
+            + '<span style="font-size:12.5px;line-height:1.6;color:#3d3426">' + esc(f[1]) + '</span></div>';
+        }).join("")
+      + '</div>'
+      + '<a id="migrateDl" href="' + APK_GOFILE + '" target="_blank" rel="noopener" '
+      + 'style="display:block;background:linear-gradient(135deg,#e0b64c,#c99a2e);color:#231a08;font-weight:900;'
+      + 'border:0;border-radius:14px;padding:14px 16px;font-size:clamp(14px,4vw,16px);text-decoration:none;margin-bottom:8px">'
+      + '\\u2B07\\uFE0F تحميل التطبيق \\u2014 النسخة 58 (من gofile)</a>'
+      + '<a href="' + apkServer() + '" download="app-latest-58.apk" '
+      + 'style="display:block;font-size:12px;color:#8a5b00;font-weight:800;text-decoration:underline;margin-bottom:12px">'
+      + '\\u21D0 أو حمّل من الخادم مباشرة (احتياط)</a>'
+      + '<div style="text-align:start;background:#fdecea;border:1px solid #f3c5bd;border-radius:14px;padding:12px 14px;margin-bottom:12px">'
+      + '<div style="font-size:12.5px;font-weight:900;color:#c0392b;margin-bottom:6px">\\uD83D\\uDDD1\\uFE0F بعد التثبيت: احذف النسخة القديمة</div>'
+      + '<div style="font-size:12.5px;line-height:1.7;color:#5a3d33">' + oldNote + '</div></div>'
+      + '<button type="button" id="migrateLater" '
+      + 'style="width:100%;background:#1d3a2f;color:#fff;font-weight:900;border:0;border-radius:14px;'
+      + 'padding:13px 16px;font-size:clamp(13.5px,3.8vw,15px);font-family:inherit;cursor:pointer">متابعة إلى النظام \\u2190</button>'
+      + '<div style="font-size:11px;color:#a0906f;margin-top:8px">تظهر هذه الشاشة مرة واحدة فقط \\u2014 الحساب والبيانات كما هي بلا أي تغيير</div>'
+      + '</div>';
+    document.body.appendChild(ov);
+    var dl = document.getElementById("migrateDl");
+    if (dl) dl.addEventListener("click", function () {
+      mark();   /* من حمّل لم يعد بحاجة للشاشة */
+      try { toast("\\u23F3 جارٍ فتح صفحة التحميل \\u2014 اضغط Download ثم ثبّت الملف"); } catch (e1) {}
+    });
+    var later = document.getElementById("migrateLater");
+    if (later) later.addEventListener("click", close);
+  }
+  function show() {
+    if (inApp() || seen()) return;
+    /* لا ننازع سبلاش استعادة الجلسة (v94) — ننتظر حتى يخفى بسقف 8 ثوانٍ */
+    var tries = 0;
+    (function wait() {
+      var v94 = document.getElementById("v94splash");
+      var busy = v94 && v94.style.display === "flex";
+      if (!busy || ++tries > 40) { try { build(); } catch (e0) {} return; }
+      setTimeout(wait, 200);
+    })();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { setTimeout(show, 800); });
+  } else setTimeout(show, 800);
+  window.showAppMigrate = show;   /* للاختبار اليدوي من الكونسول */
+})();
+"""
 
 
 _PWA_DESKTOP_CSS = r"""/* ═══ v88.1: عرض سطح المكتب — نفس التطبيق بمساحة أرحب ═══ */
@@ -20302,6 +20417,12 @@ _PWA_HTML_PATCHES = (
      '<style>' + _PWA_INVOICE_CSS + '</style>'
      + _PWA_INVOICE_SECTION_HTML
      + '<script>' + _PWA_INVOICE_JS + '</script>'
+     + '</section>'),
+    # 11-bis) v177: واجهة الترحيل المؤقت — التطبيق الأصلي بدل PWA (مرة واحدة)
+    ('<script>' + _PWA_INVOICE_JS + '</script>'
+     + '</section>',
+     '<script>' + _PWA_INVOICE_JS + '</script>'
+     + '<script>' + _PWA_MIGRATE_JS + '</script>'
      + '</section>'),
     # 12) بوابة ظهور التاب: صلاحية الفواتير (مدير/بائع) مع احتياط القديمة
     ('$("#tabOil").style.display = S.perms.oil ? "" : "none";',
