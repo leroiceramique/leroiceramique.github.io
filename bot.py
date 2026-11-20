@@ -5984,6 +5984,8 @@ def _invoice_product_type(name):
     if n.startswith("plante"):
         return "plant"
     # v129: فئة 120/60 — الرمز في أي موضع (قاعدة التسمية تلحقه بعد الاسم منذ v115)
+    if "[\u0642\u0637\u0639]" in n:
+        return "pcs"  # v176: وسم السلع اليدوية — بالقطعة دون أبعاد في الاسم
     if n.startswith("motif") or _12060_TOKEN_RE.search(n):
         return "pcs"
     return "m2"
@@ -12809,7 +12811,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "51"  # v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "52"  # v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -13621,27 +13623,51 @@ _PWA_INVOICE_CSS = r"""/* ═══ v88: شاشة الفاتورة ═══ */
 #v-oil .invRec a{text-decoration:none}
 #v-oil .invArchQ{margin-bottom:8px}
 #v-oil .invSt{font-size:10px;font-weight:800;padding:1.5px 7px;border-radius:99px;background:#f4e8d7;color:#8a5b00;margin-inline-start:4px;vertical-align:middle;white-space:nowrap}
-#v-oil .invRec .btn{white-space:nowrap}"""
+#v-oil .invRec .btn{white-space:nowrap}
+#v-oil .invChips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center}
+#v-oil .invChipsLbl{font-size:11px;color:var(--mut);margin-inline-end:2px}
+#v-oil .invChips .btn{padding:5px 10px;font-size:11.5px;max-width:160px;overflow:hidden;text-overflow:ellipsis}
+#v-oil .invModes{display:flex;gap:6px;margin:8px 0 2px}
+#v-oil .invModes .btn{padding:7px 12px;font-size:12.5px}
+#v-oil .invModes .btn.on{outline:2px solid var(--brand);outline-offset:-2px}
+#v-oil .invStock{font-size:12px;font-weight:700;color:var(--ok,#1a9c6b);min-height:16px;margin-top:6px}
+#v-oil .invStock.warn{color:#c0392b}
+#v-oil .invRow .info[data-edit]{cursor:pointer}
+#v-oil .invWarn{font-size:10.5px;font-weight:800;color:#c0392b;background:#fdecea;border-radius:99px;padding:1px 7px;margin-inline-start:4px;white-space:nowrap}
+#v-oil .invHint{font-size:10.5px;color:var(--mut);font-weight:400;margin-inline-start:6px}
+#v-oil select.invErr{border-color:#c0392b !important;outline:2px solid rgba(192,57,43,.2)}
+#v-oil #invManName{margin-bottom:6px}"""
 
 
 _PWA_INVOICE_SECTION_HTML = (
     '<div id="invMain"><div class="card invCard"><input class="search" id="invCust" placeholder="&#128100'
-    + '; اسم الزبون أو رقم هاتفه..." maxlength="120"></div><div class="card invCard"><input class="search" '
-    + 'id="invQ" placeholder="&#128269; ابحث باسم السلعة لإضافتها..." autocomplete="off"><div id="invResult'
-    + 's"><p class="empty">ابحث واختر سلعة للإضافة</p></div></div><div class="card invCard" id="invItemForm'
-    + '" style="display:none"><div class="invTitle">&#10133; <span id="invFormTitle"></span></div><div clas'
-    + 's="invGrid"><div><label id="invQtyLabel">الكمية</label><input id="invQty" type="number" inputmode="d'
+    + '; اسم الزبون أو رقم هاتفه..." maxlength="120"><div id="invCustChips" class="invChips"></div></div>'
+    + '<div class="card invCard"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">'
+    + '<input class="search" id="invQ" placeholder="&#128269; ابحث باسم السلعة أو اضغط «يدوي»..." autocomplete="off" style="flex:1">'
+    + '<button type="button" class="btn mini gray" id="invManualBtn" title="سلعة خارج المخزون">&#10010; يدوي</button></div>'
+    + '<div id="invResults"><p class="empty">ابحث واختر سلعة للإضافة</p></div></div>'
+    + '<div class="card invCard" id="invItemForm" style="display:none"><div class="invTitle">&#10133; <span id="invFormTitle"></span></div>'
+    + '<div id="invManWrap" style="display:none"><input class="search" id="invManName" placeholder="&#9998; اسم السلعة اليدوية (خارج المخزون)" maxlength="160">'
+    + '<div class="invModes" id="invManUnits">'
+    + '<button type="button" class="btn mini on" data-munit="pcs">&#9679; قطعة</button>'
+    + '<button type="button" class="btn mini gray" data-munit="m2">m&#178;</button>'
+    + '<button type="button" class="btn mini gray" data-munit="plant">&#1605;.&#1591;</button></div></div>'
+    + '<div id="invModes" class="invModes" style="display:none">'
+    + '<button type="button" class="btn mini on" id="invModeBoxes">&#128230; بالعلب</button>'
+    + '<button type="button" class="btn mini gray" id="invModeM2">m&#178; بالمتر</button></div>'
+    + '<div class="invGrid"><div><label id="invQtyLabel">الكمية</label><input id="invQty" type="number" inputmode="d'
     + 'ecimal" min="0" step="any" placeholder="0"></div><div><label>السعر (د.ج)</label><input id="invPrice"'
     + ' type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div><div id="invBoxWrap"><la'
     + 'bel>مساحة العلبة (m&#178;)</label><input id="invBox" type="number" inputmode="decimal" min="0" step='
     + '"any" value="1.44"></div><div id="invLenWrap"><label>طول القطعة (م)</label><input id="invLen" type="'
-    + 'number" inputmode="decimal" min="0" step="any" value="0.45"></div></div><div class="invPrev" id="inv'
-    + 'Preview"></div><div style="display:flex;gap:8px;margin-top:10px"><button type="button" class="btn go'
-    + 'ld" id="invAddGo" style="flex:1">&#10003; أضف للسلة</button><button type="button" class="btn gray" i'
-    + 'd="invCancelItem">إلغاء</button></div></div><div class="card invCard"><div class="invTitle">&#129522'
-    + '; السلة <span class="cnt" id="invCount"></span></div><div id="invCart"><p class="empty">أضف سلعاً با'
-    + 'لبحث أعلاه</p></div></div><div class="card invCard"><div class="invTitle">&#128104;&#8205;&#128295; '
-    + 'العامل المكلّف بالتجهيز</div><select class="search" id="invWorker"><option value="">&#8212; اختر الع'
+    + 'number" inputmode="decimal" min="0" step="any" value="0.45"></div></div><div class="invStock" id="inv'
+    + 'Stock"></div><div class="invPrev" id="invPreview"></div><div style="display:flex;gap:8px;margin-top:'
+    + '10px"><button type="button" class="btn gold" id="invAddGo" style="flex:1">&#10003; أضف للسلة</button'
+    + '><button type="button" class="btn gray" id="invCancelItem">إلغاء</button></div></div><div class="ca'
+    + 'rd invCard"><div class="invTitle">&#129522; السلة <span class="cnt" id="invCount"></span><span class='
+    + '"invHint">اضغط أي سطر لتعديله</span></div><div id="invCart"><p class="empty">أضف سلعاً بالبحث أعلاه'
+    + ' أو سلعة يدوية</p></div></div><div class="card invCard"><div class="invTitle">&#128104;&#8205;&#12829'
+    + '5; العامل المكلّف بالتجهيز</div><select class="search" id="invWorker"><option value="">&#8212; اختر الع'
     + 'امل &#8212;</option></select></div><div class="invTotalBar"><div class="tot"><span>الإجمالي</span><b'
     + ' id="invTotal">0,00 د.ج</b></div><button type="button" class="btn gold" id="invGo">&#129534; إنشاء ا'
     + 'لفاتورة</button></div></div><div class="card invCard" id="invSuccess" style="display:none"></div><di'
@@ -13655,9 +13681,23 @@ _PWA_INVOICE_SECTION_HTML = (
 )
 
 
-_PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (بدل الزيت) ═══ */
+_PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (بدل الزيت) ═══
+   v176: تحسين شامل بطلب المالك — القسم كان قليل الاستخدام لصعوبته:
+   1) المنتجات m² تُدخل «بالعلب» افتراضياً (10 علب ← 14.4m² تلقائياً) —
+      نموذج تفكير البائع الطبيعي، يقتل أكبر مصدر أخطاء حسابية (كتابة
+      عدد العلب في خانة المساحة فتُحسب غلط).
+   2) سلع يدوية خارج المخزون بثلاث وحدات (قطعة/m²/م.ط) — الخادم يستنتج
+      النوع من الاسم، فالوحدة تُرسل كوسم معه ([قطع]/بادئة plante).
+   3) أي سطر في السلة يُلمس فيُفتح للتعديل (بدل حذف وإعادة إدخال).
+   4) مسودة محفوظة (الزبون + السلة + العامل) — إغلاق التطبيق لا يفقدك شيئاً.
+   5) تحذير المتوفر قبل الإضافة + شارة ⚠ على سطر الطلب الأكبر من المخزون
+      (السلوك نفسه: تحذير دون رفض كما في البوت).
+   6) زبائن أخيرون بضغطة (من سجل الفواتير) + تذكّر آخر عامل مُختار.
+   7) الخادم (الجزء أ): تقريب القطع الكسرية بدل قطعها — المعاينة = المُفوتر. */
 (function(){
-  var INV = {cart:[], prod:null, workers:[], resMap:{}, searchSeq:0, boxMemo:{}};
+  var INV = {cart:[], prod:null, workers:[], resMap:{}, searchSeq:0, boxMemo:{},
+             custs:[], editIx:null, manUnit:null, m2Mode:"boxes"};
+  var DKEY = "leroi_inv_draft_v1";
 
   function money(n){
     n = Number(n || 0);
@@ -13665,6 +13705,63 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   }
   function unitLabel(pt){
     return pt === "pcs" ? "قطعة" : (pt === "plant" ? "م.ط" : "m²");
+  }
+
+  /* ── v176: المسودة — الزبون والسلة والعامل تبقى بعد أي إغلاق ── */
+  function draftSave(){
+    try{
+      localStorage.setItem(DKEY, JSON.stringify({
+        c: ($("#invCust").value || "").trim(),
+        w: (function(){ try{ return $("#invWorker").value || ""; }catch(e0){ return ""; } })(),
+        cart: INV.cart, custs: INV.custs.slice(0, 10)
+      }));
+    }catch(e1){}
+  }
+  function draftClear(){ try{ localStorage.removeItem(DKEY); }catch(e0){} }
+  function draftLoad(){
+    try{
+      var d = JSON.parse(localStorage.getItem(DKEY) || "null");
+      if(d && Array.isArray(d.cart)) return d;
+    }catch(e0){}
+    return null;
+  }
+  function draftApply(){
+    var d = draftLoad();
+    if(d){
+      if(d.custs && d.custs.length) INV.custs = d.custs;
+      if(d.c && !$("#invCust").value.trim()) $("#invCust").value = d.c;
+      if(d.w){
+        var has = false;
+        try{ has = !!$("#invWorker").querySelector('option[value="' + d.w + '"]'); }catch(e0){}
+        if(has) $("#invWorker").value = d.w;
+      }
+      if(d.cart && d.cart.length){
+        INV.cart = d.cart;
+        renderCart();
+        try{ toast("\uD83D\uDDC2\uFE0F استُعيدت مسودتك — " + d.cart.length + " عنصر في السلة"); }catch(e1){}
+      }
+    }
+    renderCustChips();
+    draftSave();
+  }
+
+  /* ── v176: زبائن أخيرون — تُجمع من سجل الفواتير وتُحفظ في المسودة ── */
+  function rememberCust(name, silent){
+    name = String(name || "").trim();
+    if(!name) return;
+    var i = INV.custs.indexOf(name);
+    if(i >= 0) INV.custs.splice(i, 1);
+    INV.custs.unshift(name);
+    if(INV.custs.length > 10) INV.custs.length = 10;
+    if(!silent) renderCustChips();
+  }
+  function renderCustChips(){
+    var box = $("#invCustChips");
+    if(!box) return;
+    if(!INV.custs.length){ box.innerHTML = ""; return; }
+    box.innerHTML = '<span class="invChipsLbl">زبائن أخيرون:</span>' + INV.custs.map(function(c){
+      return '<button type="button" class="btn mini soft-g" data-cust="' + esc(c) + '">' + esc(c) + '</button>';
+    }).join("");
   }
 
   // ── v100: تحميل PDF يصل فعلاً إلى ملف على الجهاز — بلاغ يوسف بعد v99:
@@ -13680,11 +13777,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   var INVPROBE = {};   // invoice_id → true (جاهزة) أو نص رسالة الخطأ
 
   function isPhone(){
-    try{
-      if (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean")
-        return navigator.userAgentData.mobile;
-    }catch(e0){}
-    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
   }
 
   async function invPreprobe(id){
@@ -13790,6 +13883,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   }
 
   // ── v88.1: سجل الفواتير الكامل — بحث + «فواتير أقدم» (ترقيم بالمؤشر)
+  // v176: أسماء الزبائن تُجمع من السجل لشريحة «زبائن أخيرون»
   var archTimer = null, archSeq = 0, archBefore = 0;
   async function loadArch(reset){
     var box = $("#invArch"), more = $("#invArchMore");
@@ -13803,6 +13897,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
         + (archBefore ? "&before=" + archBefore : ""), {noCache:true});
       if(my !== archSeq) return;
       var list = d.invoices || [];
+      list.forEach(function(v){ if(v && v.customer) rememberCust(v.customer, true); });
       var html = list.map(invRow).join("");
       if(reset){
         box.innerHTML = list.length ? html
@@ -13812,6 +13907,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       }
       if(list.length) archBefore = list[list.length - 1].id;
       if(more) more.style.display = d.has_more ? "" : "none";
+      renderCustChips();
     }catch(e){
       if(my === archSeq) box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
     }
@@ -13827,6 +13923,14 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       + INV.workers.map(function(w){
           return '<option value="' + w.id + '">' + esc(w.name) + '</option>';
         }).join("");
+    /* v176: تذكّر آخر عامل مُختار — يُزال حاجز «اختر عاملاً» في كل فاتورة */
+    var last = "";
+    try{ last = localStorage.getItem("leroi_inv_lastworker") || ""; }catch(e0){}
+    if(last){
+      var has = false;
+      try{ has = !!sel.querySelector('option[value="' + last + '"]'); }catch(e1){}
+      if(has) sel.value = last;
+    }
   }
 
   async function loadRecent(){
@@ -13834,13 +13938,16 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     try{
       var d = await api("/api/invoice/recent", {noCache:true});
       var list = d.invoices || [];
+      list.forEach(function(v){ if(v && v.customer) rememberCust(v.customer, true); });
       if(!list.length){ box.innerHTML = '<p class="empty">لا فواتير بعد — الأولى ستظهر هنا</p>'; return; }
       box.innerHTML = list.map(invRow).join("");
+      renderCustChips();
     }catch(e){ box.innerHTML = '<p class="empty">' + esc(e.message) + '</p>'; }
   }
 
   async function loadInvoice(){
     await Promise.all([loadWorkers(), loadRecent(), loadArch(true)]);
+    draftApply();   /* v176: استعادة المسودة بعد امتلاء قائمة العمال */
   }
 
   var searchTimer = null;
@@ -13864,7 +13971,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     list.forEach(function(p){ INV.resMap[p.id] = p; });
     var box = $("#invResults");
     if(!list.length){
-      box.innerHTML = '<p class="empty">لا نتائج — أضف السلعة للمخزون أولاً</p>';
+      box.innerHTML = '<p class="empty">لا نتائج — أضف السلعة للمخزون أولاً أو استخدم «يدوي»</p>';
       return;
     }
     box.innerHTML = list.map(function(p){
@@ -13877,47 +13984,164 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     }).join("");
   }
 
-  function openForm(pid){
+  /* ── v176: وضع إدخال المنتجات m² — «بالعلب» افتراضياً أو «بالمتر» ── */
+  function setM2Mode(m){
+    INV.m2Mode = (m === "m2") ? "m2" : "boxes";
+    try{ localStorage.setItem("leroi_inv_m2mode", INV.m2Mode); }catch(e0){}
+    var bOn = $("#invModeBoxes"), mOn = $("#invModeM2");
+    if(bOn) bOn.className = "btn mini " + (INV.m2Mode === "boxes" ? "on" : "gray");
+    if(mOn) mOn.className = "btn mini " + (INV.m2Mode === "m2" ? "on" : "gray");
+    if(INV.prod && INV.prod.ptype === "m2"){
+      $("#invQtyLabel").textContent = INV.m2Mode === "boxes" ? "عدد العلب" : "المساحة (m²)";
+      $("#invQty").step = INV.m2Mode === "boxes" ? "1" : "any";
+    }
+    showPreview();
+  }
+
+  function openForm(pid, editIx){
     var p = INV.resMap[pid];
     if(!p) return;
     INV.prod = p;
-    $("#invFormTitle").textContent = p.name;
+    INV.editIx = (typeof editIx === "number") ? editIx : null;
+    INV.manUnit = null;
+    $("#invManWrap").style.display = "none";
+    $("#invFormTitle").textContent = (INV.editIx != null ? "\u270F\uFE0F تعديل: " : "") + p.name;
+    var isM2 = p.ptype === "m2", isPlant = p.ptype === "plant";
+    $("#invModes").style.display = isM2 ? "" : "none";
+    $("#invBoxWrap").style.display = isM2 ? "" : "none";
+    $("#invLenWrap").style.display = isPlant ? "" : "none";
     $("#invQtyLabel").textContent = p.ptype === "pcs" ? "عدد القطع"
-      : (p.ptype === "plant" ? "الطول بالمتر (م.ط)" : "المساحة (m²)");
-    $("#invQty").value = "";
-    $("#invPrice").value = (p.price != null && p.price !== "") ? p.price : "";
-    var memo = p.box_area || INV.boxMemo[pid] || 1.44;   /* v98: المساحة المحفوظة للمنتج أولاً */
-    $("#invBoxWrap").style.display = (p.ptype === "m2") ? "" : "none";
-    $("#invBox").value = memo;
-    $("#invLenWrap").style.display = (p.ptype === "plant") ? "" : "none";
-    $("#invLen").value = "0.45";
+      : (isPlant ? "الطول بالمتر (م.ط)" : "المساحة (m²)");
+    var q = $("#invQty");
+    q.step = p.ptype === "pcs" ? "1" : "any";
+    if(INV.editIx != null){
+      var it = INV.cart[INV.editIx] || {};
+      q.value = (isM2 && it.m2mode === "boxes" && it.boxes) ? it.boxes : it.qty;
+      $("#invPrice").value = it.price;
+      if(isM2){
+        setM2Mode(it.m2mode || "m2");
+        $("#invBox").value = it.box_area || p.box_area || 1.44;
+      }
+      if(isPlant) $("#invLen").value = it.length_m || 0.45;
+    } else {
+      q.value = "";
+      $("#invPrice").value = (p.price != null && p.price !== "") ? p.price : "";
+      if(isM2){
+        var saved = "boxes";
+        try{ saved = localStorage.getItem("leroi_inv_m2mode") || "boxes"; }catch(e0){}
+        setM2Mode(saved);
+        $("#invBox").value = p.box_area || INV.boxMemo[pid] || 1.44;
+      }
+      if(isPlant) $("#invLen").value = "0.45";
+    }
     $("#invPreview").textContent = "";
+    $("#invStock").textContent = "";
+    $("#invStock").className = "invStock";
+    showPreview();
+    $("#invAddGo").textContent = INV.editIx != null ? "\u2713 حفظ التعديل" : "\u2713 أضف للسلة";
     $("#invItemForm").style.display = "";
     try{ $("#invItemForm").scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){}
-    try{ $("#invQty").focus(); }catch(e){}
+    try{ q.focus(); }catch(e){}
   }
 
+  /* ── v176: سلعة يدوية خارج المخزون — بثلاث وحدات يفهمها الخادم من الاسم ── */
+  function setManUnit(u){
+    INV.manUnit = (u === "m2" || u === "plant") ? u : "pcs";
+    var bs = document.querySelectorAll("[data-munit]");
+    for(var i = 0; i < bs.length; i++){
+      bs[i].className = "btn mini " + (bs[i].getAttribute("data-munit") === INV.manUnit ? "on" : "gray");
+    }
+    $("#invQtyLabel").textContent = INV.manUnit === "pcs" ? "عدد القطع"
+      : (INV.manUnit === "m2" ? "المساحة (m²)" : "الطول بالمتر (م.ط)");
+    $("#invQty").step = INV.manUnit === "pcs" ? "1" : "any";
+    $("#invBoxWrap").style.display = INV.manUnit === "m2" ? "" : "none";
+    $("#invLenWrap").style.display = INV.manUnit === "plant" ? "" : "none";
+    showPreview();
+  }
+  function openManual(editIx){
+    INV.prod = {id: 0, name: "", ptype: "pcs", qty: null, price: null, manual: true};
+    INV.editIx = (typeof editIx === "number") ? editIx : null;
+    var it = (INV.editIx != null) ? (INV.cart[INV.editIx] || {}) : null;
+    $("#invFormTitle").textContent = INV.editIx != null
+      ? "\u270F\uFE0F تعديل سلعة يدوية" : "\u271B سلعة يدوية — خارج المخزون";
+    $("#invModes").style.display = "none";
+    $("#invManWrap").style.display = "";
+    var unit = (it && it.munit) || "pcs";
+    $("#invManName").value = it ? (it.rawName || "") : "";
+    $("#invQty").value = it ? it.qty : "";
+    $("#invPrice").value = it ? it.price : "";
+    $("#invBox").value = (it && it.box_area) || 1.44;
+    $("#invLen").value = (it && it.length_m) || 0.45;
+    setManUnit(unit);
+    $("#invPreview").textContent = "";
+    $("#invStock").textContent = "";
+    $("#invStock").className = "invStock";
+    $("#invAddGo").textContent = INV.editIx != null ? "\u2713 حفظ التعديل" : "\u2713 أضف للسلة";
+    $("#invItemForm").style.display = "";
+    try{ $("#invItemForm").scrollIntoView({behavior:"smooth", block:"center"}); }catch(e){}
+    try{ $("#invManName").focus(); }catch(e){}
+  }
+
+  /* ── الحساب الوحيد للعنصر: المعاينة والسلة والإرسال كلها من هنا ── */
   function calcPreview(){
     var p = INV.prod;
     if(!p) return null;
     var qty = parseFloat($("#invQty").value);
     var price = parseFloat($("#invPrice").value);
-    if(!(qty > 0) || !(price >= 0)) return null;
-    var o = {pid:p.id, name:p.name, ptype:p.ptype, qty:qty, price:price};
-    if(p.ptype === "m2"){
+    if(!(price >= 0)) return null;
+    var o = {pid: p.id || 0, name: p.name, ptype: p.ptype, price: price,
+             avail: (p.qty == null ? null : (Number(p.qty) || 0))};
+    if(p.manual){
+      var nm = ($("#invManName").value || "").trim();
+      if(!nm || !(qty > 0)) return null;
+      o.name = nm; o.manual = true;
+      o.ptype = INV.manUnit || "pcs";
+    }
+    if(!(qty > 0)) return null;
+    if(o.ptype === "pcs"){
+      o.qty = Math.max(1, Math.round(qty));
+    } else if(o.ptype === "m2"){
       var ba = parseFloat($("#invBox").value);
       if(!(ba > 0)) ba = 1.44;
       o.box_area = ba;
-      o.boxes = Math.ceil(qty / ba);
-    }
-    if(p.ptype === "plant"){
+      if(INV.m2Mode === "boxes" && !p.manual){
+        var b = Math.max(1, Math.round(qty));
+        o.boxes = b;
+        o.qty = Math.round(b * ba * 100) / 100;
+        o.m2mode = "boxes";
+      } else {
+        o.qty = Math.round(qty * 100) / 100;
+        o.boxes = Math.ceil(o.qty / ba);
+        o.m2mode = "m2";
+      }
+    } else {
       var ln = parseFloat($("#invLen").value);
       if(!(ln > 0)) ln = 0.45;
       o.length_m = ln;
+      o.qty = Math.round(qty * 100) / 100;
       o.pieces = Math.ceil(qty / ln);
     }
+    o.need = (o.ptype === "m2") ? o.boxes : o.qty;
     return o;
   }
+
+  /* ── v176: تحذير المخزون قبل الإضافة — تحذير دون رفض كما في البوت ── */
+  function showStock(){
+    var el = $("#invStock");
+    if(!el) return;
+    var o = calcPreview();
+    if(!o || o.avail == null){ el.textContent = ""; el.className = "invStock"; return; }
+    if(o.need > o.avail){
+      el.textContent = "\u26A0\uFE0F المتوفر " + o.avail + " فقط — طلبك " + o.need
+        + " (" + (o.ptype === "m2" ? "علبة" : unitLabel(o.ptype))
+        + ") — الفاتورة تُقبل والنقص يُسجَّل في السجل";
+      el.className = "invStock warn";
+    } else {
+      el.textContent = "\u2705 المتوفر: " + o.avail;
+      el.className = "invStock";
+    }
+  }
+
   /* v98: العرض الدقيق لعدد العلب — «50» أو «50.5» كما طلب يوسف */
   function boxExact(q, ba){
     q = parseFloat(q); ba = parseFloat(ba);
@@ -13930,50 +14154,101 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   function showPreview(){
     var o = calcPreview();
     var el = $("#invPreview");
-    if(!o){ el.textContent = ""; return; }
+    if(!o){ el.textContent = ""; showStock(); return; }
     var sub = o.qty * o.price;
-    var extra = "";
-    if(o.ptype === "m2"){ extra = " &#8592; " + o.boxes + " علبة";
-      var _bx = boxExact(o.qty, o.box_area); if(_bx && _bx !== String(o.boxes)) extra += " (≈" + _bx + ")"; }
-    if(o.ptype === "plant") extra = " &#8592; " + o.pieces + " قطعة";
-    el.innerHTML = "&#128208; " + o.qty + " " + unitLabel(o.ptype) + extra
-      + " &#215; " + money(o.price) + " = " + money(sub);
+    var lead, extra = "";
+    if(o.ptype === "m2" && o.m2mode === "boxes"){
+      lead = o.boxes + " علبة";
+      extra = " \u2190 " + o.qty + " m\u00B2";
+    } else {
+      lead = o.qty + " " + unitLabel(o.ptype);
+      if(o.ptype === "m2"){
+        extra = " \u2190 " + o.boxes + " علبة";
+        var _bx = boxExact(o.qty, o.box_area); if(_bx && _bx !== String(o.boxes)) extra += " (\u2248" + _bx + ")";
+      }
+      if(o.ptype === "plant") extra = " \u2190 " + o.pieces + " قطعة";
+    }
+    el.innerHTML = "\uD83D\uDCC4 " + lead + extra
+      + " \u00D7 " + money(o.price) + " = " + money(sub);
+    showStock();
   }
 
   function confirmAdd(){
     var o = calcPreview();
-    if(!o){ toast("أدخل الكمية والسعر أولاً", 1); return; }
+    if(!o){
+      if(INV.prod && INV.prod.manual && !($("#invManName").value || "").trim()){
+        toast("اكتب اسم السلعة اليدوية أولاً", 1);
+        try{ $("#invManName").focus(); }catch(e0){}
+      } else toast("أدخل الكمية والسعر أولاً", 1);
+      return;
+    }
     if(o.box_area) INV.boxMemo[o.pid] = o.box_area;
-    var same = INV.cart.filter(function(i){ return i.pid === o.pid && i.price === o.price; })[0];
-    if(same){ same.qty = Math.round((same.qty + o.qty) * 1000) / 1000; }
-    else{ INV.cart.push(o); }
+    /* v176: وسم السلع اليدوية — الخادم يستنتج النوع من الاسم، فالوحدة تُرسل معه */
+    if(o.manual){
+      if(o.ptype === "pcs") o.sendName = o.name + " [\u0642\u0637\u0639]";
+      else if(o.ptype === "plant") o.sendName = "plante " + o.name;
+      else o.sendName = o.name;
+      o.munit = o.ptype;
+      o.rawName = o.name;
+    }
+    if(INV.editIx != null){
+      INV.cart[INV.editIx] = o;
+      INV.editIx = null;
+    } else {
+      var same = INV.cart.filter(function(i){
+        return !i.manual && i.pid === o.pid && i.pid > 0 && i.price === o.price;
+      })[0];
+      if(same){
+        same.qty = Math.round((same.qty + o.qty) * 1000) / 1000;
+        if(same.ptype === "m2" && same.box_area) same.boxes = Math.ceil(same.qty / same.box_area);
+        same.need = (same.ptype === "m2") ? same.boxes : same.qty;
+      } else INV.cart.push(o);
+    }
     renderCart();
     $("#invItemForm").style.display = "none";
     INV.prod = null;
     $("#invQ").value = "";
     $("#invResults").innerHTML = "";
     toast("\u2705 أُضيفت للسلة (" + INV.cart.length + " عناصر)");
+    draftSave();
   }
 
   function renderCart(){
     var box = $("#invCart");
     $("#invCount").textContent = INV.cart.length ? "(" + INV.cart.length + ")" : "";
     if(!INV.cart.length){
-      box.innerHTML = '<p class="empty">أضف سلعاً بالبحث أعلاه</p>';
+      box.innerHTML = '<p class="empty">أضف سلعاً بالبحث أعلاه أو سلعة يدوية</p>';
       $("#invTotal").textContent = money(0);
+      draftSave();
       return;
     }
     box.innerHTML = INV.cart.map(function(i, ix){
-      var det = i.qty + " " + unitLabel(i.ptype);
-      if(i.ptype === "m2"){ det += " &#8592; " + i.boxes + " علبة";
-        var _bx2 = boxExact(i.qty, i.box_area); if(_bx2 && _bx2 !== String(i.boxes)) det += " (≈" + _bx2 + ")"; }
-      if(i.ptype === "plant") det += " &#8592; " + i.pieces + " قطعة";
+      var det;
+      if(i.ptype === "m2"){
+        var _bx2 = boxExact(i.qty, i.box_area);
+        if(i.m2mode === "boxes" && i.boxes){
+          det = i.boxes + " علبة = " + i.qty + " m\u00B2";
+          if(_bx2 && _bx2 !== String(i.boxes)) det += " (\u2248" + _bx2 + ")";
+        } else {
+          det = i.qty + " m\u00B2";
+          if(i.boxes) det += " \u2190 " + i.boxes + " علبة";
+          else if(_bx2) det += " \u2192 " + _bx2 + " علبة";
+        }
+      } else if(i.ptype === "plant"){
+        det = i.qty + " م.ط \u2190 " + i.pieces + " قطعة";
+      } else {
+        det = i.qty + " قطعة";
+      }
+      var tags = i.manual ? ' <span class="invTag">يدوي</span>' : "";
+      if(i.avail != null && i.need > i.avail)
+        tags += ' <span class="invWarn">\u26A0\uFE0F المتوفر ' + i.avail + '</span>';
       return '<div class="invRow">'
-        + '<div class="info"><b>' + esc(i.name) + '</b>'
-        + '<span>' + det + ' &#215; ' + money(i.price) + ' = ' + money(i.qty * i.price) + '</span></div>'
+        + '<div class="info" data-edit="' + ix + '"><b>' + esc(i.name) + '</b>'
+        + '<span>' + det + ' \u00D7 ' + money(i.price) + ' = ' + money(i.qty * i.price) + tags + '</span></div>'
         + '<button type="button" class="btn mini soft-r" data-del="' + ix + '">&#10005;</button></div>';
     }).join("");
     $("#invTotal").textContent = money(cartTotal());
+    draftSave();
   }
   function cartTotal(){
     return INV.cart.reduce(function(s, i){ return s + i.qty * i.price; }, 0);
@@ -14003,10 +14278,15 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
 
   async function createInv(){
     var cust = $("#invCust").value.trim();
-    if(!cust){ toast("اكتب اسم الزبون أولاً", 1); return; }
+    if(!cust){ toast("اكتب اسم الزبون أولاً", 1); try{ $("#invCust").focus(); }catch(e0){} return; }
     if(!INV.cart.length){ toast("السلة فارغة — أضف سلعاً أولاً", 1); return; }
-    var wid = $("#invWorker").value;
-    if(!wid){ toast("اختر العامل المكلّف بالتجهيز", 1); return; }
+    var sel = $("#invWorker"), wid = sel.value;
+    if(!wid){
+      toast("اختر العامل المكلّف بالتجهيز", 1);
+      sel.className = "search invErr";
+      try{ sel.scrollIntoView({behavior:"smooth", block:"center"}); sel.focus(); }catch(e0){}
+      return;
+    }
     var btn = $("#invGo");
     btn.disabled = true;
     try{
@@ -14016,13 +14296,17 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
           customer: cust, worker_id: Number(wid),
           items: INV.cart.map(function(i){
             var o = {qty: i.qty, price: i.price, ptype: i.ptype};
-            if(i.pid) o.product_id = i.pid; else o.name = i.name;
+            if(i.pid) o.product_id = i.pid;
+            else o.name = (i.manual && i.sendName) ? i.sendName : i.name;
             if(i.ptype === "m2") o.box_area = i.box_area;
             if(i.ptype === "plant") o.length_m = i.length_m || 0.45;
             return o;
           })
         })
       });
+      rememberCust(cust);
+      try{ localStorage.setItem("leroi_inv_lastworker", String(wid)); }catch(e1){}
+      draftClear();
       INV.cart = [];
       renderCart();
       $("#invCust").value = "";
@@ -14035,28 +14319,61 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   }
 
   document.addEventListener("click", function(ev){
-    var t = ev.target.closest ? ev.target.closest("[data-add],[data-del],#invAddGo,#invCancelItem,#invGo") : null;
+    var t = ev.target.closest ? ev.target.closest("[data-add],[data-del],[data-edit],[data-cust],[data-munit],#invAddGo,#invCancelItem,#invGo,#invManualBtn,#invModeBoxes,#invModeM2") : null;
     if(!t) return;
     if(t.hasAttribute("data-add")) openForm(Number(t.getAttribute("data-add")));
     else if(t.hasAttribute("data-del")){
       INV.cart.splice(Number(t.getAttribute("data-del")), 1);
       renderCart();
     }
+    else if(t.hasAttribute("data-edit")){
+      var ix = Number(t.getAttribute("data-edit"));
+      var it = INV.cart[ix];
+      if(!it) return;
+      if(it.manual){ openManual(ix); return; }
+      var pp = INV.resMap[it.pid];
+      if(!pp){
+        pp = {id: it.pid, name: it.name, ptype: it.ptype, qty: it.avail,
+              price: it.price, box_area: it.box_area};
+        INV.resMap[it.pid] = pp;
+      }
+      openForm(it.pid, ix);
+    }
+    else if(t.hasAttribute("data-cust")){
+      $("#invCust").value = t.getAttribute("data-cust");
+      try{ $("#invQ").focus(); }catch(e0){}
+    }
+    else if(t.hasAttribute("data-munit")) setManUnit(t.getAttribute("data-munit"));
     else if(t.id === "invAddGo") confirmAdd();
     else if(t.id === "invCancelItem"){
       $("#invItemForm").style.display = "none";
       INV.prod = null;
+      INV.editIx = null;
     }
     else if(t.id === "invGo") createInv();
+    else if(t.id === "invManualBtn") openManual();
+    else if(t.id === "invModeBoxes") setM2Mode("boxes");
+    else if(t.id === "invModeM2") setM2Mode("m2");
   });
   document.addEventListener("input", function(ev){
     var id = ev.target && ev.target.id;
     if(id === "invQ") onSearch();
     else if(id === "invQty" || id === "invPrice" || id === "invBox" || id === "invLen") showPreview();
+    else if(id === "invCust") draftSave();
+  });
+  document.addEventListener("change", function(ev){
+    if(ev.target && ev.target.id === "invWorker"){
+      if(ev.target.className && ev.target.className.indexOf("invErr") >= 0) ev.target.className = "search";
+      draftSave();
+    }
   });
   document.addEventListener("keydown", function(ev){
     if(ev.key !== "Enter") return;
-    if(ev.target && ev.target.id === "invQty" && $("#invItemForm").style.display !== "none") confirmAdd();
+    var id = ev.target && ev.target.id;
+    var formOpen = $("#invItemForm").style.display !== "none";
+    if((id === "invQty" || id === "invPrice") && formOpen) confirmAdd();
+    else if(id === "invManName" && formOpen){ try{ $("#invQty").focus(); }catch(e0){} }
+    else if(id === "invCust"){ try{ $("#invQ").focus(); }catch(e1){} }
   });
   document.addEventListener("click", function(ev){
     var p = ev.target.closest ? ev.target.closest("[data-invpdf]") : null;
@@ -14075,6 +14392,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   /* v103: استدعاء renderCart كان يرمي «$ is not defined» عند الإقلاع ($ تُعرّف لاحقاً
      في النواة) فيتوقف تهيئة سلة الفاتورة صامتاً — خطأ صفحة قديم من أيام v84 */
   try { renderCart(); } catch (_e84) {}
+  try { renderCustChips(); } catch (_e85) {}
 })();"""
 
 
@@ -25683,7 +26001,7 @@ def _invoice_swap_core(user, invoice_id, item_id, product_id, qty,
                 new_item["quantity"] = new_item["qty_m2"]
                 new_item["subtotal"] = new_item["qty_m2"] * price
             elif new_ptype == "pcs":
-                new_item["quantity"] = max(1, int(qty))
+                new_item["quantity"] = max(1, int(round(qty)))  # v176: نفس تقريب مسار التطبيق — توحيد دلالة الفوترة
                 new_item["subtotal"] = new_item["quantity"] * price
             else:  # plant
                 try:
@@ -26424,7 +26742,7 @@ def _pwa_invoice_build_items(items_raw, cur):
             item["quantity"] = item["qty_m2"]
             item["subtotal"] = item["qty_m2"] * price
         elif ptype == "pcs":
-            item["quantity"] = max(1, int(qty))
+            item["quantity"] = max(1, int(round(qty)))  # v176: تقريب القطع الكسرية بدل قطعها — يطابق معاينة الواجهة
             item["subtotal"] = item["quantity"] * price
         else:  # plant
             try:
