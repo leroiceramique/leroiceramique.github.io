@@ -1261,6 +1261,11 @@ def init_db(conn=None):
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
                 EXCEPTION WHEN OTHERS THEN RAISE NOTICE '[schema] skipped: % (%)', SQLERRM, SQLSTATE;
                 END $$;
+                -- Migration: v178 الثيم الشخصي — لكل حساب ثيمه الخاص (نهاية الثيم المؤسسي الجماعي)
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS theme VARCHAR(20);
+                EXCEPTION WHEN OTHERS THEN RAISE NOTICE '[schema] skipped: % (%)', SQLERRM, SQLSTATE;
+                END $$;
                 -- Migration: update incoming_orders status to include 'received'
                 -- v106: الـADD انتقل داخل الحماية — صف بحالة خارج القائمة لا يقتل الإقلاع
                 DO $$ BEGIN
@@ -12811,7 +12816,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "53"  # v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "54"  # v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -13636,7 +13641,14 @@ _PWA_INVOICE_CSS = r"""/* ═══ v88: شاشة الفاتورة ═══ */
 #v-oil .invWarn{font-size:10.5px;font-weight:800;color:#c0392b;background:#fdecea;border-radius:99px;padding:1px 7px;margin-inline-start:4px;white-space:nowrap}
 #v-oil .invHint{font-size:10.5px;color:var(--mut);font-weight:400;margin-inline-start:6px}
 #v-oil select.invErr{border-color:#c0392b !important;outline:2px solid rgba(192,57,43,.2)}
-#v-oil #invManName{margin-bottom:6px}"""
+#v-oil #invManName{margin-bottom:6px}
+/* ═══ v178: الفواتير السابقة خلف زر واحد + حذف بتأكيد ضغطتين ═══ */
+#v-oil #invPastBar{padding:10px 14px}
+#v-oil #invPastBtn{display:flex;align-items:center;justify-content:center;gap:8px;font-weight:800;font-size:14px}
+#v-oil #invPastPanel.open{animation:invPastIn .18s ease}
+@keyframes invPastIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+#v-oil .invRec .btn{transition:background .15s ease,color .15s ease}
+#v-oil .invRec .btn.arm{background:#c0392b !important;color:#fff !important;border-color:#c0392b !important}"""
 
 
 _PWA_INVOICE_SECTION_HTML = (
@@ -13670,14 +13682,16 @@ _PWA_INVOICE_SECTION_HTML = (
     + '5; العامل المكلّف بالتجهيز</div><select class="search" id="invWorker"><option value="">&#8212; اختر الع'
     + 'امل &#8212;</option></select></div><div class="invTotalBar"><div class="tot"><span>الإجمالي</span><b'
     + ' id="invTotal">0,00 د.ج</b></div><button type="button" class="btn gold" id="invGo">&#129534; إنشاء ا'
-    + 'لفاتورة</button></div></div><div class="card invCard" id="invSuccess" style="display:none"></div><di'
-    + 'v class="card invCard"><div class="invTitle">&#128337; أحدث الفواتير</div><div id="invRecent"><p cla'
+    + 'لفاتورة</button></div></div><div class="card invCard" id="invSuccess" style="display:none"></div>'
+    + '<div class="card invCard" id="invPastBar"><button type="button" class="btn gray" id="invPastBtn" '
+    + 'style="width:100%">&#128203; الفواتير السابقة <span id="invPastArrow">&#9662;</span></button></div>'
+    + '<div id="invPastPanel" style="display:none"><div class="card invCard"><div class="invTitle">&#128337; أحدث الفواتير</div><div id="invRecent"><p cla'
     + 'ss="empty">&#8212;</p></div></div>'
     + '<div class="card invCard"><div class="invTitle">&#128218; سجل الفواتير '
     + '<span class="cnt" id="invArchCnt"></span></div>'
     + '<input class="search invArchQ" id="invArchQ" placeholder="&#128269; ابحث باسم الزبون أو برقم الفاتورة..." autocomplete="off">'
     + '<div id="invArch"><p class="empty">جارِ التحميل...</p></div>'
-    + '<button type="button" class="btn gray" id="invArchMore" style="display:none;width:100%;margin-top:8px">&#11015; فواتير أقدم</button></div>'
+    + '<button type="button" class="btn gray" id="invArchMore" style="display:none;width:100%;margin-top:8px">&#11015; فواتير أقدم</button></div></div>'
 )
 
 
@@ -13879,7 +13893,8 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
       + '<span>' + esc(v.at) + (v.worker ? ' • &#128104; ' + esc(v.worker) : '')
       + ' • &#128176; ' + money(v.total) + '</span></div>'
       + '<button type="button" class="btn mini soft-g" data-invpdf="' + v.id + '">&#11015;&#65039; PDF</button>'
-      + '<button type="button" class="btn mini gray" data-invview="' + v.id + '" title="معاينة">&#128065;</button></div>';
+      + '<button type="button" class="btn mini gray" data-invview="' + v.id + '" title="معاينة">&#128065;</button>'
+      + '<button type="button" class="btn mini gray" data-invdel="' + v.id + '" title="حذف الفاتورة وإرجاع سلعها للمخزون">&#128465;&#65039;</button></div>';
   }
 
   // ── v88.1: سجل الفواتير الكامل — بحث + «فواتير أقدم» (ترقيم بالمؤشر)
@@ -13948,6 +13963,52 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   async function loadInvoice(){
     await Promise.all([loadWorkers(), loadRecent(), loadArch(true)]);
     draftApply();   /* v176: استعادة المسودة بعد امتلاء قائمة العمال */
+  }
+
+  /* ═══ v178: الفواتير السابقة خلف زر — شاشة الإنشاء تبقى نظيفة، والبيانات
+     تُحمَّل خلف الكواليس كي تعمل شريحة «زبائن أخيرون» كما هي ═══ */
+  var pastOpen = false;
+  function togglePast(force){
+    var panel = $("#invPastPanel"), arrow = $("#invPastArrow");
+    if(!panel) return;
+    pastOpen = (typeof force === "boolean") ? force : !pastOpen;
+    panel.style.display = pastOpen ? "block" : "none";
+    try{ if(panel.classList) panel.classList.toggle("open", pastOpen); }catch(e0){}
+    if(arrow) arrow.textContent = pastOpen ? "\u25B4" : "\u25BE";
+  }
+  var delArm = null;
+  function delInv(id, btn){
+    if(delArm && delArm.id === id && delArm.btn === btn){
+      clearTimeout(delArm.timer);
+      try{ btn.classList.remove("arm"); btn.innerHTML = "&#128465;&#65039;"; }catch(e1){}
+      delArm = null;
+      doDelInv(id);
+      return;
+    }
+    if(delArm){
+      clearTimeout(delArm.timer);
+      try{ delArm.btn.classList.remove("arm"); delArm.btn.innerHTML = "&#128465;&#65039;"; }catch(e2){}
+    }
+    try{ btn.classList.add("arm"); btn.textContent = "تأكيد؟"; }catch(e3){}
+    delArm = {id: id, btn: btn, timer: setTimeout(function(){
+      if(delArm && delArm.btn === btn){
+        try{ btn.classList.remove("arm"); btn.innerHTML = "&#128465;&#65039;"; }catch(e4){}
+        delArm = null;
+      }
+    }, 5000)};
+  }
+  async function doDelInv(id){
+    try{
+      var d = await api("/api/invoice/delete", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: id }) });
+      var rest = (d.restored || []).map(function(r){ return r.name + " (" + r.qty + ")"; }).join("، ");
+      toast("\uD83D\uDDD1\uFE0F حُذفت الفاتورة #" + id + (rest ? " — أُرجع للمخزون: " + rest : " — لا سلع مخزونية للإرجاع"));
+      await Promise.all([loadRecent(), loadArch(true)]);
+      try{ renderCustChips(); }catch(e0){}
+    }catch(e){
+      toast(e.message || "تعذر حذف الفاتورة", 1);
+    }
   }
 
   var searchTimer = null;
@@ -14319,7 +14380,7 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
   }
 
   document.addEventListener("click", function(ev){
-    var t = ev.target.closest ? ev.target.closest("[data-add],[data-del],[data-edit],[data-cust],[data-munit],#invAddGo,#invCancelItem,#invGo,#invManualBtn,#invModeBoxes,#invModeM2") : null;
+    var t = ev.target.closest ? ev.target.closest("[data-add],[data-del],[data-edit],[data-cust],[data-munit],#invAddGo,#invCancelItem,#invGo,#invManualBtn,#invModeBoxes,#invModeM2,#invPastBtn,[data-invdel]") : null;
     if(!t) return;
     if(t.hasAttribute("data-add")) openForm(Number(t.getAttribute("data-add")));
     else if(t.hasAttribute("data-del")){
@@ -14352,6 +14413,8 @@ _PWA_INVOICE_JS = r"""/* ═══ v88: شاشة إنشاء الفاتورة (ب
     }
     else if(t.id === "invGo") createInv();
     else if(t.id === "invManualBtn") openManual();
+    else if(t.id === "invPastBtn") togglePast();
+    else if(t.hasAttribute("data-invdel")) delInv(Number(t.getAttribute("data-invdel")), t);
     else if(t.id === "invModeBoxes") setM2Mode("boxes");
     else if(t.id === "invModeM2") setM2Mode("m2");
   });
@@ -23321,7 +23384,8 @@ def _pwa_session_user(request):
                 "u.role, u.active, u.display_name, u.avatar, a.username AS web_username, "
                 "u.banned, u.email, u.notify_user, u.archived, "
                 # v173: حالة ربط Google الحقيقية تصل مع /api/me لكل مستخدم
-                "u.google_linked_at, u.identity_verified, u.last_seen "  # v175: البريد الموثق يدخل في حساب الربط
+                "u.google_linked_at, u.identity_verified, u.last_seen, "
+                "u.theme "  # v175: البريد الموثق يدخل في حساب الربط · v178: الثيم الشخصي للحساب
                 "FROM pwa_sessions s JOIN users u ON u.id = s.user_id "
                 "LEFT JOIN pwa_auth a ON a.user_id = u.id "
                 "WHERE s.token_hash = %s AND s.expires_at > NOW()",
@@ -23614,7 +23678,7 @@ def _pwa_api_me(user):
     }, "perms": _pwa_perm_map(user),
        "owner": _protected_account(user.get("telegram_id")),   # v161: المالك — يظهر له الحظر/الأرشفة/التدقيق
        "notify": note,
-       "theme": _org_theme_get()}   # v120: الثيم المؤسسي — اختيار المدير يصل للجميع
+       "theme": (user.get("theme") or "")}   # v178: الثيم الشخصي — اختيار المستخدم يتبع حسابه وحده ولا يصل لغيره
 
 
 # ═══════════ v120: الثيم المؤسسي — المدير يختار الهوية اللونية وتُطبّق على الجميع ═══════════
@@ -23629,6 +23693,15 @@ PWA_ORG_THEMES = {
     "violet":  "بنفسجي ملكي",
     "rose":    "وردي عصري",
     "slate":   "رمادي احترافي",
+    # ═══ v178: الهويات الاحترافية العالمية — ثيم شخصي لكل مستخدم ═══
+    "whatsapp": "واتساب أخضر",
+    "facebook": "فيسبوك أزرق",
+    "twitter":  "تويتر إكس سماوي",
+    "tiktok":   "تيكتوك نيون",
+    "canva":    "كانفا بنفسجي تركوازي",
+    "insta":    "إنستغرام وردي برتقالي",
+    "telegram": "تلغرام سماوي",
+    "spotify":  "سبوتيفاي أخضر ليلي",
 }
 _ORG_THEME_KEY = "org_theme"
 _ORG_THEME_CACHE = {"name": "discord", "t": 0.0}
@@ -23638,6 +23711,10 @@ _ORG_THEME_BRAND_HEX = {
     "discord": "#5865f2", "royal": "#2563eb", "indigo": "#4f46e5",
     "emerald": "#059669", "ocean": "#0d9488", "violet": "#7c3aed",
     "rose": "#e11d48", "slate": "#475569",
+    # v178: الهويات العالمية (لون الوضع النهاري — للمانيفست)
+    "whatsapp": "#128c7e", "facebook": "#1877f2", "twitter": "#1d9bf0",
+    "tiktok": "#fe2c55", "canva": "#8b3dff", "insta": "#e1306c",
+    "telegram": "#229ed9", "spotify": "#1db954",
 }
 
 
@@ -23667,6 +23744,21 @@ def _org_theme_get():
     return name
 
 
+def _pwa_user_theme_set(uid, name):
+    """v178: حفظ الثيم الشخصي على صف المستخدم — يتبع الحساب على كل أجهزته
+    ولا يُطبَّق على أي مستخدم آخر مهما كانت صلاحياته."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET theme = %s WHERE id = %s", (name, uid))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+
+
 def _org_theme_set(name):
     """حفظ اختيار المدير — يُصادَق على الاسم قبل الاستدعاء."""
     conn = get_connection()
@@ -23687,12 +23779,12 @@ def _org_theme_set(name):
 
 
 async def pwa_theme_set_handler(request):
-    """v120: المدير فقط — تطبيق هوية لونية على جميع المستخدمين فوراً."""
+    """v178: الثيم الشخصي — كل مستخدم يعتمد ثيمه الخاص على حسابه وحده.
+    (كان v120: المدير يطبّق هوية لونية على جميع المستخدمين — أُلغي التطبيق
+    الجماعي بطلب المالك: ثيم كل شخص قراره الخاص حتى ولو كان مديراً.)"""
     user, err = _pwa_guard(await _pwa_auth_user(request), None)
     if err:
         return err
-    if user.get("role") not in (ROLE_ADMIN, ROLE_MANAGER):
-        return _pwa_err(403, "هذا الخيار للمدير فقط.")
     try:
         body = await request.json()
     except Exception:
@@ -23701,11 +23793,11 @@ async def pwa_theme_set_handler(request):
     if name not in PWA_ORG_THEMES:
         return _pwa_err(400, "ثيم غير معروف.")
     try:
-        await _pwa_run(_org_theme_set, name)
+        await _pwa_run(_pwa_user_theme_set, user["id"], name)
     except Exception as e:
         logging.error("[PWA][theme] save failed: " + str(e))
         return _pwa_err(500, "تعذر حفظ الثيم — أعد المحاولة.")
-    await _pwa_run(_audit_log, "org_theme", user, details=name, ip=request.remote or "؟")
+    await _pwa_run(_audit_log, "theme_personal", user, details=name, ip=request.remote or "؟")
     return _pwa_jr({"ok": True, "theme": name, "label": PWA_ORG_THEMES[name]})
 
 
@@ -26949,6 +27041,89 @@ def _pwa_api_invoice_create(user, customer, items_raw, worker_id):
         "creator_tid": user.get("telegram_id"),
         "items": items, "pdf": "/api/invoice/pdf?id=" + str(invoice_id),
     }
+
+
+def _pwa_api_invoice_delete(user, invoice_id):
+    """v178: حذف فاتورة مقبولة من التطبيق — العكس المحاسبي الدقيق لنفس
+    قواعد الإنشاء والاستبدال (v102): كل سلعة مخزونية تُعاد للرصيد بكمية
+    التخزين نفسها (m² بالكراتين المحفوظة أو بإعادة البناء من المساحة
+    للفواتير القديمة) مع سجل حركة «إرجاع» لكل سلعة، ثم تُمسح الفاتورة
+    وعناصرها (CASCADE) فتختفي من السجل والإحصاءات وشريحة الزبائن.
+    الصلاحية: منشئو الفواتير فقط، والملكية: المدير أو منشئ الفاتورة نفسه —
+    العامل المكلّف بالتجهيز لا يحذف. الحذف نهائي بلا تراجع."""
+    if not _pwa_perm_map(user)["invoice"]:
+        return None
+    try:
+        invoice_id = int(invoice_id or 0)
+    except (TypeError, ValueError):
+        return False, "معطيات الحذف غير صالحة."
+    if invoice_id <= 0:
+        return False, "حدد الفاتورة المطلوب حذفها."
+    uid = user.get("id")
+    role = user.get("role")
+    import math as _del_math
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, customer_name, admin_id, worker_id, total_amount "
+                "FROM invoices WHERE id = %s FOR UPDATE", (invoice_id,))
+            inv = cur.fetchone()
+            if not inv:
+                return False, "الفاتورة غير موجودة — ربما حُذفت من قبل."
+            if role not in (ROLE_ADMIN, ROLE_MANAGER) and inv[2] != uid:
+                return False, "حذف الفاتورة للمدير أو منشئها فقط."
+            cur.execute(
+                "SELECT product_id, product_name, quantity, box_area, num_boxes "
+                "FROM invoice_items WHERE invoice_id = %s", (invoice_id,))
+            items = cur.fetchall()
+            restored = []
+            for pid, name, qty, box_area, num_boxes in items:
+                if not pid:      # سلع يدوية بلا معرف — لم تُخصم أصلاً فلا إرجاع
+                    continue
+                ptype = _invoice_product_type(name)
+                if ptype == "m2":
+                    stock_q = None
+                    try:
+                        stock_q = int(num_boxes) if num_boxes is not None else None
+                    except (TypeError, ValueError):
+                        stock_q = None
+                    if stock_q is None:
+                        try:
+                            ba = float(box_area) if box_area is not None else 0.0
+                        except (TypeError, ValueError):
+                            ba = 0.0
+                        try:
+                            qf = float(qty or 0)
+                        except (TypeError, ValueError):
+                            qf = 0.0
+                        stock_q = (_del_math.ceil(qf / ba) if ba > 0
+                                   else max(1, int(round(qf))))
+                    stock_q = max(1, int(stock_q))
+                else:
+                    try:
+                        stock_q = max(1, int(round(float(qty or 0))))
+                    except (TypeError, ValueError):
+                        stock_q = 1
+                cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s",
+                            (stock_q, int(pid)))
+                cur.execute(
+                    "INSERT INTO transactions (product_id, type, quantity, user_id, reason) "
+                    "VALUES (%s, 'add', %s, %s, %s)",
+                    (int(pid), stock_q, uid,
+                     ("حذف فاتورة #" + str(invoice_id)
+                      + " — إرجاع «" + str(name)[:60] + "»")[:200]))
+                restored.append({"name": str(name), "qty": stock_q})
+            cur.execute("DELETE FROM invoices WHERE id = %s", (invoice_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
+    return True, {"ok": True, "invoice_id": invoice_id,
+                  "customer": str(inv[1]), "total": float(inv[4] or 0),
+                  "restored": restored}
 
 
 def _pwa_api_invoice_recent(user, limit=8):
@@ -31300,6 +31475,30 @@ async def pwa_invoice_swap_handler(request):
     ok, payload = result
     if not ok:
         return _pwa_err(400, payload)
+    return _pwa_jr(payload)
+
+
+async def pwa_invoice_delete_handler(request):
+    """v178: حذف فاتورة — POST JSON {id} — الإرجاع المحاسبي الآمن داخل النواة."""
+    user, err = _pwa_guard(await _pwa_auth_user(request), None)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _pwa_err(400, "طلب غير صالح.")
+    result = await _pwa_run(_pwa_api_invoice_delete, user, body.get("id"))
+    if result is None:
+        return _pwa_err(403, "حذف الفواتير لمنشئي الفواتير فقط.")
+    ok, payload = result
+    if not ok:
+        return _pwa_err(400, payload)
+    await _pwa_run(_audit_log, "invoice_delete", user,
+                   details="حذف فاتورة #" + str(payload.get("invoice_id"))
+                           + " — " + str(payload.get("customer"))
+                           + " — إرجاع " + str(len(payload.get("restored") or []))
+                           + " سلعة للمخزون",
+                   ip=request.remote or "؟")
     return _pwa_jr(payload)
 
 
@@ -36224,6 +36423,7 @@ def register_pwa_routes(app):
     app.router.add_get("/api/invoice/get", pwa_invoice_get_handler)       # v97: JSON للعارض الأصلي
     app.router.add_get("/api/invoice/pdf", pwa_invoice_pdf_handler)
     app.router.add_post("/api/invoice/swap", pwa_invoice_swap_handler)   # v102: استبدال سلعة مباعة
+    app.router.add_post("/api/invoice/delete", pwa_invoice_delete_handler)   # v178: حذف فاتورة بإرجاع مخزوني آمن
     app.router.add_get("/api/swap/products", pwa_swap_products_handler)  # v103: بحث سلع للاستبدال العام
     app.router.add_post("/api/swap/general", pwa_swap_general_handler)   # v103: استبدال عام بلا فاتورة
     app.router.add_get("/api/expenses/list", pwa_expenses_list_handler)  # v106: قائمة المصروفات
