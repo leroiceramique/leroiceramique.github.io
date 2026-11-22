@@ -15,8 +15,9 @@
 (function(){
   try{
     var t = localStorage.getItem("ceram_theme");
-    if(!t && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) t = "dark";
-    if(t === "dark") document.documentElement.setAttribute("data-theme","dark");
+    var _sys = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    /* v179: الوضع المحفوظ نهاري/ليلي/حسب النظام — الافتراضي «حسب النظام»، يُحلّ قبل الرسم فلا وميض */
+    if(t === "dark" || ((!t || t === "system") && _sys)) document.documentElement.setAttribute("data-theme","dark");
   }catch(e){}
 })();
 </script>
@@ -99,6 +100,27 @@ input,select,textarea{font-family:inherit;font-size:16px}
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.28),0 1px 4px rgba(0,0,0,.15)}
 .othm .lb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .othm.on{border-color:var(--brand);background:var(--brandsoft);color:var(--brand)}
+/* ═══ v179: أزرار وضع العرض الثلاثة — معاينة مصغّرة بألوان الوضع نفسه ═══ */
+.thmode-t{margin:6px 0 6px;font-size:12.5px;font-weight:800;color:var(--mut)}
+.thmodes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 10px}
+.thmode{border:1.5px solid var(--line);border-radius:12px;background:var(--card);
+  padding:6px 5px 7px;display:flex;flex-direction:column;align-items:center;gap:6px;
+  cursor:pointer;font-family:inherit;color:var(--ink)}
+.thmode.on{border-color:var(--brand);background:var(--brandsoft);color:var(--brand)}
+.thmode .tl{font-size:11.5px;font-weight:800;white-space:nowrap}
+.thprev{width:100%;height:34px;border-radius:8px;border:1px solid var(--line);
+  display:flex;flex-direction:column;gap:3px;padding:5px;overflow:hidden}
+.thprev i{display:block;border-radius:3px;height:7px;flex:none}
+.thprev i:last-child{flex:1}
+.thprev-l{background:#f2f3f5;border-color:#e3e5e8}
+.thprev-l i:first-child{background:#5865f2;width:70%}
+.thprev-l i:last-child{background:#ffffff;border:1px solid #e3e5e8}
+.thprev-d{background:#1e1f22;border-color:#3d3f45}
+.thprev-d i:first-child{background:#7983f5;width:70%}
+.thprev-d i:last-child{background:#2b2d31;border:1px solid #3d3f45}
+.thprev-s{background:linear-gradient(135deg,#f2f3f5 50%,#1e1f22 50%);border-color:#3d3f45}
+.thprev-s i:first-child{background:linear-gradient(90deg,#5865f2 50%,#7983f5 50%);width:70%}
+.thprev-s i:last-child{background:linear-gradient(90deg,#ffffff 50%,#2b2d31 50%);border:1px solid transparent}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
 header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--h1),var(--h2));
@@ -542,17 +564,26 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
         </div>
         <span class="badge n" id="pRole">—</span>
       </div>
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">🎨 المظهر</p>
-        <div class="seg" style="margin-bottom:0">
-          <button id="thLight">☀️ نهاري</button>
-          <button id="thDark">🌙 ليلي</button>
-        </div>
-      </div>
-      <!-- v178: الثيمات الشخصية — كل مستخدم يعتمد ثيمه على حسابه وحده -->
+      <!-- v179: الثيم الحقيقي — وضع العرض الكامل + لون الهوية، شخصي لكل حساب -->
       <div class="card" id="orgThemeCard" style="display:none;margin-bottom:12px">
-        <p class="sect">🎨 ألوان التطبيق — ثيمك الشخصي</p>
-        <p class="hint" style="margin:2px 0 6px">16 هوية احترافية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا...) — اعتماد ثيمك يخصّ حسابك وحده ولا يظهر لبقية المستخدمين حتى ولو كانوا مدراء.</p>
+        <p class="sect">🎨 ثيم التطبيق — ثيمك الشخصي</p>
+        <p class="hint" style="margin:2px 0 10px">ثيم حقيقي يغيّر شكل التطبيق كله: اختر وضع العرض ولون الهوية — ويُحفَظان على حسابك فيتبعانك على كل الأجهزة ولا يظهران لأي مستخدم آخر حتى ولو كان مديراً.</p>
+        <p class="thmode-t">وضع العرض — يقلب التطبيق بالكامل</p>
+        <div class="thmodes">
+          <button type="button" class="thmode" id="thLight">
+            <span class="thprev thprev-l"><i></i><i></i></span>
+            <span class="tl">☀️ نهاري</span>
+          </button>
+          <button type="button" class="thmode" id="thDark">
+            <span class="thprev thprev-d"><i></i><i></i></span>
+            <span class="tl">🌙 ليلي</span>
+          </button>
+          <button type="button" class="thmode" id="thSys">
+            <span class="thprev thprev-s"><i></i><i></i></span>
+            <span class="tl">📱 حسب النظام</span>
+          </button>
+        </div>
+        <p class="thmode-t">لون الهوية — فوق الوضع لا بديلاً عنه</p>
         <div id="orgThemeGrid" class="thgrid"></div>
         <button class="btn" id="btnOrgThemeSave">✨ اعتماد ثيمي الشخصي</button>
       </div>
@@ -854,19 +885,35 @@ function lockBtn(btn, label) {
   return () => { btn.disabled = false; btn.textContent = old; };
 }
 
-/* ─── v41: الوضع الليلي/النهاري ─── */
+/* ─── v41: الوضع الليلي/النهاري — v179: ثيم حقيقي بثلاثة أوضاع يقلب التطبيق كاملاً:
+       ☀️ نهاري · 🌙 ليلي · 📱 حسب النظام (تتبع حي: تغيير إعدادات الهاتف يقلب التطبيق فوراً) ─── */
+function _themeResolved(mode) {
+  if (mode !== "system") return mode;
+  try { return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"; } catch (e) { return "light"; }
+}
+var _themeOnSys = false;
 function applyTheme(mode, save) {
-  document.documentElement.setAttribute("data-theme", mode);
+  _themeOnSys = (mode === "system");
+  document.documentElement.setAttribute("data-theme", _themeResolved(mode));
   /* v120: الثيم المؤسسي يُعاد تلوينه حسب الوضع — وإلا الهوية الافتراضية */
   if (S.orgTheme) applyOrgTheme(S.orgTheme);
   else {
     const m0 = document.querySelector('meta[name="theme-color"]');
-    if (m0) m0.setAttribute("content", mode === "dark" ? "#1e1f22" : "#5865f2");
+    if (m0) m0.setAttribute("content", document.documentElement.getAttribute("data-theme") === "dark" ? "#1e1f22" : "#5865f2");
   }
-  const l = $("#thLight"), d = $("#thDark");
-  if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); }
+  const l = $("#thLight"), d = $("#thDark"), s = $("#thSys");
+  if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); if (s) s.classList.toggle("on", mode === "system"); }
   if (save) { try { localStorage.setItem("ceram_theme", mode); } catch (e) {} }
 }
+(function () {
+  try {
+    var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    var _h = function () { if (_themeOnSys) applyTheme("system", false); };
+    if (mq.addEventListener) mq.addEventListener("change", _h);
+    else if (mq.addListener) mq.addListener(_h);
+  } catch (e) {}
+})();
 
 /* ═══════════ v120: الثيم المؤسسي — المدير يختار هوية لونية احترافية ═══════════
    يُطبّق على جميع المستخدمين عبر الخادم (app_settings → /api/me + /api/status).
@@ -953,28 +1000,31 @@ function renderOrgThemeGrid() {
       + '<span class="lb">' + t.label + '</span></button>';
   }).join("");
   g.querySelectorAll("button[data-th]").forEach((b) => b.addEventListener("click", () => {
-    S.orgThemeSel = b.dataset.th; renderOrgThemeGrid();
+    S.orgThemeSel = b.dataset.th; applyOrgTheme(b.dataset.th);   /* v179: معاينة فورية للهوية فوق الوضع الحالي */
   }));
 }
 $("#btnOrgThemeSave").addEventListener("click", async () => {
   const name = S.orgThemeSel || S.orgTheme || "discord";
+  const mode = currentTheme();   /* v179: الوضع الحالي (نهاري/ليلي/حسب النظام) يُحفظ مع الهوية */
   const unlock = lockBtn($("#btnOrgThemeSave"), "جارٍ التطبيق…");
   try {
     await api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name }) });
+      body: JSON.stringify({ name: name, mode: mode }) });
     S.orgThemeSel = "";
     applyOrgTheme(name);
-    toast("✅ «" + ORG_THEMES[name].label + "» أصبح ثيمك الشخصي — يخصّ حسابك ولا يظهر لغيرك");
+    applyTheme(mode, true);
+    toast("✅ ثيمك الشخصي اعتُمد: «" + ORG_THEMES[name].label + "» + وضع " + ({light: "نهاري ☀️", dark: "ليلي 🌙", system: "حسب النظام 📱"}[mode] || mode) + " — يخصّ حسابك ولا يظهر لغيرك");
   } catch (e) { toast(e.message, true); } finally { if (unlock) unlock(); }
 });
 
 
+/* v179: الوضع المحفوظ قد يكون «system» — الافتراضي حسب النظام */
 function currentTheme() {
   try {
     const t = localStorage.getItem("ceram_theme");
-    if (t === "dark" || t === "light") return t;
-    return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-  } catch (e) { return "light"; }
+    if (t === "dark" || t === "light" || t === "system") return t;
+  } catch (e) {}
+  return "system";
 }
 
 /* ─── الجلسات ─── */
@@ -1170,10 +1220,12 @@ function applyPerms() {
 function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
   if (S.user.role === "pending") { showGoogleWait(); return; }
-  /* v178: الثيم الشخصي يصل مع /api/me — ثيم حسابك أنت فقط؛ ومن بلا ثيم شخصي يعود للافتراضي (بلا ثيم مدير عالمي) */
+  /* v178: الثيم الشخصي يصل مع /api/me — ثيم حسابك أنت فقط؛ ومن بلا ثيم شخصي يعود للافتراضي (بلا ثيم مدير عالمي)
+     v179: وضع العرض أيضاً يتبع الحساب (نهاري/ليلي/حسب النظام) — يُطبَّق فوراً ويُخزَّن كاشاً بالجهاز */
   try {
     if (me.theme && ORG_THEMES[me.theme]) applyOrgTheme(me.theme);
     else if (S.orgTheme && S.orgTheme !== "discord") applyOrgTheme("discord");
+    applyTheme(typeof me.theme_mode === "string" && me.theme_mode ? me.theme_mode : "system", true);
   } catch (e120) {}
   $("#login").style.display = "none"; $("#app").style.display = "flex";
   applyPerms();
@@ -2462,8 +2514,10 @@ $("#dlgUserGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
   finally { btn.disabled = false; }
 });
+/* v179: أزرار وضع العرض الثلاثة — تطبيق فوري كامل للشكل، والاعتماد على الحساب من زر الثيم */
 $("#thLight").addEventListener("click", () => applyTheme("light", true));
 $("#thDark").addEventListener("click", () => applyTheme("dark", true));
+$("#thSys").addEventListener("click", () => applyTheme("system", true));
 $("#btnMyPass").addEventListener("click", () => openPass(null, S.user ? S.user.name : "", true));
 async function doLogout() {
   try { await api("/api/logout", { method: "POST" }); } catch (e) {}

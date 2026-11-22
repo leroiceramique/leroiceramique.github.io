@@ -18,8 +18,9 @@
 (function(){
   try{
     var t = localStorage.getItem("ceram_theme");
-    if(!t && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) t = "dark";
-    if(t === "dark") document.documentElement.setAttribute("data-theme","dark");
+    var _sys = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    /* v179: الوضع المحفوظ نهاري/ليلي/حسب النظام — الافتراضي «حسب النظام»، يُحلّ قبل الرسم فلا وميض */
+    if(t === "dark" || ((!t || t === "system") && _sys)) document.documentElement.setAttribute("data-theme","dark");
   }catch(e){}
 })();
 </script>
@@ -102,6 +103,27 @@ input,select,textarea{font-family:inherit;font-size:16px}
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.28),0 1px 4px rgba(0,0,0,.15)}
 .othm .lb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .othm.on{border-color:var(--brand);background:var(--brandsoft);color:var(--brand)}
+/* ═══ v179: أزرار وضع العرض الثلاثة — معاينة مصغّرة بألوان الوضع نفسه ═══ */
+.thmode-t{margin:6px 0 6px;font-size:12.5px;font-weight:800;color:var(--mut)}
+.thmodes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 10px}
+.thmode{border:1.5px solid var(--line);border-radius:12px;background:var(--card);
+  padding:6px 5px 7px;display:flex;flex-direction:column;align-items:center;gap:6px;
+  cursor:pointer;font-family:inherit;color:var(--ink)}
+.thmode.on{border-color:var(--brand);background:var(--brandsoft);color:var(--brand)}
+.thmode .tl{font-size:11.5px;font-weight:800;white-space:nowrap}
+.thprev{width:100%;height:34px;border-radius:8px;border:1px solid var(--line);
+  display:flex;flex-direction:column;gap:3px;padding:5px;overflow:hidden}
+.thprev i{display:block;border-radius:3px;height:7px;flex:none}
+.thprev i:last-child{flex:1}
+.thprev-l{background:#f2f3f5;border-color:#e3e5e8}
+.thprev-l i:first-child{background:#5865f2;width:70%}
+.thprev-l i:last-child{background:#ffffff;border:1px solid #e3e5e8}
+.thprev-d{background:#1e1f22;border-color:#3d3f45}
+.thprev-d i:first-child{background:#7983f5;width:70%}
+.thprev-d i:last-child{background:#2b2d31;border:1px solid #3d3f45}
+.thprev-s{background:linear-gradient(135deg,#f2f3f5 50%,#1e1f22 50%);border-color:#3d3f45}
+.thprev-s i:first-child{background:linear-gradient(90deg,#5865f2 50%,#7983f5 50%);width:70%}
+.thprev-s i:last-child{background:linear-gradient(90deg,#ffffff 50%,#2b2d31 50%);border:1px solid transparent}
 /* ─── الهيكل ─── */
 #app{display:none;flex-direction:column;min-height:100vh}
 header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,var(--h1),var(--h2));
@@ -996,8 +1018,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
 #v-oil #invPastBtn{display:flex;align-items:center;justify-content:center;gap:8px;font-weight:800;font-size:14px}
 #v-oil #invPastPanel.open{animation:invPastIn .18s ease}
 @keyframes invPastIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
-#v-oil .invRec .btn{transition:background .15s ease,color .15s ease}
-#v-oil .invRec .btn.arm{background:#c0392b !important;color:#fff !important;border-color:#c0392b !important}</style><div id="invMain"><div class="card invCard"><input class="search" id="invCust" placeholder="&#128100; اسم الزبون أو رقم هاتفه..." maxlength="120"><div id="invCustChips" class="invChips"></div></div><div class="card invCard"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input class="search" id="invQ" placeholder="&#128269; ابحث باسم السلعة أو اضغط «يدوي»..." autocomplete="off" style="flex:1"><button type="button" class="btn mini gray" id="invManualBtn" title="سلعة خارج المخزون">&#10010; يدوي</button></div><div id="invResults"><p class="empty">ابحث واختر سلعة للإضافة</p></div></div><div class="card invCard" id="invItemForm" style="display:none"><div class="invTitle">&#10133; <span id="invFormTitle"></span></div><div id="invManWrap" style="display:none"><input class="search" id="invManName" placeholder="&#9998; اسم السلعة اليدوية (خارج المخزون)" maxlength="160"><div class="invModes" id="invManUnits"><button type="button" class="btn mini on" data-munit="pcs">&#9679; قطعة</button><button type="button" class="btn mini gray" data-munit="m2">m&#178;</button><button type="button" class="btn mini gray" data-munit="plant">&#1605;.&#1591;</button></div></div><div id="invModes" class="invModes" style="display:none"><button type="button" class="btn mini on" id="invModeBoxes">&#128230; بالعلب</button><button type="button" class="btn mini gray" id="invModeM2">m&#178; بالمتر</button></div><div class="invGrid"><div><label id="invQtyLabel">الكمية</label><input id="invQty" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div><div><label>السعر (د.ج)</label><input id="invPrice" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div><div id="invBoxWrap"><label>مساحة العلبة (m&#178;)</label><input id="invBox" type="number" inputmode="decimal" min="0" step="any" value="1.44"></div><div id="invLenWrap"><label>طول القطعة (م)</label><input id="invLen" type="number" inputmode="decimal" min="0" step="any" value="0.45"></div></div><div class="invStock" id="invStock"></div><div class="invPrev" id="invPreview"></div><div style="display:flex;gap:8px;margin-top:10px"><button type="button" class="btn gold" id="invAddGo" style="flex:1">&#10003; أضف للسلة</button><button type="button" class="btn gray" id="invCancelItem">إلغاء</button></div></div><div class="card invCard"><div class="invTitle">&#129522; السلة <span class="cnt" id="invCount"></span><span class="invHint">اضغط أي سطر لتعديله</span></div><div id="invCart"><p class="empty">أضف سلعاً بالبحث أعلاه أو سلعة يدوية</p></div></div><div class="card invCard"><div class="invTitle">&#128104;&#8205;&#128295; العامل المكلّف بالتجهيز</div><select class="search" id="invWorker"><option value="">&#8212; اختر العامل &#8212;</option></select></div><div class="invTotalBar"><div class="tot"><span>الإجمالي</span><b id="invTotal">0,00 د.ج</b></div><button type="button" class="btn gold" id="invGo">&#129534; إنشاء الفاتورة</button></div></div><div class="card invCard" id="invSuccess" style="display:none"></div><div class="card invCard" id="invPastBar"><button type="button" class="btn gray" id="invPastBtn" style="width:100%">&#128203; الفواتير السابقة <span id="invPastArrow">&#9662;</span></button></div><div id="invPastPanel" style="display:none"><div class="card invCard"><div class="invTitle">&#128337; أحدث الفواتير</div><div id="invRecent"><p class="empty">&#8212;</p></div></div><div class="card invCard"><div class="invTitle">&#128218; سجل الفواتير <span class="cnt" id="invArchCnt"></span></div><input class="search invArchQ" id="invArchQ" placeholder="&#128269; ابحث باسم الزبون أو برقم الفاتورة..." autocomplete="off"><div id="invArch"><p class="empty">جارِ التحميل...</p></div><button type="button" class="btn gray" id="invArchMore" style="display:none;width:100%;margin-top:8px">&#11015; فواتير أقدم</button></div></div><script>/* ═══ v88: شاشة إنشاء الفاتورة (بدل الزيت) ═══
+#v-oil .invRec .btn{transition:background .15s ease,color .15s ease}</style><div id="invMain"><div class="card invCard"><input class="search" id="invCust" placeholder="&#128100; اسم الزبون أو رقم هاتفه..." maxlength="120"><div id="invCustChips" class="invChips"></div></div><div class="card invCard"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input class="search" id="invQ" placeholder="&#128269; ابحث باسم السلعة أو اضغط «يدوي»..." autocomplete="off" style="flex:1"><button type="button" class="btn mini gray" id="invManualBtn" title="سلعة خارج المخزون">&#10010; يدوي</button></div><div id="invResults"><p class="empty">ابحث واختر سلعة للإضافة</p></div></div><div class="card invCard" id="invItemForm" style="display:none"><div class="invTitle">&#10133; <span id="invFormTitle"></span></div><div id="invManWrap" style="display:none"><input class="search" id="invManName" placeholder="&#9998; اسم السلعة اليدوية (خارج المخزون)" maxlength="160"><div class="invModes" id="invManUnits"><button type="button" class="btn mini on" data-munit="pcs">&#9679; قطعة</button><button type="button" class="btn mini gray" data-munit="m2">m&#178;</button><button type="button" class="btn mini gray" data-munit="plant">&#1605;.&#1591;</button></div></div><div id="invModes" class="invModes" style="display:none"><button type="button" class="btn mini on" id="invModeBoxes">&#128230; بالعلب</button><button type="button" class="btn mini gray" id="invModeM2">m&#178; بالمتر</button></div><div class="invGrid"><div><label id="invQtyLabel">الكمية</label><input id="invQty" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div><div><label>السعر (د.ج)</label><input id="invPrice" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div><div id="invBoxWrap"><label>مساحة العلبة (m&#178;)</label><input id="invBox" type="number" inputmode="decimal" min="0" step="any" value="1.44"></div><div id="invLenWrap"><label>طول القطعة (م)</label><input id="invLen" type="number" inputmode="decimal" min="0" step="any" value="0.45"></div></div><div class="invStock" id="invStock"></div><div class="invPrev" id="invPreview"></div><div style="display:flex;gap:8px;margin-top:10px"><button type="button" class="btn gold" id="invAddGo" style="flex:1">&#10003; أضف للسلة</button><button type="button" class="btn gray" id="invCancelItem">إلغاء</button></div></div><div class="card invCard"><div class="invTitle">&#129522; السلة <span class="cnt" id="invCount"></span><span class="invHint">اضغط أي سطر لتعديله</span></div><div id="invCart"><p class="empty">أضف سلعاً بالبحث أعلاه أو سلعة يدوية</p></div></div><div class="card invCard"><div class="invTitle">&#128104;&#8205;&#128295; العامل المكلّف بالتجهيز</div><select class="search" id="invWorker"><option value="">&#8212; اختر العامل &#8212;</option></select></div><div class="invTotalBar"><div class="tot"><span>الإجمالي</span><b id="invTotal">0,00 د.ج</b></div><button type="button" class="btn gold" id="invGo">&#129534; إنشاء الفاتورة</button></div></div><div class="card invCard" id="invSuccess" style="display:none"></div><div class="card invCard" id="invPastBar"><button type="button" class="btn gray" id="invPastBtn" style="width:100%">&#128203; الفواتير السابقة <span id="invPastArrow">&#9662;</span></button></div><div id="invPastPanel" style="display:none"><div class="card invCard"><div class="invTitle">&#128337; أحدث الفواتير</div><div id="invRecent"><p class="empty">&#8212;</p></div></div><div class="card invCard"><div class="invTitle">&#128218; سجل الفواتير <span class="cnt" id="invArchCnt"></span></div><input class="search invArchQ" id="invArchQ" placeholder="&#128269; ابحث باسم الزبون أو برقم الفاتورة..." autocomplete="off"><div id="invArch"><p class="empty">جارِ التحميل...</p></div><button type="button" class="btn gray" id="invArchMore" style="display:none;width:100%;margin-top:8px">&#11015; فواتير أقدم</button></div></div><script>/* ═══ v88: شاشة إنشاء الفاتورة (بدل الزيت) ═══
    v176: تحسين شامل بطلب المالك — القسم كان قليل الاستخدام لصعوبته:
    1) المنتجات m² تُدخل «بالعلب» افتراضياً (10 علب ← 14.4m² تلقائياً) —
       نموذج تفكير البائع الطبيعي، يقتل أكبر مصدر أخطاء حسابية (كتابة
@@ -1196,7 +1217,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
       + ' • &#128176; ' + money(v.total) + '</span></div>'
       + '<button type="button" class="btn mini soft-g" data-invpdf="' + v.id + '">&#11015;&#65039; PDF</button>'
       + '<button type="button" class="btn mini gray" data-invview="' + v.id + '" title="معاينة">&#128065;</button>'
-      + '<button type="button" class="btn mini gray" data-invdel="' + v.id + '" title="حذف الفاتورة وإرجاع سلعها للمخزون">&#128465;&#65039;</button></div>';
+      + '<button type="button" class="btn mini gray" data-invdel="' + v.id + '" title="حذف الفاتورة من السجل — بلا إرجاع للمخزون (السلعة تم تسليمها)">&#128465;&#65039;</button></div>';
   }
 
   // ── v88.1: سجل الفواتير الكامل — بحث + «فواتير أقدم» (ترقيم بالمؤشر)
@@ -1278,34 +1299,22 @@ img{-webkit-user-drag:none;user-select:none}</style>
     try{ if(panel.classList) panel.classList.toggle("open", pastOpen); }catch(e0){}
     if(arrow) arrow.textContent = pastOpen ? "\u25B4" : "\u25BE";
   }
-  var delArm = null;
-  function delInv(id, btn){
-    if(delArm && delArm.id === id && delArm.btn === btn){
-      clearTimeout(delArm.timer);
-      try{ btn.classList.remove("arm"); btn.innerHTML = "&#128465;&#65039;"; }catch(e1){}
-      delArm = null;
-      doDelInv(id);
-      return;
-    }
-    if(delArm){
-      clearTimeout(delArm.timer);
-      try{ delArm.btn.classList.remove("arm"); delArm.btn.innerHTML = "&#128465;&#65039;"; }catch(e2){}
-    }
-    try{ btn.classList.add("arm"); btn.textContent = "تأكيد؟"; }catch(e3){}
-    delArm = {id: id, btn: btn, timer: setTimeout(function(){
-      if(delArm && delArm.btn === btn){
-        try{ btn.classList.remove("arm"); btn.innerHTML = "&#128465;&#65039;"; }catch(e4){}
-        delArm = null;
-      }
-    }, 5000)};
+  /* ═══ v179: حذف الفاتورة بنافذة تأكيد بنص صريح — تنظيف سجل فقط بلا أي إرجاع ═══ */
+  async function delInv(id){
+    var msg = "⛔ سيتم حذف الفاتورة #" + id + " نهائياً من السجل، دون إرجاع السلعة للمخزون (السلعة تم تسليمها مع الفاتورة).";
+    var ok = false;
+    try { ok = await window.v90confirm(msg, { yes: "حذف نهائياً", danger: true }); }
+    catch (eC) { try { ok = window.confirm(msg); } catch (eD) { ok = false; } }
+    if (!ok) return;
+    try{ vib(8); }catch(eV){}
+    await doDelInv(id);
   }
   async function doDelInv(id){
     try{
       var d = await api("/api/invoice/delete", { method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: id }) });
-      var rest = (d.restored || []).map(function(r){ return r.name + " (" + r.qty + ")"; }).join("، ");
-      toast("\uD83D\uDDD1\uFE0F حُذفت الفاتورة #" + id + (rest ? " — أُرجع للمخزون: " + rest : " — لا سلع مخزونية للإرجاع"));
+      toast("\uD83D\uDDD1\uFE0F حُذفت الفاتورة #" + id + " من السجل — لا تغيير في المخزون (السلعة تم تسليمها مع الفاتورة)");
       await Promise.all([loadRecent(), loadArch(true)]);
       try{ renderCustChips(); }catch(e0){}
     }catch(e){
@@ -1716,7 +1725,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
     else if(t.id === "invGo") createInv();
     else if(t.id === "invManualBtn") openManual();
     else if(t.id === "invPastBtn") togglePast();
-    else if(t.hasAttribute("data-invdel")) delInv(Number(t.getAttribute("data-invdel")), t);
+    else if(t.hasAttribute("data-invdel")) delInv(Number(t.getAttribute("data-invdel")));
     else if(t.id === "invModeBoxes") setM2Mode("boxes");
     else if(t.id === "invModeM2") setM2Mode("m2");
   });
@@ -1799,17 +1808,17 @@ img{-webkit-user-drag:none;user-select:none}</style>
     if (document.getElementById("migrateOv")) return;
     var phone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
     var feats = [
-      ["\\uD83E\\uDDFA", "إنشاء الفاتورة أصبح سهلاً: حساب بالعلب، سلع يدوية، تعديل السلة بلمسة، مسودة محفوظة"],
-      ["\\u26A0\\uFE0F", "تحذير المخزون قبل الإضافة + زبائن أخيرون بضغطة واحدة"],
-      ["\\uD83D\\uDCE5", "تنزيل فواتير PDF مباشرة إلى الجهاز مع إشعار التحميل"],
-      ["\\uD83D\\uDD14", "إشعارات فورية بالطلبات والتنبيهات المهمة"],
-      ["\\uD83D\\uDD10", "تسجيل دخول بحساب Google + استعادة الجلسة تلقائياً"],
-      ["\\u26A1", "أسرع وأثبت مع التحديث الذاتي — بلا إعادة تثبيت يدوي"]
+      ["🧺", "إنشاء الفاتورة أصبح سهلاً: حساب بالعلب، سلع يدوية، تعديل السلة بلمسة، مسودة محفوظة"],
+      ["⚠️", "تحذير المخزون قبل الإضافة + زبائن أخيرون بضغطة واحدة"],
+      ["📥", "تنزيل فواتير PDF مباشرة إلى الجهاز مع إشعار التحميل"],
+      ["🔔", "إشعارات فورية بالطلبات والتنبيهات المهمة"],
+      ["🔐", "تسجيل دخول بحساب Google + استعادة الجلسة تلقائياً"],
+      ["⚡", "أسرع وأثبت مع التحديث الذاتي — بلا إعادة تثبيت يدوي"]
     ];
     var oldNote = phone
-      ? "\\uD83D\\uDCF1 أيقونة الموقع القديمة (PWA): اضغط مطولاً عليها ثم اختر «إزالة» أو «إزالة الاختصار».<br>"
-        + "\\uD83D\\uDCF1 تطبيق قديم مثبت: ثبّت الجديد فوقه أو ألغِ تثبيته من إعدادات الجهاز."
-      : "\\uD83D\\uDCBB احذف «التطبيق المثبت» من قائمة تطبيقات متصفحك بعد تثبيت النسخة الجديدة.";
+      ? "📱 أيقونة الموقع القديمة (PWA): اضغط مطولاً عليها ثم اختر «إزالة» أو «إزالة الاختصار».<br>"
+        + "📱 تطبيق قديم مثبت: ثبّت الجديد فوقه أو ألغِ تثبيته من إعدادات الجهاز."
+      : "💻 احذف «التطبيق المثبت» من قائمة تطبيقات متصفحك بعد تثبيت النسخة الجديدة.";
     var ov = document.createElement("div");
     ov.id = "migrateOv";
     ov.style.cssText = "position:fixed;inset:0;z-index:2147482000;display:flex;align-items:center;justify-content:center;"
@@ -1818,12 +1827,12 @@ img{-webkit-user-drag:none;user-select:none}</style>
       '<div id="migrateCard" style="background:#fffdf8;border-radius:22px;box-shadow:0 18px 60px rgba(0,0,0,.45);'
       + 'max-width:440px;width:min(94vw,440px);max-height:calc(100vh - 28px);overflow:auto;padding:clamp(18px,4vw,26px);'
       + 'text-align:center;font-family:inherit;box-sizing:border-box">'
-      + '<div style="font-size:clamp(30px,9vw,40px);line-height:1">\\uD83D\\uDCE6</div>'
+      + '<div style="font-size:clamp(30px,9vw,40px);line-height:1">📦</div>'
       + '<h2 style="margin:8px 0 4px;font-size:clamp(19px,5.4vw,23px);font-weight:900;color:#231a08">التطبيق الأحدث متوفر</h2>'
       + '<p style="margin:0 0 12px;font-size:clamp(12.5px,3.4vw,14px);color:#6b5b45;font-weight:700">'
       + 'نسخة أندرويد أصلية كاملة — بدل واجهة الويب (PWA)</p>'
       + '<div style="text-align:start;background:#f7f2e7;border:1px solid #eadfc8;border-radius:14px;padding:12px 14px;margin-bottom:12px">'
-      + '<div style="font-size:12.5px;font-weight:900;color:#8a5b00;margin-bottom:6px">\\u2728 مميزات النسخة الجديدة</div>'
+      + '<div style="font-size:12.5px;font-weight:900;color:#8a5b00;margin-bottom:6px">✨ مميزات النسخة الجديدة</div>'
       + feats.map(function (f) {
           return '<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0">'
             + '<span style="flex:none;line-height:1.5">' + f[0] + '</span>'
@@ -1833,23 +1842,23 @@ img{-webkit-user-drag:none;user-select:none}</style>
       + '<a id="migrateDl" href="' + APK_GOFILE + '" target="_blank" rel="noopener" '
       + 'style="display:block;background:linear-gradient(135deg,#e0b64c,#c99a2e);color:#231a08;font-weight:900;'
       + 'border:0;border-radius:14px;padding:14px 16px;font-size:clamp(14px,4vw,16px);text-decoration:none;margin-bottom:8px">'
-      + '\\u2B07\\uFE0F تحميل التطبيق \\u2014 النسخة 58 (من gofile)</a>'
+      + '⬇️ تحميل التطبيق — النسخة 58 (من gofile)</a>'
       + '<a href="' + apkServer() + '" download="app-latest-58.apk" '
       + 'style="display:block;font-size:12px;color:#8a5b00;font-weight:800;text-decoration:underline;margin-bottom:12px">'
-      + '\\u21D0 أو حمّل من الخادم مباشرة (احتياط)</a>'
+      + '⇐ أو حمّل من الخادم مباشرة (احتياط)</a>'
       + '<div style="text-align:start;background:#fdecea;border:1px solid #f3c5bd;border-radius:14px;padding:12px 14px;margin-bottom:12px">'
-      + '<div style="font-size:12.5px;font-weight:900;color:#c0392b;margin-bottom:6px">\\uD83D\\uDDD1\\uFE0F بعد التثبيت: احذف النسخة القديمة</div>'
+      + '<div style="font-size:12.5px;font-weight:900;color:#c0392b;margin-bottom:6px">🗑️ بعد التثبيت: احذف النسخة القديمة</div>'
       + '<div style="font-size:12.5px;line-height:1.7;color:#5a3d33">' + oldNote + '</div></div>'
       + '<button type="button" id="migrateLater" '
       + 'style="width:100%;background:#1d3a2f;color:#fff;font-weight:900;border:0;border-radius:14px;'
-      + 'padding:13px 16px;font-size:clamp(13.5px,3.8vw,15px);font-family:inherit;cursor:pointer">متابعة إلى النظام \\u2190</button>'
-      + '<div style="font-size:11px;color:#a0906f;margin-top:8px">تظهر هذه الشاشة مرة واحدة فقط \\u2014 الحساب والبيانات كما هي بلا أي تغيير</div>'
+      + 'padding:13px 16px;font-size:clamp(13.5px,3.8vw,15px);font-family:inherit;cursor:pointer">متابعة إلى النظام ←</button>'
+      + '<div style="font-size:11px;color:#a0906f;margin-top:8px">تظهر هذه الشاشة مرة واحدة فقط — الحساب والبيانات كما هي بلا أي تغيير</div>'
       + '</div>';
     document.body.appendChild(ov);
     var dl = document.getElementById("migrateDl");
     if (dl) dl.addEventListener("click", function () {
       mark();   /* من حمّل لم يعد بحاجة للشاشة */
-      try { toast("\\u23F3 جارٍ فتح صفحة التحميل \\u2014 اضغط Download ثم ثبّت الملف"); } catch (e1) {}
+      try { toast("⏳ جارٍ فتح صفحة التحميل — اضغط Download ثم ثبّت الملف"); } catch (e1) {}
     });
     var later = document.getElementById("migrateLater");
     if (later) later.addEventListener("click", close);
@@ -1928,17 +1937,26 @@ img{-webkit-user-drag:none;user-select:none}</style>
         </div>
         <span class="badge n" id="pRole">—</span>
       </div>
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">🎨 المظهر</p>
-        <div class="seg" style="margin-bottom:0">
-          <button id="thLight">☀️ نهاري</button>
-          <button id="thDark">🌙 ليلي</button>
-        </div>
-      </div>
-      <!-- v178: الثيمات الشخصية — كل مستخدم يعتمد ثيمه على حسابه وحده -->
+      <!-- v179: الثيم الحقيقي — وضع العرض الكامل + لون الهوية، شخصي لكل حساب -->
       <div class="card" id="orgThemeCard" style="display:none;margin-bottom:12px">
-        <p class="sect">🎨 ألوان التطبيق — ثيمك الشخصي</p>
-        <p class="hint" style="margin:2px 0 6px">16 هوية احترافية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا...) — اعتماد ثيمك يخصّ حسابك وحده ولا يظهر لبقية المستخدمين حتى ولو كانوا مدراء.</p>
+        <p class="sect">🎨 ثيم التطبيق — ثيمك الشخصي</p>
+        <p class="hint" style="margin:2px 0 10px">ثيم حقيقي يغيّر شكل التطبيق كله: اختر وضع العرض ولون الهوية — ويُحفَظان على حسابك فيتبعانك على كل الأجهزة ولا يظهران لأي مستخدم آخر حتى ولو كان مديراً.</p>
+        <p class="thmode-t">وضع العرض — يقلب التطبيق بالكامل</p>
+        <div class="thmodes">
+          <button type="button" class="thmode" id="thLight">
+            <span class="thprev thprev-l"><i></i><i></i></span>
+            <span class="tl">☀️ نهاري</span>
+          </button>
+          <button type="button" class="thmode" id="thDark">
+            <span class="thprev thprev-d"><i></i><i></i></span>
+            <span class="tl">🌙 ليلي</span>
+          </button>
+          <button type="button" class="thmode" id="thSys">
+            <span class="thprev thprev-s"><i></i><i></i></span>
+            <span class="tl">📱 حسب النظام</span>
+          </button>
+        </div>
+        <p class="thmode-t">لون الهوية — فوق الوضع لا بديلاً عنه</p>
         <div id="orgThemeGrid" class="thgrid"></div>
         <button class="btn" id="btnOrgThemeSave">✨ اعتماد ثيمي الشخصي</button>
       </div>
@@ -2294,19 +2312,35 @@ function lockBtn(btn, label) {
   return () => { btn.disabled = false; btn.textContent = old; };
 }
 
-/* ─── v41: الوضع الليلي/النهاري ─── */
+/* ─── v41: الوضع الليلي/النهاري — v179: ثيم حقيقي بثلاثة أوضاع يقلب التطبيق كاملاً:
+       ☀️ نهاري · 🌙 ليلي · 📱 حسب النظام (تتبع حي: تغيير إعدادات الهاتف يقلب التطبيق فوراً) ─── */
+function _themeResolved(mode) {
+  if (mode !== "system") return mode;
+  try { return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"; } catch (e) { return "light"; }
+}
+var _themeOnSys = false;
 function applyTheme(mode, save) {
-  document.documentElement.setAttribute("data-theme", mode);
+  _themeOnSys = (mode === "system");
+  document.documentElement.setAttribute("data-theme", _themeResolved(mode));
   /* v120: الثيم المؤسسي يُعاد تلوينه حسب الوضع — وإلا الهوية الافتراضية */
   if (S.orgTheme) applyOrgTheme(S.orgTheme);
   else {
     const m0 = document.querySelector('meta[name="theme-color"]');
-    if (m0) m0.setAttribute("content", mode === "dark" ? "#1e1f22" : "#5865f2");
+    if (m0) m0.setAttribute("content", document.documentElement.getAttribute("data-theme") === "dark" ? "#1e1f22" : "#5865f2");
   }
-  const l = $("#thLight"), d = $("#thDark");
-  if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); }
+  const l = $("#thLight"), d = $("#thDark"), s = $("#thSys");
+  if (l && d) { l.classList.toggle("on", mode === "light"); d.classList.toggle("on", mode === "dark"); if (s) s.classList.toggle("on", mode === "system"); }
   if (save) { try { localStorage.setItem("ceram_theme", mode); } catch (e) {} }
 }
+(function () {
+  try {
+    var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    var _h = function () { if (_themeOnSys) applyTheme("system", false); };
+    if (mq.addEventListener) mq.addEventListener("change", _h);
+    else if (mq.addListener) mq.addListener(_h);
+  } catch (e) {}
+})();
 
 /* ═══════════ v120: الثيم المؤسسي — المدير يختار هوية لونية احترافية ═══════════
    يُطبّق على جميع المستخدمين عبر الخادم (app_settings → /api/me + /api/status).
@@ -2393,28 +2427,31 @@ function renderOrgThemeGrid() {
       + '<span class="lb">' + t.label + '</span></button>';
   }).join("");
   g.querySelectorAll("button[data-th]").forEach((b) => b.addEventListener("click", () => {
-    S.orgThemeSel = b.dataset.th; renderOrgThemeGrid();
+    S.orgThemeSel = b.dataset.th; applyOrgTheme(b.dataset.th);   /* v179: معاينة فورية للهوية فوق الوضع الحالي */
   }));
 }
 $("#btnOrgThemeSave").addEventListener("click", async () => {
   const name = S.orgThemeSel || S.orgTheme || "discord";
+  const mode = currentTheme();   /* v179: الوضع الحالي (نهاري/ليلي/حسب النظام) يُحفظ مع الهوية */
   const unlock = lockBtn($("#btnOrgThemeSave"), "جارٍ التطبيق…");
   try {
     await api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name }) });
+      body: JSON.stringify({ name: name, mode: mode }) });
     S.orgThemeSel = "";
     applyOrgTheme(name);
-    toast("✅ «" + ORG_THEMES[name].label + "» أصبح ثيمك الشخصي — يخصّ حسابك ولا يظهر لغيرك");
+    applyTheme(mode, true);
+    toast("✅ ثيمك الشخصي اعتُمد: «" + ORG_THEMES[name].label + "» + وضع " + ({light: "نهاري ☀️", dark: "ليلي 🌙", system: "حسب النظام 📱"}[mode] || mode) + " — يخصّ حسابك ولا يظهر لغيرك");
   } catch (e) { toast(e.message, true); } finally { if (unlock) unlock(); }
 });
 
 
+/* v179: الوضع المحفوظ قد يكون «system» — الافتراضي حسب النظام */
 function currentTheme() {
   try {
     const t = localStorage.getItem("ceram_theme");
-    if (t === "dark" || t === "light") return t;
-    return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-  } catch (e) { return "light"; }
+    if (t === "dark" || t === "light" || t === "system") return t;
+  } catch (e) {}
+  return "system";
 }
 
 /* ─── الجلسات ─── */
@@ -2610,10 +2647,12 @@ function applyPerms() {
 function showApp(me) {
   S.user = me.user; S.perms = me.perms || {};
   if (S.user.role === "pending") { showGoogleWait(); return; }
-  /* v178: الثيم الشخصي يصل مع /api/me — ثيم حسابك أنت فقط؛ ومن بلا ثيم شخصي يعود للافتراضي (بلا ثيم مدير عالمي) */
+  /* v178: الثيم الشخصي يصل مع /api/me — ثيم حسابك أنت فقط؛ ومن بلا ثيم شخصي يعود للافتراضي (بلا ثيم مدير عالمي)
+     v179: وضع العرض أيضاً يتبع الحساب (نهاري/ليلي/حسب النظام) — يُطبَّق فوراً ويُخزَّن كاشاً بالجهاز */
   try {
     if (me.theme && ORG_THEMES[me.theme]) applyOrgTheme(me.theme);
     else if (S.orgTheme && S.orgTheme !== "discord") applyOrgTheme("discord");
+    applyTheme(typeof me.theme_mode === "string" && me.theme_mode ? me.theme_mode : "system", true);
   } catch (e120) {}
   $("#login").style.display = "none"; $("#app").style.display = "flex";
   try { if (typeof _v131Welcome === "function") _v131Welcome(); } catch (e131) {}
@@ -3968,8 +4007,10 @@ $("#dlgUserGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
   finally { btn.disabled = false; }
 });
+/* v179: أزرار وضع العرض الثلاثة — تطبيق فوري كامل للشكل، والاعتماد على الحساب من زر الثيم */
 $("#thLight").addEventListener("click", () => applyTheme("light", true));
 $("#thDark").addEventListener("click", () => applyTheme("dark", true));
+$("#thSys").addEventListener("click", () => applyTheme("system", true));
 $("#btnMyPass").addEventListener("click", () => openPass(null, S.user ? S.user.name : "", true));
 async function doLogout() {
   try { await api("/api/logout", { method: "POST" }); } catch (e) {}
@@ -4404,7 +4445,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "54";
+const APP_VER = "55";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
