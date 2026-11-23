@@ -1,12 +1,12 @@
 <!doctype html>
 <html dir="rtl" lang="ar">
-<head>
+<head><script>window.CERAM_API_ROOT="https://produit-wi5o.onrender.com";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#5865f2">
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/icon.jpg">
-<link rel="apple-touch-icon" href="/icon.jpg">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -311,6 +311,18 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
 .nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
 .nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
 .nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}
+/* v180: بطاقات هادئة منظمة (نمط «أهم مميزات المنتج») — الإشعارات وحوار التحديث */
+.nrow.ncard{display:flex;align-items:flex-start;gap:10px;padding:11px 12px}
+.ncard .nico{font-size:18px;line-height:1.25;flex:none;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:var(--brandsoft);border-radius:10px}
+.ncard .nbody{min-width:0;flex:1}
+.ncard .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
+.ncard .nb{font-size:13px;white-space:pre-line;margin-top:3px;line-height:1.6}
+.ncard .nm{font-size:11.5px;color:var(--mut);margin-top:5px}
+.ucards{display:flex;flex-direction:column;gap:8px;margin-bottom:2px}
+.ucards .uc{display:flex;align-items:flex-start;gap:10px;background:var(--brandsoft);border:1px solid var(--edline);border-radius:14px;padding:10px 12px}
+.ucards .uc .uico{font-size:19px;line-height:1.3;flex:none}
+.ucards .uc .ut{font-weight:800;font-size:13.5px;color:var(--edink);line-height:1.5}
+.ucards .uc .ud{font-size:12.5px;color:var(--mut);line-height:1.6;margin-top:2px}
 #notifList{max-height:55vh;overflow:auto}
 /* ─── v41: الإعدادات والملف الشخصي ─── */
 .setprof{display:flex;flex-direction:column;align-items:center;gap:8px;margin-bottom:12px}
@@ -666,128 +678,12 @@ body,.card,.row,header,nav.tabs,dialog,.seg button,.chip{
 button,.btn,.row{-webkit-tap-highlight-color:transparent}
 .badge{border-radius:99px}
 img{-webkit-user-drag:none;user-select:none}</style>
-<script id="pagesboot">
-/* v127: إقلاع نسخة GitHub Pages — التطبيق يُفتح هنا في هذه الصفحة أبداً (لا نوافذ ولا تحويل).
-   تسلسل تحديد الخادم: ?api= ← ceram_api_root ← leroi_server_url (البوابة القديمة تُرحَّل تلقائياً) ← شاشة ضبط لمرة واحدة بتحقق حي. */
-(function () {
-  window.CERAM_PAGES = 1;
-  window.CERAM_API_ROOT = "";
-  /* v164 (واجهة 41): جسر الدخول الموحد SSO — رمز التطبيق الأصلي يُلتقط هنا
-     أولاً قبل أي replaceState يزيل معاملات العنوان */
-  var ssoOt = "";
-  try { ssoOt = (new URLSearchParams(location.search).get("sso") || "").trim(); } catch (eSsoQ) {}
-  function norm(v) {
-    v = (v || "").trim().replace(/\/+$/, "");
-    if (v && !/^https?:\/\//i.test(v)) v = "https://" + v;
-    return v;
-  }
-  try {
-    var q = new URLSearchParams(location.search);
-    var fromQ = norm(q.get("api"));
-    var saved = "";
-    try { saved = norm(localStorage.getItem("ceram_api_root")); } catch (e1) {}
-    var legacy = "";
-    try { legacy = norm(localStorage.getItem("leroi_server_url")); } catch (e1b) {}
-    var root = fromQ || saved || legacy || "https://produit-wi5o.onrender.com";   /* v127: التصدير بعنوان مضمّن يتخطى شاشة الضبط */
-    if (root && /^https?:\/\//i.test(root)) {
-      window.CERAM_API_ROOT = root;
-      try { if (root !== saved) localStorage.setItem("ceram_api_root", root); } catch (e2) {}
-      if (fromQ) { try { history.replaceState(null, "", location.pathname); } catch (e2b) {} }
-    } else {
-      showSetup();
-    }
-  } catch (e) {}
-  /* v164 (واجهة 41): جسر الدخول الموحد SSO — التطبيق الأصلي يمرر رمزاً أحادي
-     الاستخدام عبر ?sso= بعد نجاح دخول Google؛ نستبدله بجلسة ويب كاملة في
-     ceram_sess ثم نعيد التحميل بلا المعامل — لا شاشة دخول ثانية أبداً. */
-  if (ssoOt && ssoOt.length <= 128) {
-    try { history.replaceState(null, "", location.pathname); } catch (eS0) {}
-    fetch((window.CERAM_API_ROOT || "") + "/api/auth/sso/consume", {
-      method: "POST", credentials: "omit",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ot: ssoOt })
-    }).then(function (r) { return r.json(); }).then(function (d) {
-      if (d && d.ok && d.sess) {
-        try { localStorage.setItem("ceram_sess", String(d.sess)); } catch (eS1) {}
-      }
-    }).catch(function () {}).then(function () { location.reload(); });
-    return;
-  }
-  function showSetup() {
-    var wait = setInterval(function () {
-      if (!document.body) return;
-      clearInterval(wait);
-      var ov = document.createElement("div");
-      ov.id = "ceramBoot";
-      ov.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg,#f2f3f5)";
-      ov.innerHTML = '<div style="width:440px;max-width:94vw;background:var(--card,#fff);border-radius:20px;overflow:hidden;box-shadow:0 16px 48px rgba(46,51,56,.20);direction:rtl;text-align:right">'
-        + '<div style="background:linear-gradient(135deg,#404eed,#5865f2);color:#fff;padding:18px 20px 16px;text-align:center">'
-        + '<div style="font-size:30px;line-height:1">👑</div>'
-        + '<div style="font-weight:800;font-size:16px;margin-top:6px;font-family:Georgia,serif;letter-spacing:.08em">LE ROI DE LA CÉRAMIQUE</div>'
-        + '<div style="font-size:12px;opacity:.92;margin-top:3px">ربط التطبيق بخادم البوت — مرة واحدة فقط لهذا الجهاز</div>'
-        + '</div>'
-        + '<div style="padding:18px 20px 20px">'
-        + '<p style="margin:0 0 12px;font-size:13px;color:var(--mut,#6d6f78);line-height:1.9">أدخل عنوان خادم البوت (مثال: <bdo dir="ltr" style="font-weight:700">https://my-bot.onrender.com</bdo>).<br>يُفتح التطبيق <b style="color:var(--brand,#5865f2)">هنا مباشرة في هذه الصفحة</b> — بلا أي نافذة أخرى ولا تحويل إلى رابط خارجي.</p>'
-        + '<input id="ceramRootIn" type="url" inputmode="url" placeholder="https://my-bot.onrender.com" style="width:100%;box-sizing:border-box;padding:12px 13px;border:1.5px solid var(--line,#d5dae3);border-radius:12px;font-size:15px;direction:ltr;text-align:left;background:var(--bg,#f2f3f5);color:var(--ink,#2e3338)" autocomplete="off" spellcheck="false">'
-        + '<div id="ceramRootErr" style="display:none;margin-top:9px;font-size:12.5px;font-weight:700;color:var(--bad,#d83c3e);background:rgba(216,60,62,.08);border:1px solid rgba(216,60,62,.3);border-radius:10px;padding:9px 11px;line-height:1.7"></div>'
-        + '<button id="ceramRootGo" style="margin-top:14px;width:100%;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:800;color:#fff;background:linear-gradient(135deg,#5865f2,#4752c4);cursor:pointer;box-shadow:0 6px 18px rgba(88,101,242,.35)">🚀 حفظ وفتح التطبيق</button>'
-        + '<button id="ceramRootSkip" style="margin-top:9px;width:100%;border:0;border-radius:12px;padding:10px;font-size:12.5px;font-weight:700;color:var(--mut,#6d6f78);background:transparent;cursor:pointer;text-decoration:underline">حفظ دون فحص (لسيرفر محلي)</button>'
-        + '<p style="margin:12px 0 0;font-size:11.5px;color:var(--mut,#6d6f78);line-height:1.8;text-align:center">العنوان يُحفظ في هذا الجهاز فقط — لتغييره لاحقاً افتح الصفحة مع <bdo dir="ltr">?api=العنوان_الجديد</bdo></p>'
-        + '</div>'
-        + '</div>';
-      document.body.appendChild(ov);
-      var inp = ov.querySelector("#ceramRootIn"), err = ov.querySelector("#ceramRootErr"),
-          go = ov.querySelector("#ceramRootGo"), skip = ov.querySelector("#ceramRootSkip");
-      function bad(msg) { err.textContent = msg; err.style.display = "block"; }
-      function setBusy(b) {
-        go.disabled = b; skip.disabled = b;
-        go.style.opacity = b ? ".7" : "1";
-        go.textContent = b ? "⏳ جارٍ التحقق من الخادم…" : "🚀 حفظ وفتح التطبيق";
-      }
-      function save(v) {
-        try { localStorage.setItem("ceram_api_root", v); } catch (e3) {}
-        location.replace(location.pathname);
-      }
-      function check(v) {
-        err.style.display = "none"; setBusy(true);
-        var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
-        var timer = setTimeout(function () { try { if (ctrl) ctrl.abort(); } catch (e4) {} }, 8000);
-        fetch(v + "/api/status", { mode: "cors", signal: ctrl ? ctrl.signal : undefined })
-          .then(function (r) {
-            /* v127: ردّ 503 المُركّب من عامل الخدمة عند سقوط الشبكة ليس نجاحاً */
-            if (!r.ok) throw new Error("HTTP " + r.status);
-            return r.json();
-          })
-          .then(function () {
-            clearTimeout(timer); setBusy(false); save(v);
-          })
-          .catch(function () {
-            clearTimeout(timer); setBusy(false);
-            bad("تعذّر الوصول إلى الخادم بهذا العنوان — تأكد من صحته ومن أن الخادم يعمل.\nإن كان الخادم على استضافة مجانية فقد يكون ساكناً (بداية باردة): انتظر نحو دقيقة وأعد المحاولة، أو استخدم «حفظ دون فحص».");
-          });
-      }
-      go.addEventListener("click", function () {
-        var v = norm(inp.value);
-        if (!v || v.indexOf(".") < 0) { bad("أدخل عنواناً صحيحاً مثل https://my-bot.onrender.com"); return; }
-        check(v);
-      });
-      skip.addEventListener("click", function () {
-        var v = norm(inp.value);
-        if (!v || v.indexOf(".") < 0) { bad("أدخل عنواناً صحيحاً مثل https://my-bot.onrender.com"); return; }
-        save(v);
-      });
-      inp.addEventListener("keydown", function (e) { if (e.key === "Enter") go.click(); });
-      setTimeout(function () { try { inp.focus(); } catch (e5) {} }, 60);
-    }, 80);
-  }
-})();
-</script>
 </head>
 <body>
 
 <!-- شاشة الدخول -->
 <div id="login">
-  <img class="logo" src="/icon.jpg" alt="">
+  <img class="logo" src="/icon.png" alt="">
   <h1>مخزون السيراميك</h1>
   <div class="wm">LE ROI · DE LA CÉRAMIQUE</div>
   <p class="sub">دخول فريق المؤسسة</p>
@@ -822,7 +718,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
       الدخول بحساب Google</button>
     <p class="hint">حساب جديد؟ أرسل طلب انضمام وتُفعّل عضويتك بعد موافقة الإدارة<br>
       بعد التثبيت يعمل التطبيق من أيقونته على الشاشة الرئيسية<br>
-      <span style="opacity:.65">الإصدار v74</span></p>
+      <span style="opacity:.65">الإصدار 61</span></p>
   </div>
   <p class="reglink" id="lnkRegisterWrap" style="display:none"><a href="#" id="lnkRegister">🆕 حساب جديد — انضم كـ بائع أو عامل مخزون</a></p>
   <div class="card" id="regCard" style="display:none">
@@ -903,7 +799,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
 <!-- التطبيق -->
 <div id="app">
   <header>
-    <img src="/icon.jpg" alt="">
+    <img src="/icon.png" alt="">
     <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
     <div class="gswrap"><span class="gsic">🔍</span><input id="gSearch" class="ginp" type="search" placeholder="ابحث عن سلعة أو مقاس… ثم Enter" autocomplete="off"></div>
     <div class="bellwrap"><button id="btnNotif" title="الإشعارات">🔔</button><span id="nBadge">0</span></div>
@@ -921,7 +817,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
       <div id="homeOrd"></div>
       <div id="homeOil"></div>
       <div id="installBox"></div>
-      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار v120</p>
+      <p class="hint" style="margin-top:16px;opacity:.65">الإصدار 61</p>
     </section>
     <!-- المخزون -->
     <section class="view" id="v-inv">
@@ -1781,7 +1677,12 @@ img{-webkit-user-drag:none;user-select:none}</style>
   function inApp() {
     try {
       var ua = navigator.userAgent || "";
-      if (/; wv\)/i.test(ua)) return true;           /* WebView التطبيق الأصلي */
+      /* v182: كشف أقوى للتطبيق الأصلي — كان فحص «; wv)» وحده قد يفشل حين يضبط
+         الغلاف وUA مخصصاً فيختفي الوسم، فتظهر واجهة الترحيل داخل التطبيق نفسه
+         فوق زر الدخول (سبب عطل «لا يستجيب شيء» بعد مسح بيانات الجهاز) */
+      if (/; wv\)/i.test(ua)) return true;
+      if (/LeRoiStock/i.test(ua)) return true;
+      if (window.AndroidBridge) return true;
       return false;
     } catch (e) { return false; }
   }
@@ -1864,15 +1765,11 @@ img{-webkit-user-drag:none;user-select:none}</style>
     if (later) later.addEventListener("click", close);
   }
   function show() {
-    if (inApp() || seen()) return;
-    /* لا ننازع سبلاش استعادة الجلسة (v94) — ننتظر حتى يخفى بسقف 8 ثوانٍ */
-    var tries = 0;
-    (function wait() {
-      var v94 = document.getElementById("v94splash");
-      var busy = v94 && v94.style.display === "flex";
-      if (!busy || ++tries > 40) { try { build(); } catch (e0) {} return; }
-      setTimeout(wait, 200);
-    })();
+    /* v182: نهاية الظهور التلقائي لواجهة الترحيل بطلب المالك — حملة الترحيل
+       انتهت والجميع على التطبيق الأصلي، والشاشة كانت تحجب زر الدخول فعلياً
+       بعد مسح بيانات الجهاز (العلامة leroi_app_migration_seen تُمسح مع البيانات
+       وعنصر تحميل APK فيها يجاثم فوق زر «دخول»). لا ظهور تلقائي إطلاقاً. */
+    return;
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { setTimeout(show, 800); });
@@ -2174,14 +2071,16 @@ img{-webkit-user-drag:none;user-select:none}</style>
 
 <!-- v44: التحديث الداخلي — تنبيه بإصدار جديد وتحديث بنقرة دون إعادة تثبيت التطبيق -->
 <dialog id="dlgUpd">
-  <div class="dh">🔄 تحديث جديد</div>
+  <div class="dh">✨ تحديث جديد — أهم المميزات</div>
   <div class="db">
-    <p style="margin:0 0 12px;font-size:14px;color:var(--mut);text-align:center">
-      يوجد تحديث جديد للتطبيق.<br>يرجى الضغط على «نعم» للتحميل — التحديث داخلي ولا يحتاج إعادة تثبيت.</p>
-    <button class="btn" id="btnUpdYes">✅ نعم، حدّث الآن</button>
-    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً</button>
+    <div id="updCards" class="ucards"></div>
+    <p style="margin:10px 0 12px;font-size:12.5px;color:var(--mut);text-align:center">
+      التحديث داخلي بنقرة واحدة — بلا إعادة تثبيت، وجلستك تبقى كما هي.</p>
+    <button class="btn" id="btnUpdYes">⬆️ تحديث الآن</button>
+    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً — لا تُشعرني بهذه النسخة</button>
   </div>
 </dialog>
+<script>window.PWA_UPD_CARDS=[{"ico": "🔕", "t": "نهاية إشعار «تحديث جديد» المزعج نهائياً", "d": "الإشعار كان يتكرر عند كل فتح لأن رقم النسخة الداخلي في حزم الترقيع لم يُرفع — عولج من جهة الخادم بلا أي تثبيت جديد."}, {"ico": "🪄", "t": "تحديث بنمط بطاقات هادئة ومنظمة", "d": "أهم مميزات كل نسخة تُعرض بطاقات مرتبة سهلة الفهم — و«لاحقاً» تخفيها نهائياً لنفس الإصدار."}, {"ico": "🔔", "t": "قائمة إشعارات داخلية أنظف", "d": "كل إشعار الآن بطاقة بأيقونة في شارة وعنوان ووصف واضحين — قراءة أسرع بلا فوضى."}];</script>
 
 <!-- v45: قائمة خيارات السلعة — زر واحد بدل الأزرار المتناثرة على البطاقة -->
 <dialog id="dlgMenu">
@@ -4043,11 +3942,12 @@ function renderNotifList() {
   const items = S.notif.items || [];
   if (!items.length) { box.innerHTML = '<p class="empty">لا إشعارات بعد.</p>'; return; }
   box.innerHTML = items.map((n) =>
-    '<div class="nrow"><div class="nt">' + (KIND_IC[n.kind] || "🔔") + " " + esc(n.title) + '</div>'
+    '<div class="nrow ncard"><div class="nico">' + (KIND_IC[n.kind] || "🔔") + '</div>'
+    + '<div class="nbody"><div class="nt">' + esc(n.title) + '</div>'
     + (n.body ? '<div class="nb">' + esc(n.body) + '</div>' : "")
     + '<div class="nm">' + esc(n.actor || "") + (n.actor ? " • " : "")
     + (n.source === "web" ? "من التطبيق" : "من تلغرام")
-    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div>').join("");
+    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div></div>').join("");
 }
 async function pollNotifs() {
   if (!S.user || S.notif.busy) return;   /* v45: لا تداخل بين فحصين */
@@ -4100,7 +4000,7 @@ function webNotifAllowed() {
 function webNotify(title, body, icon) {
   try {
     if (("Notification" in window) && Notification.permission === "granted" && document.hidden)
-      new Notification(title, { body: String(body || "").slice(0, 250), icon: icon || "/icon.jpg" });
+      new Notification(title, { body: String(body || "").slice(0, 250), icon: icon || "/icon.png" });
   } catch (e) {}
 }
 function askWebNotifPerm() {
@@ -4117,7 +4017,7 @@ function appNotify(title, body) {
       return;
     }
   } catch (e) {}
-  webNotify(title, body, "/icon.jpg");
+  webNotify(title, body, "/icon.png");
 }
 $("#btnNotif").addEventListener("click", () => {
   renderNotifList();
@@ -4200,7 +4100,11 @@ async function doLogin() {
   const err = $("#loginErr"); err.style.display = "none";
   $("#btnLogin").disabled = true; $("#btnLogin").textContent = "جارِ الدخول...";
   try {
+    /* v182: noKick — فشل الدخول (401 متوقع) لا يجب أن يشعل آفق الجلسة
+       (v94SessionLost) الذي كان يعيد رسم شاشة الدخول ويمحو ما كتبه المستخدم
+       فلا يظهر أي أثر للضغط على «دخول» */
     const r = await api("/api/login", {
+      noKick: true,
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
     });
@@ -4445,7 +4349,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "55";
+const APP_VER = "61";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -4457,23 +4361,28 @@ S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""
 function pagesLiveSwap(v) {
   try {
     var root = window.CERAM_API_ROOT || "";
-    if (!root) { location.reload(); return true; }
-    try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
-    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })
+    if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */
+    if ((parseFloat(v) || 0) <= (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) { return false; }   /* v185: لا هبوط للنسخة */
+    var _ac = null; try { if (window.AbortController) _ac = new AbortController(); } catch (_ace) {}
+    var _to = _ac ? setTimeout(function () { try { _ac.abort(); } catch (_ate) {} }, 6000) : null;
+    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit", signal: _ac ? _ac.signal : undefined })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
       .then(function (html) {
+        try { if (_to) clearTimeout(_to); } catch (_cte) {}
+        /* v181: الحارس يُكتب عند النجاح فقط — الفشل يعيد المحاولة في الفحص التالي */
+        try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
         html = String(html);
         if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");
         var cfg = "<script>window.CERAM_API_ROOT=" + JSON.stringify(root) + ";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</" + "script>";
         if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + cfg; });
         else html = cfg + html;
-        document.open(); document.write(html); document.close();
+        try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v185: تنقّل حقيقي — نسخة كاملة نظيفة من أصل الخادم، نهاية المستندات الهجينة */
       })
       .catch(function () {
-        toast("تعذر التحديث التلقائي — سأكمل على النسخة الحالية، وجرّب «فحص التحديث» لاحقاً.", true);
-        setTimeout(function () { try { location.reload(); } catch (_re) {} }, 700);
+        /* v181: لا تنبيه ولا إعادة تحميل — تخطٍّ صامت وإعادة محاولة لاحقة */
+        try { if (_to) clearTimeout(_to); } catch (_cte2) {}
       });
-    return true;
+    return false;   /* v185: الإقلاع يكمل دائماً على النسخة الحالية حتى يصلك التنقل — لا شاشة ميتة أبداً */
   } catch (_ple) { return false; }
 }
 function swCleanup() {
@@ -4492,8 +4401,14 @@ function swCleanup() {
   } catch (e) {}
 }
 function doAppUpdate() {
+  /* v181: تحديث داخلي صامت — بلا تنبيه ولا نافذة، ومحاولة واحدة لكل إصدار
+     ضد أي حلقة إعادة تحميل (طلب المالك: التحديث مباشر دون علامة تحديث) */
+  try {
+    var _uv = S.serverVersion || "upd";
+    if (sessionStorage.getItem("ceram_supd_" + _uv)) return;
+    sessionStorage.setItem("ceram_supd_" + _uv, "1");
+  } catch (e) {}
   try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}
-  toast("جارٍ التحديث…");
   if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }
   swCleanup();
   const v = S.serverVersion || String(Date.now());
@@ -4510,11 +4425,10 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
     /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */
     if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
     const about = $("#setAbout");
-    if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");
-    if (v && v !== APP_VER && v !== S.updDismissed
-        && v !== (function () { try { return localStorage.getItem("ceram_upd_dis") || ""; } catch (e) { return ""; } })()) {
-      const dlg = $("#dlgUpd");
-      if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
+    if (about) about.textContent = "الإصدار " + APP_VER + (v && v !== APP_VER ? " — الخادم " + v : "");
+    if (v && v !== APP_VER && v !== S.updDismissed) {
+      /* v181: بلا أي نافذة أو علامة — التطبيق يحدّث نفسه داخلياً مباشرة */
+      doAppUpdate();
       return true;
     }
     if (manual) toast("أنت على أحدث إصدار ✅ " + APP_VER);
@@ -4524,6 +4438,19 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
     return false;
   });
 }
+function renderUpdCards() {   /* v180: بطاقات «أهم مميزات النسخة الجديدة» */
+  const box = $("#updCards");
+  if (!box) return;
+  const cards = (window.PWA_UPD_CARDS && window.PWA_UPD_CARDS.length)
+    ? window.PWA_UPD_CARDS
+    : [{ ico: "🆕", t: "نسخة محسّنة من التطبيق", d: "تحديث داخلي سريع يحفظ جلستك وبياناتك كما هي." }];
+  box.innerHTML = cards.map((c) =>
+    '<div class="uc"><div class="uico">' + esc(c.ico || "✨") + '</div><div>'
+    + '<div class="ut">' + esc(c.t || "") + '</div>'
+    + (c.d ? '<div class="ud">' + esc(c.d) + '</div>' : "")
+    + '</div></div>').join("");
+}
+try { renderUpdCards(); } catch (e) {}
 $("#btnUpdYes").addEventListener("click", () => {
   try { $("#dlgUpd").close(); } catch (e) {}
   doAppUpdate();
@@ -5286,6 +5213,7 @@ try {
     if (busy) return true;
     busy = true;
     show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");
+    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v185: فتحة أمان — لا حبس في السبلاش أبداً */
     var prevView = "", curEl = null;
     try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}
     rawRemember(r.t).then(function (out) {
@@ -5314,7 +5242,7 @@ try {
       return null;
     }).catch(function () {
       transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");
-    }).then(function () { busy = false; });
+    }).then(function () { busy = false; try { clearTimeout(_hatch); } catch (_hce) {} });
     return true;
   }
   /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */
@@ -5337,7 +5265,12 @@ try {
     if (busy) return;
     var r = null;
     try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}
-    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }
+    if (!r || !r.t) {
+      /* v182: إن كنا أصلاً على شاشة الدخول فلا تُعَد رسمها — كان كل 401 خلفي يمحو رسالة الخطأ ويفرغ كلمة المرور أثناء محاولة الدخول نفسها */
+      try { if (document.getElementById("login").style.display !== "none") return; } catch (eg0) {}
+      try { showLogin(false); } catch (e0) {}
+      return;
+    }
     if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */
     var now = Date.now();
     if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }
@@ -5614,7 +5547,7 @@ function paperHTML(d){
   var who = d.assigned_to_me ? '<span class="ivwtag">🛠 كُلِّفتَ بها</span>'
           : (d.by_me ? '<span class="ivwtag">✍ من إنشائي</span>' : "");
   return '<div class="ivwpaper">'
-    + '<div class="ivwhd"><img src="/icon.jpg" alt=""><h3>LE ROI DE LA CÉRAMIQUE</h3>'
+    + '<div class="ivwhd"><img src="/icon.png" alt=""><h3>LE ROI DE LA CÉRAMIQUE</h3>'
     + '<p>Facture de Vente — فاتورة بيع</p></div>'
     + '<div class="ivwmeta">'
     + '<div><span>الرقم</span><b>#' + d.invoice_id + " " + st + who + '</b></div>'
@@ -9326,1859 +9259,6 @@ html[data-theme="dark"] .bugfixchip{background:rgba(22,163,74,.18);color:#4ade80
       });
   });
 })();
-</script>
-<script id="v143ui">
-/* ═══════════════════════════════════════════════════════════════════
-   v143 — التنبيه الجماعي من التطبيق + إشعارات الهاتف الخارجية
-   بطلب يوسف: «يوجد زر تنبيه في بوت تلغرام اي شيء اكتبه يصل لكل المستخدمين
-   او لبعضهم فقط لكن هاته الخاصية لا توجد في التطبيق — اضفها واي شيء اكتبه
-   يصلهم تنبيه على بوت تلغرام او اشعار خارجي على الهاتف وليس داخلي في
-   التطبيق فقط».
-   • 📣 زر عائم لمن يملك صلاحية المستخدمين: نص + مستلمون (الكل/أعضاء) +
-     قنوات (✈️ تلغرام و/أو 🔔 إشعار الهاتف) + سجل آخر التنبيهات.
-   • 🔔 زر اشتراك إشعارات الهاتف (Web Push) لكل الأعضاء — إشعار خارجي
-     حقيقي يظهر على الهاتف حتى والتطبيق مغلق، والضغط عليه يفتح التطبيق.
-   • v147 — «ازالة نافذة تفعيل الاشعارات نهائيا» بطلب يوسف: أُزيلت نافذة
-     v144/v145 القسرية كلياً من هذه الطبقة — لا شاشة تعود عند كل فتح ولا
-     قفل للصفحة ولا أزرار قفز؛ زر 🔔 العائم يبقى الطريق الاختياري الوحيد
-     للتفعيل بضغطة العضو نفسها، مع إصلاح صامت لمن إذنه ممنوح واشتراكه
-     مفقود، وإصلاح انحصار subBusy عند الخروج المبكر.
-   ═══════════════════════════════════════════════════════════════════ */
-(function () {
-  "use strict";
-  function vsafe(f) { try { f(); } catch (e) {} }
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-  function isAdminUser() {
-    try { return !!(S && S.perms && (S.perms.users || S.perms.admin)); } catch (e) { return false; }
-  }
-
-  /* ═══ 1) إشعارات الهاتف (Web Push) — زر لكل الأعضاء ═══ */
-  var bell = document.createElement("button");
-  bell.type = "button"; bell.id = "v143bell"; bell.className = "v143bell";
-  bell.setAttribute("aria-label", "إشعارات الهاتف");
-  document.body.appendChild(bell);
-  var stopArm = 0;
-
-  function pushSupported() {
-    try {
-      return ("serviceWorker" in navigator) && ("PushManager" in window) && (typeof Notification !== "undefined");
-    } catch (e) { return false; }
-  }
-  function pushDone() {
-    try { return localStorage.getItem("ceram_push_done") === "1"; } catch (e) { return false; }
-  }
-  function pushLater() {
-    try {
-      return (parseInt(localStorage.getItem("ceram_push_later") || "0", 10) || 0) > Date.now();
-    } catch (e) { return false; }
-  }
-  function pushLaterSet() {
-    try { localStorage.setItem("ceram_push_later", String(Date.now() + 3 * 86400000)); } catch (e) {}
-  }
-  /* ═══ v155: حوار الإرشاد عند حظر الإذن — وضوح كامل بدل «لا يستجيب» ═══ */
-  var v155HelpDlg = null;
-  window.__v155PushHelp = function () {
-    if (!v155HelpDlg) {
-      v155HelpDlg = document.createElement("dialog");
-      v155HelpDlg.id = "v155dlg";
-      v155HelpDlg.className = "v155dlg";
-      v155HelpDlg.innerHTML =
-        '<div class="v155help"><div class="v155ic">🔔</div>'
-        + '<h3>الإشعارات محظورة من المتصفح</h3>'
-        + '<p>رفضتَ إذن الإشعارات لهذا الموقع سابقاً، لذلك لا يظهر طلب الإذن عند الضغط — فعّلها يدوياً:</p>'
-        + '<ol><li>اضغط أيقونة 🔒 (أو ⋮) بجانب عنوان الموقع.</li>'
-        + '<li>افتح «أذونات الموقع» ← «الإشعارات».</li>'
-        + '<li>اختر «سماح / Allow» ثم أعد تحميل التطبيق واضغط زر 🔔.</li></ol>'
-        + '<p class="v155alt">💡 بديل مضمون: قناة تلغرام — التنبيهات تصلك هناك دائماً حتى والتطبيق مغلقاً.</p>'
-        + '<button type="button" class="v155btn">فهمت</button></div>';
-      document.body.appendChild(v155HelpDlg);
-      v155HelpDlg.querySelector(".v155btn").addEventListener("click", function () { try { v155HelpDlg.close(); } catch (e) {} });
-    }
-    try { v155HelpDlg.showModal(); } catch (e) {}
-  };
-  function refreshBell() {
-    /* v155: الزر لا يُخفى بعد ضغطه أبداً — الإخفاء 3 أيام كان يجعله «لا يستجيب» */
-    bell.style.display = pushSupported() ? "inline-block" : "none";
-    bell.textContent = pushDone() ? "🔔 إشعارات مفعلة ✓" : "🔔 فعّل إشعارات الهاتف";
-  }
-
-  function b64ToU8(b64) {
-    var pad = "";
-    var k = (4 - (b64.length % 4)) % 4;
-    for (var q = 0; q < k; q++) pad += "=";
-    var b = (b64 + pad).replace(/-/g, "+").replace(/_/g, "/");
-    var raw = atob(b);
-    var out = new Uint8Array(raw.length);
-    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-    return out;
-  }
-
-  var subBusy = false;   /* منع اشتراك مزدوج متوازٍ */
-  async function v143Subscribe(silent) {
-    if (subBusy) return;
-    subBusy = true;
-    function t(msg, isErr) { try { if (!silent) toast(msg, isErr); } catch (eX) {} }
-    try {
-      if (!pushSupported()) { t("متصفحك لا يدعم إشعارات الهاتف — اعتمد قناة تلغرام.", true); return; }
-      if (Notification.permission === "denied") {
-        /* v155: حوار إرشادات حقيقي بدل توست يُفقد — والزر يبقى ظاهراً */
-        if (typeof window.__v155PushHelp === "function") { window.__v155PushHelp(); }
-        else { t("الإشعارات محظورة لهذا الموقع — فعّلها من إعدادات المتصفح ثم اضغط زر 🔔 مجدداً.", true); }
-        return;
-      }
-      var perm = Notification.permission;
-      if (perm !== "granted") perm = await Notification.requestPermission();
-      if (perm !== "granted") {
-        /* v155: بلا إخفاء عقابي — الرفض المؤقت لا يُخفي الزر 3 أيام */
-        if (Notification.permission === "denied" && typeof window.__v155PushHelp === "function") { window.__v155PushHelp(); }
-        else { t("لم يُمنح إذن الإشعارات — يمكنك تفعيله لاحقاً من زر 🔔.", true); }
-        return;
-      }
-      var reg = null;
-      try { reg = await navigator.serviceWorker.getRegistration(); } catch (e) {}
-      if (!reg) { try { reg = await navigator.serviceWorker.register("/sw.js"); } catch (e) {} }
-      if (!reg) { t("تعذر تجهيز عامل الخدمة — أعد فتح التطبيق وحاول مجدداً.", true); return; }
-      var kr = await api("/api/push/key", { noCache: true });
-      if (!kr || !kr.ok || !kr.key) { t((kr && kr.error) || "تعذر جلب مفاتيح الإشعارات من الخادم.", true); return; }
-      var sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64ToU8(kr.key)
-      });
-      var res = await api("/api/push/subscribe", {
-        method: "POST",
-        body: JSON.stringify({ subscription: sub.toJSON() })
-      });
-      if (res && res.ok) {
-        try { localStorage.setItem("ceram_push_done", "1"); } catch (e) {}
-        t("✅ تم تفعيل إشعارات الهاتف — التنبيهات ستوصلك خارجياً حتى والتطبيق مغلق.");
-      } else {
-        t((res && res.error) || "تعذر حفظ الاشتراك.", true);
-      }
-      refreshBell();
-    } catch (e) {
-      t("تعذر التفعيل هنا — إن كنت داخل تلغرام افتح التطبيق من المتصفح أو أضفه للشاشة الرئيسية، أو اعتمد قناة تلغرام.", true);
-    } finally {
-      subBusy = false;
-    }
-  }
-
-  async function v143Unsubscribe() {
-    try {
-      var reg = await navigator.serviceWorker.getRegistration();
-      if (reg) {
-        var s = await reg.pushManager.getSubscription();
-        if (s) { try { await s.unsubscribe(); } catch (e) {} }
-      }
-      await api("/api/push/unsubscribe", { method: "POST", body: "{}" });
-    } catch (e) {}
-    try { localStorage.removeItem("ceram_push_done"); } catch (e) {}
-    toast("تم إيقاف إشعارات الهاتف.");
-    refreshBell();
-  }
-
-  bell.addEventListener("click", function () {
-    if (pushDone()) {
-      var now = Date.now();
-      if (now - stopArm < 4000) { stopArm = 0; v143Unsubscribe(); }
-      else { stopArm = now; toast("اضغط مجدداً خلال 4 ثوانٍ لتأكيد إيقاف الإشعارات."); }
-      return;
-    }
-    v143Subscribe();
-  });
-
-  /* ═══ 2) التنبيه الجماعي — لمن يملك صلاحية المستخدمين ═══ */
-  var fab = document.createElement("button");
-  fab.type = "button"; fab.id = "v143fab"; fab.className = "v143fab";
-  fab.title = "تنبيه جماعي"; fab.setAttribute("aria-label", "تنبيه جماعي");
-  fab.textContent = "📣";
-  document.body.appendChild(fab);
-
-  var dlg = null, usersCache = null, picked = {}, pickMode = false, sending = false;
-
-  function updateN() {
-    var n = dlg.querySelector("#bcN");
-    if (!pickMode) { n.textContent = "سيصل لكل الأعضاء النشطين"; return; }
-    var c = 0;
-    for (var k in picked) if (picked[k]) c++;
-    n.textContent = c + " محدد";
-  }
-
-  function renderUsers(filter) {
-    var box = dlg.querySelector("#bcListBody");
-    var us = usersCache || [];
-    var f = String(filter || "").trim().toLowerCase();
-    var html = "";
-    for (var i = 0; i < us.length; i++) {
-      var u = us[i];
-      var tid = u.telegram_id;
-      if (f && String(u.name || "").toLowerCase().indexOf(f) === -1) continue;
-      /* v156: التحديد بمعرّف الحساب users.id — يعمل لحسابات التطبيق بلا تلغرام */
-      html += '<label class="v143u"><input type="checkbox" data-uid="' + esc(u.id) + '"'
-        + (picked[u.id] && u.active !== false ? " checked" : "")
-        + (u.active === false ? " disabled" : "")   /* v157: المطرودون غير قابلين للتحديد */
-        + '><span class="nm">' + esc(u.name || ("#" + tid)) + (u.active === false ? " ⛔" : "") + '</span>'
-        + '<span class="rl">' + esc(u.role_label || u.role || "") + '</span></label>';
-    }
-    box.innerHTML = html || '<p style="padding:10px;color:#888">لا نتائج</p>';
-  }
-
-  async function send() {
-    if (sending) return;
-    var text = (dlg.querySelector("#bcText").value || "").trim();
-    if (text.length < 2) { toast("اكتب نص التنبيه أولاً.", true); return; }
-    var channels = [];
-    if (dlg.querySelector("#bcTg").classList.contains("on")) channels.push("tg");
-    if (dlg.querySelector("#bcPush").classList.contains("on")) channels.push("push");
-    if (!channels.length) { toast("اختر قناة واحدة على الأقل (تلغرام أو إشعار الهاتف).", true); return; }
-    var uids = null;   /* v156: الإرسال بمعرّف الحساب users.id */
-    if (pickMode) {
-      uids = [];
-      for (var k in picked) if (picked[k]) uids.push(Number(k));
-      if (!uids.length) { toast("اختر المستلمين من القائمة أو ارجع إلى «الكل».", true); return; }
-    }
-    var btn = dlg.querySelector("#bcGo");
-    sending = true; btn.disabled = true; btn.textContent = "⏳ جارٍ الإرسال…";
-    var resBox = dlg.querySelector("#bcRes");
-    resBox.style.display = "none";
-    try {
-      var r = await api("/api/broadcast/send", {
-        method: "POST",
-        body: JSON.stringify({ targets: pickMode ? "list" : "all", uids: uids, channels: channels, text: text })
-      });
-      if (r && r.ok) {
-        var x = r.result || {};
-        var lines = ["✅ اكتمل الإرسال — المستلمون: " + (x.recipients || 0)];
-        if (channels.indexOf("tg") !== -1) {
-          lines.push("✈️ تلغرام: " + (x.tg_ok || 0) + " ناجح" + ((x.tg_fail || 0) ? " • " + x.tg_fail + " فشل" : ""));
-        }
-        if (channels.indexOf("push") !== -1) {
-          lines.push("🔔 إشعار الهاتف: " + (x.push_ok || 0) + " ناجح" + ((x.push_fail || 0) ? " • " + x.push_fail + " فشل" : ""));
-          if (x.no_tg_n) lines.push("ℹ️ " + x.no_tg_n + " بلا حساب تلغرام — يصلهم 🔔 إشعار الهاتف إن فعّلوه.");   /* v156 */
-        if (x.push_hint) lines.push("ℹ️ " + x.push_hint);
-        }
-        if (x.failed && x.failed.length) lines.push("⚠️ فشل الإرسال لـ: " + x.failed.join("، "));
-        resBox.innerHTML = lines.map(esc).join("<br>");
-        resBox.style.display = "";
-        dlg.querySelector("#bcText").value = "";
-        picked = {}; renderUsers(""); updateN();   /* v157: فتح نظيف — لا اختيارات شبح بعد الإرسال */
-      } else {
-        toast((r && r.error) || "فشل الإرسال.", true);
-      }
-    } catch (e) {
-      toast((e && e.message) || "فشل الإرسال — تحقق من الاتصال.", true);
-    }
-    sending = false; btn.disabled = false; btn.textContent = "📤 إرسال التنبيه";
-  }
-
-  async function loadHist() {
-    var box = dlg.querySelector("#bcHistBox"), list = dlg.querySelector("#bcHistList");
-    box.style.display = "";
-    list.innerHTML = '<p style="padding:10px;color:#888">جارٍ التحميل…</p>';
-    try {
-      var r = await api("/api/broadcast/history", { noCache: true });
-      var items = (r && r.items) || [];
-      if (!items.length) { list.innerHTML = '<p style="padding:10px;color:#888">لا تنبيهات بعد.</p>'; return; }
-      list.innerHTML = items.map(function (it) {
-        var ch = [];
-        var cstr = String(it.channels || "");
-        if (cstr.indexOf("tg") !== -1) ch.push("✈️ " + it.tg_ok + "/" + (it.tg_ok + it.tg_fail));
-        if (cstr.indexOf("push") !== -1) ch.push("🔔 " + it.push_ok + "/" + (it.push_ok + it.push_fail));
-        return '<div class="v143hist" data-id="' + esc(it.id) + '"><div class="ht">' + esc(it.text) + '</div>'
-          + '<div class="hm">' + esc(it.at) + " • " + (it.kind === "all" ? "الكل" : (it.n + " محدد"))
-          + (ch.length ? " • " + ch.join(" • ") : "")
-          + (it.admin ? " • بواسطة " + esc(it.admin) : "") + '</div></div>';
-      }).join("");
-    } catch (e) {
-      list.innerHTML = '<p style="padding:10px;color:#888">تعذر التحميل.</p>';
-    }
-  }
-
-  function ensureDlg() {
-    if (dlg) return dlg;
-    dlg = document.createElement("dialog");
-    dlg.id = "dlgBroadcast";
-    dlg.innerHTML = '<div class="dh">📣 تنبيه جماعي</div>'
-      + '<div class="db">'
-      + '<div class="fld"><label>نص التنبيه — يصل المستلمين على بوت تلغرام و/أو كإشعار خارجي على هواتفهم:</label>'
-      + '<textarea id="bcText" maxlength="2000" rows="4" '
-      + 'placeholder="مثال: غداً صبيحة الجمعة تسليم بضاعة جديدة — جهزوا قائمة الجرد."></textarea></div>'
-      + '<div class="v143row"><span class="v143lbl">المستلمون:</span>'
-      + '<button type="button" class="v143chip on" id="bcAll">👥 الكل</button>'
-      + '<button type="button" class="v143chip" id="bcPick">👤 اختيار أعضاء…</button>'
-      + '<span class="v143cnt" id="bcN"></span></div>'
-      + '<div id="bcList" style="display:none">'
-      + '<input id="bcQ" type="text" class="v143q" placeholder="🔍 بحث بالاسم…">'
-      + '<div id="bcListBody" class="v143list"></div></div>'
-      + '<div class="v143row"><span class="v143lbl">القنوات:</span>'
-      + '<button type="button" class="v143chip on" id="bcTg">✈️ تلغرام</button>'
-      + '<button type="button" class="v143chip on" id="bcPush">🔔 إشعار الهاتف</button></div>'
-      + '<button type="button" class="btn" id="bcGo">📤 إرسال التنبيه</button>'
-      + '<div id="bcRes" class="v143res" style="display:none"></div>'
-      + '<button type="button" class="btn gray" id="bcCancel" style="margin-top:10px">إغلاق</button>'
-      + '<button type="button" class="btn soft-e" id="bcHist" style="margin-top:8px">📜 آخر التنبيهات</button>'
-      + '<div id="bcHistBox" style="display:none;margin-top:8px">'
-      + '<div id="bcHistList" class="v143list" style="max-height:260px"></div></div>'
-      + '</div>';
-    document.body.appendChild(dlg);
-    dlg.addEventListener("click", function (e) {
-      if (e.target === dlg) vsafe(function () { dlg.close(); });
-    });
-    dlg.querySelector("#bcAll").addEventListener("click", function () {
-      pickMode = false;
-      this.classList.add("on");
-      dlg.querySelector("#bcPick").classList.remove("on");
-      dlg.querySelector("#bcList").style.display = "none";
-      updateN();
-    });
-    dlg.querySelector("#bcPick").addEventListener("click", async function () {
-      pickMode = true;
-      this.classList.add("on");
-      dlg.querySelector("#bcAll").classList.remove("on");
-      dlg.querySelector("#bcList").style.display = "";
-      if (!usersCache) {
-        try {
-          var r = await api("/api/users", { noCache: true });
-          usersCache = (r && r.users) || [];
-        } catch (e) { usersCache = []; toast("تعذر جلب قائمة الأعضاء.", true); }
-      }
-      renderUsers(dlg.querySelector("#bcQ").value);
-      updateN();
-    });
-    dlg.querySelector("#bcQ").addEventListener("input", function () { renderUsers(this.value); });
-    dlg.querySelector("#bcListBody").addEventListener("change", function (e) {
-      var t = e.target;
-      if (t && t.type === "checkbox") {
-        picked[t.getAttribute("data-uid")] = t.checked;   /* v156: بمعرّف الحساب */
-        updateN();
-      }
-    });
-    dlg.querySelector("#bcTg").addEventListener("click", function () { this.classList.toggle("on"); });
-    dlg.querySelector("#bcPush").addEventListener("click", function () { this.classList.toggle("on"); });
-    dlg.querySelector("#bcGo").addEventListener("click", send);
-    dlg.querySelector("#bcCancel").addEventListener("click", function () { dlg.close(); });
-    dlg.querySelector("#bcHist").addEventListener("click", loadHist);
-    return dlg;
-  }
-
-  fab.addEventListener("click", function () {
-    ensureDlg();
-    /* v157: فتح نظيف — تصفير الاختيارات القديمة والعودة إلى «الكل» */
-    picked = {}; pickMode = false;
-    dlg.querySelector("#bcAll").classList.add("on");
-    dlg.querySelector("#bcPick").classList.remove("on");
-    dlg.querySelector("#bcList").style.display = "none";
-    updateN();
-    try { dlg.showModal(); } catch (e) {}
-  });
-
-  function refreshFab() { fab.style.display = isAdminUser() ? "block" : "none"; }
-  vsafe(refreshFab); vsafe(refreshBell);
-  setInterval(function () { vsafe(refreshFab); vsafe(refreshBell); }, 5000);
-
-  /* ═══ 3) v147: بلا نافذة تفعيل إشعارات — إزالة نهائية بطلب يوسف ═══
-     «ازالة نافذة تفعيل الاشعارات نهائيا» — أُزيلت نافذة v144/v145 القسرية
-     كلياً: لا قفل للصفحة ولا شاشة تعود عند كل فتح ولا أزرار قفز للإعدادات.
-     الطريق الوحيد للتفعيل هو زر 🔔 العائم بضغطة العضو نفسها (طلب إذن
-     المتصفح الأصلي)، ومعه إصلاح صامت فقط: من إذنه ممنوح واشتراكه مفقود
-     يُشترَك تلقائياً بلا أي واجهة ولا رسائل مزعجة. */
-  var autoSubT = 0;
-  function maybeAutoSub() {
-    try {
-      if (pushDone()) return;
-      if ((typeof Notification === "undefined") || Notification.permission !== "granted") return;
-      if (Date.now() - autoSubT < 60000) return;
-      autoSubT = Date.now();
-      vsafe(function () { v143Subscribe(true); });
-    } catch (e) {}
-  }
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) { vsafe(refreshFab); vsafe(refreshBell); vsafe(maybeAutoSub); }
-  });
-  window.addEventListener("focus", function () { vsafe(refreshBell); });
-  setTimeout(function () { vsafe(maybeAutoSub); }, 2500);
-
-  /* v147: خطاف فحص آلي (لا يؤثر على الإنتاج) */
-  try {
-    window.__v147push = { maybeAutoSub: maybeAutoSub,
-                          silentSub: function () { return v143Subscribe(true); } };
-  } catch (e) {}
-
-})();
-
-</script>
-<style id="v143css">/* ═══ v143: التنبيه الجماعي + إشعارات الهاتف ═══ */
-.v143fab{position:fixed;z-index:1200;inset-inline-start:18px;bottom:calc(154px + env(safe-area-inset-bottom));
-  width:46px;height:46px;border:1px solid rgba(245,158,11,.55);border-radius:16px;cursor:pointer;display:none;
-  background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-size:20px;line-height:1;
-  box-shadow:0 6px 16px rgba(239,68,68,.32)}
-.v143bell{position:fixed;z-index:1200;inset-inline-end:14px;bottom:calc(96px + env(safe-area-inset-bottom));
-  border:none;border-radius:999px;padding:10px 16px;cursor:pointer;display:none;font-family:inherit;
-  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff;font-weight:700;font-size:13px;
-  box-shadow:0 6px 16px rgba(37,99,235,.28)}
-.v143row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
-.v143lbl{font-weight:700;font-size:13px;color:var(--muted,#8b93a2)}
-.v143chip{border:1.5px solid var(--line,#dfe3ea);background:var(--card,#fff);color:var(--text,#23272a);
-  border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
-.v143chip.on{background:var(--brand,#5865f2);border-color:var(--brand,#5865f2);color:#fff}
-.v143cnt{font-size:12px;color:var(--muted,#8b93a2)}
-.v143q{width:100%;padding:9px 12px;border:1.5px solid var(--line,#dfe3ea);border-radius:10px;margin:6px 0 4px;
-  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;font-size:14px}
-.v143list{max-height:230px;overflow:auto;border:1px solid var(--line,#dfe3ea);border-radius:12px;padding:4px}
-.v143u{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;cursor:pointer}
-.v143u:hover{background:rgba(88,101,242,.08)}
-.v143u input{width:18px;height:18px;accent-color:var(--brand,#5865f2)}
-.v143u .nm{flex:1;font-size:14px;font-weight:600}
-.v143u .rl{font-size:11px;color:var(--muted,#8b93a2)}
-.v143res{margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(34,197,94,.12);
-  border:1px solid rgba(34,197,94,.4);font-size:13px;line-height:1.9}
-.v143hist{padding:9px 11px;border:1px solid var(--line,#dfe3ea);border-radius:10px;margin-bottom:7px}
-.v143hist .ht{font-size:13.5px;font-weight:600;line-height:1.6}
-.v143hist .hm{font-size:11.5px;color:var(--muted,#8b93a2);margin-top:3px}
-/* ═══ v155: حوار إرشاد إشعارات الهاتف — يتبع الثيم المؤسسي ═══ */
-.v155dlg{border:none;border-radius:18px;padding:0;max-width:340px;width:88%;
-  background:var(--card,#fff);color:var(--text,#23272a);font-family:inherit;
-  box-shadow:0 24px 70px rgba(2,6,23,.4)}
-.v155dlg::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
-.v155help{padding:20px 18px 16px;text-align:right}
-.v155help .v155ic{font-size:30px;text-align:center;margin-bottom:4px}
-.v155help h3{margin:2px 0 8px;font-size:15.5px;color:var(--brand,#5865f2);text-align:center}
-.v155help p{margin:6px 0;font-size:13px;line-height:1.8;color:var(--text,#23272a)}
-.v155help ol{margin:8px 18px 8px 0;padding:0;font-size:13px;line-height:2;color:var(--text,#23272a)}
-.v155help .v155alt{font-size:12px;color:var(--muted,#8b93a2);background:var(--soft,rgba(88,101,242,.08));
-  border-radius:10px;padding:8px 10px;margin-top:8px}
-.v155help .v155btn{display:block;width:100%;margin-top:10px;border:none;border-radius:11px;
-  padding:10px 12px;font:inherit;font-weight:700;font-size:13.5px;cursor:pointer;
-  background:linear-gradient(135deg,#2563eb,#5865f2);color:#fff}
-
-</style>
-<script id="v146ui">
-/* ═══════════════════════════════════════════════════════════════════
-   v146 — الحركة المزدوجة + حذف التنبيهات المسجلة
-   بطلب يوسف: «تحدث اخطاء من بعض المستخدمين — مثلا في نظام الحركة انا اسجل
-   حركة معينة و صديقي يسجل نفس الحركة بإعتقاده انني لم اسجلها وهنا تسجل
-   مرتين — هل لديك حل سلس يجعل احداهما ملغاة دون ترك اثر لعملية نفسها»
-   + «اضف نظام حذف التنبيهات المسجلة في التطبيق في اخر تحديث قمنا به».
-   • الحماية قبل التسجيل: كل حركة إضافة/إخراج يفحصها الخادم أولاً ضد حركة
-     مطابقة (نفس السلعة + النوع + الكمية) سُجلت خلال آخر 15 دقيقة من عضو
-     آخر — إن وُجدت ظهرت بطاقة «⚠️ حركة مطابقة للتو» قبل الحفظ:
-     «✅ مختلفة — سجّلها» أو «✋ نفسها — إلغاء» فلا تُسجَّل مرتين أبداً.
-   • العلاج بعد التسجيل: زر «⚠️ الحركات المكررة» أعلى سجل الحركة يجمع
-     المتطابقة من أكثر من عضو داخل نصف ساعة (آخر 7 أيام)، وإلغاء أي منها
-     حذف نظيف تام يردّ الكمية كما كانت — كأنها لم تُسجَّل قط: بلا قيد
-     إلغاء وبلا أثر في السجل. (v148: زر ✕ بجوار كل حركة أُزيل بطلب يوسف
-     — الإلغاء صار بضغطة مطوّلة على الحركة نفسها تفتح ورقة تأكيد).
-   • التنبيهات المسجلة: زر 🗑 لكل تنبيه في جرس التطبيق + «🧹 حذف كل
-     التنبيهات» بتأكيد الضغطتين — للإدارة أو من يملك صلاحية المستخدمين،
-     والحذف من الخادم فيختفي عن الجميع.
-   العميل القديم (APK/كاش) لا يرسل check_dup فسلوكه كما هو تماماً.
-   ═══════════════════════════════════════════════════════════════════ */
-(function () {
-  "use strict";
-  function $(s) { try { return document.querySelector(s); } catch (e) { return null; } }
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-  function canManageNotifs() {
-    try { return !!(S && S.perms && (S.perms.users || S.perms.admin)); } catch (e) { return false; }
-  }
-  function refMov() { try { if (typeof loadMovements === "function") loadMovements(); } catch (e) {} }
-  function refInv() { try { if (typeof loadInventory === "function") loadInventory(); } catch (e) {} }
-  function refBadge() { try { if (typeof renderBadge === "function") renderBadge(); } catch (e) {} }
-
-  /* ── حصن التأكيد المشترك: ضغطة تحضير + ضغطة تنفيذ خلال 4 ثوانٍ ── */
-  function armTwoTap(btn, label, armedLabel, fn) {
-    if (btn.dataset.armed === "1") {
-      btn.dataset.armed = ""; btn.classList.remove("armed");
-      try { btn.disabled = true; } catch (e) {}
-      setTimeout(function () { try { btn.disabled = false; } catch (e) {} }, 400);
-      fn();
-      return;
-    }
-    btn.dataset.armed = "1"; btn.classList.add("armed");
-    btn.textContent = armedLabel;
-    setTimeout(function () {
-      if (btn.dataset.armed === "1") {
-        btn.dataset.armed = ""; btn.classList.remove("armed");
-        btn.textContent = label;
-      }
-    }, 4000);
-  }
-
-  /* ═══ 1) بطاقة «حركة مطابقة للتو» — القرار قبل الحفظ ═══ */
-  var dupDlg = null, dupResolve = null;
-  function dupFin(go) {
-    try { if (dupDlg && dupDlg.open) dupDlg.close(); } catch (e) {}
-    var r = dupResolve; dupResolve = null;
-    try { if (r) r(!!go); } catch (e) {}
-  }
-  function askDup(d) {
-    try {
-      if (!dupDlg) {
-        dupDlg = document.createElement("dialog");
-        dupDlg.id = "v146dup";
-        dupDlg.innerHTML = '<div class="dh">⚠️ حركة مطابقة للتو</div>'
-          + '<div class="db"><div id="v146dupBox"></div>'
-          + '<button type="button" class="btn" id="v146dupYes">✅ حركة مختلفة — سجّلها</button>'
-          + '<button type="button" class="btn gray" id="v146dupNo" style="margin-top:8px">✋ إنها نفسها — إلغاء</button></div>';
-        document.body.appendChild(dupDlg);
-        dupDlg.querySelector("#v146dupYes").addEventListener("click", function () { dupFin(true); });
-        dupDlg.querySelector("#v146dupNo").addEventListener("click", function () { dupFin(false); });
-        dupDlg.addEventListener("cancel", function (e) {
-          try { e.preventDefault(); } catch (e2) {}
-          dupFin(false);
-        });
-        dupDlg.addEventListener("click", function (e) { if (e.target === dupDlg) dupFin(false); });
-      }
-      var unit = d && d.type === "add" ? "➕ إضافة" : "➖ إخراج";
-      dupDlg.querySelector("#v146dupBox").innerHTML =
-        '<p style="font-weight:800">' + unit + " " + esc(d && d.quantity) + " — 📦 " + esc(d && d.product_name) + '</p>'
-        + '<p>سُجلت حركة مطابقة لها <b>' + esc((d && d.minutes_label) || "قبل لحظات") + '</b> من عضو آخر (' + esc((d && d.user_name) || "—") + ').</p>'
-        + '<p style="font-size:12.5px">إن كانت حركتك مختلفة فعلاً أكمل التسجيل — وإن كانت نفسها ألغِها كي لا تُسجَّل مرتين.</p>';
-      try { if (dupDlg.open) dupDlg.close(); dupDlg.showModal(); } catch (eO) {}
-      return new Promise(function (res) { dupResolve = res; });
-    } catch (e) { return Promise.resolve(true); }   /* عند أي عطل لا نعطّل التسجيل */
-  }
-
-  /* ═══ 2) غلاف api — فحص التكرار يسبق كل /api/qty إضافة/إخراج ═══ */
-  try {
-    var _api = window.api;
-    if (typeof _api === "function" && !_api.__v146dup) {
-      window.api = function (path, opts) {
-        try {
-          if (String(path) === "/api/qty" && opts && opts.method === "POST"
-              && opts.body && !opts.__v146qty) {
-            var b1 = JSON.parse(opts.body);
-            if ((b1.type === "add" || b1.type === "remove")
-                && !b1.confirm_dup && !b1.check_dup) {
-              b1.check_dup = true;
-              var p1 = Object.assign({}, opts, { body: JSON.stringify(b1), __v146qty: 1 });
-              return Promise.resolve(_api(path, p1)).then(function (res) {
-                if (res && res.duplicate_warning) {
-                  return askDup(res.duplicate_warning).then(function (go) {
-                    if (!go) {
-                      var er = new Error("تم إلغاء العملية — لم تُسجَّل أي حركة.");
-                      er.v146cancel = true;
-                      throw er;
-                    }
-                    var b2 = JSON.parse(opts.body);
-                    b2.confirm_dup = true;
-                    var p2 = Object.assign({}, opts, { body: JSON.stringify(b2), __v146qty: 1 });
-                    return _api(path, p2);
-                  });
-                }
-                return res;
-              });
-            }
-          }
-        } catch (e) {}
-        return _api.apply(this, arguments);
-      };
-      window.api.__v146dup = true;
-    }
-  } catch (e) {}
-
-  /* ═══ 3) لوحة «الحركات المكررة المحتملة» + إلغاء الحركة بضغطة مطوّلة ═══
-     v148 بطلب يوسف: «ظهور x امام كل حركة يبدو سيئا جدا» — أُزيل زر ✕ عن كل
-     صف في السجل كلياً، وأصبح الإلغاء النظيف (لصاحب الحركة أو للإدارة) بضغطة
-     مطوّلة على الحركة نفسها (أو النقرة اليمنى على سطح المكتب) تفتح ورقة
-     تأكيد بعنوان الحركة وزر 🗑 بحصن الضغطتين — السجل نظيف بلا أي زوائد. */
-  function cancelMovement(mid, btn, onDone) {
-    armTwoTap(btn, btn.dataset.lbl || "🗑 إلغاء", "تأكيد؟", function () {
-      api("/api/movement/delete", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: mid })
-      }).then(function (r) {
-        toast((r && r.message) || "أُلغيت الحركة — كأنها لم تُسجَّل ✓");
-        try { if (onDone) onDone(); } catch (e) {}
-        refMov(); refInv();
-      }).catch(function (e) {
-        try { btn.disabled = false; } catch (e2) {}
-        toast(e.message || "تعذر الإلغاء.", true);
-      });
-    });
-  }
-  var panel = null, panelList = null;
-  function ensurePanel() {
-    if (panel) return;
-    panel = document.createElement("dialog");
-    panel.id = "v146dupPanel";
-    panel.innerHTML = '<div class="dh">⚠️ الحركات المكررة المحتملة</div>'
-      + '<div class="db"><p class="v146hint">حركات متطابقة (نفس السلعة والنوع والكمية) من أكثر من عضو داخل نصف ساعة — آخر 7 أيام. ألغِ الزائدة فيختفي أثرها كلياً وترجع الكمية كما كانت كأنها لم تُسجَّل.</p>'
-      + '<div id="v146dupList"></div>'
-      + '<button type="button" class="btn gray" id="v146dupClose" style="margin-top:10px">إغلاق</button></div>';
-    document.body.appendChild(panel);
-    panel.querySelector("#v146dupClose").addEventListener("click", function () {
-      try { panel.close(); } catch (e) {}
-    });
-    panelList = panel.querySelector("#v146dupList");
-  }
-  function renderClusters(d) {
-    var cls = (d && d.clusters) || [];
-    if (!cls.length) {
-      panelList.innerHTML = '<p id="v146empty">👍 لا توجد حركات مكررة محتملة خلال آخر 7 أيام — كل شيء نظيف.</p>';
-      return;
-    }
-    var html = "";
-    cls.forEach(function (c, ci) {
-      var sign = c.type === "add" ? "➕ إضافة" : "➖ إخراج";
-      html += '<div class="v146cl" data-ci="' + ci + '">'
-        + '<div class="v146clh">📦 ' + esc(c.product_name) + '</div>'
-        + '<div class="v146cln">' + sign + " " + esc(c.quantity) + " • " + esc(c.count)
-        + ' حركات ' + esc(c.span_label || "") + '</div>';
-      c.movements.forEach(function (m, mi) {
-        html += '<div class="v146row"><div class="v146ru">' + esc(m.user_name)
-          + (mi === c.movements.length - 1 ? '<span class="v146new">الأحدث</span>' : "")
-          + '<small>' + esc(m.date || "") + (m.can_del ? "" : " — الإلغاء لصاحبها أو الإدارة") + '</small></div>';
-        if (m.can_del)
-          html += '<button type="button" class="v146del" data-id="' + m.id + '" data-lbl="🗑 إلغاء">🗑 إلغاء</button>';
-        html += '</div>';
-      });
-      html += '</div>';
-    });
-    panelList.innerHTML = html;
-    panelList.querySelectorAll(".v146del").forEach(function (b) {
-      b.addEventListener("click", function () {
-        var mid = parseInt(b.dataset.id, 10);
-        var row = b.closest(".v146row"), card = b.closest(".v146cl");
-        cancelMovement(mid, b, function () {
-          try { row.remove(); } catch (e) {}
-          try {
-            var left = card.querySelectorAll(".v146row").length;
-            if (left < 2) {
-              card.remove();
-              if (!panelList.querySelector(".v146cl")) renderClusters({ clusters: [] });
-            }
-          } catch (e) {}
-        });
-      });
-    });
-  }
-  function openPanel() {
-    ensurePanel();
-    panelList.innerHTML = '<p id="v146empty">جارِ البحث…</p>';
-    try { panel.showModal(); } catch (e) {}
-    api("/api/movements/duplicates", { noCache: true })
-      .then(renderClusters)
-      .catch(function (e) {
-        panelList.innerHTML = '<p id="v146empty">' + esc(e.message || "تعذر الجلب.") + '</p>';
-      });
-  }
-  var movList = $("#movList");
-  if (movList && movList.parentNode && !$("#v146dupbar")) {
-    var dupBar = document.createElement("div");
-    dupBar.id = "v146dupbar";
-    dupBar.innerHTML = '<button type="button" id="v146dupBtn">⚠️ عرض الحركات المكررة المحتملة</button>';
-    movList.parentNode.insertBefore(dupBar, movList);
-    dupBar.querySelector("#v146dupBtn").addEventListener("click", openPanel);
-  }
-  /* ── v148: ورقة إلغاء الحركة + الضغطة المطوّلة بدل زر ✕ ── */
-  var cxSheet = null, cxBox = null, cxBtn = null;
-  function ensureSheet() {
-    if (cxSheet) return;
-    cxSheet = document.createElement("dialog");
-    cxSheet.id = "v148sheet";
-    cxSheet.innerHTML = '<div class="dh">🗑 إلغاء حركة</div>'
-      + '<div class="db"><div id="v148box"></div>'
-      + '<p id="v148hint">ستُحذف الحركة وترجع الكمية كما كانت قبلها — كأنها لم تُسجَّل قط: بلا قيد إلغاء وبلا أي أثر في السجل.</p>'
-      + '<button type="button" class="btn" id="v148del">🗑 إلغاء هذه الحركة</button>'
-      + '<button type="button" class="btn gray" id="v148close" style="margin-top:8px">تركها — إغلاق</button></div>';
-    document.body.appendChild(cxSheet);
-    cxBox = cxSheet.querySelector("#v148box");
-    cxBtn = cxSheet.querySelector("#v148del");
-    cxBtn.dataset.lbl = "🗑 إلغاء هذه الحركة";
-    cxSheet.querySelector("#v148close").addEventListener("click", function () {
-      try { cxSheet.close(); } catch (e) {}
-    });
-    cxSheet.addEventListener("click", function (e) {
-      if (e.target === cxSheet) { try { cxSheet.close(); } catch (e2) {} }
-    });
-  }
-  function openCancelSheet(m) {
-    ensureSheet();
-    var unit = m.type === "add" ? "➕ إضافة" : "➖ إخراج";
-    cxBox.innerHTML = '<p><b>' + unit + " " + esc(m.quantity) + '</b> — 📦 ' + esc(m.product_name) + '</p>'
-      + '<p>👤 ' + esc(m.user_name || "—") + " • " + esc(String(m.date || "").slice(0, 16))
-      + (m.reason ? " • " + esc(m.reason) : "") + '</p>';
-    try { cxBtn.dataset.armed = ""; cxBtn.classList.remove("armed"); cxBtn.disabled = false; } catch (e) {}
-    cxBtn.onclick = function () {
-      cancelMovement(m.id, cxBtn, function () {
-        try { cxSheet.close(); } catch (e) {}
-      });
-    };
-    try { if (cxSheet.open) cxSheet.close(); cxSheet.showModal(); } catch (e) {}
-  }
-  function attachCancelHold(el, m) {
-    var timer = null, fired = false, sx = 0, sy = 0;
-    function fire() {
-      timer = null;
-      if (fired) return;
-      fired = true;
-      try { el.dataset.v148fired = String(Date.now()); } catch (_vfe) {}   /* v170 */
-      try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
-      try { el.classList.add("v148hold"); } catch (e2) {}
-      setTimeout(function () { try { el.classList.remove("v148hold"); } catch (e3) {} }, 320);
-      if (m.can_del) openCancelSheet(m);
-      else toast("الإلغاء لصاحب الحركة نفسه أو للإدارة فقط.", true);
-      setTimeout(function () { fired = false; }, 450);
-    }
-    function cancel() { if (timer) { clearTimeout(timer); timer = null; } }
-    el.addEventListener("touchstart", function (e) {
-      if (!e.touches || e.touches.length !== 1) { cancel(); return; }
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-      if (!timer) timer = setTimeout(fire, 480);
-    }, { passive: true });
-    el.addEventListener("touchmove", function (e) {
-      if (timer && e.touches && e.touches[0]
-          && (Math.abs(e.touches[0].clientX - sx) > 10
-              || Math.abs(e.touches[0].clientY - sy) > 10)) cancel();
-    }, { passive: true });
-    el.addEventListener("touchend", cancel);
-    el.addEventListener("touchcancel", cancel);
-    el.addEventListener("contextmenu", function (e) {
-      e.preventDefault();
-      if (!fired) fire();
-    });
-  }
-  function decorateMovRows() {
-    var box = $("#movList"); if (!box) return;
-    var data = [];
-    try { data = (S.mov && S.mov.data) || []; } catch (e) {}
-    var rows = box.querySelectorAll("div.row");
-    if (!rows.length || !data.length || rows.length !== data.length) return;
-    for (var i = 0; i < rows.length; i++) {
-      var m = data[i];
-      if (!m || !m.id) continue;
-      if (rows[i].dataset.v148lp) continue;
-      rows[i].dataset.v148lp = "1";
-      (function (mm, el) { attachCancelHold(el, mm); })(m, rows[i]);
-    }
-  }
-  if (movList) {
-    var movMo = new MutationObserver(function () { try { decorateMovRows(); } catch (e) {} });
-    movMo.observe(movList, { childList: true });
-  }
-
-  /* ═══ 4) حذف التنبيهات المسجلة — جرس التطبيق ═══ */
-  function delNotif(nid, btn, row) {
-    armTwoTap(btn, "🗑", "تأكيد؟", function () {
-      api("/api/notifications/delete", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: nid })
-      }).then(function () {
-        try {
-          S.notif.items = (S.notif.items || []).filter(function (n) {
-            return String(n.id) !== String(nid);
-          });
-        } catch (e) {}
-        try { if (row) row.remove(); } catch (e) {}
-        toast("حُذف التنبيه — اختفى عن الجميع ✓");
-        try { if (typeof pollNotifs === "function") pollNotifs(); } catch (e) {}
-      }).catch(function (e) {
-        try { btn.disabled = false; } catch (e2) {}
-        toast(e.message || "تعذر الحذف.", true);
-      });
-    });
-  }
-  function decorateNotifs() {
-    var box = $("#notifList"); if (!box) return;
-    var ok = canManageNotifs();
-    try { document.body.classList.toggle("v146nmanage", ok); } catch (e) {}
-    var bar = $("#v146nbar");
-    var rows = box.querySelectorAll(".nrow");
-    var items = [];
-    try { items = (S.notif && S.notif.items) || []; } catch (e) {}
-    if (bar) bar.style.display = (ok && rows.length) ? "block" : "none";
-    if (!ok) return;
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].querySelector(".v146ndel")) continue;
-      var n = items[i];
-      if (!n || !n.id) continue;
-      (function (nid, el) {
-        var x = document.createElement("button");
-        x.type = "button"; x.className = "v146ndel";
-        x.title = "حذف هذا التنبيه — يختفي عن الجميع";
-        x.textContent = "🗑";
-        x.addEventListener("click", function () { delNotif(nid, x, el); });
-        el.appendChild(x);
-      })(n.id, rows[i]);
-    }
-  }
-  var notifBox = $("#notifList");
-  if (notifBox) {
-    var dlgNotif = $("#dlgNotif");
-    if (dlgNotif && !$("#v146nbar")) {
-      var bar = document.createElement("div");
-      bar.id = "v146nbar";
-      bar.innerHTML = '<button type="button" id="v146nclear">🧹 حذف كل التنبيهات المسجلة</button>';
-      var db = dlgNotif.querySelector(".db");
-      if (db) db.insertBefore(bar, notifBox.nextSibling);
-      var cbtn = bar.querySelector("#v146nclear");
-      cbtn.addEventListener("click", function () {
-        armTwoTap(cbtn, "🧹 حذف كل التنبيهات المسجلة", "⚠️ اضغط مجدداً لحذف الكل", function () {
-          api("/api/notifications/clear", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scope: "all" })
-          }).then(function () {
-            try { S.notif.items = []; S.notif.lastId = 0; S.notif.unread = 0; } catch (e) {}
-            try {
-              if (typeof renderNotifList === "function") renderNotifList();
-              else {
-                var b2 = $("#notifList");
-                if (b2) b2.innerHTML = '<p class="empty">لا إشعارات بعد.</p>';
-              }
-            } catch (e) {}
-            refBadge();
-            cbtn.dataset.armed = ""; cbtn.classList.remove("armed");
-            cbtn.textContent = "🧹 حذف كل التنبيهات المسجلة";
-            toast("حُذفت كل التنبيهات المسجلة ✓");
-            try { if (typeof pollNotifs === "function") pollNotifs(); } catch (e) {}
-          }).catch(function (e) {
-            try { cbtn.disabled = false; } catch (e2) {}
-            toast(e.message || "تعذر الحذف.", true);
-          });
-        });
-      });
-    }
-    var nbMo = new MutationObserver(function () { try { decorateNotifs(); } catch (e) {} });
-    nbMo.observe(notifBox, { childList: true });
-    setTimeout(decorateNotifs, 600);   /* أول تزيين بعد إقلاع الواجهة */
-  }
-})();
-
-</script>
-<style id="v146css">/* ═══ v146: الحركة المزدوجة + حذف التنبيهات المسجلة ═══ */
-#v146dup,#v146dupPanel{max-width:400px;width:90%;padding:0}
-#v146dupBox{background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.35);
-  border-radius:12px;padding:11px 12px;margin-bottom:12px}
-#v146dupBox p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
-#v146dupBox p:last-child{margin-bottom:0}
-#v146dupBox b{color:#b45309}
-.v146hint{font-size:12.5px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 10px}
-.v146cl{border:1px solid rgba(128,128,128,.28);border-radius:14px;padding:10px 11px;
-  margin-bottom:10px;background:rgba(127,127,127,.05)}
-.v146clh{font-weight:800;font-size:13.5px;margin-bottom:2px}
-.v146cln{font-size:11.5px;color:var(--mut,#6b7280);font-weight:700;margin-bottom:9px}
-.v146row{display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:7px 9px;border-radius:10px;background:rgba(127,127,127,.07);margin-bottom:6px}
-.v146row:last-child{margin-bottom:0}
-.v146ru{font-size:12.5px;font-weight:800;line-height:1.6;min-width:0}
-.v146ru small{display:block;color:var(--mut,#6b7280);font-weight:600;font-size:11px}
-.v146new{display:inline-block;font-size:9.5px;font-weight:800;color:#fff;
-  background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:7px;padding:1px 7px;
-  margin-inline-start:6px;vertical-align:1px}
-.v146del{flex:0 0 auto;border:1.5px solid rgba(239,68,68,.45);background:rgba(239,68,68,.08);
-  color:#dc2626;font-family:inherit;font-size:12px;font-weight:800;border-radius:9px;
-  padding:6px 10px;cursor:pointer;transition:.15s}
-.v146del:active{transform:scale(.95)}
-.v146del.armed{background:#dc2626;color:#fff;border-color:#dc2626;
-  animation:v146pulse 1.1s ease-in-out infinite}
-.v146del:disabled{opacity:.55;cursor:wait}
-@keyframes v146pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.35)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
-#v146dupbar{margin:0 0 10px}
-#v146dupbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
-  padding:10px 12px;cursor:pointer;border:1.5px dashed rgba(245,158,11,.55);
-  background:rgba(245,158,11,.08);color:#b45309;width:100%;transition:.15s}
-#v146dupbar button:active{transform:scale(.985)}
-#v146empty{font-size:13px;color:var(--mut,#6b7280);text-align:center;padding:18px 8px;line-height:1.9}
-/* v148: بلا زر ✕ في السجل بطلب يوسف («ظهور x امام كل حركة يبدو سيئا جدا») —
-   الإلغاء صار بضغطة مطوّلة على الحركة نفسها (أو نقرة يمنى) تفتح ورقة تأكيد */
-#movList .row{position:relative;transition:transform .18s ease,opacity .18s ease}
-#movList .row.v148hold{transform:scale(.975);opacity:.72}
-#v148sheet{max-width:400px;width:90%;padding:0}
-#v148box{background:rgba(127,127,127,.08);border:1px solid rgba(128,128,128,.26);
-  border-radius:12px;padding:11px 12px;margin-bottom:11px}
-#v148box p{margin:0 0 6px;font-size:13.5px;line-height:1.85}
-#v148box p:last-child{margin-bottom:0}
-#v148box b{font-size:14px}
-#v148hint{font-size:12px;color:var(--mut,#6b7280);line-height:1.9;margin:0 0 11px}
-.v148long{display:none;font-size:11.5px;color:var(--mut,#6b7280);text-align:center;
-  margin:9px 0 0;line-height:1.8}
-/* 🗑 حذف التنبيهات المسجلة — لمن يملك صلاحية المستخدمين أو الإدارة */
-body.v146nmanage #notifList .nrow{position:relative;padding-left:38px}
-.v146ndel{position:absolute;left:7px;top:9px;width:26px;height:26px;
-  border:1.5px solid rgba(127,127,127,.3);background:rgba(127,127,127,.08);
-  border-radius:8px;font-size:12px;cursor:pointer;display:flex;align-items:center;
-  justify-content:center;padding:0;font-family:inherit;transition:.15s;color:inherit}
-.v146ndel:active{transform:scale(.94)}
-.v146ndel.armed{background:#dc2626;color:#fff;border-color:#dc2626;font-size:9.5px;
-  font-weight:800;animation:v146pulse 1.1s ease-in-out infinite}
-.v146ndel:disabled{opacity:.55;cursor:wait}
-#v146nbar{margin-top:10px;display:none}
-#v146nbar button{font-family:inherit;font-weight:800;font-size:13px;border-radius:12px;
-  padding:10px 12px;cursor:pointer;width:100%;border:1.5px solid rgba(239,68,68,.4);
-  background:rgba(239,68,68,.07);color:#dc2626;transition:.15s}
-#v146nbar button:active{transform:scale(.985)}
-#v146nbar button.armed{background:#dc2626;color:#fff;border-color:#dc2626;
-  animation:v146pulse 1.1s ease-in-out infinite}
-
-</style>
-<script id="v147ui">
-/* ═══════════════════════════════════════════════════════════════════
-   v147 — حذف التنبيهات السابقة من سجل التنبيه الجماعي
-   بطلب يوسف: «حذف التنبيهات اقصد بها زر تنبيه برسالة للجميع — يوجد به
-   تنبيهات سابقة اريد حذفها يدويا واختياريا».
-   • زر 🗑 بجانب كل تنبيه في «📜 آخر التنبيهات» داخل نافذة التنبيه الجماعي
-     (زر 📣): ضغطة تحضير «تأكيد؟» + ضغطة تنفيذ خلال 4 ثوانٍ — حذف يدوي
-     واختياري تنبيهاً تنبيهاً، ويختفي من السجل فوراً.
-   • الحذف عبر POST /api/broadcast/delete بنفس بوابة الإرسال والسجل
-     (الإدارة أو صلاحية المستخدمين) — ويُدوَّن في سجل التدقيق.
-   • (أُزيلت نافذة تفعيل الإشعارات نهائياً في طبقة v143 نفسها بطلب يوسف).
-   ═══════════════════════════════════════════════════════════════════ */
-(function () {
-  "use strict";
-  function $(s) { try { return document.querySelector(s); } catch (e) { return null; } }
-  function canManageBroadcasts() {
-    try { return !!(S && S.perms && (S.perms.users || S.perms.admin)); } catch (e) { return false; }
-  }
-  /* حصن التأكيد المشترك: ضغطة تحضير + ضغطة تنفيذ خلال 4 ثوانٍ */
-  function armTwoTap(btn, label, armedLabel, fn) {
-    if (btn.dataset.armed === "1") {
-      btn.dataset.armed = ""; btn.classList.remove("armed");
-      try { btn.disabled = true; } catch (e) {}
-      setTimeout(function () { try { btn.disabled = false; } catch (e) {} }, 400);
-      fn();
-      return;
-    }
-    btn.dataset.armed = "1"; btn.classList.add("armed");
-    btn.textContent = armedLabel;
-    setTimeout(function () {
-      if (btn.dataset.armed === "1") {
-        btn.dataset.armed = ""; btn.classList.remove("armed");
-        btn.textContent = label;
-      }
-    }, 4000);
-  }
-  function delBroadcast(bid, btn, row) {
-    armTwoTap(btn, "🗑", "تأكيد؟", function () {
-      api("/api/broadcast/delete", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: parseInt(bid, 10) || bid })
-      }).then(function (r) {
-        try { if (row) row.remove(); } catch (e) {}
-        try {
-          var box = $("#bcHistList");
-          if (box && !box.querySelector(".v143hist")) {
-            box.innerHTML = '<p style="padding:10px;color:#888">لا تنبيهات بعد.</p>';
-          }
-        } catch (e) {}
-        toast((r && r.message) || "حُذف التنبيه من السجل ✓");
-      }).catch(function (e) {
-        try { btn.disabled = false; } catch (e2) {}
-        toast(e.message || "تعذر الحذف.", true);
-      });
-    });
-  }
-  function decorateHist() {
-    var box = $("#bcHistList"); if (!box) return;
-    if (!canManageBroadcasts()) return;
-    var rows = box.querySelectorAll(".v143hist");
-    for (var i = 0; i < rows.length; i++) {
-      var el = rows[i];
-      if (el.querySelector(".v147bdel")) continue;
-      var bid = el.getAttribute("data-id");
-      if (!bid) continue;
-      (function (id, node) {
-        var b = document.createElement("button");
-        b.type = "button"; b.className = "v147bdel";
-        b.title = "حذف هذا التنبيه من السجل — يدوي واختياري";
-        b.textContent = "🗑";
-        b.addEventListener("click", function () { delBroadcast(id, b, node); });
-        node.appendChild(b);
-      })(bid, el);
-    }
-  }
-  var histMo = null;
-  function watchHist() {
-    var box = $("#bcHistList");
-    if (!box || histMo) return;
-    try {
-      histMo = new MutationObserver(function () { try { decorateHist(); } catch (e) {} });
-      histMo.observe(box, { childList: true });
-    } catch (e) { histMo = null; }
-  }
-  setInterval(function () { try { watchHist(); decorateHist(); } catch (e) {} }, 1000);
-  /* v147: خطاف فحص آلي (لا يؤثر على الإنتاج) */
-  try { window.__v147hist = { decorate: decorateHist }; } catch (e) {}
-})();
-
-</script>
-<style id="v147css">/* ═══ v147: حذف التنبيهات السابقة — سجل التنبيه الجماعي ═══ */
-.v143hist{position:relative;padding-inline-end:46px}
-.v147bdel{position:absolute;top:50%;transform:translateY(-50%);inset-inline-end:8px;
-  min-width:30px;height:30px;border:1px solid rgba(220,38,38,.35);border-radius:9px;cursor:pointer;
-  background:var(--card,#fff);color:#dc2626;font-size:14px;line-height:1;padding:0 7px;font-family:inherit}
-.v147bdel.armed{background:#dc2626;border-color:#dc2626;color:#fff;font-size:11px;font-weight:800;min-width:58px}
-.v147bdel:active{transform:translateY(-50%) scale(.94)}
-
-</style>
-<script id="v152ui">
-/* ═══ v152: «الفئة والصلاحيات لكل مستخدم» — طبقة الواجهة ═══
-   بطلب يوسف: «قمت بقبول مستخدم جديد وهو يظهر كبائع لكنني لا اجد خيارات
-   تحديد فئته او صلاحياته». التشخيص: مستخدمو التسجيل من الويب يُنشَأون بلا
-   telegram_id فكان زر «🎯 الفئة» مخفياً عنهم (شرط hasTg)، وواجهة الصلاحيات
-   لم تكن موجودة في التطبيق إطلاقاً (نقاط v107 الخادمية بلا واجهة).
-   v152: زر «🎯 الفئة» لكل مستخدم غير محمي (حتى بلا تلغرام — عبر uid)، وزر
-   «🔐 صلاحيات»: مصفوفة v107 الحية (تتبع الفئة/تشغيل/إيقاف + إعادة ضبط) لمن
-   له تلغرام، ووضع الفئة القرائي لمن لا تلغرام (الصلاحيات تتبع فئته). */
-try {
-if (!window.__v152perms) {
-window.__v152perms = true;
-
-/* ── كتالوج الفئات (نسخة عرض من ROLE_PERM_CATALOG الخادمية) ── */
-var V152_CATALOG = {
-  seller:  ["search", "add_qty", "remove", "invoice", "supply_order", "my_orders", "movements", "expenses"],
-  stock:   ["add_qty", "add_product", "remove", "edit_product", "movements", "low_stock", "pending", "expenses"],
-  external:["search"],
-  manager: "*", admin: "*", customer: [], pending: ["search"]
-};
-
-/* ── usrRow بنسخة v152: الفئة والصلاحيات لكل غير المحمي ── */
-usrRow = function (u) {
-  var self = u.telegram_id === S.user.telegram_id;
-  var hasTg = !!u.telegram_id;
-  var acts = "";
-  if (!self && !u.protected) {
-    /* v152: زر الفئة لكل مستخدم — بلا شرط تلغرام (الهدف عبر uid) */
-    acts += '<button class="btn mini blue" data-v152role="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
-    /* v152: زر الصلاحيات — حي (v107) لمن له تلغرام، وضع الفئة لمن لا تلغرام */
-    acts += '<button class="btn mini gray" data-v152perms="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-v152r="' + esc(u.role || "") + '" data-v152rl="' + esc(u.role_label || "") + '" data-n="' + esc(u.name) + '">🔐 صلاحيات</button>';
-    if (hasTg && u.role !== "admin") {
-      acts += u.active
-        ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
-        : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
-    }
-  }
-  if (!self && !u.protected && u.web && u.telegram_id) {
-    acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
-  }
-  acts += self
-    ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
-    : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
-  var sub = [
-    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",
-    u.phone ? "📞 " + esc(u.phone) : "",
-    u.email ? "✉️ " + esc(u.email) : ""
-  ].filter(Boolean).join(" · ");
-  if (!hasTg && u.web) sub += (sub ? " · " : "") + '👤 بلا حساب تلغرام';   /* v152: شفافية الهوية */
-  return '<div class="row"><div class="info"><b>' + esc(u.name) + usrOnline(u)
-    + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
-    + '<span class="usub"><span class="rk rk-' + (USR_RANK[u.role] !== undefined ? u.role : "customer") + '">' + esc(u.role_label) + '</span>'
-    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + '</span></div>'
-    + (u.active ? "" : '<span class="badge r">مطرود</span>')
-    + '<div class="acts">' + acts + '</div>'
-    + '</div>';
-};
-
-/* ── بناء حوارَي v152 مرة واحدة ── */
-function v152EnsureDialogs() {
-  if (document.getElementById("dlgRole152")) return;
-  var wrap = document.createElement("div");
-  wrap.innerHTML =
-    '<dialog id="dlgRole152">' +
-      '<div class="dh">🎯 تحديد الفئة</div>' +
-      '<div class="db">' +
-        '<p id="dlgRole152User" style="margin:0 0 12px;font-weight:800;color:var(--brand);text-align:center"></p>' +
-        '<div id="dlgRole152Chips" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:8px"></div>' +
-        '<p id="dlgRole152Hint" style="margin:0 0 12px;font-size:12px;color:var(--mut);text-align:center"></p>' +
-        '<div style="display:flex;gap:10px;justify-content:center">' +
-          '<button type="button" class="btn gray" id="dlgRole152Cancel">إلغاء</button>' +
-          '<button type="button" class="btn green" id="dlgRole152Go">💾 حفظ الفئة</button>' +
-        '</div>' +
-      '</div>' +
-    '</dialog>' +
-    '<dialog id="dlgPerms152" style="width:min(94vw,560px)">' +
-      '<div class="dh">🔐 صلاحيات المستخدم</div>' +
-      '<div class="db">' +
-        '<p id="dlgPerms152User" style="margin:0 0 4px;font-weight:800;color:var(--brand);text-align:center"></p>' +
-        '<p id="dlgPerms152Sub" style="margin:0 0 10px;font-size:12px;color:var(--mut);text-align:center"></p>' +
-        '<div id="dlgPerms152Body" style="max-height:55vh;overflow:auto"></div>' +
-        '<div id="dlgPerms152Foot" style="display:flex;gap:10px;justify-content:center;margin-top:12px">' +
-          '<button type="button" class="btn gray" id="dlgPerms152Close">إغلاق</button>' +
-          '<button type="button" class="btn red" id="dlgPerms152Reset" style="display:none">♻️ إعادة الضبط الكاملة</button>' +
-        '</div>' +
-      '</div>' +
-    '</dialog>';
-  document.body.appendChild(wrap);
-  $("#dlgRole152Cancel").addEventListener("click", function () { $("#dlgRole152").close(); });
-  $("#dlgPerms152Close").addEventListener("click", function () { $("#dlgPerms152").close(); });
-}
-
-/* ── حوار الفئة (tid أو uid) ── */
-var V152_ROLE_OPTS = [
-  ["admin", "👑 مدير النظام"], ["manager", "🧑‍💼 مدير البوت"],
-  ["stock", "📦 عامل مخزون"], ["seller", "🛍 بائع"],
-  ["external", "🌍 بائع خارجي"], ["customer", "👤 عميل"]
-];
-var V152_roleDlg = null;
-function openRole152(tid, uid, name) {
-  v152EnsureDialogs();
-  V152_roleDlg = { tid: tid || null, uid: uid || null, name: name, role: null };
-  $("#dlgRole152User").textContent = name;
-  $("#dlgRole152Hint").textContent = tid ? "" : "👤 بلا حساب تلغرام — الحفظ عبر معرّف الحساب ويعمل عادي";
-  $("#dlgRole152Chips").innerHTML = V152_ROLE_OPTS.map(function (o) {
-    return '<button type="button" class="rchip" data-v152r="' + o[0] + '">' + o[1] + '</button>';
-  }).join("");
-  Array.prototype.forEach.call($("#dlgRole152Chips").querySelectorAll(".rchip"), function (b) {
-    b.addEventListener("click", function () {
-      Array.prototype.forEach.call($("#dlgRole152Chips").querySelectorAll(".rchip"), function (x) { x.classList.remove("on"); });
-      b.classList.add("on"); V152_roleDlg.role = b.getAttribute("data-v152r");
-    });
-  });
-  $("#dlgRole152").showModal();
-}
-document.addEventListener("click", function (ev) {
-  var go = ev.target.closest ? ev.target.closest("#dlgRole152Go") : null;
-  if (!go || !V152_roleDlg) return;
-  if (!V152_roleDlg.role) { toast("اختر الفئة أولاً.", true); return; }
-  if (V152_roleDlg.role === "admin" && !confirm("ترقية هذا المستخدم إلى مدير؟ سيصبح له كل الصلاحيات بما فيها إدارة المستخدمين.")) return;
-  try {
-    var body = { role: V152_roleDlg.role };
-    if (V152_roleDlg.tid) body.telegram_id = V152_roleDlg.tid;
-    if (V152_roleDlg.uid) body.uid = V152_roleDlg.uid;
-    api("/api/users/role", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(function (d) {
-        toast(d.message + " — ستظهر الصلاحيات في تطبيقه تلقائياً خلال لحظات.");
-        $("#dlgRole152").close(); loadUsers();
-      })
-      .catch(function (e) { toast(e.message, true); });
-  } catch (e) { toast(e.message, true); }
-});
-
-/* ── حوار الصلاحيات — الوضع الحي (v107) ── */
-var V152_STATE_LBL = { track: "🧭 تتبع الفئة", on: "✅ مفعّلة", off: "⛔ موقفة" };
-function v152PermRow(p, label, st, eff, editable) {
-  var effBadge = eff
-    ? '<span class="badge g">فعّالة فعلياً</span>'
-    : '<span class="badge r">موقفة فعلياً</span>';
-  var seg = editable
-    ? '<div class="v152seg" data-p="' + p + '">' +
-        '<button type="button" class="v152opt' + (st === undefined ? " on" : "") + '" data-s="track">🧭 الفئة</button>' +
-        '<button type="button" class="v152opt' + (st === 1 || st === true ? " on" : "") + '" data-s="1">✅</button>' +
-        '<button type="button" class="v152opt' + (st === 0 || st === false ? " on" : "") + '" data-s="0">⛔</button>' +
-      '</div>'
-    : '<span class="badge mut">تتبع الفئة</span>';
-  return '<div class="v152pm"><div class="v152pminfo"><b>' + label + '</b>' + effBadge + '</div>' + seg + '</div>';
-}
-/* v154: عنوان نقاط المصفوفة — «u45» يعني users.id (حساب تطبيق بلا تلغرام) */
-function v154PermsUrl(k) {
-  k = String(k || "");
-  return "/api/user/" + (/^u\d+$/.test(k) ? "uid/" + k.slice(1) : k) + "/perms";
-}
-function v152RenderLive(data) {
-  var t = data.target || {};
-  $("#dlgPerms152User").textContent = (t.name || "") + " — " + (t.role_label || "");
-  data.target.__key = t.uid ? "u" + t.uid : String(t.telegram_id || "");   /* v154: عنوان الهدف */
-  $("#dlgPerms152Sub").textContent = t.protected
-    ? "🛡 حساب محمي — صلاحياته كاملة دائماً ولا تُعدَّل"
-    : (t.telegram_id ? "" : "👤 بلا حساب تلغرام — ") + "🧭 «تتبع الفئة» = يطبَّق افتراضي فئته • التجاوز الصريح هو الحاكم";
-  var editable = !t.protected;
-  var html = (data.matrix || []).map(function (p) {
-    return v152PermRow(p, (data.labels || {})[p] || p,
-      (data.states || {})[p], (data.effective || {})[p], editable);
-  }).join("");
-  if (data.redAlertMode !== undefined && data.redAlertMode !== null)
-    html += '<p class="hint">🚨 وضع الإنذار الأحمر: ' + esc(String(data.redAlertMode)) + '</p>';
-  $("#dlgPerms152Body").innerHTML = html;
-  $("#dlgPerms152Reset").style.display = editable ? "" : "none";
-  $("#dlgPerms152Reset").onclick = function () {
-    if (!confirm("إعادة ضبط كل التجاوزات؟ يعود المستخدم لتتبع فئته بالكامل.")) return;
-    api(v154PermsUrl(data.target.__key), {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true })
-    }).then(function (d) { toast(d.message || "تم."); v152OpenLive(data.target.__key, data.target.name); })
-      .catch(function (e) { toast(e.message, true); });
-  };
-  Array.prototype.forEach.call($("#dlgPerms152Body").querySelectorAll(".v152seg button"), function (b) {
-    b.addEventListener("click", function () {
-      var seg = b.parentNode, perm = seg.getAttribute("data-p");
-      var s = b.getAttribute("data-s");
-      var state = s === "1" ? 1 : (s === "0" ? 0 : null);
-      api(v154PermsUrl(data.target.__key), {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ perm: perm, state: state })
-      }).then(function (d) {
-        var st = data.states;
-        if (state === null) delete st[perm]; else st[perm] = state;
-        data.effective = d.effective || data.effective;
-        toast(d.message || "تم الحفظ ✅");
-        v152RenderLive(data);
-      }).catch(function (e) { toast(e.message, true); });
-    });
-  });
-}
-function v152OpenLive(tid, name) {
-  v152EnsureDialogs();
-  $("#dlgPerms152User").textContent = name + " — جارٍ التحميل...";
-  $("#dlgPerms152Sub").textContent = "";
-  $("#dlgPerms152Body").innerHTML = '<p class="empty">جارِ التحميل...</p>';
-  $("#dlgPerms152Reset").style.display = "none";
-  api(v154PermsUrl(tid))
-    .then(function (d) { v152RenderLive(d); $("#dlgPerms152").showModal(); })
-    .catch(function (e) {
-      $("#dlgPerms152Body").innerHTML = '<p class="empty">' + esc(e.message) + '</p>';
-      $("#dlgPerms152").showModal();
-    });
-}
-
-/* ── حوار الصلاحيات — وضع الفئة (بلا تلغرام: قراءة فقط) ── */
-function v152OpenRoleMode(u) {
-  v152EnsureDialogs();
-  var r = u.role || "customer";
-  var cat = V152_CATALOG[r];
-  $("#dlgPerms152User").textContent = (u.name || "") + " — " + (u.role_label || r);
-  $("#dlgPerms152Sub").textContent = "👤 بلا حساب تلغرام — الصلاحيات تتبع الفئة تلقائياً (قراءة فقط)";
-  var all = ["search", "add_qty", "remove", "invoice", "supply_order", "my_orders",
-             "movements", "add_product", "edit_product", "low_stock", "pending",
-             "expenses", "users", "red_alert"];
-  var labels = { search: "🔍 البحث", add_qty: "➕ إضافة كمية", remove: "➖ إخراج كمية",
-    invoice: "🧾 إنشاء فاتورة", supply_order: "📦 طلب توريد جديد", my_orders: "📋 طلباتي",
-    movements: "📋 الحركة", add_product: "📦 إضافة سلعة", edit_product: "✏️ تعديل سلعة",
-    low_stock: "📊 المخزون المنخفض", pending: "🔴 الطلبات المعلقة", expenses: "💰 المصروفات",
-    users: "⚙️ نظام المستخدمين", red_alert: "🚨 الإنذار الأحمر — تذكير المخزون" };
-  var set = (cat === "*") ? all : (cat || []);
-  $("#dlgPerms152Body").innerHTML = all.map(function (p) {
-    var on = set.indexOf(p) !== -1;
-    return '<div class="v152pm"><div class="v152pminfo"><b>' + labels[p] + '</b>'
-      + (on ? '<span class="badge g">فعّالة فعلياً</span>' : '<span class="badge r">موقفة فعلياً</span>')
-      + '</div><span class="badge mut">تتبع الفئة</span></div>';
-  }).join("") + '<p class="hint">💡 للتحكم الفردي بالصلاحيات: اربط حسابه بتلغرام (يصبح التحكم الحي متاحاً هنا) أو غيّر فئته بزر «🎯 الفئة».</p>';
-  $("#dlgPerms152Reset").style.display = "none";
-  $("#dlgPerms152").showModal();
-}
-
-/* ── التفويض الموحد لأزرار البطاقة ── */
-document.addEventListener("click", function (ev) {
-  var el = ev.target.closest ? ev.target.closest("[data-v152role],[data-v152perms]") : null;
-  if (!el) return;
-  var tid = parseInt(el.getAttribute("data-tid"), 10) || null;
-  var uid = parseInt(el.getAttribute("data-uid"), 10) || null;
-  var name = el.getAttribute("data-n") || "";
-  if (el.hasAttribute("data-v152role")) {
-    if (!tid && !uid) { toast("معرّف المستخدم مفقود.", true); return; }
-    openRole152(tid, uid, name);
-  } else if (el.hasAttribute("data-v152perms")) {
-    /* v154: المصفوفة الحية للجميع — حساب التطبيق عبر users.id (uid) */
-    if (uid) v152OpenLive("u" + uid, name);
-    else if (tid) v152OpenLive(tid, name);
-    else v152OpenRoleMode({ name: name, role: el.getAttribute("data-v152r"), role_label: el.getAttribute("data-v152rl") });
-  }
-});
-
-/* إعادة رسم قائمة المستخدمين إن كانت الشاشة مفتوحة */
-try { if (document.getElementById("v-users") && document.getElementById("v-users").classList.contains("on")) loadUsers(); } catch (_e) {}
-}
-} catch (_v152e) { try { console.warn("[v152] layer error:", _v152e); } catch (_e2) {} }
-
-</script>
-<style id="v152css">/* ═══ v152: أنماط بطاقة الصلاحيات — تتبع الثيم المؤسسي (متغيرات الألوان القائمة) ═══ */
-#dlgPerms152Body .v152pm{display:flex;align-items:center;justify-content:space-between;gap:10px;
-  padding:9px 10px;border:1.5px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--card,transparent)}
-#dlgPerms152Body .v152pminfo{display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0}
-#dlgPerms152Body .v152pminfo b{font-size:13.5px}
-#dlgPerms152Body .v152seg{display:flex;gap:4px;flex-shrink:0}
-#dlgPerms152Body .v152opt{border:1.5px solid var(--line);background:transparent;color:var(--ink,#2b2d31);
-  font:inherit;font-size:12px;font-weight:700;padding:5px 9px;border-radius:9px;cursor:pointer}
-#dlgPerms152Body .v152opt.on{background:var(--brand);border-color:var(--brand);color:#fff}
-#dlgPerms152Body .v152pm:hover{border-color:var(--brand)}
-@media (max-width:640px){
-  #dlgPerms152Body .v152pm{flex-direction:column;align-items:stretch}
-  #dlgPerms152Body .v152seg{justify-content:flex-end}
-}
-
-</style>
-<script id="v156ui">
-/* ═══════════════════════════════════════════════════════════════════
-   v156 — قائمة تحترم الصلاحيات: تبويب «الطلبات» وقسما «المعلقة/التوريد»
-   تظهر فقط لمَن يملك الصلاحية المرتبطة بها (بطلب يوسف: مستخدم البحث فقط
-   لا يُعرف له ما لا يعمل به — «طلبات معلقة/إنشاء فاتورة» تظهر لديه بلا طاقة).
-   تبويب «فاتورة» موبوَّب من v88 لكن رؤية الفواتير صارت تحترم المصفوفة
-   خادمياً (invoice_view override-aware) فيختفي التاب تلقائياً معها.
-   ═══════════════════════════════════════════════════════════════════ */
-(function () {
-  "use strict";
-  if (window.__v156nav) return;
-  window.__v156nav = 1;
-  function vis(id, on) {
-    var el = document.getElementById(id);
-    if (el) el.style.display = on ? "" : "none";
-  }
-  function apply() {
-    var P = null;
-    try { P = (typeof S !== "undefined" && S) ? S.perms : null; } catch (e) { return; }
-    if (!P || typeof P !== "object") return;
-    /* تبويب الطلبات: لمَن يملك طلب توريد أو رؤية المعلقة فقط */
-    vis("tabOrders", !!(P.admin || P.supply_order || P.pending));   /* v170: المالك لا يفقده أبداً */
-    /* القسمان داخل شاشة الطلبات — كلٌّ بصلاحيته */
-    vis("segPend", !!(P.admin || P.pending));   /* v170: المالك لا يفقده أبداً */
-    vis("segInc", !!P.supply_order);
-    if (!P.pending && P.supply_order) {
-      try {
-        var sp = document.getElementById("segPend");
-        var si = document.getElementById("segInc");
-        if (sp && si && sp.classList.contains("on")) si.click();
-      } catch (e) {}
-    }
-  }
-  /* v157: بولينج حدثي — الأحداث أولًا (تركيز/عودة للصفحة/رؤية) واحتياط كل 15 ثانية بدل حلقة كل 3 ثوانٍ الدائمة */
-  apply();
-  window.addEventListener("focus", apply);
-  window.addEventListener("pageshow", apply);
-  document.addEventListener("visibilitychange", apply);
-  setInterval(apply, 15000);
-})();
-
-</script>
-<script id="v167ui">
-/* ═══ v167: فصل حسابات تلغرام + حيوية النشاط + تفاصيل + حذف نهائي ═══ */
-try {
-if (!window.__v167users) {
-window.__v167users = true;
-
-function v167IsApp(u) { return u.telegram_id == null || !!u.web || !!u.email; }
-function v167IsTg(u) { return u.telegram_id != null && !u.web && !u.email; }
-
-/* ── 1) الفلترة: «📱 التطبيق» افتراضياً — حسابات تلغرام الخالصة مخفية دون مساس بعملها ── */
-var _oldUFH = window.usrFilterHit;
-window.usrFilterHit = function (u) {
-  if (S.usrFilter === "app") return v167IsApp(u);
-  if (S.usrFilter === "tg") return v167IsTg(u);
-  return _oldUFH ? _oldUFH(u) : true;
-};
-S.usrFilter = "app";
-
-function v167AddChips() {
-  var kc = document.getElementById("cKick");
-  var bar = kc ? kc.parentElement : null;
-  if (!bar || document.getElementById("cApp")) return;
-  var appChip = document.createElement("button");
-  appChip.type = "button"; appChip.className = "chip"; appChip.setAttribute("data-f", "app");
-  appChip.innerHTML = '📱 التطبيق <b id="cApp">0</b>';
-  var tgChip = document.createElement("button");
-  tgChip.type = "button"; tgChip.className = "chip"; tgChip.setAttribute("data-f", "tg");
-  tgChip.innerHTML = '📨 تلغرام <b id="cTg">0</b>';
-  var first = bar.querySelector(".chip");
-  bar.insertBefore(appChip, first ? first.nextSibling : null);
-  bar.insertBefore(tgChip, appChip.nextSibling);
-  [appChip, tgChip].forEach(function (c) {
-    c.addEventListener("click", function () {
-      S.usrFilter = c.getAttribute("data-f");
-      window.renderUsers();
-    });
-  });
-}
-function v167SyncChips() {
-  var kc = document.getElementById("cKick");
-  var bar = kc ? kc.parentElement : null;
-  if (!bar) return;
-  Array.prototype.forEach.call(bar.querySelectorAll(".chip"), function (c) {
-    c.classList.toggle("on", c.getAttribute("data-f") === S.usrFilter);
-  });
-}
-v167AddChips();
-
-/* ── 2) عرض القائمة: نسخة v167 — الطلبات المعلقة تظهر في «التطبيق» و«الكل» ── */
-window.renderUsers = function () {
-  if (!S.usrLast) return;
-  var box = $("#usrList");
-  var d = S.usrLast.d, regs = S.usrLast.regs, resets = S.usrLast.resets;
-  var q = (S.usrQ || "").trim().toLowerCase();
-  var users = d.users || [];
-  $("#cAll").textContent = d.counts.all;
-  $("#cWeb").textContent = d.counts.web;
-  $("#cKick").textContent = d.counts.kicked;
-  $("#cStaff").textContent = users.filter(function (u) { return u.active && u.role !== "customer"; }).length;
-  $("#cCust").textContent = users.filter(function (u) { return u.active && u.role === "customer"; }).length;
-  try {
-    $("#cApp").textContent = users.filter(function (u) { return u.active && v167IsApp(u); }).length;
-    $("#cTg").textContent = users.filter(function (u) { return v167IsTg(u); }).length;
-    $("#cLive").textContent = users.filter(function (u) { return u.active && u.last_seen
-      && (Date.now() - new Date(u.last_seen).getTime() < 86400000); }).length;
-  } catch (e) {}
-  v167SyncChips();
-  var html = "";
-  if (S.usrFilter === "all" || S.usrFilter === "app") {
-    var waiting = regs.filter(function (w) { return !q || [w.name, w.username, w.email, w.phone, w.role_label]
-      .some(function (v) { return (v || "").toString().toLowerCase().indexOf(q) !== -1; }); });
-    if (waiting.length) {
-      html += '<p class="u96sech">⏳ طلبات انضمام بانتظار الموافقة (' + waiting.length + ')</p>';
-      html += waiting.map(function (w) {
-        return '<div class="u96req"><div class="u96nm">' + esc(w.name) + '</div>'
-          + '<div class="u96sub">' + esc(w.role_label) + (w.username ? " • 🔑 اسم الدخول: " + esc(w.username) : "") + (w.email ? " • ✉️ " + esc(w.email) : "") + (w.phone ? " • 📞 " + esc(w.phone) : "") + '</div>'
-          + ((w.code || "").toUpperCase().indexOf("GO") === 0 ? '<span class="badge g" style="margin-top:7px">Google</span>'
-            : ((w.code || "").toUpperCase().indexOf("PW") === 0 ? '<span class="badge b" style="margin-top:7px">🔑 اسم + رقم سر</span>' : '<span class="badge b" style="margin-top:7px">رمز: ' + esc(w.code) + '</span>'))
-          + '<div class="acts"><button class="btn mini green" data-appr=\'' + esc(JSON.stringify(w)) + '\'>✅ موافقة</button>'
-          + '<button class="btn mini red" data-reg="' + w.id + '">🗑 حذف</button></div>'
-          + '</div>';
-      }).join("");
-    }
-    var rs = resets.filter(function (r) { return !q || (r.username || "").toLowerCase().indexOf(q) !== -1; });
-    if (rs.length) {
-      html += '<p class="u96sech" style="margin-top:12px">🔑 طلبات استعادة كلمة المرور (' + rs.length + ')</p>';
-      html += rs.map(function (r) {
-        return '<div class="u96req"><div class="u96nm">' + esc(r.username) + '</div>'
-          + '<div class="u96sub">طالب باستعادة رقمه السري' + (r.created_at ? " • ⏰ " + esc(r.created_at) : "") + '</div>'
-          + '<div class="acts"><button class="btn mini gold" data-reset="' + r.id + '" data-runame="' + esc(r.username) + '">🔑 توليد رقم سر مؤقت</button></div>'
-          + '</div>';
-      }).join("");
-    }
-  }
-  if (S.usrFilter === "kick") {
-    var kick = users.filter(function (u) { return usrFilterHit(u) && usrMatch(u, q); })
-      .sort(function (a, b) { return (a.name || "").localeCompare(b.name || "", "ar"); });
-    html += kick.length ? kick.map(usrRow).join("") : '<p class="empty">' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مطرودون.") + '</p>';
-  } else {
-    var act = users.filter(function (u) { return usrFilterHit(u) && usrMatch(u, q); });
-    act.sort(function (a, b) {
-      var sa = a.telegram_id === S.user.telegram_id ? 0 : 1;
-      var sb = b.telegram_id === S.user.telegram_id ? 0 : 1;
-      if (sa !== sb) return sa - sb;
-      if (usrRank(a) !== usrRank(b)) return usrRank(a) - usrRank(b);
-      return (a.name || "").localeCompare(b.name || "", "ar");
-    });
-    html += act.length ? act.map(usrRow).join("") : '<p class="empty">' + (q ? "لا نتائج مطابقة لبحثك." : "لا يوجد مستخدمون هنا.") + '</p>';
-    if (S.usrFilter === "all") {
-      var kick2 = users.filter(function (u) { return !u.active && usrMatch(u, q); })
-        .sort(function (a, b) { return (a.name || "").localeCompare(b.name || "", "ar"); });
-      if (kick2.length) {
-        html += '<button type="button" class="khead' + (S.usrKickOpen ? " open" : "") + '" id="usrKickHead">🚫 المطرودون (' + kick2.length + ') <span class="karr">▶</span></button>'
-          + '<div id="usrKickList" style="display:' + (S.usrKickOpen ? "" : "none") + '">' + kick2.map(usrRow).join("") + '</div>';
-      }
-    }
-  }
-  box.innerHTML = html;
-  /* أزرار v152 (الفئة/الصلاحيات) يربطها مستند مركزي خاص بها — لا تُربط هنا تفادياً للتشغيل المزدوج */
-  box.querySelectorAll("button[data-tg],button[data-reg],button[data-appr],button[data-reset],button[data-delweb],button[data-v167det],button[data-v167purge]").forEach(function (b) {
-    b.addEventListener("click", function () {
-      if (b.dataset.reg !== undefined) regDelete(+b.dataset.reg);
-      else if (b.dataset.appr !== undefined) { try { openApprove(JSON.parse(b.dataset.appr)); } catch (e2) {} }
-      else if (b.dataset.reset !== undefined) resetGenerate(+b.dataset.reset, b.dataset.runame);
-      else if (b.dataset.v167det !== undefined) v167Details(+b.dataset.uid || null, +b.dataset.tid || null, b.dataset.n);
-      else if (b.dataset.v167purge !== undefined) v167Purge(+b.dataset.uid || null, +b.dataset.tid || null, b.dataset.n);
-      else if (b.dataset.delweb !== undefined) delWeb(+b.dataset.delweb, b.dataset.n);
-      else if (b.dataset.self) openPass(null, b.dataset.n, true);
-      else if (b.dataset.to !== undefined) userToggle(+b.dataset.tg, b.dataset.to === "1");
-      else openPass(+b.dataset.tg, b.dataset.n, false);
-    });
-  });
-  var kh = box.querySelector("#usrKickHead");
-  if (kh) kh.addEventListener("click", function () { S.usrKickOpen = !S.usrKickOpen; window.renderUsers(); });
-};
-
-/* ── 3) بطاقة المستخدم: حيوية النشاط + أصل الحساب + زرا التفاصيل والحذف النهائي ── */
-window.usrRow = function (u) {
-  var self = u.telegram_id === S.user.telegram_id;
-  var hasTg = !!u.telegram_id;
-  var acts = "";
-  if (!self && !u.protected) {
-    acts += '<button class="btn mini blue" data-v152role="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-n="' + esc(u.name) + '">🎯 الفئة</button>';
-    acts += '<button class="btn mini gray" data-v152perms="1" data-tid="' + (u.telegram_id || "") + '" data-uid="' + (u.id || "") + '" data-v152r="' + esc(u.role || "") + '" data-v152rl="' + esc(u.role_label || "") + '" data-n="' + esc(u.name) + '">🔐 صلاحيات</button>';
-    if (hasTg && u.role !== "admin") {
-      acts += u.active
-        ? '<button class="btn mini red" data-tg="' + u.telegram_id + '" data-to="0">🚫 إيقاف</button>'
-        : '<button class="btn mini green" data-tg="' + u.telegram_id + '" data-to="1">✅ إعادة تنشيط</button>';
-    }
-    if (S.user && S.user.role === "admin") {
-      acts += '<button class="btn mini red" data-v167purge="1" data-uid="' + (u.id || "") + '" data-tid="' + (u.telegram_id || "") + '" data-n="' + esc(u.name) + '">🗑️ حذف نهائي</button>';
-    }
-  }
-  if (!self && !u.protected && u.web && u.telegram_id) {
-    acts += '<button class="btn mini red" data-delweb="' + (u.telegram_id || 0) + '" data-n="' + esc(u.name) + '">🗑️ حذف من التطبيق</button>';
-  }
-  acts += '<button class="btn mini" data-v167det="1" data-uid="' + (u.id || "") + '" data-tid="' + (u.telegram_id || "") + '" data-n="' + esc(u.name) + '">ℹ️ التفاصيل</button>';
-  acts += self
-    ? '<button class="btn mini gold" data-self="1" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مروري</button>'
-    : (hasTg ? '<button class="btn mini gold" data-tg="' + u.telegram_id + '" data-n="' + esc(u.name) + '">🔑 كلمة مرور</button>' : '');
-  var sub = [
-    (u.web && u.web_username) ? "🔑 " + esc(u.web_username) : "",
-    u.phone ? "📞 " + esc(u.phone) : "",
-    u.email ? "✉️ " + esc(u.email) : ""
-  ].filter(Boolean).join(" · ");
-  if (!hasTg && u.web) sub += (sub ? " · " : "") + '👤 بلا حساب تلغرام';
-  var seenCls = "v167never";
-  if (u.last_seen_days != null) {
-    seenCls = u.last_seen_days < 1 ? "v167fresh" : (u.last_seen_days > 30 ? "v167stale" : "v167seen");
-  }
-  sub += (sub ? " · " : "") + '<span class="' + seenCls + '">⏱ ' + esc(u.last_seen_rel || "—") + '</span>'
-    + (u.origin === "telegram" ? ' <span class="badge mut">📨 تلغرام</span>' : '');
-  return '<div class="row"><div class="info"><b>' + esc(u.name) + usrOnline(u)
-    + (u.protected ? " 🛡" : "") + (self ? " <span class='badge'>أنت</span>" : "") + '</b>'
-    + '<span class="usub"><span class="rk rk-' + (USR_RANK[u.role] !== undefined ? u.role : "customer") + '">' + esc(u.role_label) + '</span>'
-    + (sub || (u.web ? "🔑 حساب تطبيق" : "")) + '</span></div>'
-    + (u.active ? "" : '<span class="badge r">مطرود</span>')
-    + '<div class="acts">' + acts + '</div>'
-    + '</div>';
-};
-
-/* ── 4) حوارا التفاصيل والحذف النهائي ── */
-function v167EnsureDialogs() {
-  if (document.getElementById("dlgDet167")) return;
-  var wrap = document.createElement("div");
-  wrap.innerHTML = '<dialog id="dlgDet167" class="v167dlg">'
-    + '<h3 id="d167T">تفاصيل الحساب</h3>'
-    + '<div id="d167Body" class="v167body">⏳ جارٍ الجلب...</div>'
-    + '<div class="v167dlgacts"><button type="button" class="btn" id="d167Close">إغلاق</button></div>'
-    + '</dialog>'
-    + '<dialog id="dlgPurge167" class="v167dlg">'
-    + '<h3>🗑️ حذف نهائي كامل</h3>'
-    + '<div id="p167Body" class="v167body">⏳ حساب أثر الحذف...</div>'
-    + '<label class="v167lbl">اكتب اسم الحساب <b id="p167Name"></b> حرفياً للتأكيد:</label>'
-    + '<input type="text" id="p167Confirm" autocomplete="off" placeholder="اسم الحساب حرفياً">'
-    + '<div class="v167dlgacts"><button type="button" class="btn red" id="p167Go">🗑️ حذف نهائي لا رجعة فيه</button>'
-    + '<button type="button" class="btn" id="p167Cancel">إلغاء</button></div>'
-    + '</dialog>';
-  document.body.appendChild(wrap);
-  $("#d167Close").addEventListener("click", function () { $("#dlgDet167").close(); });
-  $("#p167Cancel").addEventListener("click", function () { $("#dlgPurge167").close(); });
-}
-
-function v167SeenCls(days) {
-  if (days == null) return "v167never";
-  return days < 1 ? "v167fresh" : (days > 30 ? "v167stale" : "v167seen");
-}
-
-window.v167Details = function (uid, tid, name) {
-  v167EnsureDialogs();
-  $("#d167T").textContent = "تفاصيل الحساب — " + name;
-  $("#d167Body").innerHTML = "⏳ جارٍ الجلب...";
-  var qs = [];
-  if (uid) qs.push("uid=" + encodeURIComponent(uid));
-  if (tid) qs.push("tid=" + encodeURIComponent(tid));
-  api("/api/users/details?" + qs.join("&"), { noCache: true, timeout: 60000 })
-    .then(function (d) {
-      var c = d.counts || {};
-      var row = function (k, v) { return '<div class="v167row"><span>' + k + '</span><b>' + v + '</b></div>'; };
-      $("#d167Body").innerHTML = ""
-        + row("نوع الحساب", esc(d.origin_label || ""))
-        + row("الفئة", esc(d.role_label || ""))
-        + row("الحالة", (d.active ? "✅ نشط" : "🚫 مطرود") + (d.banned ? " · ⛔ محظور نهائياً" : "") + (d.archived ? " · 📦 مؤرشف" : ""))
-        + row("أُنشئ الحساب", esc(d.created_rel || "—"))
-        + row("آخر نشاط", '<span class="' + v167SeenCls(d.last_seen_days) + '">⏱ ' + esc(d.last_seen_rel || "—") + '</span>')
-        + row("حساب تلغرام", d.telegram_id ? esc("@" + (d.tg_username || "") + " · " + d.telegram_id) : "— لا يوجد (حساب تطبيق خالص)")
-        + row("اسم دخول التطبيق", d.web_username ? esc(d.web_username) : "—")
-        + row("بريد Google", d.email ? esc(d.email) + (d.email_verified ? " ✅" : "") + " · رُبط " + esc(d.google_linked_rel || "—") : "—")
-        + row("الهاتف", d.phone ? esc(d.phone) : "—")
-        + row("جلسات نشطة الآن", c.sess || 0)
-        + '<div class="v167sech">ما يرتبط بالحساب (يُحذف معه عند الحذف النهائي)</div>'
-        + row("حركات مخزون", c.txn || 0)
-        + row("أوامر توريد", c.supply || 0)
-        + row("طلبات سحب", c.extr || 0)
-        + row("فواتير بصفته منفذاً (تبقى وتُنزع نسبته)", c.inv_worker || 0)
-        + row("فواتير بصفته مديراً", c.inv_admin || 0)
-        + row("سجلات عمليات", c.audit || 0)
-        + row("طلبات تسجيل بنفس بريده", c.regs || 0);
-    })
-    .catch(function (e) { $("#d167Body").textContent = "تعذر الجلب: " + e.message; });
-  $("#dlgDet167").showModal();
-};
-
-var V167_purgeT = null;
-window.v167Purge = function (uid, tid, name) {
-  v167EnsureDialogs();
-  V167_purgeT = { uid: uid || null, tid: tid || null, name: name };
-  $("#p167Body").innerHTML = "⏳ حساب أثر الحذف...";
-  $("#p167Confirm").value = "";
-  $("#p167Name").textContent = name;
-  $("#dlgPurge167").showModal();
-  api("/api/users/purge", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ uid: uid || undefined, telegram_id: tid || undefined }), timeout: 60000 })
-    .then(function (d) {
-      var im = d.impact || {};
-      var li = function (k, v) { return "<li>" + k + ": <b>" + v + "</b></li>"; };
-      $("#p167Body").innerHTML = '<p>سيُحذف <b>نهائياً ولا رجعة فيه</b> كل ما يلي لهذا الحساب:</p><ul class="v167imp">'
-        + li("حركات مخزون", im.txn || 0) + li("أوامر توريد", im.supply || 0)
-        + li("طلبات سحب", im.extr || 0) + li("فواتير بصفته مديراً", im.inv_admin || 0)
-        + li("سجلات عمليات", im.audit || 0) + li("طلبات تسجيل ببريده", im.regs || 0)
-        + "</ul><p>فواتيره بصفته منفذاً (" + (im.inv_worker || 0) + ") تبقى في السجل المالي وتُنزع نسبته منها فقط.</p>";
-    })
-    .catch(function (e) { $("#p167Body").textContent = "تعذر حساب الأثر: " + e.message; });
-};
-
-document.addEventListener("click", function (ev) {
-  var go = ev.target.closest ? ev.target.closest("#p167Go") : null;
-  if (!go || !V167_purgeT) return;
-  var val = ($("#p167Confirm").value || "").trim();
-  if (val !== V167_purgeT.name) { toast("اكتب اسم الحساب مطابقاً حرفياً للتأكيد.", true); return; }
-  api("/api/users/purge", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ uid: V167_purgeT.uid || undefined, telegram_id: V167_purgeT.tid || undefined, confirm_name: val }) })
-    .then(function (d) {
-      toast(d.message || "تم الحذف النهائي.");
-      $("#dlgPurge167").close();
-      if (window.loadUsers) loadUsers();
-    })
-    .catch(function (e) { toast(e.message, true); });
-});
-
-}
-} catch (e) { try { console.error("v167 init", e); } catch (e2) {} }
-</script>
-<style id="v167css">
-.v167seen{font-weight:700;color:#0369a1}
-.v167fresh{font-weight:700;color:#15803d}
-.v167stale{font-weight:700;color:#b91c1c}
-.v167never{color:#94a3b8}
-.v167row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 2px;border-bottom:1px dashed #e2e8f0;font-size:13px}
-.v167row span{color:#475569}
-.v167row b{color:#0f172a;text-align:left}
-.v167sech{margin:12px 0 4px;font-weight:700;color:#1B6B7A;font-size:13px}
-.v167imp{padding-inline-start:20px;margin:6px 0}
-.v167imp li{margin:3px 0;font-size:13px}
-.v167dlg{border:none;border-radius:14px;padding:16px;max-width:430px;width:92%;direction:rtl}
-.v167dlg h3{margin:0 0 10px}
-.v167dlgacts{display:flex;gap:8px;justify-content:flex-start;margin-top:14px}
-.v167lbl{display:block;margin-top:12px;font-size:13px}
-#p167Confirm{width:100%;margin-top:6px;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;box-sizing:border-box}
-
-</style>
-<script id="v158clean">try{localStorage.removeItem("__v150sell");localStorage.removeItem("__v149sell");localStorage.removeItem("__v150neg");}catch(e){}</script>
-<script id="v160ui">
-/* ═══ v160: إدارة حسابات Google داخل شاشة المستخدمين نفسها — بلا شاشة منفصلة ═══
-   للمدير الرئيسي فقط (الخادم يفحص دائماً): شريط إحصائيات + الحسابات المرتبطة
-   بإجراءاتها (تعطيل/تفعيل/إلغاء ربط) + ربط Gmail يدوياً + ربط ذاتي لمن بلا بريد.
-   طلبات Google المعلقة تظهر أصلاً في «طلبات انضمام بانتظار الموافقة» أعلى الشاشة،
-   والقرار منها أو من تلغرام يعمل على نفس الصف وينعكس في الجهتين فوراً. */
-(function () {
-  "use strict";
-  if (window.__v160g) return;
-  if (window.__v161Users) return;   /* v161: قسم Google صار ضمن لوحة المستخدمين الجديدة — تعطيل كامل */
-  window.__v160g = 1;
-
-  var st = document.createElement("style"); st.id = "v160g-css";
-  st.textContent = ''
-    + '#v160gbox{margin:10px 0 2px}'
-    + '#v160gbox .gstats{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}'
-    + '#v160gbox .gstat{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:14px;font-size:12px;font-weight:700;background:rgba(120,120,120,.14)}'
-    + '#v160gbox .gstat b{font-size:14px}'
-    + '#v160gbox .ghead{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}'
-    + '#v160gbox .gmeta{font-size:11px;opacity:.75;margin:4px 0 2px}';
-  document.head.appendChild(st);
-
-  /* v160b: الصلاحية تُحسم من الخادم نفسه — إن كان الدور غير معروف نجرّب
-     ونكتشف الرفض، فلا اعتماد على شكل S.user إطلاقاً */
-  var gAdminFlag = null;   /* null = غير معروف، true = مدير، false = غير مخوّل */
-  function isAdmin() {
-    if (gAdminFlag !== null) return gAdminFlag;
-    try { if (S && S.user && S.user.role) return (S.user.role === "admin"); } catch (e) {}
-    return true;
-  }
-  function esc2(s) { return (typeof esc === "function") ? esc(s) : String(s == null ? "" : s); }
-
-  function ensureBox() {
-    var list = document.getElementById("usrList");
-    if (!list) return null;
-    var box = document.getElementById("v160gbox");
-    if (!box) {
-      box = document.createElement("div");
-      box.id = "v160gbox";
-      list.parentNode.insertBefore(box, list);
-    }
-    return box;
-  }
-
-  function selfEmail() {
-    try {
-      var us = (S.usrLast && S.usrLast.d && S.usrLast.d.users) || [];
-      for (var i = 0; i < us.length; i++) {
-        if (us[i].telegram_id === S.user.telegram_id) return us[i].email || "";
-      }
-    } catch (e) {}
-    return "";
-  }
-
-  var gData = null, loading = false;
-
-  function dropBox() { var b = document.getElementById("v160gbox"); if (b) b.remove(); }
-
-  async function load(force) {
-    if (gAdminFlag === false || !isAdmin()) { dropBox(); return; }
-    var box = ensureBox();
-    if (!box || loading) return;
-    if (gData && !force) { render(box); return; }
-    loading = true;
-    box.innerHTML = '<div class="ghead"><p class="u96sech" style="margin:0">🔗 حسابات Google — الإدارة</p></div><p class="empty">جارِ التحميل…</p>';
-    try {
-      var d = await api("/api/admin/google/overview", { noCache: true });
-      if (!d || !d.ok) throw new Error((d && d.error) || "غير متاح");
-      gAdminFlag = true;
-      gData = d;
-      render(box);
-    } catch (e) {
-      var m = String((e && e.message) || "");
-      /* رفض الصلاحية = لسنا مديراً — يُزال القسم نهائياً بهدوء */
-      if (/403|المدير|صلاحية/.test(m)) { gAdminFlag = false; dropBox(); }
-      else {
-        /* خطأ عابر — يبقى القسم ويعيد المحاولة تلقائياً لاحقاً */
-        gAdminFlag = null;
-        box.innerHTML = '<div class="ghead"><p class="u96sech" style="margin:0">🔗 حسابات Google — الإدارة</p></div>'
-          + '<p class="empty">' + esc2(m || "تعذر الجلب") + '</p>';
-      }
-    } finally { loading = false; }
-  }
-
-  /* v160b: مشغّل احتياطي دوري يضمن ظهور القسم حتى لو تغيّر مسار العرض —
-     رخيص: يعود فوراً إن كانت البيانات جاهزة أو الصلاحية محسومة */
-  setInterval(function () { try { load(); } catch (e) {} }, 12000);
-
-  function stat(label, n) {
-    return '<span class="gstat">' + label + ' <b>' + esc2(n) + '</b></span>';
-  }
-
-  /* v163: دمج حالة Google داخل بطاقات القائمة المألوفة نفسها — المطابقة بالبريد
-     (فريد إجبارياً على الخادم: لا يُكتب فوق حساب آخر) من بيانات overview،
-     والحقن يزيل ما أضافه سابقاً أولاً (.gaugx) فلا يتضاعف أبداً عند كل تحديث. */
-  function augmentCards() {
-    if (!gData || gAdminFlag === false || !isAdmin()) return;
-    var box = document.getElementById("usrList");
-    if (!box) return;
-    var map = {};
-    (gData.linked || []).forEach(function (u) {
-      if (u.email) map[String(u.email).toLowerCase()] = u;
-    });
-    box.querySelectorAll(".u96card").forEach(function (card) {
-      card.querySelectorAll(".gaugx").forEach(function (el) { el.remove(); });
-      var sub = card.querySelector(".u96sub");
-      if (!sub) return;
-      var m = (sub.textContent || "").match(/✉️\s*([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)/);
-      if (!m) return;
-      var rec = map[m[1].toLowerCase()];
-      if (!rec) return;
-      var badge = (!rec.active) ? '<span class="badge r gaugx">🚫 الحساب موقوف</span>'
-        : (rec.gdis ? '<span class="badge b gaugx">⛔ Google معطل</span>'
-                    : '<span class="badge g gaugx">✅ Google فعّال</span>');
-      var top = card.querySelector(".u96top");
-      if (top) top.insertAdjacentHTML("beforeend", badge);
-      var acts = card.querySelector(".u96acts");
-      if (!acts) { acts = document.createElement("div"); acts.className = "u96acts"; card.appendChild(acts); }
-      var b1 = rec.gdis
-        ? '<button type="button" class="btn mini green gaugx">▶️ تفعيل Google</button>'
-        : '<button type="button" class="btn mini blue gaugx">⏸ تعطيل Google</button>';
-      var b2 = '<button type="button" class="btn mini red gaugx">🔓 إلغاء الربط</button>';
-      acts.insertAdjacentHTML("beforeend", b1 + b2);
-      var btns = acts.querySelectorAll("button.gaugx");
-      if (btns[0]) btns[0].addEventListener("click", function () { act(rec.gdis ? "reactivate" : "suspend", rec.id, rec.name || ""); });
-      if (btns[1]) btns[1].addEventListener("click", function () { act("unlink", rec.id, rec.name || ""); });
-    });
-  }
-
-  function render(box) {
-    var s = (gData && gData.stats) || {};
-    var linked = (gData && gData.linked) || [];
-    var html = ''
-      + '<div class="ghead"><p class="u96sech" style="margin:0">🔗 حسابات Google — الإدارة</p>'
-      + '<span><button type="button" class="btn mini gray" data-gref="1">🔄 تحديث</button> '
-      + '<button type="button" class="btn mini blue" data-gmanual="1">🔗 ربط Gmail يدوياً</button></span></div>'
-      + '<div class="gstats">'
-      + stat("📧 مرتبطة", s.linked || 0) + stat("✅ مصرح لها", s.approved || 0)
-      + stat("⏳ طلبات معلقة", s.pending || 0) + stat("🚫 مرفوضة", s.rejected || 0)
-      + stat("⛔ معطلة", s.suspended || 0)
-      + '</div>'
-      + '<p class="gmeta">الطلبات المعلقة تظهر أعلى الشاشة في «طلبات انضمام بانتظار الموافقة» — القبول منها أو من تلغرام نفس الشيء.</p>';
-    if (!selfEmail()) {
-      html += '<div class="u96card"><div class="u96main"><div class="u96nm">حسابك غير مرتبط ببريد Google بعد</div>'
-        + '<div class="gmeta">اربط بريدك لتدخل بحساب جوجل مباشرة دون اسم مستخدم ورقم سر.</div></div>'
-        + '<div class="u96acts" style="display:flex"><button type="button" class="btn gold" style="flex:1;font-size:14px;padding:11px 14px" data-gself="1">🔗 ربط حسابي بحساب Google</button></div></div>';
-    }
-    /* v163 (قرار المالك): قائمة «الحسابات المرتبطة» حُذفت من هنا — كانت تكرر
-       اسم المستخدم مرتين (بطاقة Google فوق بطاقة القائمة المألوفة). حالة Google
-       وشاراتها وأزرار التعطيل/التفعيل/إلغاء الربط صارت مدموجة على بطاقة كل
-       مستخدم في القائمة أدناه نفسها (augmentCards) — شخص واحد = بطاقة واحدة. */
-    html += '<p class="gmeta">حالة Google وأزرارها تظهر على بطاقة كل مستخدم في القائمة أدناه — بلا أي قائمة مكررة.</p>';
-    box.innerHTML = html;
-    box.querySelectorAll("button[data-gref],button[data-gmanual],button[data-gself],button[data-gact]").forEach(function (b) {
-      b.addEventListener("click", function () {
-        if (b.dataset.gref !== undefined) load(true);
-        else if (b.dataset.gmanual !== undefined) manualLink();
-        else if (b.dataset.gself !== undefined) selfLink(b);
-        else if (b.dataset.gact !== undefined) act(b.dataset.gact, +b.dataset.uid, b.dataset.n);
-      });
-    });
-    try { augmentCards(); } catch (e2) {}
-  }
-
-  async function act(action, uid, name) {
-    var q = action === "unlink"
-      ? ("إلغاء ربط Google عن «" + name + "»؟ لن يدخل عبره حتى ربط جديد بموافقة الإدارة، وحسابه وكلمته وفئته لا تُمس.")
-      : action === "suspend"
-      ? ("تعطيل الدخول عبر Google مؤقتاً لـ«" + name + "»؟ حسابه وكلمة مروره كما هما.")
-      : ("إعادة تفعيل الدخول عبر Google لـ«" + name + "»؟");
-    if (!(await window.v90confirm(q, { yes: "تأكيد" }))) return;
-    try {
-      var d = await api("/api/admin/google/user_action", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid: uid, action: action }) });
-      toast((d && d.message) || "تم", false);
-      load(true);
-    } catch (e) { toast(e.message || "تعذر التنفيذ", true); }
-  }
-
-  function manualLink() {
-    var users = [];
-    try { users = (S.usrLast && S.usrLast.d && S.usrLast.d.users) || []; } catch (e) {}
-    if (!users.length) { toast("لا مستخدمين — حدّث الشاشة أولًا", true); return; }
-    var old = document.getElementById("v160gmodal");
-    if (old) old.remove();
-    var ov = document.createElement("div"); ov.id = "v160gmodal";
-    ov.style.cssText = "position:fixed;inset:0;z-index:2147482000;background:rgba(10,14,20,.55);display:flex;align-items:center;justify-content:center;padding:18px";
-    var card = document.createElement("div");
-    card.style.cssText = "background:var(--card,#fff);color:var(--tx,#222);border-radius:18px;padding:18px;max-width:430px;width:100%;box-shadow:0 14px 40px rgba(0,0,0,.25);font-family:inherit";
-    var opts = users.map(function (u) {
-      return '<option value="' + u.id + '">' + esc2(u.name) + " — " + esc2(u.role_label)
-        + (u.email ? " (مرتبط)" : "") + '</option>';
-    }).join("");
-    card.innerHTML = '<p class="u96sech" style="margin:0 0 8px">🔗 ربط Gmail بحساب قائم</p>'
-      + '<select id="v160guser" style="width:100%;padding:10px;border-radius:10px;border:1px solid rgba(120,120,120,.35);font-family:inherit;margin-bottom:10px">' + opts + '</select>'
-      + '<input id="v160gmail" type="email" dir="ltr" placeholder="example@gmail.com" style="width:100%;padding:10px;border-radius:10px;border:1px solid rgba(120,120,120,.35);font-family:inherit;margin-bottom:6px" />'
-      + '<p class="gmeta">الربط بحساب آخر يرفضه الخادم تلقائياً — ولا يُنشأ حساب مكرر أبداً.</p>'
-      + '<div style="display:flex;gap:8px;margin-top:10px"><button type="button" class="btn gold" id="v160gok" style="flex:1">🔗 ربط</button>'
-      + '<button type="button" class="btn gray" id="v160gcancel" style="flex:1">إلغاء</button></div>';
-    ov.appendChild(card);
-    document.body.appendChild(ov);
-    ov.querySelector("#v160gcancel").addEventListener("click", function () { ov.remove(); });
-    ov.addEventListener("click", function (ev) { if (ev.target === ov) ov.remove(); });
-    ov.querySelector("#v160gok").addEventListener("click", async function () {
-      var uid = +ov.querySelector("#v160guser").value;
-      var email = (ov.querySelector("#v160gmail").value || "").trim();
-      if (!uid || !email) { toast("اختر المستخدم وأدخل البريد", true); return; }
-      try {
-        var d = await api("/api/admin/google/link_manual", { method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uid: uid, email: email }) });
-        toast((d && d.message) || "تم الربط", false);
-        ov.remove();
-        load(true);
-      } catch (e) { toast(e.message || "تعذر الربط", true); }
-    });
-  }
-
-  async function selfLink(btn) {
-    if (btn) { btn.disabled = true; btn.textContent = "جارِ التحضير…"; }
-    try {
-      var d = await api("/api/auth/google/link", { method: "POST",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
-      var url = (d && d.url) || "";
-      if (!url) throw new Error((d && d.error) || "تعذر بدء الربط");
-      /* v160: داخل واجهة التطبيق نزيل app=1 حتى تعود Google إلى الواجهة نفسها بعد الموافقة */
-      url = url.replace("app=1&", "").replace("&app=1", "");
-      location.href = url;
-    } catch (e) {
-      toast(e.message || "تعذر بدء الربط", true);
-      if (btn) { btn.disabled = false; btn.textContent = "🔗 ربط حسابي بحساب Google"; }
-    }
-  }
-
-  var orig = window.renderUsers;
-  window.renderUsers = function () {
-    var r = orig ? orig.apply(this, arguments) : undefined;
-    try { augmentCards(); } catch (e) {}
-    try { load(); } catch (e) {}
-    return r;
-  };
-})();
-
 </script>
 </body>
 </html>
