@@ -46,13 +46,6 @@ html[data-theme="dark"]{
   --line:#3d3f45; --chip:#383a40;
   --shadow:0 2px 4px rgba(0,0,0,.40), 0 4px 16px rgba(0,0,0,.25);
 }
-/* ═══ v186: طبقة ثيم «إزي باور أزرق ذهبي» — تُفعَّل تلقائياً عند اختيار الهوية ═══
-   على صورة المرجع: بطاقات سماوية فاتحة بحواف زرقاء ناعمة + رؤوس أقسام بحقول زرقاء صريحة بنص أبيض */
-html[data-org="ezy"] .card{background:#f3f9fe;border-color:#d8e9f8}
-html[data-theme="dark"][data-org="ezy"] .card{background:#17293c;border-color:#28425c}
-html[data-org="ezy"] .sect{background:var(--brand);color:#fff;border-radius:11px;padding:7px 12px}
-html[data-theme="dark"][data-org="ezy"] .sect{background:var(--brandsoft);color:var(--brand)}
-html[data-org="ezy"] h2.vt{color:var(--h2)}
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
 body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
@@ -981,20 +974,11 @@ const ORG_THEMES = {
              _orgDerive("#229ed9", "#1c8cb8", "#e3f2fa", "#1c8cb8", "#54b9ee", "#2aabee", "#0b2a3d")),
   spotify:  Object.assign({ label: "سبوتيفاي أخضر ليلي" },
              _orgDerive("#14a34a", "#0e7d38", "#e0f5e8", "#0e7d38", "#1ed760", "#17b34c", "#0a2e18")),
-  /* ═══ v186: إزي باور أزرق ذهبي — على صورة مرجع EzyPower: أزرق حيوي + ذهبي حقيقي للتمييز ═══ */
-  ezy:      Object.assign({ label: "إزي باور أزرق ذهبي", dot: ["#1477d2", "#f0b429"] },
-             { light: { brand:"#1477d2", brand2:"#0d5ea6", brandsoft:"#e8f3fc", h1:"#0d5ea6", h2:"#1477d2",
-               gold:"#f0b429", goldsoft:"rgba(240,180,41,.14)", goldline:"rgba(240,180,41,.45)",
-               edsoft:"#eef6fd", edline:"#cfe4f6", edink:"#0d5ea6" },
-             dark: { brand:"#4aa3ea", brand2:"#2b87d4", brandsoft:"#14293d",
-               gold:"#ffc85c", goldsoft:"rgba(255,200,92,.15)", goldline:"rgba(255,200,92,.40)",
-               edsoft:"#16293c", edline:"#2c4560", edink:"#8fc6f2" } }),
 };
 function applyOrgTheme(name) {
   const p = ORG_THEMES[name]; if (!p) return;
   S.orgTheme = name;
   try { localStorage.setItem("ceram_org_theme", name); } catch (e) {}
-  try { document.documentElement.setAttribute("data-org", name); } catch (e0) {}
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
   const c = dark ? p.dark : p.light;
   const r = document.documentElement.style;

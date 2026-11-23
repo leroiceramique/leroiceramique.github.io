@@ -347,9 +347,6 @@ load_dotenv()
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
-# v184b: علم وضع التجريبية يُعرَّف مبكراً جداً — قبل حارسي BOT_TOKEN/ADMIN_IDS
-# أدناه، لأن خدمة التجريبية على Render تعمل عمداً بلا أيٍّ منهما (بلا تلغرام)
-STAGING_MODE = os.getenv("STAGING", "").strip().lower() in ("1", "true", "yes", "on")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
 
 # Email backup (optional — for daily auto-backup via email)
@@ -394,11 +391,9 @@ ADMIN_IDS: list = [
     if uid.strip().isdigit()
 ]
 
-if not BOT_TOKEN and not STAGING_MODE:
-    # v184b: التجريبية بلا تلغرام أصلاً (v183 تتخطى بناء تطبيق تلغرام كلياً)
-    # فالغياب هنا طبيعي فيها — الإنتاج يبقى صارماً كما هو.
-    logging.warning("[STAGING] يعمل بلا BOT_TOKEN — تلغرام معطّل بالكامل (مقصود)")
-if not ADMIN_IDS and not STAGING_MODE:
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set.")
+if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
 _raw_owner_ids = os.getenv("OWNER_IDS", "")
@@ -408,8 +403,7 @@ OWNER_IDS: list = [
     if uid.strip().isdigit()
 ]
 if not OWNER_IDS:
-    # v184c: في وضع التجريبية ADMIN_IDS فارغة أصلاً (بلا تلغرام) — لا فهرسة
-    OWNER_IDS = [ADMIN_IDS[0]] if ADMIN_IDS else []
+    OWNER_IDS = [ADMIN_IDS[0]]
 
 # v113: حُذف RESET_STOCK_PIN نهائياً بطلب يوسف («نعم احذفه») — كان معرّفاً
 # بلا أي استخدام في كل الكود منذ القاعدة الأصلية (مفتاح بلا باب) وتحذير
@@ -3727,17 +3721,6 @@ ROLE_LABELS = {
     "customer": "👤 عميل",
     "pending": "⏳ قيد المراجعة",
 }
-
-# ═══ v183: البيئة التجريبية (Staging) — بنية بديلة لا مشروع جديد ═══
-# نفس هذا الملف يعمل إنتاجاً وتجريبياً: خدمة Render ثانية مرتبطة بفرع staging
-# تُشغَّل بمتغير STAGING=1 وقاعدة بيانات منفصلة تماماً عبر DATABASE_URL الخاص
-# بخدمتها. بلا STAGING=1 هذا الملف إنتاجٌ حرفياً كما كان — لا أثر إطلاقاً.
-#   • المسموح دخوله في التجريبية: فئة admin فقط (حساب المدير) — بقية الفئات
-#     تُرفض من نقطة الدخول نفسها، وإنشاء الحسابات معطّل كلياً.
-#   • تلغرام معطّل كلياً في التجريبية: لا polling يتصادم مع الإنتاج ولا نسخ
-#     احتياطي تلغرامي، وإشعارات الويب تتجاهل TG_APP الفارغ بأمان (حرس موجود).
-# STAGING_MODE معرَّفة مبكراً أعلى الملف (v184b — قبل حارس BOT_TOKEN)
-_STAGING_ADMIN_ROLES = {ROLE_ADMIN}
 
 # الخيارات التي تُعرض على المستخدم الجديد عند طرق باب البوت لأول مرة
 ROLE_PICK_ORDER = (ROLE_SELLER, ROLE_STOCK, ROLE_MANAGER, ROLE_EXTERNAL)
@@ -12838,7 +12821,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "61"  # v185 = إصلاح جذري لعلة «جاري استعادة الجلستك… ولا يفتح» التي أرجعت المالك مرتين إلى v179 بطلب المالك: التبديل الحي (v168) كان يستبدل واجهة Pages بنسخة الخادم عبر document.write بعد اكتمال تحميل الصفحة — وهذا لا يستبدل المستند بشكل موثوق في متصفحات الويب الحديثة بل يُلَحِّق المحتوى، فتعيد سكربتات الصفحة الجديدة التصريح عن ثوابتها (const APP_VER…) فيموت السكربت الرئيسي وينشأ مستند هجين نصف ميت يُظهر سبلاش الاستعادة عالقاً — كل تغيير إصدار منذ v168 كان يكسر التطبيق على الجهاز والرجوع لنسخة مطابقة كان يخفي العلة فقط (أُثبت حياً بمحاكاة كاملة: الجلب سليم وWRITE-DONE ثم مستند هجين APP_VER قديم مع عناصر جديدة). الإصلاح في الواجهة: نهاية document.write نهائياً — التبديل يتحقق من حيوية الخادم وصفحة صالحة ثم ينقل حقيقياً (location.href) إلى الواجهة الحية على أصل الخادم نسخة نظيفة كاملة، مع حماية هبوط (لا تنقل لإصدار أقدم) وفشل يُكمل الإقلاع على النسخة الحالية (نداءات API متوافقة) فلا شاشة ميتة أبداً + فتحة أمان في سبلاش v94: استعادة معلقة فوق 25 ثاً تُخفي السبلاش وتُظهر تسجيل الدخول فلا يُحبس المستخدم أبداً + Cache-Control: no-store على الصفحة وسجل الخدمة ضد أي كاش WebView قديم. ولأول مرة تُسلَّم حزمة Pages محدثة (index.html بإصدار 61 + التبديل الجديد + جذر الخادم مثبت + اسم كاش sw.js يتجدد gp-v61) — الترتيب الحاسم للنشر: حزمة Pages أولاً ثم انتظار ≤15 دقيقة (تجديد كاش سجل الخدمة) ثم رفع bot.py، وعكس الترتيب يُشفى ذاتياً خلال ≤10 دقائق (انتهاء كاش Pages). السابق v184 = (1) حساب المالك الثابت بطلب المالك صراحةً: youssef_d1 بكلمة مروره الثابتة يُضمن عند كل إقلاع وعند كل محاولة دخول — إن غاب يُنشأ مديراً وإن انحرفت كلمة مروره/فئته أو أُوقف يُعاد فوراً بنفس دوال النظام (scrypt + pwa_set_password) بلا أي نظام جديد وبلمس صف المالك وحده؛ (2) حقيقة الإصدار: نصوص v74/v120 القديمة الجامدة (APP_VER وتذييل الدخول والإعدادات) تُستبدل وقت الخدمة برقم الإصدار الحي للخادم — كان يخدع المالك بأنه محدث بينما الإصلاحات لم تُرفع (الإنتاج كان على 57)؛ + إقلاع التجريبية بلا BOT_TOKEN/ADMIN_IDS (حارسا الاستيراد كانا يقتلان خدمة التجريبية — اكتشفه الإثبات الحي على قاعدة محلية قبل الوصول للمالك). السابق v183 = البيئة التجريبية (Staging) بأقل تغيير ممكن بطلب المالك: نفس الملف يخدم الإنتاج والتجريبية والفارق متغير STAGING=1 + DATABASE_URL منفصل على خدمة Render ثانية من فرع staging (بلا أي مشروع جديد ولا تكلفة): التجريبية بلا تلغرام كلياً (لا polling يتصادم مع الإنتاج ولا نسخ تلغرامي — الويب فقط) + بوابة دخول لفئة admin فقط برفض صريح 403 للبقية + تعطيل إنشاء الحسابات (تسجيل/بريد/Google) + مؤشر TEST VERSION (شريط شاشة الدخول + شارة ثابتة بلا اعتراض نقرات + بادئة العنوان + سطر الإصدار) + "staging" في /api/status للتحقق عن بعد. بلا STAGING=1 الإنتاج كما كان حرفياً (مُتحقق بمقارنة الناتج المقدم). السابق v182 = إصلاح عطل «لا يستجيب شيء» الجذري (التشخيص حي على الخادم الحي): (أ) واجهة الترحيل v177 كانت تظهر داخل التطبيق بعد مسح بيانات الجهاز لأن كشف APK يعتمد «; wv)» وحدها، وعنصر تحميل APK فيها يجاثم فوق زر «دخول» — انتهى الظهور التلقائي نهائياً + كشف أقوى (LeRoiStock/AndroidBridge)؛ (ب) كل 401 خلفي كان يستدعي showLogin فيمحو رسالة الخطأ ويفرغ كلمة المرور أثناء المحاولة — حارس شاشة الدخول في v94SessionLost + noKick لنداء الدخول فالأخطاء تظهر وتبقى والمدخلات تحترم. السابق v181 = إسكات مسار التحديث بالكامل بطلب المالك: بلا نافذة تحديث ولا toast ولا إعادة تحميل عمياء — عدم تطابق الإصدار يحدّث داخلياً مباشرة بمحاولة واحدة لكل إصدار في الجلسة (حارس ceram_supd_) ضد الحلقات + التبديل الحي بمهلة 6 ثوانٍ وحارسه يُكتب عند النجاح فقط + إصلاح حلقة reload اللانهائية عند root فارغ في صفحات Pages المجمّدة + سطر الإصدار بلا «جارٍ التحديث الآن…». الجذر: فشل التبديل الحي بعد النشر (خادم بارد) كان يفعل toast+reload من v168 وحارساً يُكتب قبل الجلب فيمنع النجاح — حلقة سبلاش/نافذة أخلطت الدخول. السابق v180 = نهاية إشعار «تحديث جديد v58» المزعج نهائياً بطلب المالك: حزم v57/v58 بُنيت ترقيعاً ثنائياً لم يرفع ثابت CURRENT_VERSION_CODE الداخلي في Update.kt (بقي أدنى من البيان) فبقي الغلاف يرى «نسخة أحدث» ويبلّغ عند كل فتح للأبد — الإصلاح من جهة الخادم بلا أي APK: تثبيت app_version.json على versionCode 55 (قيمة الإسكات المجرّبة منذ v172) فيصمت الإشعار على كل الجهازات المثبتة مع بقاء الحزمة الأخيرة متاحة يدوياً + تطبيق النمط الذي أعجب المالك (نمط «أهم مميزات المنتج» الهادئ المنظم): حوار «تحديث جديد» الداخلي صار بطاقات مميزات بأيقونة وعنوان ووصف مع «لاحقاً» تخفي نهائياً + قائمة الإشعارات الداخلية بطاقات أنظف (أيقونة في شارة + عنوان + وصف) مع الحفاظ الكامل على حذف التنبيهات v146. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "55"  # v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -14482,12 +14465,7 @@ _PWA_MIGRATE_JS = r"""/* ═══ v177: واجهة الترحيل المؤقت 
   function inApp() {
     try {
       var ua = navigator.userAgent || "";
-      /* v182: كشف أقوى للتطبيق الأصلي — كان فحص «; wv)» وحده قد يفشل حين يضبط
-         الغلاف وUA مخصصاً فيختفي الوسم، فتظهر واجهة الترحيل داخل التطبيق نفسه
-         فوق زر الدخول (سبب عطل «لا يستجيب شيء» بعد مسح بيانات الجهاز) */
-      if (/; wv\)/i.test(ua)) return true;
-      if (/LeRoiStock/i.test(ua)) return true;
-      if (window.AndroidBridge) return true;
+      if (/; wv\)/i.test(ua)) return true;           /* WebView التطبيق الأصلي */
       return false;
     } catch (e) { return false; }
   }
@@ -14570,11 +14548,15 @@ _PWA_MIGRATE_JS = r"""/* ═══ v177: واجهة الترحيل المؤقت 
     if (later) later.addEventListener("click", close);
   }
   function show() {
-    /* v182: نهاية الظهور التلقائي لواجهة الترحيل بطلب المالك — حملة الترحيل
-       انتهت والجميع على التطبيق الأصلي، والشاشة كانت تحجب زر الدخول فعلياً
-       بعد مسح بيانات الجهاز (العلامة leroi_app_migration_seen تُمسح مع البيانات
-       وعنصر تحميل APK فيها يجاثم فوق زر «دخول»). لا ظهور تلقائي إطلاقاً. */
-    return;
+    if (inApp() || seen()) return;
+    /* لا ننازع سبلاش استعادة الجلسة (v94) — ننتظر حتى يخفى بسقف 8 ثوانٍ */
+    var tries = 0;
+    (function wait() {
+      var v94 = document.getElementById("v94splash");
+      var busy = v94 && v94.style.display === "flex";
+      if (!busy || ++tries > 40) { try { build(); } catch (e0) {} return; }
+      setTimeout(wait, 200);
+    })();
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { setTimeout(show, 800); });
@@ -15170,7 +15152,7 @@ try {
 })();'''
 
 
-_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v185: فتحة أمان — لا حبس في السبلاش أبداً */\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; try { clearTimeout(_hatch); } catch (_hce) {} });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) {\n      /* v182: إن كنا أصلاً على شاشة الدخول فلا تُعَد رسمها — كان كل 401 خلفي يمحو رسالة الخطأ ويفرغ كلمة المرور أثناء محاولة الدخول نفسها */\n      try { if (document.getElementById("login").style.display !== "none") return; } catch (eg0) {}\n      try { showLogin(false); } catch (e0) {}\n      return;\n    }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
+_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
 
 
 _PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات احترافية بأفاتار، وعمود الاسم مضمون العرض */\n.u96card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden}\n.u96card.off{opacity:.7}\n.u96top{display:flex;align-items:center;gap:11px;padding:12px 13px}\n.u96top .badge{flex:none}\n.u96avwrap{position:relative;flex:none;width:48px;height:48px}\n.u96avph{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;background:var(--u96t,#64748b);user-select:none}\n.u96avimg{position:absolute;inset:0;width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card)}\n.u96main{flex:1 1 170px;min-width:0}\n.u96nm{font-weight:800;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}\n.u96nm .conline{color:var(--ok);font-size:11px}\n.u96sub{font-size:11.5px;color:var(--mut);margin-top:3px;line-height:1.8;overflow-wrap:anywhere;word-break:break-word}\n.u96rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;margin-inline-end:6px;white-space:nowrap}\n.u96rk.rk-admin{background:rgba(240,178,50,.20);color:#8a5c00}\n.u96rk.rk-manager{background:rgba(88,101,242,.14);color:#4752c4}\n.u96rk.rk-stock{background:rgba(2,132,199,.13);color:#0369a1}\n.u96rk.rk-seller{background:rgba(35,165,90,.13);color:#1a8b4a}\n.u96rk.rk-external{background:rgba(235,69,158,.12);color:#c2257f}\n.u96rk.rk-customer{background:var(--chip);color:var(--mut)}\n.u96acts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px dashed var(--line);background:var(--bg)}\n.u96req{background:var(--card);border:1px solid var(--line);border-inline-start:3px solid var(--brand);border-radius:14px;padding:11px 13px;margin-bottom:8px;box-shadow:var(--shadow)}\n.u96req .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}\n.u96sech{margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)}\n'
@@ -20438,17 +20420,6 @@ _PWA_V174_JS = r'''/* ═══ v174: قسم «حساب Google» داخل صفح
 })();'''
 
 
-# ── v180: بطاقات «أهم مميزات النسخة الجديدة» — تُحقن في حوار التحديث الداخلي
-# (النمط الهادئ المنظم الذي أعجب المالك — تُحدَّث يدوياً مع كل إصدار)
-PWA_UPD_CARDS = [
-    {"ico": "🔕", "t": "نهاية إشعار «تحديث جديد» المزعج نهائياً",
-     "d": "الإشعار كان يتكرر عند كل فتح لأن رقم النسخة الداخلي في حزم الترقيع لم يُرفع — عولج من جهة الخادم بلا أي تثبيت جديد."},
-    {"ico": "🪄", "t": "تحديث بنمط بطاقات هادئة ومنظمة",
-     "d": "أهم مميزات كل نسخة تُعرض بطاقات مرتبة سهلة الفهم — و«لاحقاً» تخفيها نهائياً لنفس الإصدار."},
-    {"ico": "🔔", "t": "قائمة إشعارات داخلية أنظف",
-     "d": "كل إشعار الآن بطاقة بأيقونة في شارة وعنوان ووصف واضحين — قراءة أسرع بلا فوضى."},
-]
-
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -21102,190 +21073,6 @@ _PWA_HTML_PATCHES = (
     # 94) v174: قسم «حساب Google» داخل صفحة الإعدادات + فحص التحديث أسفله
     ('</script>\n</body>',
      '</script>\n<style id="v174css">' + _PWA_V174_CSS + '</style>\n<script id="v174js">\n' + _PWA_V174_JS + '\n</script>\n</body>'),
-    # 95) v180: حوار «تحديث جديد» بنمط البطاقات الهادئة المنظمة (طلب المالك:
-    #     نهاية النافذة الصارمة — «أهم المميزات» بطاقات بأيقونة وعنوان ووصف)
-    ('''<dialog id="dlgUpd">
-  <div class="dh">🔄 تحديث جديد</div>
-  <div class="db">
-    <p style="margin:0 0 12px;font-size:14px;color:var(--mut);text-align:center">
-      يوجد تحديث جديد للتطبيق.<br>يرجى الضغط على «نعم» للتحميل — التحديث داخلي ولا يحتاج إعادة تثبيت.</p>
-    <button class="btn" id="btnUpdYes">✅ نعم، حدّث الآن</button>
-    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً</button>
-  </div>
-</dialog>''',
-     '''<dialog id="dlgUpd">
-  <div class="dh">✨ تحديث جديد — أهم المميزات</div>
-  <div class="db">
-    <div id="updCards" class="ucards"></div>
-    <p style="margin:10px 0 12px;font-size:12.5px;color:var(--mut);text-align:center">
-      التحديث داخلي بنقرة واحدة — بلا إعادة تثبيت، وجلستك تبقى كما هي.</p>
-    <button class="btn" id="btnUpdYes">⬆️ تحديث الآن</button>
-    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً — لا تُشعرني بهذه النسخة</button>
-  </div>
-</dialog>
-<script>window.PWA_UPD_CARDS=__PWA_UPD_CARDS__;</script>'''),
-    # 96) v180: CSS البطاقات — قائمة الإشعارات وحوار التحديث (متوافقة مع الثيمات
-    #     وغير مماسة لقاعدة حذف التنبيهات v146 التي تنتصر بالمعرّف)
-    ('''.nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
-.nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
-.nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
-.nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}''',
-     '''.nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
-.nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
-.nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
-.nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}
-/* v180: بطاقات هادئة منظمة (نمط «أهم مميزات المنتج») — الإشعارات وحوار التحديث */
-.nrow.ncard{display:flex;align-items:flex-start;gap:10px;padding:11px 12px}
-.ncard .nico{font-size:18px;line-height:1.25;flex:none;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:var(--brandsoft);border-radius:10px}
-.ncard .nbody{min-width:0;flex:1}
-.ncard .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
-.ncard .nb{font-size:13px;white-space:pre-line;margin-top:3px;line-height:1.6}
-.ncard .nm{font-size:11.5px;color:var(--mut);margin-top:5px}
-.ucards{display:flex;flex-direction:column;gap:8px;margin-bottom:2px}
-.ucards .uc{display:flex;align-items:flex-start;gap:10px;background:var(--brandsoft);border:1px solid var(--edline);border-radius:14px;padding:10px 12px}
-.ucards .uc .uico{font-size:19px;line-height:1.3;flex:none}
-.ucards .uc .ut{font-weight:800;font-size:13.5px;color:var(--edink);line-height:1.5}
-.ucards .uc .ud{font-size:12.5px;color:var(--mut);line-height:1.6;margin-top:2px}'''),
-    # 97) v180: قائمة الإشعارات — بطاقة بأيقونة في شارة + عنوان + وصف
-    #     (الصف يبقى .nrow كما هو: حذف التنبيهات v146 وترتيبها يبقيان سليمين)
-    ('''  box.innerHTML = items.map((n) =>
-    '<div class="nrow"><div class="nt">' + (KIND_IC[n.kind] || "🔔") + " " + esc(n.title) + '</div>'
-    + (n.body ? '<div class="nb">' + esc(n.body) + '</div>' : "")
-    + '<div class="nm">' + esc(n.actor || "") + (n.actor ? " • " : "")
-    + (n.source === "web" ? "من التطبيق" : "من تلغرام")
-    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div>').join("");''',
-     '''  box.innerHTML = items.map((n) =>
-    '<div class="nrow ncard"><div class="nico">' + (KIND_IC[n.kind] || "🔔") + '</div>'
-    + '<div class="nbody"><div class="nt">' + esc(n.title) + '</div>'
-    + (n.body ? '<div class="nb">' + esc(n.body) + '</div>' : "")
-    + '<div class="nm">' + esc(n.actor || "") + (n.actor ? " • " : "")
-    + (n.source === "web" ? "من التطبيق" : "من تلغرام")
-    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div></div>').join("");'''),
-    # 98) v180: تعبئة بطاقات التحديث من الخادم (PWA_UPD_CARDS) — بديل احتياطي
-    #     عام إن لم تُعرَّف البطاقات، فلا يعود الحوار فارغاً أبداً
-    ('''$("#btnUpdYes").addEventListener("click", () => {
-  try { $("#dlgUpd").close(); } catch (e) {}
-  doAppUpdate();
-});''',
-     '''function renderUpdCards() {   /* v180: بطاقات «أهم مميزات النسخة الجديدة» */
-  const box = $("#updCards");
-  if (!box) return;
-  const cards = (window.PWA_UPD_CARDS && window.PWA_UPD_CARDS.length)
-    ? window.PWA_UPD_CARDS
-    : [{ ico: "🆕", t: "نسخة محسّنة من التطبيق", d: "تحديث داخلي سريع يحفظ جلستك وبياناتك كما هي." }];
-  box.innerHTML = cards.map((c) =>
-    '<div class="uc"><div class="uico">' + esc(c.ico || "✨") + '</div><div>'
-    + '<div class="ut">' + esc(c.t || "") + '</div>'
-    + (c.d ? '<div class="ud">' + esc(c.d) + '</div>' : "")
-    + '</div></div>').join("");
-}
-try { renderUpdCards(); } catch (e) {}
-$("#btnUpdYes").addEventListener("click", () => {
-  try { $("#dlgUpd").close(); } catch (e) {}
-  doAppUpdate();
-});'''),
-
-    # 129) v181: doAppUpdate صامت — بلا toast، ومحاولة واحدة لكل إصدار في
-    #      الجلسة ضد أي حلقة إعادة تحميل (طلب المالك: تحديث مباشر بلا علامة)
-    ('''function doAppUpdate() {
-  try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}
-  toast("جارٍ التحديث…");
-  if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }
-  swCleanup();''',
-     '''function doAppUpdate() {
-  /* v181: تحديث داخلي صامت — بلا تنبيه ولا نافذة، ومحاولة واحدة لكل إصدار
-     ضد أي حلقة إعادة تحميل (طلب المالك: التحديث مباشر دون علامة تحديث) */
-  try {
-    var _uv = S.serverVersion || "upd";
-    if (sessionStorage.getItem("ceram_supd_" + _uv)) return;
-    sessionStorage.setItem("ceram_supd_" + _uv, "1");
-  } catch (e) {}
-  try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}
-  if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }
-  swCleanup();'''),
-    # 130) v181: checkAppUpdate بلا أي نافذة — عدم تطابق الإصدار = تحديث صامت فوري
-    ('''    if (v && v !== APP_VER && v !== S.updDismissed
-        && v !== (function () { try { return localStorage.getItem("ceram_upd_dis") || ""; } catch (e) { return ""; } })()) {
-      const dlg = $("#dlgUpd");
-      if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
-      return true;
-    }''',
-     '''    if (v && v !== APP_VER && v !== S.updDismissed) {
-      /* v181: بلا أي نافذة أو علامة — التطبيق يحدّث نفسه داخلياً مباشرة */
-      doAppUpdate();
-      return true;
-    }'''),
-    # 131) v181: التبديل الحي بمهلة إحباط 6 ثوانٍ (خادم بارد لا يعلّق شيئاً)
-    #      والحارس يُكتب عند النجاح فقط — الفشل يعيد المحاولة تلقائياً لاحقاً
-    ('''    try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
-    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
-      .then(function (html) {
-        html = String(html);
-        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");''',
-     '''    var _ac = null; try { if (window.AbortController) _ac = new AbortController(); } catch (_ace) {}
-    var _to = _ac ? setTimeout(function () { try { _ac.abort(); } catch (_ate) {} }, 6000) : null;
-    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit", signal: _ac ? _ac.signal : undefined })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
-      .then(function (html) {
-        try { if (_to) clearTimeout(_to); } catch (_cte) {}
-        /* v181: الحارس يُكتب عند النجاح فقط — الفشل يعيد المحاولة في الفحص التالي */
-        try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
-        html = String(html);
-        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");'''),
-    # 132) v181: فشل التبديل = تخطٍّ صامت — كانت toast + إعادة تحميل بعد 700ms
-    #      وهي من مصدرَي حلقة «سبلاش → إعادة تحميل → سبلاش» التي أخلطت الدخول
-    ('''      .catch(function () {
-        toast("تعذر التحديث التلقائي — سأكمل على النسخة الحالية، وجرّب «فحص التحديث» لاحقاً.", true);
-        setTimeout(function () { try { location.reload(); } catch (_re) {} }, 700);
-      });''',
-     '''      .catch(function () {
-        /* v181: لا تنبيه ولا إعادة تحميل — تخطٍّ صامت وإعادة محاولة لاحقة */
-        try { if (_to) clearTimeout(_to); } catch (_cte2) {}
-      });'''),
-    # 133) v181: root فارغ لم يكن reload بلا حارس — حلقة لا نهائية لصفحات Pages
-    #      المجمّدة (CERAM_API_ROOT="") — الآن تخطٍّ صامت بلا أي إعادة تحميل
-    ('''    if (!root) { location.reload(); return true; }''',
-     '''    if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */'''),
-    # 148) v185: نهاية عصر document.write بطلب المالك — الكتابة بعد اكتمال تحميل الصفحة لا
-    #      تستبدل المستند بشكل موثوق في متصفحات الويب الحديثة: تُلَحَّق المحتويات فتعيد سكربتات
-    #      الصفحة الجديدة التصريح عن ثوابتها (const APP_VER…) فيموت السكربت الرئيسي وينشأ مستند
-    #      هجين نصف ميت يُظهر سبلاش «جاري استعادة الجلستك…» عالقاً — سبب «لا يستجيب شيء» عند كل
-    #      تغيير إصدار منذ v168 والرجوع لنسخة مطابقة كان يخفيه فقط (أُثبت حياً: WRITE-DONE ثم مستند هجين)
-    ('''document.open(); document.write(html); document.close();''',
-     '''try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v185: تنقّل حقيقي — نسخة كاملة نظيفة من أصل الخادم، نهاية المستندات الهجينة */'''),
-    # 149) v185: فشل التبديل يُكمل الإقلاع على النسخة الحالية (نداءات API متوافقة) — كان
-    #      return true يوقف الإقلاع مباشرة فيتحول أي فشل شبكة عابر إلى شاشة ميتة
-    ('''catch (_cte2) {}
-      });
-    return true;''',
-     '''catch (_cte2) {}
-      });
-    return false;   /* v185: الإقلاع يكمل دائماً على النسخة الحالية حتى يصلك التنقل — لا شاشة ميتة أبداً */'''),
-    # 150) v185: حماية هبوط — لا تنقّل لإصدار أقدم من الواجهة الحالية (حوار «تحديث» كان
-    #      يستطيع إجبار الجهاز على النزول لخادم أقدم بعد رجوع المالك للنسخ السابقة)
-    ('''if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */''',
-     '''if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */
-    if ((parseFloat(v) || 0) <= (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) { return false; }   /* v185: لا هبوط للنسخة */'''),
-
-    # 134) v181: سطر الإصدار في الإعدادات بلا عبارة «جارٍ التحديث الآن…»
-    #      (لا علامة تحديث — التحديث يجري صامتاً وينتهي وحده)
-    ('''    if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");''',
-     '''    if (about) about.textContent = "الإصدار " + APP_VER + (v && v !== APP_VER ? " — الخادم " + v : "");'''),
-
-    # 135) v182: noKick لنداء الدخول — فشل الدخول المتوقع لا يشعل آفق الجلسة ولا يعيد رسم النموذج ويمحو المدخلات
-    ('''    const r = await api("/api/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
-    });''',
-     '''    /* v182: noKick — فشل الدخول (401 متوقع) لا يجب أن يشعل آفق الجلسة
-       (v94SessionLost) الذي كان يعيد رسم شاشة الدخول ويمحو ما كتبه المستخدم
-       فلا يظهر أي أثر للضغط على «دخول» */
-    const r = await api("/api/login", {
-      noKick: true,
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
-    });'''),
 )
 
 
@@ -22418,14 +22205,6 @@ _PWA_V167_CSS = r'''
 #p167Confirm{width:100%;margin-top:6px;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;box-sizing:border-box}
 '''
 
-# v183: CSS مؤشر النسخة التجريبية (يُحقن فقط حين STAGING=1 — الإنتاج نظيف حرفياً)
-_PWA_STAGING_TEST_CSS = (
-    '#login{position:relative}\n'
-    '#testRibbon{position:absolute;top:0;left:0;right:0;z-index:5;background:repeating-linear-gradient(45deg,#b3261e,#b3261e 14px,#8f1d17 14px,#8f1d17 28px);color:#fff;font-weight:900;font-size:12.5px;text-align:center;padding:8px 14px;letter-spacing:.3px;box-shadow:0 2px 10px rgba(0,0,0,.35)}\n'
-    '#testChip{position:fixed;top:8px;left:8px;z-index:2147480000;background:#b3261e;color:#fff;font-weight:900;font-size:11px;padding:4px 10px;border-radius:999px;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none;opacity:.95}\n'
-    '@media (max-width:640px){#testRibbon{font-size:11px;padding:7px 10px}}\n'
-)
-
 def _pwa_inject_floating_layers(out):
     """v141: حصن الحقن الذاتي — طبقات الواجهة العائمة (v132 زرا ＋/− السريعان،
     v135 الإحساس الذكي، v137+v138 البلاغات ومعالجتها، v141 شريط التذكير
@@ -22491,27 +22270,6 @@ def _pwa_inject_floating_layers(out):
         # من قائمة المستخدمين المحدّثة من الخادم (S.usrLast) فتعكس الحقيقة فوراً.
         if 'id="v160ui"' not in html:
             add += ('<script id="v160ui">\n' + _PWA_V160_JS + '\n</script>\n')
-        # v184: حقيقة الإصدار — نصوص v74/v120 القديمة الجامدة في pwa.html كانت
-        # تخدع المالك بأنه على إصدار حديث بينما الخادم على إصدار آخر — كلها
-        # تُستبدل وقت الخدمة برقم الإصدار الحي للخادم فلا لبس بعد اليوم.
-        html = html.replace('const APP_VER = "v74";',
-                            'const APP_VER = "' + PWA_VERSION + '";', 1)
-        html = html.replace('>الإصدار v74<', '>الإصدار ' + PWA_VERSION + '<', 1)
-        html = html.replace('textContent = "الإصدار v74"',
-                            'textContent = "الإصدار " + APP_VER', 1)
-        html = html.replace('الإصدار v120', 'الإصدار ' + PWA_VERSION, 1)
-        # v183: مؤشر النسخة التجريبية — شريط TEST VERSION أعلى شاشة الدخول
-        # (مطلق داخل #login فلا يزاحم تخطيطها) + شارة ثابتة صغيرة فوق الواجهة
-        # (pointer-events:none فلا تحجب أي زر) + بادئة عنوان الصفحة + سطر
-        # الإصدار في الإعدادات — لا يُقدَّم أي منه في الإنتاج حرفياً أبداً.
-        if STAGING_MODE and 'id="testRibbon"' not in html:
-            html = html.replace("<title>", "<title>🧪 [TEST] ", 1)
-            html = html.replace('about.textContent = "الإصدار " + APP_VER',
-                                'about.textContent = "🧪 TEST — الإصدار " + APP_VER', 1)
-            html = html.replace('<div id="login">',
-                                '<div id="login"><div id="testRibbon" dir="rtl">🧪 TEST VERSION — نسخة تجريبية للتجربة فقط — بيانات المحل الحقيقية منفصلة تماماً</div>', 1)
-            add += ('<style id="testRibbonCss">' + _PWA_STAGING_TEST_CSS + '</style>\n'
-                    '<div id="testChip" dir="rtl">🧪 TEST</div>\n')
         if not add:
             return out
         pos = html.rindex("</body>")
@@ -22546,10 +22304,7 @@ def _pwa_read_html():
         if _pwa_html_cache["mtime"] != mtime or _pwa_html_cache["body"] is None:
             with open(PWA_HTML_PATH, "rb") as f:
                 _pwa_html_cache = {"mtime": mtime, "body": _pwa_patch_html(f.read())}
-        return (_pwa_html_cache["body"]
-                .replace(b"__PWA_VER__", PWA_VERSION.encode("utf-8"))
-                .replace(b"__PWA_UPD_CARDS__",
-                         json.dumps(PWA_UPD_CARDS, ensure_ascii=False).encode("utf-8")))
+        return _pwa_html_cache["body"].replace(b"__PWA_VER__", PWA_VERSION.encode("utf-8"))
     except Exception as e:
         logging.warning("[PWA] pwa.html missing: " + str(e))
         return ("<!doctype html><html dir=rtl lang=ar><meta charset=utf-8>"
@@ -23055,72 +22810,6 @@ _PWA_EMOJI_RX = re.compile(
 
 def _pwa_norm_username(u):
     return re.sub(r"[\s@]+", "", _PWA_EMOJI_RX.sub("", str(u or ""))).lower()
-
-
-# ═══ v184: حساب المالك الثابت — بيانات لا تقبل العبث ═══
-# طلب المالك صراحةً: اسم الدخول وكلمة المرور الخاصة به ثابتان دائماً.
-# الآلية تعيد استخدام نظام المصادقة الموجود حرفياً (scrypt نفسه + جدولا
-# users/pwa_auth نفسهما + pwa_set_password نفسه) — بلا أي نظام جديد:
-#   • الإقلاع: يُضمن الحساب (إنشاء إن غاب، إصلاح كلمة المرور/الفئة/الإيقاف
-#     إن انحرفت) — فيصلح نفسه حتى بعد استرجاع نسخة قديمة أو قاعدة جديدة.
-#   • كل محاولة دخول بهذا الاسم: ضمان فوري قبل الفحص فلا يُحبس المالك أبداً.
-#   • يلمس صف المالك وحده — لا يمس أي مستخدم آخر ولا أي بيانات منتجات/فواتير.
-_OWNER_LOGIN = "youssef_d1"
-_OWNER_PASSWORD = "Youssef199633"
-_OWNER_TG = 8055044828          # معرف تلغرام الحقيقي للمالك (من حسابه القائم)
-_OWNER_NAME = "يوسف — المالك"
-
-
-def _pwa_ensure_owner():
-    """v184: ضمان حساب المالك الثابت — يعيد user_id أو None عند تعذر القاعدة.
-    ينفذ عند كل إقلاع وعند كل محاولة دخول باسم المالك. إن وُجد الصف يُحدّث
-    الفئة/التفعيل فقط، وكلمة المرور تُعاد فقط إن انحرفت عن الثابتة."""
-    pw_ok = False
-    uid = None
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT a.user_id, a.pass_hash FROM pwa_auth a "
-                "WHERE lower(a.username) = %s LIMIT 1", (_OWNER_LOGIN.lower(),))
-            row = cur.fetchone()
-            if row:
-                uid = row[0]
-                pw_ok = _pwa_verify_password(_OWNER_PASSWORD, row[1])
-                cur.execute(
-                    "UPDATE users SET role = %s, active = TRUE, banned = FALSE "
-                    "WHERE id = %s", (ROLE_ADMIN, uid))
-            else:
-                cur.execute("SELECT id FROM users WHERE telegram_id = %s LIMIT 1",
-                            (_OWNER_TG,))
-                r2 = cur.fetchone()
-                if r2:
-                    uid = r2[0]
-                    cur.execute(
-                        "UPDATE users SET role = %s, active = TRUE, banned = FALSE "
-                        "WHERE id = %s", (ROLE_ADMIN, uid))
-                else:
-                    cur.execute(
-                        "INSERT INTO users (telegram_id, username, first_name, role, "
-                        "active, banned, identity_verified) "
-                        "VALUES (%s, %s, %s, %s, TRUE, FALSE, TRUE) RETURNING id",
-                        (_OWNER_TG, _OWNER_LOGIN, _OWNER_NAME, ROLE_ADMIN))
-                    uid = cur.fetchone()[0]
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        release_connection(conn)
-    if not pw_ok:
-        # نفس دالة النظام: تزرع كلمة المرور بـ scrypt وتلغي الجلسات القديمة —
-        # تُستدعى فقط عند الغياب/الانحراف فلا تُهدر جلسة سليمة أبداً
-        pwa_set_password(uid, _OWNER_LOGIN, _OWNER_PASSWORD)
-    logging.info("[PWA][v184] حساب المالك الثابت مضمون (user_id=%s)", uid)
-    return uid
 
 
 def _pwa_init_tables():
@@ -28249,9 +27938,9 @@ async def _pwa_auth_user(request):
 async def pwa_page_handler(request):
     if request.path == "/sw.js":
         return web.Response(text=_PWA_SW_JS.replace("__PWA_VER__", PWA_VERSION), content_type="application/javascript",
-                            charset="utf-8", headers={"Cache-Control": "no-store"})
+                            charset="utf-8", headers={"Cache-Control": "no-cache"})
     return web.Response(body=_pwa_read_html(), content_type="text/html", charset="utf-8",
-                        headers={"Cache-Control": "no-store"})
+                        headers={"Cache-Control": "no-cache"})
 
 
 async def pwa_manifest_handler(request):
@@ -28352,13 +28041,6 @@ async def pwa_login_handler(request):
         mins = max(1, int(lk.retry_after // 60) + 1)
         return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
                         + " دقيقة ثم أعد المحاولة.")
-    # v184: حساب المالك الثابت — ضمان فوري قبل الفحص حتى لا يُحبس المالك
-    # أبداً (تغيير عرضي لكلمة المرور، إيقاف، أو استرجاع نسخة قديمة يصلح نفسه هنا)
-    try:
-        if _pwa_norm_username(username_raw) == _OWNER_LOGIN:
-            await _pwa_run(_pwa_ensure_owner)
-    except Exception:
-        pass
     ok, result, err = await _pwa_run(_pwa_api_login,
                                      username_raw, str(body.get("password", "")))
     if not ok:
@@ -28377,14 +28059,6 @@ async def pwa_login_handler(request):
         # v35: من لم يؤكد بريده بعد يُوجّه لشاشة الرمز (الكود يميّزه للواجهة) — أُلغي في v39
         return _pwa_err(401, err)
     token, user = result
-    # v183: بوابة النسخة التجريبية — فئة admin فقط تُنشئ جلسة؛ بقية الفئات
-    # تُرفض رفضاً صريحاً قبل إنشاء أي جلسة، بلا أي مساس بنظام الصلاحيات نفسه.
-    if STAGING_MODE and str(user.get("role", "")) not in _STAGING_ADMIN_ROLES:
-        try:
-            await _pwa_run(_audit_log, "staging_login_denied", user, ip=ip)
-        except Exception:
-            pass
-        return _pwa_err(403, "🧪 النسخة التجريبية متاحة لحساب المدير فقط — بيانات المحل الحقيقية خارج هذه النسخة تماماً.")
     await _pwa_run(_pwa_login_clear, key)
     await _pwa_run(_audit_log, "login", user, ip=ip)
     # v48: رمز «تذكّرني» — يولد مع كل دخول ناجح لدخول بضغطة لاحقاً
@@ -28431,8 +28105,6 @@ async def pwa_register_handler(request):
     """v39: طلب انضمام جديد بلا بريد — اسم كامل + اسم دخول + رقم سر قوي + فئة.
     الطلب يُحفظ «بانتظار موافقة الإدارة» ويُشعَر المدراء فوراً (تلغرام + جرس التطبيق).
     بلا SMTP وبلا رموز — إعداد صفري."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     try:
         body = await request.json()
     except Exception:
@@ -29441,8 +29113,6 @@ async def pwa_google_ot_handler(request):
 
 async def pwa_google_join_handler(request):
     """إرسال الفئة المختارة لطلب انضمام Google (عام — بمفتاح ot)."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     try:
         body = await request.json()
         ot = str(body.get("ot", "")).strip()
@@ -29533,8 +29203,6 @@ async def pwa_google_claim_handler(request):
     """v165: ربط بريد Google بحساب قائم (عام بمفتاح join-ot + إثبات ملكية
     باسم الدخول وكلمة المرور القديمة). عند النجاح: جلسة كاملة للحساب الأصلي
     نفسه — وفي المرات القادمة يكفي اختيار Gmail دون كلمة المرور."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     ip = request.remote or "؟"
     key = "gclaim|" + ip
     try:
@@ -30577,8 +30245,6 @@ def _pwa_api_audit_list(actor):
 
 async def pwa_register_email_handler(request):
     """POST /api/register/email — التسجيل بالبريد (عام + معدل محاولات)."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     ip = request.remote or "؟"
     try:
         body = await request.json()
@@ -35413,7 +35079,7 @@ async def pwa_status_handler(request):
         has = await _pwa_run(_pwa_has_accounts)
     except Exception:
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
-    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION, "staging": STAGING_MODE,
+    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
                     "theme": _org_theme_get(),   # v120: الثيم المؤسسي — يصل حتى شاشة الدخول
                     "storage": ("supabase" if _supabase_enabled() else "db"),  # v89: وضع التخزين
                     "self_register": _pwa_self_register_enabled(),
@@ -37188,7 +36854,6 @@ if __name__ == "__main__":
     # v88: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
-                 + (" [STAGING — TEST]" if STAGING_MODE else "")
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
@@ -37307,7 +36972,7 @@ if __name__ == "__main__":
                             + " product(s)")
     except Exception as _sync_boot_err:
         logging.error("[STARTUP][v80] deficit sync failed: " + str(_sync_boot_err))
-    tg_app = None if STAGING_MODE else build_application()   # v183: التجريبية بلا تلغرام إطلاقاً
+    tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
         port = render_port or 10000
@@ -37336,19 +37001,6 @@ if __name__ == "__main__":
         async def on_startup(aio_app):
             global _startup_restore_notice, TG_APP
             _pwa_set_main_loop()  # v40: تثبيت الحلقة الرئيسية مبكراً للجدولة من الخيوط
-            try:
-                await _pwa_run(_pwa_ensure_owner)   # v184: حساب المالك الثابت عند كل إقلاع
-            except Exception as _own_e:
-                logging.warning("[PWA][v184] ضمان المالك تأخر (القاعدة غير جاهزة بعد): "
-                                + str(_own_e))
-            if STAGING_MODE:
-                # v183: التجريبية — الويب فقط: لا توكن تلغرام أصلاً (بناء التطبيق
-                # كان سينهار)، لا polling يتصادم مع الإنتاج، لا نسخ احتياطي
-                # تلغرامي. TG_APP يبقى None وحرساته الموجودة في مسارات الإشعارات
-                # تتجاهله بأمان، والنسخ الاحتياطي يتم من داخل التطبيق (المتصفح).
-                print("[BOT] STAGING mode — web-only: Telegram polling + daily auto-backup disabled")
-                asyncio.create_task(_keep_alive(aio_app))
-                return
             await tg_app.initialize()
             TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
             await tg_app.start()
@@ -37370,8 +37022,6 @@ if __name__ == "__main__":
             print("[BOT] Daily auto-backup enabled (17:00 Algeria time, once per day)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
-            if STAGING_MODE:
-                return
             await tg_app.updater.stop()
             await tg_app.stop()
             await tg_app.shutdown()
