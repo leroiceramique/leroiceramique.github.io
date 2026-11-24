@@ -46,6 +46,13 @@ html[data-theme="dark"]{
   --line:#3d3f45; --chip:#383a40;
   --shadow:0 2px 4px rgba(0,0,0,.40), 0 4px 16px rgba(0,0,0,.25);
 }
+/* ═══ v186: طبقة ثيم «إزي باور أزرق ذهبي» — تُفعَّل تلقائياً عند اختيار الهوية ═══
+   على صورة المرجع: بطاقات سماوية فاتحة بحواف زرقاء ناعمة + رؤوس أقسام بحقول زرقاء صريحة بنص أبيض */
+html[data-org="ezy"] .card{background:#f3f9fe;border-color:#d8e9f8}
+html[data-theme="dark"][data-org="ezy"] .card{background:#17293c;border-color:#28425c}
+html[data-org="ezy"] .sect{background:var(--brand);color:#fff;border-radius:11px;padding:7px 12px}
+html[data-theme="dark"][data-org="ezy"] .sect{background:var(--brandsoft);color:var(--brand)}
+html[data-org="ezy"] h2.vt{color:var(--h2)}
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
 body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
@@ -587,6 +594,12 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
         <div id="orgThemeGrid" class="thgrid"></div>
         <button class="btn" id="btnOrgThemeSave">✨ اعتماد ثيمي الشخصي</button>
       </div>
+      <!-- v187: إدارة إصدارات التطبيق — للمالك فقط -->
+      <div class="card" id="relCard" style="display:none;margin-bottom:12px">
+        <p class="sect">🚢 إدارة إصدارات التطبيق</p>
+        <p class="hint" style="margin:2px 0 10px">اعتماد بنقرة واحدة: الشاشة تعرض إصدار المخزون الأصلي وإصدار النسخة التجريبية — زر واحد يُصدر التحديث الناجح للمخزون الأصلي، وزر آخر يحذف أي تجربة غير مقنعة فلا يمكن دمجها بالخطأ.</p>
+        <button class="btn" id="btnRelOpen">🚀 إدارة الإصدارات والاعتماد</button>
+      </div>
       <div class="card" style="margin-bottom:12px">
         <p class="sect">🔒 الأمان والحساب</p>
         <button class="btn gray" id="btnMyPass">🔑 تغيير كلمة المرور</button>
@@ -594,6 +607,51 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
       </div>
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
       <p class="hint" id="setAbout">الإصدار 02</p>
+    </section>
+    <!-- v190: لوحة إدارة الإصدارات المبسطة — زر اعتماد واحد وزر حذف واحد والتفاصيل مطوية (المالك) -->
+    <section class="view" id="v-rel">
+      <h2 class="vt">إدارة إصدارات التطبيق</h2>
+      <div id="relStagingNote" class="card" style="display:none;margin-bottom:12px;border-color:var(--gold,#f0b429)">
+        <p class="hint" style="margin:0">🧪 أنت على خدمة التجريبية — الاعتماد من هنا مسموح مؤقتاً كتمهيد لأول نقل (الإنتاج لم يحمل لوحة الإصدارات بعد)؛ بعد أول دمج ستعمل عمليات النقل من خدمة الإنتاج وحدها.</p>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <p class="sect">📋 حالة الإصدارين</p>
+        <div class="row2" style="gap:10px;margin-bottom:10px">
+          <div class="stat" id="relProd" style="flex:1"><b>🏭 المخزون الأصلي (الإنتاج)</b><div id="relProdV" class="hint">—</div></div>
+          <div class="stat" id="relStg" style="flex:1"><b>🧪 النسخة التجريبية</b><div id="relStgV" class="hint">—</div></div>
+        </div>
+        <p class="hint" id="relState" style="margin:0;font-weight:700">اضغط «فحص التحديثات» لعرض الحالة الحية.</p>
+        <p class="hint" id="relMsg" style="display:none;margin:8px 0 0;font-weight:700"></p>
+      </div>
+      <!-- v190: الزران الرئيسيان — يظهران فقط عند وجود تحديث تجريبي غير معتمد -->
+      <button class="btn" id="btnRelApprove" style="display:none;padding:16px;font-size:16.5px;font-weight:800">✅ اعتماد التحديث وإصداره للمخزون الأصلي</button>
+      <button class="btn red" id="btnRelDiscard" style="display:none;margin-top:10px">🗑 حذف إصدارات التجريبية غير المعتمدة</button>
+      <div class="row2" style="margin-top:12px;align-items:center">
+        <button class="btn gray" id="btnRelCheck">🔄 فحص التحديثات</button>
+        <span class="badge n" id="relToken">—</span>
+      </div>
+      <!-- v190: كل التفاصيل التقنية داخل قسم مطوي — لا تفتحه إلا عند الحاجة -->
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-weight:700">🔧 التفاصيل التقنية — البوابات والفروق والسجل (اضغط للفتح)</summary>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">🚦 بوابات ما قبل الدمج</p>
+          <p class="hint" id="relGatesSum">تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع الاعتماد.</p>
+          <div id="relGates"></div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">📦 الفرق بين التجريبية والإنتاج</p>
+          <p class="hint" id="relDiffSum">اضغط «فحص التحديثات» لجلب المقارنة الرسمية من GitHub.</p>
+          <div id="relFiles"></div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">📝 كوميتات التجريبية فوق الإنتاج</p>
+          <div id="relCommits"><p class="empty">اضغط «فحص التحديثات» أولاً.</p></div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">🗂️ سجل عمليات النقل</p>
+          <div id="relHist"><p class="empty">جارٍ التحميل…</p></div>
+        </div>
+      </details>
     </section>
   </main>
   <nav class="tabs">
@@ -974,11 +1032,20 @@ const ORG_THEMES = {
              _orgDerive("#229ed9", "#1c8cb8", "#e3f2fa", "#1c8cb8", "#54b9ee", "#2aabee", "#0b2a3d")),
   spotify:  Object.assign({ label: "سبوتيفاي أخضر ليلي" },
              _orgDerive("#14a34a", "#0e7d38", "#e0f5e8", "#0e7d38", "#1ed760", "#17b34c", "#0a2e18")),
+  /* ═══ v186: إزي باور أزرق ذهبي — على صورة مرجع EzyPower: أزرق حيوي + ذهبي حقيقي للتمييز ═══ */
+  ezy:      Object.assign({ label: "إزي باور أزرق ذهبي", dot: ["#1477d2", "#f0b429"] },
+             { light: { brand:"#1477d2", brand2:"#0d5ea6", brandsoft:"#e8f3fc", h1:"#0d5ea6", h2:"#1477d2",
+               gold:"#f0b429", goldsoft:"rgba(240,180,41,.14)", goldline:"rgba(240,180,41,.45)",
+               edsoft:"#eef6fd", edline:"#cfe4f6", edink:"#0d5ea6" },
+             dark: { brand:"#4aa3ea", brand2:"#2b87d4", brandsoft:"#14293d",
+               gold:"#ffc85c", goldsoft:"rgba(255,200,92,.15)", goldline:"rgba(255,200,92,.40)",
+               edsoft:"#16293c", edline:"#2c4560", edink:"#8fc6f2" } }),
 };
 function applyOrgTheme(name) {
   const p = ORG_THEMES[name]; if (!p) return;
   S.orgTheme = name;
   try { localStorage.setItem("ceram_org_theme", name); } catch (e) {}
+  try { document.documentElement.setAttribute("data-org", name); } catch (e0) {}
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
   const c = dark ? p.dark : p.light;
   const r = document.documentElement.style;
@@ -1218,7 +1285,7 @@ function applyPerms() {
   $("#tabUsers").style.display = S.perms.users ? "" : "none";
 }
 function showApp(me) {
-  S.user = me.user; S.perms = me.perms || {};
+  S.user = me.user; S.perms = me.perms || {}; S.owner = !!me.owner; if ($("#relCard")) $("#relCard").style.display = (S.perms.admin && S.owner) ? "" : "none";
   if (S.user.role === "pending") { showGoogleWait(); return; }
   /* v178: الثيم الشخصي يصل مع /api/me — ثيم حسابك أنت فقط؛ ومن بلا ثيم شخصي يعود للافتراضي (بلا ثيم مدير عالمي)
      v179: وضع العرض أيضاً يتبع الحساب (نهاري/ليلي/حسب النظام) — يُطبَّق فوراً ويُخزَّن كاشاً بالجهاز */
@@ -1255,13 +1322,13 @@ function refreshPerms(force) {
     if (me.user.role === prevRole && nextPerms === prevPerms) return;   /* لا تغيير */
     if (me.user.role === "pending" || me.user.role === "customer") {
       /* سُحب الوصول — إعادة تسجيل الدخول برسالة واضحة */
-      S.user = me.user; S.perms = me.perms || {};
+      S.user = me.user; S.perms = me.perms || {}; S.owner = !!me.owner; if ($("#relCard")) $("#relCard").style.display = (S.perms.admin && S.owner) ? "" : "none";
       stopNotifPolling();
       toast("تم تحديث صلاحياتك — لا يوجد وصول لفئتك الجديدة. سجّل الدخول من جديد.", true);
       setTimeout(() => { try { showLogin(false); } catch (e) {} }, 1200);
       return;
     }
-    S.user = me.user; S.perms = me.perms || {};
+    S.user = me.user; S.perms = me.perms || {}; S.owner = !!me.owner; if ($("#relCard")) $("#relCard").style.display = (S.perms.admin && S.owner) ? "" : "none";
     applyPerms();
     if (me.user.role !== prevRole) {
       toast("✅ حُدّثت صلاحياتك — فئتك الآن: " + (S.user.role_label || S.user.role));
@@ -1289,6 +1356,7 @@ function switchView(id) {
   if (id === "v-users") loadUsers();
   if (id === "v-home") loadHome();
   if (id === "v-set") renderProfile();
+  if (id === "v-rel") loadRelease();
 }
 document.querySelectorAll("nav.tabs button").forEach((b) =>
   b.addEventListener("click", () => switchView(b.dataset.v)));
@@ -2429,7 +2497,7 @@ $("#dlgNewGo").addEventListener("click", async () => {
 async function refreshMe() {
   try {
     const me = await api("/api/me");
-    S.user = me.user; S.perms = me.perms || {};
+    S.user = me.user; S.perms = me.perms || {}; S.owner = !!me.owner; if ($("#relCard")) $("#relCard").style.display = (S.perms.admin && S.owner) ? "" : "none";
     renderHeader();
     renderProfile();
   } catch (e) {}
@@ -2857,6 +2925,141 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) checkAppUpdate();  /* فحص لحظة العودة للتطبيق */
 });
 setTimeout(checkAppUpdate, 8000);     /* فحص أول بعد الإقلاع بقليل */
+/* ─── v187: لوحة إدارة الإصدارات — عرض وفحص فقط (المرحلة الأولى) ─── */
+function relFmtDate(s) {
+  if (!s) return "—";
+  try { const d = new Date(s); return isNaN(d.getTime()) ? s : d.toLocaleString(); } catch (e) { return s; }
+}
+function relSvcLine(s) {
+  const dot = s.reachable ? "🟢" : "🔴";
+  const role = s.staging === true ? "تجريبية" : (s.staging === false ? "إنتاج" : "؟");
+  let t = dot + " الإصدار <b>" + esc(s.version || "؟") + "</b> · " + role;
+  if (!s.reachable) t += "<br><span class='hint'>" + esc(s.err || "لا استجابة") + "</span>";
+  return t;
+}
+function renderRelease(d) {
+  const sv = (d && d.services) || {};
+  const p = sv.production || {}, st = sv.staging || {};
+  const br = (d && d.branches) || {};
+  const bp = br[d.baseBranch] || {}, bs = br[d.sourceBranch] || {};
+  $("#relProdV").innerHTML = relSvcLine(p) + "<br><span class='hint'>آخر نشر (كوميت " + esc(bp.sha || "—") + "): " + relFmtDate(bp.date) + "</span>";
+  $("#relStgV").innerHTML = relSvcLine(st) + "<br><span class='hint'>آخر نشر (كوميت " + esc(bs.sha || "—") + "): " + relFmtDate(bs.date) + "</span>";
+  const tk = $("#relToken");
+  if (tk) tk.textContent = d.token_ok ? "🔐 توكن GitHub مضبوط" : "⚠️ بلا توكن — حد GitHub المجهول 60 فحص/ساعة";
+  const sn = $("#relStagingNote");
+  if (sn) sn.style.display = d.stagingMode ? "" : "none";
+  const df = (d && d.diff) || {};
+  const nfs = (df.files || []);
+  const stTxt = df.status === "ahead" ? "التجريبية متقدمة عن الإنتاج"
+    : (df.status === "identical" ? "الفرعان متطابقان" : (df.status || "؟"));
+  $("#relDiffSum").textContent = stTxt + " · متقدمة بـ " + (df.ahead || 0) + " كوميت · متأخرة بـ " + (df.behind || 0) + " · " + nfs.length + " ملف متغير";
+  $("#relFiles").innerHTML = nfs.length ? nfs.map(f =>
+    "<p class='hint' style='margin:4px 0'>📄 <b>" + esc(f.name) + "</b> — " + esc(f.status) + " (+" + f.additions + "/-" + f.deletions + ")</p>").join("")
+    : "<p class='empty'>لا ملفات متغيرة — الفرعان متطابقان.</p>";
+  const cs = (d && d.pendingCommits) || [];
+  $("#relCommits").innerHTML = cs.length ? cs.map(c =>
+    "<p class='hint' style='margin:5px 0'>• <b>" + esc(c.sha) + "</b> — " + esc(c.msg || "(بلا رسالة)") + " <span class='hint'>· " + relFmtDate(c.date) + "</span></p>").join("")
+    : "<p class='empty'>لا كوميتات معلّقة فوق الإنتاج.</p>";
+  /* v190: سطر الحالة + إظهار زرَّي الاعتماد والحذف فقط عند وجود تحديث غير معتمد */
+  const ah = (df.ahead || 0), bh = (df.behind || 0);
+  const stEl = $("#relState");
+  if (stEl) stEl.textContent = ah > 0
+    ? ("النسخة التجريبية تحمل تحديثاً جديداً (" + ah + " كوميت · " + nfs.length + " ملف متغير) — بانتظار قرارك: اعتماد أو حذف.")
+    : (bh > 0 ? "لا جديد في التجريبية، والمخزون الأصلي فيه رفعات غير موجودة فيها."
+              : "لا جديد — التجريبية مطابقة تماماً للمخزون الأصلي.");
+  const bA = $("#btnRelApprove"), bD = $("#btnRelDiscard");
+  if (bA) bA.style.display = ah > 0 ? "" : "none";
+  if (bD) bD.style.display = ah > 0 ? "" : "none";
+}
+function renderRelHist(rows) {
+  const rs = rows || [];
+  $("#relHist").innerHTML = rs.length ? rs.map(r =>
+    "<p class='hint' style='margin:5px 0'>• [" + esc(r.ts) + "] " + esc(r.who || "—") + " — " + esc(r.action)
+    + (r.pr ? " · PR #" + esc(r.pr) : "") + (r.newV ? " · " + esc(r.oldV || "?") + " → " + esc(r.newV) : "")
+    + (r.result ? " · " + esc(r.result) : "") + "</p>").join("")
+    : "<p class='empty'>لا عمليات نقل بعد — السجل يبدأ مع أول طلب دمج معتمَد.</p>";
+}
+async function loadRelease(fresh) {
+  if (!S.owner) { toast("لوحة الإصدارات للمالك فقط.", true); try { switchView("v-set"); } catch (e) {} return; }
+  $("#relDiffSum").textContent = fresh ? "جارٍ الفحص من GitHub…" : "جارٍ التحميل…";
+  try {
+    const d = await api("/api/release/overview" + (fresh ? "?fresh=1" : ""), { noCache: !!fresh });
+    renderRelease(d);
+  } catch (e) {
+    $("#relDiffSum").textContent = "⚠️ " + (e && e.message ? e.message : "تعذر الجلب");
+  }
+  try {
+    const g = await api("/api/release/gates" + (fresh ? "?fresh=1" : ""), { noCache: !!fresh });
+    renderGates(g);
+  } catch (e) {
+    $("#relGatesSum").textContent = "⚠️ " + (e && e.message ? e.message : "تعذر جلب البوابات");
+  }
+  try {
+    const h = await api("/api/release/history", { noCache: !!fresh });
+    renderRelHist(h && h.rows);
+  } catch (e) { /* السجل قراءة ثانوية — فشله لا يسقط الشاشة */ }
+}
+$("#btnRelOpen").addEventListener("click", () => switchView("v-rel"));
+$("#btnRelCheck").addEventListener("click", () => {
+  const unlock = lockBtn($("#btnRelCheck"), "جارٍ الفحص…");
+  loadRelease(true).finally(() => { if (unlock) unlock(); });
+});
+
+/* ─── v188: بوابات ما قبل الدمج + إنشاء طلب الدمج ─── */
+function relGateRow(g) {
+  const ic = g.state === "pass" ? "✅" : (g.state === "warn" ? "⚠️" : "⛔");
+  return "<p class='hint' style='margin:6px 0'><b>" + ic + " " + esc(g.title) + "</b>"
+    + (g.detail ? "<br><span class='hint'>" + esc(g.detail) + "</span>" : "") + "</p>";
+}
+function renderGates(d) {
+  const gr = (d && d.gates_result) || {};
+  const gs = gr.gates || [];
+  $("#relGates").innerHTML = gs.length ? gs.map(relGateRow).join("")
+    : "<p class='empty'>اضغط «فحص التحديثات» لجلب البوابات.</p>";
+  const nb = (gr.blocking || []).length, nw = (gr.warnings || []).length;
+  $("#relGatesSum").textContent = gs.length
+    ? ("الخلاصة: " + (nb ? "⛔ " + nb + " بوابة حاجبة فاشلة" : "✅ الحواجب سليمة")
+       + (nw ? " · ⚠️ " + nw + " تحذير" : ""))
+    : "تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع الاعتماد.";
+}
+/* ─── v190: الاعتماد بنقرة واحدة + حذف الإصدارات غير المعتمدة ─── */
+function relMsg(t, bad) {
+  const el = $("#relMsg");
+  if (!el) return;
+  el.textContent = (bad ? "⚠️ " : "") + t;
+  el.style.color = bad ? "#b3261e" : "#0a7d32";
+  el.style.display = "";
+}
+async function relApprove() {
+  if (!S.owner) return;
+  if (!confirm("اعتماد التحديث التجريبي وإصداره للمخزون الأصلي؟\nإصدار النسخة التجريبية سيصبح هو إصدار المخزون الأصلي، والنشر التلقائي يجري خلال دقائق.")) return;
+  const unlock = lockBtn($("#btnRelApprove"), "جارٍ الاعتماد والدمج…");
+  try {
+    const d = await api("/api/release/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", timeout: 150000 });
+    relMsg(d.message || "تم الاعتماد ✅", false);
+    toast(d.message || "تم الاعتماد ✅", false);
+    loadRelease(true);
+  } catch (e) {
+    relMsg(e && e.message ? e.message : "تعذر الاعتماد.", true);
+    toast(e && e.message ? e.message : "تعذر الاعتماد.", true);
+  } finally { if (unlock) unlock(); }
+}
+async function relDiscard() {
+  if (!S.owner) return;
+  if (!confirm("حذف كل الإصدارات غير المعتمدة من النسخة التجريبية؟\nستعود التجريبية لمطابقة المخزون الأصلي تماماً فلا يمكن دمج هذه التعديلات بالخطأ — لا رجوع في ذلك.")) return;
+  const unlock = lockBtn($("#btnRelDiscard"), "جارٍ الحذف…");
+  try {
+    const d = await api("/api/release/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", timeout: 150000 });
+    relMsg(d.message || "تم الحذف ✅", false);
+    toast(d.message || "تم الحذف ✅", false);
+    loadRelease(true);
+  } catch (e) {
+    relMsg(e && e.message ? e.message : "تعذر الحذف.", true);
+    toast(e && e.message ? e.message : "تعذر الحذف.", true);
+  } finally { if (unlock) unlock(); }
+}
+$("#btnRelApprove").addEventListener("click", relApprove);
+$("#btnRelDiscard").addEventListener("click", relDiscard);
 
 </script>
 </body>
