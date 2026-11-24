@@ -612,7 +612,7 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
     <section class="view" id="v-rel">
       <h2 class="vt">إدارة إصدارات التطبيق</h2>
       <div id="relStagingNote" class="card" style="display:none;margin-bottom:12px;border-color:var(--gold,#f0b429)">
-        <p class="hint" style="margin:0">🧪 أنت على خدمة التجريبية — هذه الشاشة عرض فقط هنا؛ عمليات النقل تعمل من خدمة الإنتاج بعد اكتمال مراحلها.</p>
+        <p class="hint" style="margin:0">🧪 أنت على خدمة التجريبية — إنشاء طلب الدمج مسموح من هنا مؤقتاً كتمهيد لأول نقل (الإنتاج لم يحمل لوحة الإصدارات بعد)؛ بعد أول دمج ستعمل عمليات النقل من خدمة الإنتاج وحدها.</p>
       </div>
       <div class="row2" style="margin-bottom:12px;align-items:center">
         <button class="btn" id="btnRelCheck">🔄 فحص التحديثات</button>
@@ -621,6 +621,19 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
       <div class="row2" style="gap:10px;margin-bottom:12px">
         <div class="stat" id="relProd" style="flex:1"><b>🏭 الإنتاج</b><div id="relProdV" class="hint">—</div></div>
         <div class="stat" id="relStg" style="flex:1"><b>🧪 التجريبية</b><div id="relStgV" class="hint">—</div></div>
+      </div>
+      <!-- v188: بوابات ما قبل الدمج — الحاجبة تمنع الإنشاء والتحذيرية تُظهر نصائح -->
+      <div class="card" style="margin-bottom:12px">
+        <p class="sect">🚦 بوابات ما قبل الدمج</p>
+        <p class="hint" id="relGatesSum">تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع إنشاء طلب الدمج.</p>
+        <div id="relGates"></div>
+      </div>
+      <!-- v188: طلب الدمج — الإنشاء فقط هنا، والاعتماد والدمج في v189 -->
+      <div class="card" style="margin-bottom:12px">
+        <p class="sect">🔀 طلب الدمج (Staging → main)</p>
+        <div id="relPrBox"><p class="empty">لا طلب دمج مفتوح حالياً.</p></div>
+        <button class="btn" id="btnRelPr" style="display:none;margin-top:10px">📝 إنشاء طلب الدمج</button>
+        <p class="hint" style="margin:8px 0 0">الدمج نفسه لا يحدث من هنا إطلاقاً: بعد إنشاء الطلب يأتي زر «الاعتماد الصريح» في المرحلة القادمة (v189) لتنفيذ الدمج ومتابعة النشر لكل هدف.</p>
       </div>
       <div class="card" style="margin-bottom:12px">
         <p class="sect">📦 الفرق بين التجريبية والإنتاج</p>
@@ -635,7 +648,7 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
         <p class="sect">🗂️ سجل عمليات النقل</p>
         <div id="relHist"><p class="empty">جارٍ التحميل…</p></div>
       </div>
-      <p class="hint">المرحلة التالية (بعد اختبار هذه الشاشة على التجريبية): إنشاء طلب دمج، ثم الاعتماد الصريح والنقل إلى الإنتاج مع متابعة نشر مستقلة لكل هدف (الخادم + Pages).</p>
+      <p class="hint">المتبقي بعد هذه المرحلة (v189): زر «الاعتماد الصريح» ينفّذ الدمج الفعلي لطلب الدمج المعتمَد ويحرس متابعة النشر لكل هدف (الخادم + Pages) مع تسجيل كامل في سجل عمليات النقل.</p>
     </section>
   </main>
   <nav class="tabs">
@@ -2963,6 +2976,12 @@ async function loadRelease(fresh) {
     $("#relDiffSum").textContent = "⚠️ " + (e && e.message ? e.message : "تعذر الجلب");
   }
   try {
+    const g = await api("/api/release/gates" + (fresh ? "?fresh=1" : ""), { noCache: !!fresh });
+    renderGates(g);
+  } catch (e) {
+    $("#relGatesSum").textContent = "⚠️ " + (e && e.message ? e.message : "تعذر جلب البوابات");
+  }
+  try {
     const h = await api("/api/release/history", { noCache: !!fresh });
     renderRelHist(h && h.rows);
   } catch (e) { /* السجل قراءة ثانوية — فشله لا يسقط الشاشة */ }
@@ -2972,6 +2991,66 @@ $("#btnRelCheck").addEventListener("click", () => {
   const unlock = lockBtn($("#btnRelCheck"), "جارٍ الفحص…");
   loadRelease(true).finally(() => { if (unlock) unlock(); });
 });
+
+/* ─── v188: بوابات ما قبل الدمج + إنشاء طلب الدمج ─── */
+const REL_MERGEABLE = {
+  clean: "جاهز للدمج — لا تعارضات",
+  dirty: "⚠️ تعارضات يجب حلّها قبل الدمج",
+  blocked: "محجوب بإعدادات المستودع",
+  unstable: "فحوصات غير مستقرة على الطلب",
+  behind: "الفرع الهدف متقدم — يحتاج تحديثاً",
+  has_hooks: "خطافات مستودع قيد التقييم"
+};
+function relGateRow(g) {
+  const ic = g.state === "pass" ? "✅" : (g.state === "warn" ? "⚠️" : "⛔");
+  return "<p class='hint' style='margin:6px 0'><b>" + ic + " " + esc(g.title) + "</b>"
+    + (g.detail ? "<br><span class='hint'>" + esc(g.detail) + "</span>" : "") + "</p>";
+}
+function renderGates(d) {
+  const gr = (d && d.gates_result) || {};
+  const gs = gr.gates || [];
+  $("#relGates").innerHTML = gs.length ? gs.map(relGateRow).join("")
+    : "<p class='empty'>اضغط «فحص التحديثات» لجلب البوابات.</p>";
+  const nb = (gr.blocking || []).length, nw = (gr.warnings || []).length;
+  $("#relGatesSum").textContent = gs.length
+    ? ("الخلاصة: " + (nb ? "⛔ " + nb + " بوابة حاجبة فاشلة" : "✅ الحواجب سليمة")
+       + (nw ? " · ⚠️ " + nw + " تحذير" : "")
+       + (d.pr ? " · طلب دمج مفتوح #" + d.pr.number : ""))
+    : "تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع إنشاء طلب الدمج.";
+  renderPr(d);
+  const btn = $("#btnRelPr");
+  if (btn) btn.style.display = (gs.length && !nb && !d.pr) ? "" : "none";
+}
+function renderPr(d) {
+  const box = $("#relPrBox");
+  const pr = d && d.pr;
+  if (!pr) { box.innerHTML = "<p class='empty'>لا طلب دمج مفتوح حالياً.</p>"; return; }
+  const ms = REL_MERGEABLE[pr.mergeableState] || "قيد الحساب من GitHub — أعد الفحص بعد لحظات";
+  box.innerHTML =
+    "<p class='hint' style='margin:4px 0'><b>#" + esc(pr.number) + "</b> — " + esc(pr.title || "(بلا عنوان)") + "</p>"
+    + "<p class='hint' style='margin:4px 0'>الحالة: " + esc(pr.state === "open" ? "مفتوح" : esc(pr.state))
+    + " · إمكانية الدمج: " + esc(ms)
+    + " · كوميت الرأس: " + esc(pr.headSha || "—")
+    + " · أنشئ في " + relFmtDate(pr.createdAt) + "</p>"
+    + (pr.url ? "<p class='hint' style='margin:4px 0'><a href='" + esc(pr.url)
+      + "' target='_blank' rel='noopener'>فتح الطلب على GitHub ↗</a></p>" : "");
+}
+async function relCreatePr() {
+  if (!S.owner) return;
+  if (!confirm("إنشاء طلب دمج رسمي على GitHub لنقل التجريبية إلى الإنتاج؟\nالدمج نفسه لن يحدث إلا لاحقاً من زر «الاعتماد الصريح» (v189).")) return;
+  const btn = $("#btnRelPr");
+  const unlock = lockBtn(btn, "جارٍ الإنشاء…");
+  try {
+    const d = await api("/api/release/pr/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    toast(d.message || "تم إنشاء طلب الدمج.", false);
+    renderGates({ gates_result: d.gates_result, pr: d.pr });
+    try { const h = await api("/api/release/history", { noCache: true }); renderRelHist(h && h.rows); } catch (e) {}
+    try { const o = await api("/api/release/overview?fresh=1", { noCache: true }); renderRelease(o); } catch (e) {}
+  } catch (e) {
+    toast(e && e.message ? e.message : "تعذر إنشاء طلب الدمج.", true);
+  } finally { if (unlock) unlock(); }
+}
+$("#btnRelPr").addEventListener("click", relCreatePr);
 
 </script>
 </body>
