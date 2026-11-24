@@ -597,8 +597,8 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
       <!-- v187: إدارة إصدارات التطبيق — للمالك فقط -->
       <div class="card" id="relCard" style="display:none;margin-bottom:12px">
         <p class="sect">🚢 إدارة إصدارات التطبيق</p>
-        <p class="hint" style="margin:2px 0 10px">متابعة بيئتي الإنتاج والتجريبية ومقارنة ما بينهما، تمهيداً لنقل التحديث من التجريبية إلى الإنتاج بموافقتك الصريحة — هذه المرحلة عرض وفحص فقط.</p>
-        <button class="btn" id="btnRelOpen">🧭 فتح لوحة الإصدارات</button>
+        <p class="hint" style="margin:2px 0 10px">اعتماد بنقرة واحدة: الشاشة تعرض إصدار المخزون الأصلي وإصدار النسخة التجريبية — زر واحد يُصدر التحديث الناجح للمخزون الأصلي، وزر آخر يحذف أي تجربة غير مقنعة فلا يمكن دمجها بالخطأ.</p>
+        <button class="btn" id="btnRelOpen">🚀 إدارة الإصدارات والاعتماد</button>
       </div>
       <div class="card" style="margin-bottom:12px">
         <p class="sect">🔒 الأمان والحساب</p>
@@ -608,47 +608,50 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
       <button class="btn gray" id="btnChkUpd" style="margin-bottom:10px">🔄 فحص التحديث الآن</button>
       <p class="hint" id="setAbout">الإصدار 02</p>
     </section>
-    <!-- v187: لوحة إدارة الإصدارات — عرض وفحص (المرحلة الأولى، للمالك) -->
+    <!-- v190: لوحة إدارة الإصدارات المبسطة — زر اعتماد واحد وزر حذف واحد والتفاصيل مطوية (المالك) -->
     <section class="view" id="v-rel">
       <h2 class="vt">إدارة إصدارات التطبيق</h2>
       <div id="relStagingNote" class="card" style="display:none;margin-bottom:12px;border-color:var(--gold,#f0b429)">
-        <p class="hint" style="margin:0">🧪 أنت على خدمة التجريبية — إنشاء طلب الدمج مسموح من هنا مؤقتاً كتمهيد لأول نقل (الإنتاج لم يحمل لوحة الإصدارات بعد)؛ بعد أول دمج ستعمل عمليات النقل من خدمة الإنتاج وحدها.</p>
+        <p class="hint" style="margin:0">🧪 أنت على خدمة التجريبية — الاعتماد من هنا مسموح مؤقتاً كتمهيد لأول نقل (الإنتاج لم يحمل لوحة الإصدارات بعد)؛ بعد أول دمج ستعمل عمليات النقل من خدمة الإنتاج وحدها.</p>
       </div>
-      <div class="row2" style="margin-bottom:12px;align-items:center">
-        <button class="btn" id="btnRelCheck">🔄 فحص التحديثات</button>
+      <div class="card" style="margin-bottom:12px">
+        <p class="sect">📋 حالة الإصدارين</p>
+        <div class="row2" style="gap:10px;margin-bottom:10px">
+          <div class="stat" id="relProd" style="flex:1"><b>🏭 المخزون الأصلي (الإنتاج)</b><div id="relProdV" class="hint">—</div></div>
+          <div class="stat" id="relStg" style="flex:1"><b>🧪 النسخة التجريبية</b><div id="relStgV" class="hint">—</div></div>
+        </div>
+        <p class="hint" id="relState" style="margin:0;font-weight:700">اضغط «فحص التحديثات» لعرض الحالة الحية.</p>
+        <p class="hint" id="relMsg" style="display:none;margin:8px 0 0;font-weight:700"></p>
+      </div>
+      <!-- v190: الزران الرئيسيان — يظهران فقط عند وجود تحديث تجريبي غير معتمد -->
+      <button class="btn" id="btnRelApprove" style="display:none;padding:16px;font-size:16.5px;font-weight:800">✅ اعتماد التحديث وإصداره للمخزون الأصلي</button>
+      <button class="btn red" id="btnRelDiscard" style="display:none;margin-top:10px">🗑 حذف إصدارات التجريبية غير المعتمدة</button>
+      <div class="row2" style="margin-top:12px;align-items:center">
+        <button class="btn gray" id="btnRelCheck">🔄 فحص التحديثات</button>
         <span class="badge n" id="relToken">—</span>
       </div>
-      <div class="row2" style="gap:10px;margin-bottom:12px">
-        <div class="stat" id="relProd" style="flex:1"><b>🏭 الإنتاج</b><div id="relProdV" class="hint">—</div></div>
-        <div class="stat" id="relStg" style="flex:1"><b>🧪 التجريبية</b><div id="relStgV" class="hint">—</div></div>
-      </div>
-      <!-- v188: بوابات ما قبل الدمج — الحاجبة تمنع الإنشاء والتحذيرية تُظهر نصائح -->
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">🚦 بوابات ما قبل الدمج</p>
-        <p class="hint" id="relGatesSum">تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع إنشاء طلب الدمج.</p>
-        <div id="relGates"></div>
-      </div>
-      <!-- v188: طلب الدمج — الإنشاء فقط هنا، والاعتماد والدمج في v189 -->
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">🔀 طلب الدمج (Staging → main)</p>
-        <div id="relPrBox"><p class="empty">لا طلب دمج مفتوح حالياً.</p></div>
-        <button class="btn" id="btnRelPr" style="display:none;margin-top:10px">📝 إنشاء طلب الدمج</button>
-        <p class="hint" style="margin:8px 0 0">الدمج نفسه لا يحدث من هنا إطلاقاً: بعد إنشاء الطلب يأتي زر «الاعتماد الصريح» في المرحلة القادمة (v189) لتنفيذ الدمج ومتابعة النشر لكل هدف.</p>
-      </div>
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">📦 الفرق بين التجريبية والإنتاج</p>
-        <p class="hint" id="relDiffSum">اضغط «فحص التحديثات» لجلب المقارنة الرسمية من GitHub.</p>
-        <div id="relFiles"></div>
-      </div>
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">📝 ملخص التعديلات — كوميتات التجريبية فوق الإنتاج</p>
-        <div id="relCommits"><p class="empty">اضغط «فحص التحديثات» أولاً.</p></div>
-      </div>
-      <div class="card" style="margin-bottom:12px">
-        <p class="sect">🗂️ سجل عمليات النقل</p>
-        <div id="relHist"><p class="empty">جارٍ التحميل…</p></div>
-      </div>
-      <p class="hint">المتبقي بعد هذه المرحلة (v189): زر «الاعتماد الصريح» ينفّذ الدمج الفعلي لطلب الدمج المعتمَد ويحرس متابعة النشر لكل هدف (الخادم + Pages) مع تسجيل كامل في سجل عمليات النقل.</p>
+      <!-- v190: كل التفاصيل التقنية داخل قسم مطوي — لا تفتحه إلا عند الحاجة -->
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-weight:700">🔧 التفاصيل التقنية — البوابات والفروق والسجل (اضغط للفتح)</summary>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">🚦 بوابات ما قبل الدمج</p>
+          <p class="hint" id="relGatesSum">تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع الاعتماد.</p>
+          <div id="relGates"></div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">📦 الفرق بين التجريبية والإنتاج</p>
+          <p class="hint" id="relDiffSum">اضغط «فحص التحديثات» لجلب المقارنة الرسمية من GitHub.</p>
+          <div id="relFiles"></div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">📝 كوميتات التجريبية فوق الإنتاج</p>
+          <div id="relCommits"><p class="empty">اضغط «فحص التحديثات» أولاً.</p></div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <p class="sect">🗂️ سجل عمليات النقل</p>
+          <div id="relHist"><p class="empty">جارٍ التحميل…</p></div>
+        </div>
+      </details>
     </section>
   </main>
   <nav class="tabs">
@@ -2957,6 +2960,16 @@ function renderRelease(d) {
   $("#relCommits").innerHTML = cs.length ? cs.map(c =>
     "<p class='hint' style='margin:5px 0'>• <b>" + esc(c.sha) + "</b> — " + esc(c.msg || "(بلا رسالة)") + " <span class='hint'>· " + relFmtDate(c.date) + "</span></p>").join("")
     : "<p class='empty'>لا كوميتات معلّقة فوق الإنتاج.</p>";
+  /* v190: سطر الحالة + إظهار زرَّي الاعتماد والحذف فقط عند وجود تحديث غير معتمد */
+  const ah = (df.ahead || 0), bh = (df.behind || 0);
+  const stEl = $("#relState");
+  if (stEl) stEl.textContent = ah > 0
+    ? ("النسخة التجريبية تحمل تحديثاً جديداً (" + ah + " كوميت · " + nfs.length + " ملف متغير) — بانتظار قرارك: اعتماد أو حذف.")
+    : (bh > 0 ? "لا جديد في التجريبية، والمخزون الأصلي فيه رفعات غير موجودة فيها."
+              : "لا جديد — التجريبية مطابقة تماماً للمخزون الأصلي.");
+  const bA = $("#btnRelApprove"), bD = $("#btnRelDiscard");
+  if (bA) bA.style.display = ah > 0 ? "" : "none";
+  if (bD) bD.style.display = ah > 0 ? "" : "none";
 }
 function renderRelHist(rows) {
   const rs = rows || [];
@@ -2993,14 +3006,6 @@ $("#btnRelCheck").addEventListener("click", () => {
 });
 
 /* ─── v188: بوابات ما قبل الدمج + إنشاء طلب الدمج ─── */
-const REL_MERGEABLE = {
-  clean: "جاهز للدمج — لا تعارضات",
-  dirty: "⚠️ تعارضات يجب حلّها قبل الدمج",
-  blocked: "محجوب بإعدادات المستودع",
-  unstable: "فحوصات غير مستقرة على الطلب",
-  behind: "الفرع الهدف متقدم — يحتاج تحديثاً",
-  has_hooks: "خطافات مستودع قيد التقييم"
-};
 function relGateRow(g) {
   const ic = g.state === "pass" ? "✅" : (g.state === "warn" ? "⚠️" : "⛔");
   return "<p class='hint' style='margin:6px 0'><b>" + ic + " " + esc(g.title) + "</b>"
@@ -3014,43 +3019,47 @@ function renderGates(d) {
   const nb = (gr.blocking || []).length, nw = (gr.warnings || []).length;
   $("#relGatesSum").textContent = gs.length
     ? ("الخلاصة: " + (nb ? "⛔ " + nb + " بوابة حاجبة فاشلة" : "✅ الحواجب سليمة")
-       + (nw ? " · ⚠️ " + nw + " تحذير" : "")
-       + (d.pr ? " · طلب دمج مفتوح #" + d.pr.number : ""))
-    : "تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع إنشاء طلب الدمج.";
-  renderPr(d);
-  const btn = $("#btnRelPr");
-  if (btn) btn.style.display = (gs.length && !nb && !d.pr) ? "" : "none";
+       + (nw ? " · ⚠️ " + nw + " تحذير" : ""))
+    : "تُفحص تلقائياً مع «فحص التحديثات» — الحاجبة تمنع الاعتماد.";
 }
-function renderPr(d) {
-  const box = $("#relPrBox");
-  const pr = d && d.pr;
-  if (!pr) { box.innerHTML = "<p class='empty'>لا طلب دمج مفتوح حالياً.</p>"; return; }
-  const ms = REL_MERGEABLE[pr.mergeableState] || "قيد الحساب من GitHub — أعد الفحص بعد لحظات";
-  box.innerHTML =
-    "<p class='hint' style='margin:4px 0'><b>#" + esc(pr.number) + "</b> — " + esc(pr.title || "(بلا عنوان)") + "</p>"
-    + "<p class='hint' style='margin:4px 0'>الحالة: " + esc(pr.state === "open" ? "مفتوح" : esc(pr.state))
-    + " · إمكانية الدمج: " + esc(ms)
-    + " · كوميت الرأس: " + esc(pr.headSha || "—")
-    + " · أنشئ في " + relFmtDate(pr.createdAt) + "</p>"
-    + (pr.url ? "<p class='hint' style='margin:4px 0'><a href='" + esc(pr.url)
-      + "' target='_blank' rel='noopener'>فتح الطلب على GitHub ↗</a></p>" : "");
+/* ─── v190: الاعتماد بنقرة واحدة + حذف الإصدارات غير المعتمدة ─── */
+function relMsg(t, bad) {
+  const el = $("#relMsg");
+  if (!el) return;
+  el.textContent = (bad ? "⚠️ " : "") + t;
+  el.style.color = bad ? "#b3261e" : "#0a7d32";
+  el.style.display = "";
 }
-async function relCreatePr() {
+async function relApprove() {
   if (!S.owner) return;
-  if (!confirm("إنشاء طلب دمج رسمي على GitHub لنقل التجريبية إلى الإنتاج؟\nالدمج نفسه لن يحدث إلا لاحقاً من زر «الاعتماد الصريح» (v189).")) return;
-  const btn = $("#btnRelPr");
-  const unlock = lockBtn(btn, "جارٍ الإنشاء…");
+  if (!confirm("اعتماد التحديث التجريبي وإصداره للمخزون الأصلي؟\nإصدار النسخة التجريبية سيصبح هو إصدار المخزون الأصلي، والنشر التلقائي يجري خلال دقائق.")) return;
+  const unlock = lockBtn($("#btnRelApprove"), "جارٍ الاعتماد والدمج…");
   try {
-    const d = await api("/api/release/pr/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    toast(d.message || "تم إنشاء طلب الدمج.", false);
-    renderGates({ gates_result: d.gates_result, pr: d.pr });
-    try { const h = await api("/api/release/history", { noCache: true }); renderRelHist(h && h.rows); } catch (e) {}
-    try { const o = await api("/api/release/overview?fresh=1", { noCache: true }); renderRelease(o); } catch (e) {}
+    const d = await api("/api/release/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    relMsg(d.message || "تم الاعتماد ✅", false);
+    toast(d.message || "تم الاعتماد ✅", false);
+    loadRelease(true);
   } catch (e) {
-    toast(e && e.message ? e.message : "تعذر إنشاء طلب الدمج.", true);
+    relMsg(e && e.message ? e.message : "تعذر الاعتماد.", true);
+    toast(e && e.message ? e.message : "تعذر الاعتماد.", true);
   } finally { if (unlock) unlock(); }
 }
-$("#btnRelPr").addEventListener("click", relCreatePr);
+async function relDiscard() {
+  if (!S.owner) return;
+  if (!confirm("حذف كل الإصدارات غير المعتمدة من النسخة التجريبية؟\nستعود التجريبية لمطابقة المخزون الأصلي تماماً فلا يمكن دمج هذه التعديلات بالخطأ — لا رجوع في ذلك.")) return;
+  const unlock = lockBtn($("#btnRelDiscard"), "جارٍ الحذف…");
+  try {
+    const d = await api("/api/release/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    relMsg(d.message || "تم الحذف ✅", false);
+    toast(d.message || "تم الحذف ✅", false);
+    loadRelease(true);
+  } catch (e) {
+    relMsg(e && e.message ? e.message : "تعذر الحذف.", true);
+    toast(e && e.message ? e.message : "تعذر الحذف.", true);
+  } finally { if (unlock) unlock(); }
+}
+$("#btnRelApprove").addEventListener("click", relApprove);
+$("#btnRelDiscard").addEventListener("click", relDiscard);
 
 </script>
 </body>
