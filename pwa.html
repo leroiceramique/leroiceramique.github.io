@@ -3035,7 +3035,7 @@ async function relApprove() {
   if (!confirm("اعتماد التحديث التجريبي وإصداره للمخزون الأصلي؟\nإصدار النسخة التجريبية سيصبح هو إصدار المخزون الأصلي، والنشر التلقائي يجري خلال دقائق.")) return;
   const unlock = lockBtn($("#btnRelApprove"), "جارٍ الاعتماد والدمج…");
   try {
-    const d = await api("/api/release/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const d = await api("/api/release/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", timeout: 150000 });
     relMsg(d.message || "تم الاعتماد ✅", false);
     toast(d.message || "تم الاعتماد ✅", false);
     loadRelease(true);
@@ -3049,7 +3049,7 @@ async function relDiscard() {
   if (!confirm("حذف كل الإصدارات غير المعتمدة من النسخة التجريبية؟\nستعود التجريبية لمطابقة المخزون الأصلي تماماً فلا يمكن دمج هذه التعديلات بالخطأ — لا رجوع في ذلك.")) return;
   const unlock = lockBtn($("#btnRelDiscard"), "جارٍ الحذف…");
   try {
-    const d = await api("/api/release/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const d = await api("/api/release/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", timeout: 150000 });
     relMsg(d.message || "تم الحذف ✅", false);
     toast(d.message || "تم الحذف ✅", false);
     loadRelease(true);
