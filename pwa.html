@@ -240,7 +240,9 @@ dialog .db .fld textarea{width:100%;border:1.5px solid var(--line);border-radius
   font-size:13.5px;display:none;z-index:10000;max-width:88vw;text-align:center;
   box-shadow:0 8px 24px rgba(0,0,0,.3)}
 #toast.err{background:var(--bad);color:#fff}
-.chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chips .fchip{flex:0 0 auto;white-space:nowrap}
 .chip{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:6px 14px;
   font-size:12.5px;font-weight:700;color:var(--mut)}
 .chip b{color:var(--brand)}
@@ -574,7 +576,7 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
       <!-- v179: الثيم الحقيقي — وضع العرض الكامل + لون الهوية، شخصي لكل حساب -->
       <div class="card" id="orgThemeCard" style="display:none;margin-bottom:12px">
         <p class="sect">🎨 ثيم التطبيق — ثيمك الشخصي</p>
-        <p class="hint" style="margin:2px 0 10px">ثيم حقيقي يغيّر شكل التطبيق كله: اختر وضع العرض ولون الهوية — ويُحفَظان على حسابك فيتبعانك على كل الأجهزة ولا يظهران لأي مستخدم آخر حتى ولو كان مديراً.</p>
+        <p class="hint" style="margin:2px 0 10px">اختر وضع العرض ولون الهوية — يُحفظ على حسابك ويتبعك على كل أجهزتك.</p>
         <p class="thmode-t">وضع العرض — يقلب التطبيق بالكامل</p>
         <div class="thmodes">
           <button type="button" class="thmode" id="thLight">
@@ -597,7 +599,7 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
       <!-- v187: إدارة إصدارات التطبيق — للمالك فقط -->
       <div class="card" id="relCard" style="display:none;margin-bottom:12px">
         <p class="sect">🚢 إدارة إصدارات التطبيق</p>
-        <p class="hint" style="margin:2px 0 10px">اعتماد بنقرة واحدة: الشاشة تعرض إصدار المخزون الأصلي وإصدار النسخة التجريبية — زر واحد يُصدر التحديث الناجح للمخزون الأصلي، وزر آخر يحذف أي تجربة غير مقنعة فلا يمكن دمجها بالخطأ.</p>
+        <p class="hint" style="margin:2px 0 10px">اعتماد بنقرة واحدة يُصدر التحديث المجرب للمخزون الأصلي — أو احذف التجارب غير المقنعة.</p>
         <button class="btn" id="btnRelOpen">🚀 إدارة الإصدارات والاعتماد</button>
       </div>
       <div class="card" style="margin-bottom:12px">
@@ -1273,7 +1275,7 @@ $("#dlgApprGo").addEventListener("click", async () => {
 });
 function renderHeader() {
   if (!S.user) return;
-  $("#hUser").textContent = S.user.name + " — " + S.user.role_label;
+  $("#hUser").textContent = S.user.name + (S.user.role_label ? " — " + S.user.role_label : "");
 }
 /* v63: تطبيق بوابات الصلاحيات على الواجهة — يُستدعى عند الدخول وعند أي تحديث للصلاحيات */
 function applyPerms() {
@@ -1414,10 +1416,17 @@ function renderInstall() {
       const c = await S.installEvt.userChoice;
       if (c && c.outcome === "accepted") { box.innerHTML = ""; }
     };
-  } else if (ios) {
-    box.innerHTML = '<p class="hint">📲 للتثبيت على آيفون: زر المشاركة ⬆️ ← «إضافة إلى الشاشة الرئيسية»</p>';
   } else {
-    box.innerHTML = '<p class="hint">📲 للتثبيت: قائمة المتصفح ⋮ ← «تثبيت التطبيق / إضافة إلى الشاشة الرئيسية»</p>';
+    /* v192: تلميح التثبيت مرة واحدة لكل جهاز — لا يتزاحم في كل فتح */
+    let __hinted = false;
+    try { __hinted = localStorage.getItem("ceram_inst_hint") === "1"; } catch (e) {}
+    if (__hinted) { box.innerHTML = ""; }
+    else {
+      try { localStorage.setItem("ceram_inst_hint", "1"); } catch (e) {}
+      box.innerHTML = ios
+        ? '<p class="hint">📲 للتثبيت على آيفون: زر المشاركة ⬆️ ← «إضافة إلى الشاشة الرئيسية»</p>'
+        : '<p class="hint">📲 للتثبيت: قائمة المتصفح ⋮ ← «تثبيت التطبيق / إضافة إلى الشاشة الرئيسية»</p>';
+    }
   }
 }
 window.addEventListener("beforeinstallprompt", (e) => {
