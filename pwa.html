@@ -732,8 +732,8 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
   </div>
 </dialog>
 
-<input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">
-<input type="file" id="avatarFile" accept="image/*" style="display:none">
+<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView -->
+<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView بدل display:none الذي يمنع فتح المنتقي -->
 
 <dialog id="dlgOrd">
   <div class="dh">🚚 طلب توريد جديد</div>
@@ -2514,10 +2514,21 @@ $("#dlgUserGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
   finally { btn.disabled = false; }
 });
-/* v179: أزرار وضع العرض الثلاثة — تطبيق فوري كامل للشكل، والاعتماد على الحساب من زر الثيم */
-$("#thLight").addEventListener("click", () => applyTheme("light", true));
-$("#thDark").addEventListener("click", () => applyTheme("dark", true));
-$("#thSys").addEventListener("click", () => applyTheme("system", true));
+/* v179: أزرار وضع العرض الثلاثة — تطبيق فوري كامل للشكل
+   v200: وكل ضغطة تحفظ الوضع على الحساب فوراً فيتبعك على كل الأجهزة */
+/* v200: أزرار وضع العرض تحفظ على الحساب فوراً — كانت محلية فقط فكانت
+   قيمة الخادم القديمة تعود وتعلو عليها عند كل فتح (بلاغ المالك) */
+function _themeModeSave(mode) {
+  applyTheme(mode, true);
+  try {
+    api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: (typeof S !== "undefined" && S && S.orgTheme) || "discord", mode: mode }) })
+      .catch(function (e) { toast("طُبّق محلياً ولم يثبت على الحساب: " + (e && e.message ? e.message : ""), true); });
+  } catch (e) {}
+}
+$("#thLight").addEventListener("click", () => _themeModeSave("light"));
+$("#thDark").addEventListener("click", () => _themeModeSave("dark"));
+$("#thSys").addEventListener("click", () => _themeModeSave("system"));
 $("#btnMyPass").addEventListener("click", () => openPass(null, S.user ? S.user.name : "", true));
 async function doLogout() {
   try { await api("/api/logout", { method: "POST" }); } catch (e) {}
@@ -2768,8 +2779,9 @@ $("#fUser").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#fPas
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل */
-    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
+    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل
+       v200: للجهاز الذي لم يختر مستخدمه ثيمه بعد فقط — لا فرض للثيم العام فوق الاختيار المحفوظ */
+    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);
     $("#setAbout").textContent = "الإصدار v74" + (S.serverVersion ? " — الخادم " + S.serverVersion : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
@@ -2819,8 +2831,8 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
   return fetch("/api/status", { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
     const v = (d && d.version) || "";
     if (v) S.serverVersion = v;
-    /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */
-    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
+    /* v120: التقاط الثيم المؤسسي دورياً — v200: بلا فرض فوق الاختيار الشخصي المحفوظ (الثيمات شخصية منذ v178) */
+    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);
     const about = $("#setAbout");
     if (about) about.textContent = "الإصدار " + APP_VER + (v ? " — الخادم " + v : "");
     if (v && v !== APP_VER && v !== S.updDismissed) {

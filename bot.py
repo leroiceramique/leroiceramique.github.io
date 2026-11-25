@@ -21648,6 +21648,47 @@ _PWA_HTML_PATCHES = (
     # 94) v174: قسم «حساب Google» داخل صفحة الإعدادات + فحص التحديث أسفله
     ('</script>\n</body>',
      '</script>\n<style id="v174css">' + _PWA_V174_CSS + '</style>\n<script id="v174js">\n' + _PWA_V174_JS + '\n</script>\n</body>'),
+    # ── v200: إصلاحا بلاغي المالك — الثيم يعود للثابت + صورة الحساب لا تُعين ──
+    # 95) أزرار وضع العرض (نهاري/ليلي/حسب النظام) كانت تحفظ محلياً فقط دون
+    #     الخادم، وقيمة الخادم القديمة كانت تعود وتعلو عليها عند كل فتح.
+    #     الآن: كل ضغطة تحفظ الوضع على الحساب فوراً بنفس مسار «الاعتماد».
+    ('$("#thLight").addEventListener("click", () => applyTheme("light", true));\n'
+     '$("#thDark").addEventListener("click", () => applyTheme("dark", true));\n'
+     '$("#thSys").addEventListener("click", () => applyTheme("system", true));',
+     '/* v200: أزرار وضع العرض تحفظ على الحساب فوراً — كانت محلية فقط فكانت\n'
+     '   قيمة الخادم القديمة تعود وتعلو عليها عند كل فتح (بلاغ المالك) */\n'
+     'function _themeModeSave(mode) {\n'
+     '  applyTheme(mode, true);\n'
+     '  try {\n'
+     '    api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },\n'
+     '      body: JSON.stringify({ name: (typeof S !== "undefined" && S && S.orgTheme) || "discord", mode: mode }) })\n'
+     '      .catch(function (e) { toast("طُبّق محلياً ولم يثبت على الحساب: " + (e && e.message ? e.message : ""), true); });\n'
+     '  } catch (e) {}\n'
+     '}\n'
+     '$("#thLight").addEventListener("click", () => _themeModeSave("light"));\n'
+     '$("#thDark").addEventListener("click", () => _themeModeSave("dark"));\n'
+     '$("#thSys").addEventListener("click", () => _themeModeSave("system"));'),
+    # 96) الإقلاع: الثيم المؤسسي العام القديم (app_settings) كان يُفرض على شاشة
+    #     الدخول حتى لمن لديه اختيار شخصي محفوظ على الجهاز — v178 جعل الثيمات
+    #     شخصية؛ الفرض العام الآن للجهاز الجديد فقط الذي لم يختر بعد.
+    ('    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل */\n'
+     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);',
+     '    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل\n'
+     '       v200: للجهاز الذي لم يختر مستخدمه ثيمه بعد فقط — لا فرض للثيم العام فوق الاختيار المحفوظ */\n'
+     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);'),
+    # 97) الفحص الدوري (~5 دقائق): كان يعيد الثيم العام القديم فوق الثيم الشخصي
+    #     المعتمد فيستأنف «الثابت» رغم تغييره — نفس بواب v200 للجهاز الجديد فقط.
+    ('    /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */\n'
+     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);',
+     '    /* v120: التقاط الثيم المؤسسي دورياً — v200: بلا فرض فوق الاختيار الشخصي المحفوظ (الثيمات شخصية منذ v178) */\n'
+     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);'),
+    # 98) صورة الحساب: حقل الملف display:none لا يفتح منتقي الملفات في بعض
+    #     WebViews (APK) — يُخفى بنمط آمن يبقى قابلاً للاستدعاء البرمجي.
+    ('<input type="file" id="avatarFile" accept="image/*" style="display:none">',
+     '<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView بدل display:none الذي يمنع فتح المنتقي -->'),
+    # 99) نفس الإصلاح لحقل إيصال التوريد (النمط نفسه، الوقاية نفسها)
+    ('<input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">',
+     '<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView -->'),
 )
 
 
