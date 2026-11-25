@@ -48,6 +48,13 @@ html[data-theme="dark"]{
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0}
+/* v202: قفل الانزلاق الأفقي للمستند كله — بلاغ «الشاشة تهرب لوحدها بمجرد سحب»:
+   أي عنصر أعرض/أبعد من الشاشة (كانت حقولا المخفية عند ‎-9999px) يفتح تمريراً
+   أفقياً بآلاف البكسلات فتُفلت الصفحة جانبياً بسحبة واحدة إلى فراغ أبيض.
+   clip يقطع الفائض الأفقي بلا إنشاء حاوية تمرير — فلا يمسّ التمرير العمودي
+   ولا position:sticky ولا الأزرار العائمة، ولا يؤثر على أشرطة التمرير الأفقية
+   الداخلية المشروعة (صفوف الشرائح مثلاً) لأنها حاويات مستقلة */
+html{overflow-x:clip}
 body{font-family:"Segoe UI",Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--ink);
   min-height:100vh; font-size:15px}
 button{font-family:inherit}
@@ -732,8 +739,8 @@ html[data-theme="dark"] #nBadge{border-color:#1e1f22}
   </div>
 </dialog>
 
-<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView -->
-<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView بدل display:none الذي يمنع فتح المنتقي -->
+<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — نسخة ‎-9999px (v200) كانت تفتح تمريراً أفقياً بـ9999 بكسل تُفلت الشاشة جانبياً بالسحب -->
+<input type="file" id="avatarFile" accept="image/*" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض بدل display:none الذي يمنع فتح المنتقي في الـWebView — وبدل ‎-9999px (v200) الذي كان يفتح تمريراً أفقياً يُفلت الشاشة (بلاغ «الشاشة تهرب») -->
 
 <dialog id="dlgOrd">
   <div class="dh">🚚 طلب توريد جديد</div>

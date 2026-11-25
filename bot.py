@@ -13438,7 +13438,7 @@ async def _pages_staleness_guard(bot):
         logging.info("[PWA][v201] حارس Pages تخطّى الفحص بهدوء: " + str(_e)[:160])
 
 
-PWA_VERSION = "71"  # v201 = رفع إصدار كاش الـSW والواجهة معاً — كان عالقاً على «70» منذ
+PWA_VERSION = "72"  # v202 = إصلاح «الشاشة تهرب لوحدها بمجرد سحب» — حقولا الإخفاء عند ‎-9999px (رقعة v200) كانت تفتح تمريراً أفقياً بـ9999 بكسل تُفلت الصفحة جانبياً بسحبة واحدة (مؤكد بقياس headless: scrollWidth 10359 بدل 360) + قفل html{overflow-x:clip} وقائياً — كان عالقاً على «71» منذ v201
 # v193: كل التحديثات بعد ذلك كانت تُنشر على الخادم بينما sw.js المنشور يبقى متطابقاً
 # بالبايت فلا يتجدد كاش الأجهزة، وآلية الاستبدال الذاتي (v168) تشترط إصدار خادم
 # أحدث فلا تنطلق أبداً، ولا يظهر إشعار التحديث — بلاغ المالك «لم يتغير شيء».
@@ -21748,11 +21748,21 @@ _PWA_HTML_PATCHES = (
      '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);'),
     # 98) صورة الحساب: حقل الملف display:none لا يفتح منتقي الملفات في بعض
     #     WebViews (APK) — يُخفى بنمط آمن يبقى قابلاً للاستدعاء البرمجي.
+    #     v202: النمط الآمن صار داخل إطار العرض (position:fixed بالزاوية، 1px،
+    #     شفاف، خلف كل شيء) — نسخة ‎-9999px السابقة كانت تفتح تمريراً أفقياً
+    #     بـ9999 بكسل تُفلت الشاشة كلها جانبياً بالسحب (بلاغ المالك بالفيديو).
     ('<input type="file" id="avatarFile" accept="image/*" style="display:none">',
-     '<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView بدل display:none الذي يمنع فتح المنتقي -->'),
+     '<input type="file" id="avatarFile" accept="image/*" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض بدل display:none الذي يمنع فتح المنتقي — وبدل ‎-9999px الذي كان يفتح تمريراً أفقياً يُفلت الشاشة -->'),
     # 99) نفس الإصلاح لحقل إيصال التوريد (النمط نفسه، الوقاية نفسها)
     ('<input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">',
-     '<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView -->'),
+     '<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — نسخة ‎-9999px كانت تفتح تمريراً أفقياً يُفلت الشاشة -->'),
+    # 100) v202: حقلا ‎-9999px (نمط v200 المطبق فعلاً في ملفات pwa.html الحالية
+    #      المنشورة) — تحويلهما للنمط الآمن داخل إطار العرض. المراسي تنكسر في
+    #      pwa.html الجديد فتتخطى بالعدّ x0 فلا تُكرَّر.
+    ('<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0">',
+     '<input type="file" id="avatarFile" accept="image/*" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — ‎-9999px كان يفتح تمريراً أفقياً بـ9999 بكسل يُفلت الشاشة بالسحب -->'),
+    ('<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0">',
+     '<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — ‎-9999px كان يفتح تمريراً أفقياً يُفلت الشاشة -->'),
 )
 
 
@@ -22950,6 +22960,13 @@ def _pwa_inject_floating_layers(out):
         # من قائمة المستخدمين المحدّثة من الخادم (S.usrLast) فتعكس الحقيقة فوراً.
         if 'id="v160ui"' not in html:
             add += ('<script id="v160ui">\n' + _PWA_V160_JS + '\n</script>\n')
+        # v202: حصن الحقن — قفل الانزلاق الأفقي للمستند (بلاغ «الشاشة تهرب لوحدها
+        # بمجرد سحب»). يُحقن فقط إن غاب الحارس عن الصفحة نفسها (pwa.html الجديد
+        # يحمله سطراً فيتخطى). clip لا ينشئ حاوية تمرير فلا يمسّ العمودي ولا sticky.
+        if 'overflow-x:clip' not in html:
+            add += ('<style id="v202guard">/* v202: قفل الانزلاق الأفقي — أي عنصر أبعد من '
+                    'الشاشة كان يفتح تمريراً أفقياً بآلاف البكسلات تُفلت الصفحة جانبياً بسحبة واحدة */\n'
+                    'html{overflow-x:clip}</style>\n')
         if not add:
             return out
         pos = html.rindex("</body>")
