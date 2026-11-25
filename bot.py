@@ -2117,9 +2117,29 @@ def db_export_backup():
             incoming_orders = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM pending_deliveries ORDER BY id")
             pending_deliveries = [dict(r) for r in cur.fetchall()]
+            # ── v180: جداول المصادقة PWA — كانت الغائبة عن كل نسخة احتياطية،
+            # وأي استيراد كان يمسحها نهائياً عبر CASCADE (مرتبطة بـ users).
+            _pwa_auth = []
+            _pwa_regs = []
+            _pwa_sess = []
+            try:
+                cur.execute("SELECT * FROM pwa_auth ORDER BY user_id")
+                _pwa_auth = [dict(r) for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
+            try:
+                cur.execute("SELECT * FROM pwa_registrations ORDER BY id")
+                _pwa_regs = [dict(r) for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
+            try:
+                cur.execute("SELECT * FROM pwa_sessions ORDER BY token_hash")
+                _pwa_sess = [dict(r) for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
         conn.commit()
         return {
-            "version": 5,
+            "version": 6,
             "date": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=1))).isoformat(),
             "products": products,
             "transactions": transactions,
@@ -2129,12 +2149,40 @@ def db_export_backup():
             "extraction_requests": extraction_requests,
             "incoming_orders": incoming_orders,
             "pending_deliveries": pending_deliveries,
+            # v180: المصادقة كاملة داخل النسخة — كلمات المرور والجلسات والتسجيلات
+            "pwa_auth": _pwa_auth,
+            "pwa_registrations": _pwa_regs,
+            "pwa_sessions": _pwa_sess,
         }
     except Exception:
         conn.rollback()
         raise
     finally:
         release_connection(conn)
+
+
+def _v180_pwa_table_insert(cur, table, rows, restored_uids, null_link=False):
+    """v180: إدخال صفوف جداول المصادقة من النسخة مع حماية الروابط.
+
+    pwa_auth/pwa_sessions: user_id إلزامي (FK) — الصف الذي لا مستخدم له في
+    القاعدة المستعادة يُتخطى (وإلا رفض قيد FK يُسقط الاستيراد كله).
+    pwa_registrations: user_id يجوز أن يصير NULL (سلوك ON DELETE SET NULL نفسه).
+    أسماء الأعمدة تؤخذ من ملف النسخة نفسه فتطابق مخطط القاعدة دائماً.
+    """
+    _n = 0
+    for _r in rows or []:
+        _cols = list(_r.keys())
+        _vals = [_r.get(_c) for _c in _cols]
+        if "user_id" in _cols and _r.get("user_id") not in restored_uids:
+            if not null_link:
+                continue
+            _vals[_cols.index("user_id")] = None
+        cur.execute(
+            "INSERT INTO " + table + " (" + ", ".join(_cols) + ") "
+            "VALUES (" + ", ".join(["%s"] * len(_cols)) + ") ON CONFLICT DO NOTHING",
+            _vals)
+        _n += 1
+    return _n
 
 
 def db_import_backup(data):
@@ -2164,6 +2212,19 @@ def db_import_backup(data):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # ── v180: إن كانت النسخة قديمة بلا جداول مصادقة (أي ملف قبل v180) —
+            # احفظ الحالية لحظياً قبل حذف users لأن CASCADE سيمسحها معه. النسخ
+            # من v180 وما بعد تحمل الجداول نفسها فلا حاجة للحفظ.
+            _saved_pwa = {}
+            if data.get("pwa_auth") is None:
+                _cur2 = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                for _t in ("pwa_auth", "pwa_sessions", "pwa_registrations"):
+                    try:
+                        _cur2.execute("SELECT * FROM " + _t)
+                        _saved_pwa[_t] = [dict(_r) for _r in _cur2.fetchall()]
+                    except Exception:
+                        _saved_pwa[_t] = []
+                _cur2.close()
             # ── DELETE in reverse dependency order ──
             cur.execute("DELETE FROM invoice_items")
             cur.execute("DELETE FROM invoices")
@@ -2382,12 +2443,35 @@ def db_import_backup(data):
                 max_pdid = max(pd["id"] for pd in pend_delivs)
                 cur.execute("SELECT setval('pending_deliveries_id_seq', %s)", (max_pdid,))
 
+        # ── v180: استعادة جداول المصادقة (كلمات المرور + الجلسات + التسجيلات) ──
+        # القديم: DELETE FROM users كان يمسحها عبر CASCADE بلا رحمة ولا استعادة
+        # فلا يستطيع أحد الدخول بعد أي استيراد إلا بإنشاء حساب جديد.
+        cur.execute("SELECT id FROM users")
+        _restored_uids = set(_r[0] for _r in cur.fetchall())
+        _pwa_auth_src = data.get("pwa_auth")
+        _pwa_sess_src = data.get("pwa_sessions")
+        _pwa_regs_src = data.get("pwa_registrations")
+        if _pwa_auth_src is None:
+            # نسخة قديمة: أعد ما حُفظ لحظياً قبل الحذف — لا فقدان للدخول
+            _pwa_auth_src = _saved_pwa.get("pwa_auth") or []
+            _pwa_sess_src = _saved_pwa.get("pwa_sessions") or []
+            _pwa_regs_src = _saved_pwa.get("pwa_registrations") or []
+        _pwa_auth_n = _v180_pwa_table_insert(cur, "pwa_auth", _pwa_auth_src, _restored_uids)
+        _pwa_sess_n = _v180_pwa_table_insert(cur, "pwa_sessions", _pwa_sess_src, _restored_uids)
+        _pwa_regs_n = _v180_pwa_table_insert(cur, "pwa_registrations", _pwa_regs_src, _restored_uids, null_link=True)
+
         conn.commit()
 
         summary = ("✅ تم استيراد البيانات [" + PWA_VERSION + "]:\n"
             "  المستخدمين: " + str(len(users)) + "\n"
             "  السلع: " + str(len(products)) + "\n"
             "  العمليات: " + str(len(transactions)))
+        if _pwa_auth_n > 0:
+            summary += "\n  🔐 كلمات الدخول المستعادة: " + str(_pwa_auth_n)
+        if _pwa_sess_n > 0:
+            summary += "\n  💻 الجلسات المستعادة: " + str(_pwa_sess_n)
+        if _pwa_regs_n > 0:
+            summary += "\n  🗂 التسجيلات المستعادة: " + str(_pwa_regs_n)
         if len(invoices) > 0:
             summary += "\n  الفواتير: " + str(len(invoices))
         if len(invoice_items) > 0:
@@ -7638,6 +7722,30 @@ async def backup_test_command(update, context):
     await update.message.reply_text("\n".join(lines), reply_markup=get_admin_keyboard())
 
 
+async def _pre_import_safety_snapshot(context):
+    """v180: لقطة أمان قبل أي استيراد — الاستيراد يستبدل كل البيانات، وبدون
+    لقطة قبلية لا يوجد تراجع. تُحفظ على القرص بمسار مستقل (لا يمس نسخة اليوم)
+    وتُرسل لقناة النسخ الاحتياطي إن ضُبطت. فشلها يُسجل ولا يمنع الاستيراد."""
+    try:
+        _snap = await asyncio.to_thread(db_export_backup)
+        _payload = json.dumps(_snap, ensure_ascii=False, default=str).encode("utf-8")
+        try:
+            with open("/tmp/backup_pre_import.json", "wb") as _f:
+                _f.write(_payload)
+        except Exception:
+            pass
+        try:
+            _now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
+            await _send_backup_to_channel(context.bot, _payload,
+                                          "pre_import_safety_" + _now + ".json",
+                                          label="pre-import")
+        except Exception:
+            pass
+        logging.info("[BACKUP] Pre-import safety snapshot saved (" + str(len(_payload)) + " bytes)")
+    except Exception as _e:
+        logging.error("[BACKUP] Pre-import snapshot failed: " + str(_e))
+
+
 async def handle_backup_document(update, context):
     """Admin sends a backup .json file to restore data."""
     if not is_admin(update.effective_user.id):
@@ -7687,6 +7795,11 @@ async def callback_restore_handler(update, context):
         if not restore_data:
             await query.edit_message_text("\u274c \u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u064a\u0627\u0646\u0627\u062a \u0644\u0644\u0627\u0633\u062a\u064a\u0631\u0627\u062f.")
             return
+        if not is_owner(query.from_user.id):
+            await _safe_edit(query, "🔐 الاستعادة الكاملة متاحة لصاحب البوت فقط.")
+            logging.warning("[BACKUP] Unauthorized file-restore attempt by " + str(query.from_user.id))
+            return
+        await _pre_import_safety_snapshot(context)
         try:
             result = db_import_backup(restore_data)
             await query.edit_message_text(result)
@@ -8126,6 +8239,7 @@ async def callback_restore_last_confirm_handler(update, context):
         if not _last_backup_data:
             await _safe_edit(query, "❌ لا توجد نسخة.")
             return
+        await _pre_import_safety_snapshot(context)
         try:
             result = db_import_backup(_last_backup_data)
             await _safe_edit(query, result)
@@ -12821,7 +12935,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "55"  # v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "56"  # v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
