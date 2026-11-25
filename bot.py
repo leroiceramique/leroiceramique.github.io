@@ -8012,6 +8012,8 @@ async def backup_command(update, context):
         )
         file_bytes = json_str.encode("utf-8")
         del json_str
+        # v199: نسخة /backup اليدوية تُؤرشف على القرص أيضاً (أرشيف مؤرخ)
+        await asyncio.to_thread(_save_backup_to_disk, file_bytes)
         _gap_note = ("\n⚠️ فحص ذاتي [" + PWA_VERSION + "]: جداول مرتبطة بالمستخدمين خارج النسخة: " + ", ".join(_backup_integrity_gaps)) if _backup_integrity_gaps else ""  # v180
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         keyboard = InlineKeyboardMarkup([
@@ -8199,9 +8201,17 @@ async def callback_restore_from_channel_handler(update, context):
 async def callback_restore_last_handler(update, context):
     query = update.callback_query
     await query.answer()
+    global _last_backup_data
+    _from_disk = False
     if not _last_backup_data:
-        await _safe_edit(query, "❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
-        return
+        # v199: بعد إعادة تشغيل الخادم تعود النسخة من أرشيف القرص المؤرخ
+        # (أحدث نسخة سليمة) بدل رسالة «لا توجد نسخة» حتى نسخة قادمة جديدة
+        _disk = await asyncio.to_thread(_load_backup_from_disk_any)
+        if not _disk:
+            await _safe_edit(query, "❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
+            return
+        _last_backup_data = _disk
+        _from_disk = True
     data = _last_backup_data
     prod_count = len(data.get("products", []))
     tx_count = len(data.get("transactions", []))
@@ -8210,7 +8220,8 @@ async def callback_restore_last_handler(update, context):
         [InlineKeyboardButton("⚠️ تأكيد استيراد", callback_data="last_restore_confirm"),
          InlineKeyboardButton("❌ إلغاء", callback_data="last_restore_cancel")],
     ])
-    text = "💾 استيراد آخر نسخة احتياطية:\n\n" + "📅 التاريخ: " + backup_date + "\n" + "📦 السلع: " + str(prod_count) + "\n" + "📜 العمليات: " + str(tx_count) + "\n\n" + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!"
+    _src_tag = " (من أرشيف القرص)" if _from_disk else ""
+    text = ("💾 استيراد آخر نسخة احتياطية" + _src_tag + ":\n\n" + "📅 التاريخ: " + backup_date + "\n" + "📦 السلع: " + str(prod_count) + "\n" + "📜 العمليات: " + str(tx_count) + "\n\n" + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!")
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
@@ -13022,28 +13033,110 @@ def _send_backup_email_with_retry(backup_bytes, filename, max_attempts=3, delay_
     return False
 
 
+# v199: أرشيف نسخ يومية مؤرخة على القرص — الاحتفاظ بعدة نسخ بدل آخر نسخة فقط
+# القناة والبريد يحتفظان أصلاً بكل نسخة يومية كنسخة مستقلة (لا حذف في
+# _send_backup_to_channel) — هنا يكتمل الأرشيف المحلي للقراءة الفورية:
+# انضغاط آخر ملف أو تلفه لم يعد يعني فقدان كل ما على القرص.
+_BACKUP_DISK_DIR = "/tmp/backups"  # أرشيف النسخ المؤرخة (منفصل عن backup_pre_import.json)
+_BACKUP_DISK_KEEP = 7              # الاحتفاظ بأحدث 7 نسخ مؤرخة — الأقدم يُقتطع تلقائياً
+
+
+def _backup_dict_valid(data):
+    """v199: تحقق بنيوي خفيف من ملف النسخة قبل الاعتماد عليه — قاموس يحمل
+    جوهر النسخة (سلع/عمليات/مستخدمون قوائم، موجودة في كل إصدارات النسخ
+    2/3 وما بعدها). يمنع اعتماد ملف تالف أو مبتور بدل نسخة سليمة أقدم."""
+    if not isinstance(data, dict):
+        return False
+    for _k in ("products", "transactions", "users"):
+        if not isinstance(data.get(_k), list):
+            return False
+    return True
+
+
 def _save_backup_to_disk(backup_bytes):
-    """Save backup to local disk as a fallback. Returns True on success."""
+    """Save backup to local disk as a fallback. Returns True on success.
+    v199: إلى جانب «آخر نسخة» (backup_last.json — نفس المسار التقليدي
+    الذي تعتمده مسارات الاستعادة القائمة بلا أي تغيير) تُكتب نسخة مؤرخة
+    في /tmp/backups ويُقتطع الأقدم فوق _BACKUP_DISK_KEEP نسخاً."""
+    ok = False
     try:
         with open(_BACKUP_DISK_PATH, "wb") as f:
             f.write(backup_bytes)
         logging.info("[BACKUP] Saved to disk: " + _BACKUP_DISK_PATH)
-        return True
+        ok = True
     except Exception as e:
         logging.warning("[BACKUP] Disk save failed: " + str(e))
-        return False
+    # v199: نسخة مؤرخة في الأرشيف المحلي + اقتطاع فوق الحد — فشلها لا يُسقط
+    # نجاح حفظ النسخة الأساسية (نسخة القرص الأساسية هي المرجع الأول)
+    try:
+        os.makedirs(_BACKUP_DISK_DIR, exist_ok=True)
+        _dt_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
+        _dated_name = "backup_" + _dt_now.strftime("%Y-%m-%d_%H-%M") + ".json"
+        with open(os.path.join(_BACKUP_DISK_DIR, _dated_name), "wb") as f:
+            f.write(backup_bytes)
+        _kept = [f for f in os.listdir(_BACKUP_DISK_DIR)
+                 if f.startswith("backup_") and f.endswith(".json")]
+        _kept.sort(reverse=True)  # الصيغة المؤرخة ترتب زمنياً — الأحدث أولًا
+        for _old in _kept[_BACKUP_DISK_KEEP:]:
+            try:
+                os.remove(os.path.join(_BACKUP_DISK_DIR, _old))
+            except Exception:
+                pass
+        logging.info("[BACKUP] Dated copy archived: " + _dated_name
+                     + " (أرشيف القرص: "
+                     + str(min(len(_kept), _BACKUP_DISK_KEEP)) + " نسخ)")
+    except Exception as e:
+        logging.warning("[BACKUP] Dated archive save failed (النسخة الأساسية محفوظة): " + str(e))
+    return ok
 
 
 def _load_backup_from_disk():
-    """Load last backup from disk into memory. Used at startup."""
+    """Load last backup from disk into memory. Used at startup.
+    v199: ملف تالف أو مبتور يُرفض (None) بدل اعتماده — والمسار الاحتياطي
+    الأوسع عبر _load_backup_from_disk_any الذي يمسح الأرشيف المؤرخ."""
     try:
         if os.path.exists(_BACKUP_DISK_PATH):
             with open(_BACKUP_DISK_PATH, "rb") as f:
                 data = json.loads(f.read().decode("utf-8"))
+            if not _backup_dict_valid(data):
+                logging.warning("[BACKUP] Last-disk copy invalid (تالف/مبتور) — يُبحث في الأرشيف المؤرخ")
+                return None
             logging.info("[BACKUP] Loaded backup from disk (" + str(data.get("date", "?")) + ")")
             return data
     except Exception as e:
         logging.warning("[BACKUP] Disk load failed: " + str(e))
+    return None
+
+
+def _load_backup_from_disk_any():
+    """v199: أحدث نسخة سليمة من أرشيف القرص — النسخ المؤرخة (الأحدث أولًا)
+    ثم «آخر نسخة» التقليدية. كل مرشح يُفك ويُتحقق بنيوياً قبل الاعتماد،
+    والتالف يُتخطى تلقائياً فلا يُعتمد ملف ضائع أبداً. قراءة قرص فقط —
+    بلا أي استعلام قاعدة بيانات وبلا أي مساس بالبيانات الحية."""
+    _candidates = []
+    try:
+        if os.path.isdir(_BACKUP_DISK_DIR):
+            _names = [f for f in os.listdir(_BACKUP_DISK_DIR)
+                      if f.startswith("backup_") and f.endswith(".json")]
+            _names.sort(reverse=True)
+            _candidates += [os.path.join(_BACKUP_DISK_DIR, f) for f in _names]
+    except Exception:
+        pass
+    _candidates.append(_BACKUP_DISK_PATH)
+    for _path in _candidates:
+        try:
+            if not os.path.exists(_path):
+                continue
+            with open(_path, "rb") as f:
+                data = json.loads(f.read().decode("utf-8"))
+            if _backup_dict_valid(data):
+                logging.info("[BACKUP] Valid copy loaded: " + os.path.basename(_path)
+                             + " (" + str(data.get("date", "?")) + ")")
+                return data
+            logging.warning("[BACKUP] Skip invalid copy: " + os.path.basename(_path))
+        except Exception as e:
+            logging.warning("[BACKUP] Skip unreadable copy "
+                            + os.path.basename(_path) + ": " + str(e))
     return None
 
 
@@ -37652,7 +37745,9 @@ if __name__ == "__main__":
     # Restore last backup from disk into memory (if any) so /backup → restore_last works
     # immediately after a Render restart, even before the next scheduled backup runs.
     if _last_backup_data is None:
-        _loaded = _load_backup_from_disk()
+        # v199: أحدث نسخة سليمة من أرشيف القرص المؤرخ (كانت آخر ملف فقط —
+        # وتلفه كان يُبطل استعادة الإقلاع وأساس /backup → استعادة آخر نسخة)
+        _loaded = _load_backup_from_disk_any()
         if _loaded:
             _last_backup_data = _loaded
     # ── استعادة تلقائية عند الإقلاع: قاعدة فارغة + نسخة متاحة = ضياع حقيقي ──
