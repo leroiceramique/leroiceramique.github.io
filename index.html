@@ -2149,8 +2149,8 @@ img{-webkit-user-drag:none;user-select:none}</style>
   </div>
 </dialog>
 
-<input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">
-<input type="file" id="avatarFile" accept="image/*" style="display:none">
+<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView -->
+<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0"><!-- v200: إخفاء آمن للـWebView بدل display:none الذي يمنع فتح المنتقي -->
 
 <dialog id="dlgOrd">
   <div class="dh">🚚 طلب توريد جديد</div>
@@ -4007,10 +4007,21 @@ $("#dlgUserGo").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
   finally { btn.disabled = false; }
 });
-/* v179: أزرار وضع العرض الثلاثة — تطبيق فوري كامل للشكل، والاعتماد على الحساب من زر الثيم */
-$("#thLight").addEventListener("click", () => applyTheme("light", true));
-$("#thDark").addEventListener("click", () => applyTheme("dark", true));
-$("#thSys").addEventListener("click", () => applyTheme("system", true));
+/* v179: أزرار وضع العرض الثلاثة — تطبيق فوري كامل للشكل
+   v200: وكل ضغطة تحفظ الوضع على الحساب فوراً فيتبعك على كل الأجهزة */
+/* v200: أزرار وضع العرض تحفظ على الحساب فوراً — كانت محلية فقط فكانت
+   قيمة الخادم القديمة تعود وتعلو عليها عند كل فتح (بلاغ المالك) */
+function _themeModeSave(mode) {
+  applyTheme(mode, true);
+  try {
+    api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: (typeof S !== "undefined" && S && S.orgTheme) || "discord", mode: mode }) })
+      .catch(function (e) { toast("طُبّق محلياً ولم يثبت على الحساب: " + (e && e.message ? e.message : ""), true); });
+  } catch (e) {}
+}
+$("#thLight").addEventListener("click", () => _themeModeSave("light"));
+$("#thDark").addEventListener("click", () => _themeModeSave("dark"));
+$("#thSys").addEventListener("click", () => _themeModeSave("system"));
 $("#btnMyPass").addEventListener("click", () => openPass(null, S.user ? S.user.name : "", true));
 async function doLogout() {
   try { await api("/api/logout", { method: "POST" }); } catch (e) {}
@@ -4419,8 +4430,9 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
     S.googleLogin = !!(d && d.google_login);
     $("#btnGoogle").style.display = S.googleLogin ? "" : "none";
     $("#gDiv").style.display = S.googleLogin ? "flex" : "none";
-    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل */
-    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
+    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل
+       v200: للجهاز الذي لم يختر مستخدمه ثيمه بعد فقط — لا فرض للثيم العام فوق الاختيار المحفوظ */
+    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);
     $("#setAbout").textContent = "الإصدار " + (S.serverVersion || APP_VER) + (S.serverVersion && S.serverVersion !== APP_VER ? " — واجهة " + APP_VER + " (تُحدَّث تلقائياً)" : "");
   } catch (e2) {}
   const q = new URLSearchParams(location.search);
@@ -4445,7 +4457,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "70";
+const APP_VER = "71";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -4457,7 +4469,7 @@ S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""
 function pagesLiveSwap(v) {
   try {
     var root = window.CERAM_API_ROOT || "";
-    if (!root) { return false; }   /* v193: لا إعادة تحميل عمياء */
+    if (!root) { return false; }   /* v193: لا إعادة تحميل عمياء — تخطٍّ صامت */
     if ((parseFloat(v) || 0) <= (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) { return false; }   /* v193: لا هبوط للنسخة */
     try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
     fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })
@@ -4468,13 +4480,13 @@ function pagesLiveSwap(v) {
         var cfg = "<script>window.CERAM_API_ROOT=" + JSON.stringify(root) + ";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</" + "script>";
         if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + cfg; });
         else html = cfg + html;
-        try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v193: تنقّل حقيقي */
+        try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v193: تنقّل حقيقي — نهاية المستندات الهجينة */
       })
       .catch(function () {
         /* v193: تخطٍّ صامت */
         
       });
-    return false;   /* v193: الإقلاع يكمل دائماً */
+    return false;   /* v193: الإقلاع يكمل دائماً على النسخة الحالية — لا شاشة ميتة */
   } catch (_ple) { return false; }
 }
 function swCleanup() {
@@ -4508,8 +4520,8 @@ function checkAppUpdate(manual) {   /* v45: manual = رسائل صريحة + ت�
   return fetch((window.CERAM_API_ROOT || "") + "/api/status", { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
     const v = (d && d.version) || "";
     if (v) S.serverVersion = v;
-    /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */
-    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);
+    /* v120: التقاط الثيم المؤسسي دورياً — v200: بلا فرض فوق الاختيار الشخصي المحفوظ (الثيمات شخصية منذ v178) */
+    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);
     const about = $("#setAbout");
     if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");
     if (v && v !== APP_VER && v !== S.updDismissed
@@ -5287,7 +5299,7 @@ try {
     if (busy) return true;
     busy = true;
     show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");
-    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v193: فتحة أمان */
+    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v193: فتحة أمان — لا حبس في السبلاش أبداً */
     var prevView = "", curEl = null;
     try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}
     rawRemember(r.t).then(function (out) {
@@ -5340,6 +5352,7 @@ try {
     var r = null;
     try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}
     if (!r || !r.t) {
+      /* v193: إن كنا أصلاً على شاشة الدخول فلا تُعَد رسمها — كل 401 خلفي لا يمحو رسالة الخطأ ولا يفرغ كلمة المرور */
       try { if (document.getElementById("login").style.display !== "none") return; } catch (eg0) {}
       try { showLogin(false); } catch (e0) {}
       return;
