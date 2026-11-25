@@ -493,24 +493,45 @@ DB_CONNECT_KWARGS = {
     "keepalives_count": 3,
 }
 
+# ═══ v198: انتظار آمن عند ازدحام الاتصالات — بدل إعادة بناء الـPool ═══
+# المشكلة المُصلَحة: عند فشل الحصول على اتصال كان get_connection() يعيد بناء
+# الـPool كاملاً، وكان init_pool() يُغلق القديم بـ closeall() — وهذا يقتل
+# اتصالات عمليات أخرى ما تزال جارية في منتصف معاملاتها (مخزون/فواتير) فتتفشى
+# أخطاء «connection already closed» وقد تُفقد معاملات جارية.
+# الحل: انضغال الـPool → انتظار محدود على عودة اتصال (شرط يُبلّغ من
+# release_connection)، والاتصال الميت → يُرمى هو وحده، ولا إعادة بناء
+# في مسار الحصول على اتصال إطلاقاً، ولا إغلاق قسري لأي Pool حي.
+GETCONN_WAIT_STEP = 1.0        # خطوة كل استيقاظ من الانتظار (ثانية)
+GETCONN_TOTAL_WAIT = 30.0      # سقف الانتظار الكلي قبل إعلان فشل نظيف (ثانية)
+_conn_return_cv = threading.Condition()   # يُبلّغ عند عودة أي اتصال للـPool
+_conn_owner = {}               # id(اتصال) → (الاتصال، الـPool الذي أُخرج منه)
+_conn_owner_lock = threading.Lock()
+
+
+def _notify_conn_returned():
+    """v198: إيقاظ الناقلين المنتظرين على اتصال حر بعد عودة اتصال للـPool."""
+    try:
+        with _conn_return_cv:
+            _conn_return_cv.notify_all()
+    except Exception:
+        pass
+
 
 def init_pool(url=None):
     """Create connection pool for the given URL (or active DB).
-    Thread-safe: guarded by a dedicated lock, and any previous pool is fully
-    drained first so repeated calls never leak connections.
+    Thread-safe: guarded by a dedicated lock.
     v74: ThreadedConnectionPool إلزامي — توثيق psycopg2 يمنع مشاركة
     SimpleConnectionPool بين الخيوط (تزامن getconn/putconn يُتلف دفاتر
-    الـPool تدريجياً → فشل شامل حتى /start يتشافى فقط بإعادة تشغيل)."""
+    الـPool تدريجياً → فشل شامل حتى /start يتشافى فقط بإعادة تشغيل).
+    v198 إصلاح جوهري: لم يعد يُغلق الـPool القديم بـ closeall() — الإغلاق
+    كان يقتل اتصالات عمليات أخرى جارية في منتصف معاملاتها. الآن: استبدال
+    مرجعي فقط؛ الاتصالات المشغولة تكمل عملها وتعود عبر release_connection()
+    إلى Poolها الأصلي بخريطة الملكية، والخاملة تُغلقها آلية الحسابات (GC)
+    عند وصول الـPool القديم إلى صفر مراجع."""
     global _pool
     dsn = url or get_active_db_url()
     with _pool_creation_lock:
-        old = _pool
-        _pool = None
-        if old is not None:
-            try:
-                old.closeall()
-            except Exception:
-                pass
+        # v198: بلا closeall() — استبدال مرجعي آمن فقط، اتصالات الغير محمية
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1, maxconn=15, dsn=dsn, **DB_CONNECT_KWARGS   # v157: 5→15 — بوت + 116 مسار ويب متزامنة
         )
@@ -519,79 +540,133 @@ def init_pool(url=None):
 
 def get_connection():
     """v87: اتصال حي من الـ Pool للقاعدة الوحيدة — لا تبديل تلقائي إطلاقاً.
-    عند الفشل المتكرر: إعادة بناء Pool مرة واحدة ثم RuntimeError مع رفع
-    علم إشعار المالك (يُرسل عبر keep-alive مرة واحدة لكل حادثة).
-
-    Fixes over the previous version:
-    - init_pool() failure at startup now triggers failover instead of crashing.
-    - Dead pooled connections are discarded via putconn(close=True) so the
-      pool's internal bookkeeping stays consistent (no more leaked slots).
-    - Brief backoff between attempts absorbs transient bursts/exhaustion."""
-    global _pool, _active_db_index
+    v198: عند انضغال الـPool (كل الاتصالات مشغولة) ينتظر بأمان حتى عودة
+    اتصال بدل إعادة بناء الـPool التي كانت تُسقط اتصالات المستخدمين الآخرين؛
+    وعند هبوط حقيقي للقاعدة: RuntimeError نظيف بعد السقف الزمني مع رفع
+    علم إشعار المالك (يُرسل مرة واحدة لكل حادثة).
+    - الاتصال الميت يُرمى هو وحده عبر putconn(close=True) — دفاتر الـPool
+      تبقى سليمة بلا تسريب ولا يمسّ بقية الاتصالات.
+    - لا إعادة بناء للـPool في مسار الحصول على اتصال نهائياً."""
+    global _pool
+    deadline = time.monotonic() + GETCONN_TOTAL_WAIT
     last_err = None
-    for attempt in range(3):
-        try:
-            if _pool is None:
-                init_pool()
-            conn = _pool.getconn()
+    _wait_logged = False
+    while True:
+        pool = _pool
+        # 1) تهيئة كسولة للـPool عند أول طلب
+        if pool is None:
             try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    cur.execute("SET statement_timeout = 15000")  # v73
-                    cur.execute("SET idle_in_transaction_session_timeout = 30000")
-                    cur.execute("SET TIME ZONE 'Africa/Algiers'")
-                _mark_db_ok()
-                return conn
-            except Exception:
-                # connection is dead → return it CLOSED through the pool API
-                try:
-                    _pool.putconn(conn, close=True)
-                except Exception:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                raise
+                pool = init_pool()
+            except Exception as e:
+                last_err = e
+                if time.monotonic() >= deadline:
+                    _mark_db_down()
+                    raise RuntimeError(
+                        "No database connection available: " + str(last_err))
+                time.sleep(0.2)
+                continue
+        # 2) أخذ اتصال خام — الانضغال يُعالج بالانتظار لا بإعادة البناء
+        try:
+            conn = pool.getconn()
+        except psycopg2.pool.PoolError as pool_err:
+            if pool.closed:
+                # Pool مغلق (تهيئة بديلة جارية) — أعد المحاولة بالمرجع الجديد
+                if time.monotonic() >= deadline:
+                    _mark_db_down()
+                    raise RuntimeError(
+                        "No database connection available: pool closed: "
+                        + str(pool_err))
+                time.sleep(0.05)
+                continue
+            # v198: انضغال الـPool → انتظار عودة اتصال من عملية أخرى،
+            # بدل إعادة البناء التي تُغلق اتصالات الغير الجارية
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logging.error(
+                    "[DB] Pool busy " + str(GETCONN_TOTAL_WAIT) + "s — refusing to "
+                    "rebuild (protects in-flight operations); failing this request safely")
+                raise RuntimeError(
+                    "اتصالات قاعدة البيانات (" + str(pool.maxconn) + ") كلها مشغولة منذ "
+                    + str(GETCONN_TOTAL_WAIT) + " ثانية — تم الانتظار الآمن بدل إعادة "
+                    "بناء الـPool، أعد المحاولة بعد لحظات")
+            if not _wait_logged:
+                _wait_logged = True
+                logging.warning(
+                    "[DB] Pool exhausted (" + str(pool.maxconn) + " conns) — waiting "
+                    "for a release instead of rebuilding the pool")
+            with _conn_return_cv:
+                _conn_return_cv.wait(timeout=min(GETCONN_WAIT_STEP, remaining))
+            continue
         except Exception as e:
+            # فشل فتح اتصال جديد (هبوط شبكة/قاعدة) — انتظار قصير وإعادة
             last_err = e
-            logging.warning(
-                "[DB] get_connection attempt " + str(attempt + 1) + "/3 failed: "
-                + str(e)[:150]
-            )
-            time.sleep(0.2 * (attempt + 1))
-    # Last resort: recreate current pool
-# Last resort: recreate current pool (single-DB or all multi-DBs failed)
-    logging.warning("[DB] Recreating pool for current DB...")
-    try:
-        init_pool()
-        conn = _pool.getconn()
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.execute("SET statement_timeout = 15000")  # v73
-            cur.execute("SET idle_in_transaction_session_timeout = 30000")
-            cur.execute("SET TIME ZONE 'Africa/Algiers'")
-        _mark_db_ok()
-        return conn
-    except Exception as e:
-        _mark_db_down()
-        raise RuntimeError(
-            "No database connection available: " + str(last_err) + " / " + str(e)
-        )
+            if time.monotonic() >= deadline:
+                _mark_db_down()
+                raise RuntimeError(
+                    "No database connection available: " + str(last_err))
+            time.sleep(0.2)
+            continue
+        # 3) فحص صحة الاتصال وتعيين إعدادات الجلسة
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.execute("SET statement_timeout = 15000")  # v73
+                cur.execute("SET idle_in_transaction_session_timeout = 30000")
+                cur.execute("SET TIME ZONE 'Africa/Algiers'")
+            with _conn_owner_lock:
+                _conn_owner[id(conn)] = (conn, pool)
+            _mark_db_ok()
+            return conn
+        except Exception as e:
+            # اتصال ميت → نرميه هو وحده عبر واجهة الـPool (دفاتر سليمة
+            # بلا تسريب) ثم نعيد المحاولة باتصال آخر — بلا مسّ للبقية
+            try:
+                pool.putconn(conn, close=True)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            last_err = e
+            if time.monotonic() >= deadline:
+                _mark_db_down()
+                raise RuntimeError(
+                    "No healthy database connection available: " + str(last_err))
+            time.sleep(0.05)
+            continue
 
 
 def release_connection(conn):
+    """v198: إعادة الاتصال إلى الـPool الذي أُخرج منه (وليس الـPool الحالي
+    بالضرورة) ثم إيقاظ أي ناقل منتظر على الانضغال. الاتصال المغلق يُمرّر
+    عبر putconn(close=True) ليتحرّر قيده من الـPool بدفاتر سليمة بدل تسريب
+    الخانة كما كان يحدث سابقاً."""
     if conn is None:
         return
-    if conn.closed:
-        return
-    if _pool:
+    with _conn_owner_lock:
+        entry = _conn_owner.pop(id(conn), None)
+    owner = entry[1] if (entry is not None and entry[0] is conn) else None
+    target = owner if owner is not None else _pool
+    if target is None:
         try:
-            _pool.putconn(conn)
+            conn.close()
+        except Exception:
+            pass
+    elif conn.closed:
+        # مغلق مسبقاً — استرجاعه بمفتاح الإتلاف لتحرير الخانة بدفاتر سليمة
+        try:
+            target.putconn(conn, close=True)
+        except Exception:
+            pass
+    else:
+        try:
+            target.putconn(conn)
         except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
+    _notify_conn_returned()
 
 # ═══════════════════════════════════════════════════════════
 #  OFFLINE MODE + SYNC SYSTEM
@@ -3393,7 +3468,7 @@ def delete_transaction(tx_id, admin_tid):
                 "SELECT t.*, u.telegram_id AS user_tid "
                 "FROM transactions t "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.id = %s", (tx_id,))
+                "WHERE t.id = %s FOR UPDATE", (tx_id,))
             tx = cur.fetchone()
             if not tx:
                 return False, "❌ العملية غير موجودة."
@@ -3433,6 +3508,31 @@ def delete_transaction(tx_id, admin_tid):
                             cur.execute("DELETE FROM pending_deliveries WHERE id = %s", (pd["id"],))
                         else:
                             cur.execute("UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s", (new_pending, pd["id"]))
+            # v198: أثر الحذف أولاً — مَن حذف ومتى ولماذا، داخل نفس المعاملة:
+            # أي فشل في كتابة السجل يُبطل الحذف نفسه (الحذف بلا أثر مستحيل)
+            cur.execute(
+                "SELECT id, COALESCE(username, '') AS uname, "
+                "COALESCE(first_name, '') AS fname "
+                "FROM users WHERE telegram_id = %s", (admin_tid,))
+            _del_u = cur.fetchone()
+            _del_uid = (_del_u or {}).get("id")
+            _del_uname = ((_del_u or {}).get("uname")
+                          or (_del_u or {}).get("fname")
+                          or ("telegram:" + str(admin_tid)))
+            cur.execute("SELECT name FROM products WHERE id = %s", (tx["product_id"],))
+            _del_p = cur.fetchone()
+            _del_pname = str((_del_p or {}).get("name")
+                             or ("#" + str(tx["product_id"])))
+            _del_why = ("حذف حركة #" + str(tx_id) + " (" + str(tx["type"])
+                        + " " + str(tx["quantity"]) + ") سلعة: " + _del_pname[:80]
+                        + " — عكس الكمية"
+                        + ((" " + _undo_note.replace("\n", " ").strip()) if _undo_note else "")
+                        + " — عبر البوت")
+            cur.execute(
+                "INSERT INTO audit_log (user_id, username, action, details, ip) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (_del_uid, _del_uname[:200], "movement_delete",
+                 _del_why[:500], "telegram"))
             # Delete the transaction
             cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
         conn.commit()
@@ -26411,7 +26511,11 @@ def _pwa_api_movement_delete(user, mid):
     إلغاء نظيف تام لحركة: حذفها من القاعدة وردّ الكمية كما كانت في معاملة
     واحدة — كأن العملية لم تُسجَّل قط: بلا قيد إلغاء وبلا أثر في سجل الحركة.
     الإلغاء لصاحب الحركة نفسه أو للإدارة (مدير/مدير عام).
-    (بطلب يوسف الصريح: لا سجل تدقيق هنا — الحركة تختفي بلا أثر إطلاقاً)."""
+    v198 تعديل المطلب: يُسجّل أثر الإلغاء في audit_log (من/متى/لماذا) داخل
+    نفس المعاملة — أي فشل في كتابة السجل يُبطل الإلغاء نفسه (الإلغاء بلا
+    أثر مستحيل)، ويبقى سجل الحركة نفسه نظيفاً كما كان، والواجهة بلا تغيير.
+    كما عُكِس منطق الطلبات المعلقة من مسار البوت: العجز يُسجّل فوراً
+    وأحدث طلب معلق يُخفّض فوراً بدل انتظار التسوية الكسولة."""
     try:
         mid = int(mid)
     except (TypeError, ValueError):
@@ -26436,8 +26540,48 @@ def _pwa_api_movement_delete(user, mid):
             pname = str((prow or {}).get("name") or "")
             # ردّ الكمية كما كانت قبل الحركة — حرفياً كأنها لم تحدث
             delta = -int(t["quantity"] or 0) if t["type"] == "add" else int(t["quantity"] or 0)
-            cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s",
+            cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s RETURNING quantity",
                         (delta, t["product_id"]))
+            _new_qty = (cur.fetchone() or {}).get("quantity")
+            try:
+                _new_qty_i = int(_new_qty or 0)
+            except (TypeError, ValueError):
+                _new_qty_i = 0
+            # v198: موازاة منطق البوت — الطلبات المعلقة تُسوّى فوراً داخل نفس
+            # المعاملة بدل انتظار التسوية الكسولة عند أول زيادة كمية لاحقة
+            if t["type"] == "add" and _new_qty_i < 0:
+                # عكس الإضافة خلق عجزاً — سجّله كطلب معلق فوراً (كما في مسار البوت)
+                sync_product_pending_deficit(t["product_id"], cur,
+                                             owner_user_id=t.get("user_id"))
+            elif t["type"] == "remove":
+                # عكس الإخراج غطّى أحدث طلب معلق — خفّضه أو احذفه (كما في مسار البوت)
+                cur.execute(
+                    "SELECT id, pending_qty FROM pending_deliveries "
+                    "WHERE user_id = %s AND product_id = %s AND pending_qty > 0 "
+                    "AND NOT COALESCE(dismissed, FALSE) "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (t["user_id"], t["product_id"]),
+                )
+                _pd = cur.fetchone()
+                if _pd:
+                    _new_pending = _pd["pending_qty"] - int(t["quantity"] or 0)
+                    if _new_pending <= 0:
+                        cur.execute("DELETE FROM pending_deliveries WHERE id = %s", (_pd["id"],))
+                    else:
+                        cur.execute("UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s",
+                                    (_new_pending, _pd["id"]))
+            # v198: أثر الإلغاء — من/متى/لماذا، داخل نفس المعاملة:
+            # أي فشل في كتابة السجل يُبطل الإلغاء نفسه (الإلغاء بلا أثر مستحيل)
+            cur.execute(
+                "INSERT INTO audit_log (user_id, username, action, details, ip) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (user.get("id"),
+                 str(user.get("name") or user.get("web_username") or "")[:200],
+                 "movement_delete",
+                 ("إلغاء حركة #" + str(mid) + " (" + str(t["type"]) + " "
+                  + str(t["quantity"]) + ") سلعة: " + pname[:80]
+                  + " — ردّ الكمية — عبر التطبيق")[:500],
+                 "pwa"))
             cur.execute("DELETE FROM transactions WHERE id = %s", (mid,))
         conn.commit()
         return True, ("أُلغيت الحركة ورُدّت الكمية — كأنها لم تُسجَّل ✓"
