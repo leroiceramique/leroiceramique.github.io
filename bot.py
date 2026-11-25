@@ -2226,8 +2226,10 @@ def _db_v57_restore_user_deps(cur, data):
             _ph = ", ".join(["%s"] * len(_keys))
             cur.execute("SAVEPOINT " + _sv)
             try:
-                cur.execute('DELETE FROM "' + _t + '"')  # صفوف بمرجع NULL نجات من الـCASCADE — لا تكرار
-                cur.executemany('INSERT INTO "' + _t + '" (' + _colsql + ') VALUES (' + _ph + ')',
+                # v193: دمج إضافي — لا DELETE نهائياً: الكلمات والجلسات والتشات
+                # والمصروفات والصلاحيات القائمة لا تُمس، والناقص يُستكمل من النسخة
+                cur.executemany('INSERT INTO "' + _t + '" (' + _colsql + ') VALUES (' + _ph + ') '
+                                'ON CONFLICT DO NOTHING',
                                 [tuple(r.get(k) for k in _keys) for r in rows])
                 total += len(rows)
             except Exception as _te:
@@ -2267,7 +2269,17 @@ def db_export_backup():
             products = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM transactions ORDER BY id")
             transactions = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT id, telegram_id, username, role, active, can_extract, first_name, created_at FROM users ORDER BY id")
+            # v193: أعمدة users من المخطط نفسه — البريد والتحقق والحظر والثيم
+            # تُصدَّر مع كل نسخة (كانت تسقط فيصبح الجميع بلا بريد بعد أي استيراد)
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='users'")
+            _exp_have = {r["column_name"] for r in cur.fetchall()}
+            _exp_ucols = [c for c in (
+                "id", "telegram_id", "username", "role", "active",
+                "can_extract", "first_name", "created_at", "email",
+                "banned", "identity_verified", "theme", "theme_mode")
+                if c in _exp_have]
+            cur.execute("SELECT " + ", ".join(_exp_ucols) + " FROM users ORDER BY id")
             users = [dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM invoices ORDER BY id")
             invoices = [dict(r) for r in cur.fetchall()]
@@ -2422,28 +2434,13 @@ def db_import_backup(data):
             cur.execute("DELETE FROM pending_deliveries")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
-            # ── v57: تفريغ وقائي لجداول المستخدمين قبل حذف users — حذف users
-            # يفترض CASCADE على كل ما يعتمد عليه؛ لو كان قيد جدول ما بلا
-            # CASCADE لفشل الحذف وأسقط الاستيراد كله (اكتشافه الاختبار
-            # الدائري). أحداث التوفير تجعل الحذف ناجحاً مهما كان المخطط،
-            # والاستعادة تعيد الصفوف من user_deps وجداول المصادقة لاحقاً.
-            try:
-                for _pdt in _db_v180_user_dep_tables():
-                    if _pdt in ("transactions", "invoices", "invoice_items",
-                                "extraction_requests", "incoming_orders",
-                                "pending_deliveries", "unshipped_sales",
-                                "products", "users"):
-                        continue  # تُفرَّغ صراحة في مكانها أعلاه
-                    _psv = "sv_pre_" + "".join(c if c.isalnum() else "_" for c in _pdt)[:40]
-                    cur.execute("SAVEPOINT " + _psv)
-                    try:
-                        cur.execute('DELETE FROM "' + _pdt + '"')
-                    except Exception:
-                        cur.execute("ROLLBACK TO SAVEPOINT " + _psv)
-                    cur.execute("RELEASE SAVEPOINT " + _psv)
-            except Exception as _pre_err:
-                logging.warning("[BACKUP][v57] تفريغ وقائي فشل: " + str(_pre_err))
-            cur.execute("DELETE FROM users")
+            # ── v193: نهاية عصر «حذف المستخدمين عند الاستيراد» نهائياً ═══
+            # طلب المالك صراحةً: يمنع منعاً باتا المساس بالمستخدمين وعملياتهم.
+            # لا DELETE FROM users ولا تفريغ وقائي — إطلاقاً: users تُدمَج
+            # إضافياً أدناه فلا CASCADE يمسح الجلسات والكلمات والتشات
+            # والمصروفات والصلاحيات، فلا يسجّل خروج أي مستخدم مهما كان
+            # ملف الاستيراد، والحسابات الناقصة تُستعاد بمعرفاتها الأصلية
+            # فلا ينفصل تاريخ أحد من حركاته السابقة أبداً.
 
             # ── Users: dedup by telegram_id + بناء خريطة إعادة الربط ──
             # Deduplicate by telegram_id BEFORE inserting: a duplicated/corrupted backup
@@ -2464,26 +2461,60 @@ def db_import_backup(data):
                         _surv = _seen.get(u["telegram_id"])
                         if _surv is not None:
                             _remap[u["id"]] = _surv["id"]
+                # v193: دمج إضافي واعٍ بالمخطط — الأعمدة من القاعدة نفسها
+                # (البريد والحظر والتحقق والثيم كانت تسقط في كل استيراد
+                # فينقطع الدخول بجوجل ويصير الجميع بلا بريد):
+                #  • مستخدم موجود حياً (نفس telegram_id): لا يُمس إطلاقاً —
+                #    يُستكمل الناقص فقط (COALESCE) دون تغيير أي قيمة قائمة.
+                #  • مستخدم في النسخة وغائب عن القاعدة: يُعاد بمعرفه الأصلي
+                #    فترتبط حركاته السابقة به من جديد.
+                cur.execute("SELECT column_name FROM information_schema.columns "
+                            "WHERE table_schema='public' AND table_name='users'")
+                _live_ucols = {r[0] for r in cur.fetchall()}
+                _ucols = ["id", "telegram_id", "username", "role", "active",
+                          "created_at", "can_extract", "first_name"] \
+                         + [c for c in ("email", "banned", "identity_verified",
+                                        "theme", "theme_mode") if c in _live_ucols]
+                cur.execute("SELECT telegram_id FROM users")
+                _live_tg = {r[0] for r in cur.fetchall()}
+                cur.execute("SELECT lower(username) FROM users WHERE username IS NOT NULL")
+                _live_names = {r[0] for r in cur.fetchall()}
                 rows = []
                 for u in users:
+                    if u.get("telegram_id") in _live_tg:
+                        # v193: موجود حياً — استكمال الناقص فقط، لا مساس بالقائم
+                        _sets, _vals = [], []
+                        for _c in ("email", "first_name", "can_extract"):
+                            if _c in _live_ucols and u.get(_c) is not None:
+                                _sets.append(_c + " = COALESCE(" + _c + ", %s)")
+                                _vals.append(u.get(_c))
+                        if _sets:
+                            cur.execute(
+                                "UPDATE users SET " + ", ".join(_sets)
+                                + " WHERE telegram_id = %s", _vals + [u["telegram_id"]])
+                        continue
                     _un = _normalize_username(u.get("username"))
                     if _un:
                         if _un.lower() in _used_usernames:
                             _un = None  # v87.1: فهرس فريد على الاسم — المكرر يُفرَّغ
+                        elif _un.lower() in _live_names:
+                            _un = None  # v193: الاسم محجوز لمستخدم حي — يُدرج بلا اسم
                         else:
                             _used_usernames.add(_un.lower())
-                    rows.append((
-                        u["id"], u["telegram_id"], _un,
-                        u.get("role", "customer"), u.get("active", True),
-                        u.get("created_at"),
-                        u.get("can_extract", False),
-                        u.get("first_name"),
-                    ))
-                cur.executemany("""
-                    INSERT INTO users (id, telegram_id, username, role, active, created_at, can_extract, first_name)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (telegram_id) DO NOTHING
-                """, rows)
+                    _uvals = []
+                    for _c in _ucols:
+                        _v = u.get(_c)
+                        if _v is None:
+                            _v = {"role": "customer", "active": True,
+                                  "can_extract": False, "banned": False,
+                                  "identity_verified": False}.get(_c)
+                        _uvals.append(_v)
+                    rows.append(tuple(_uvals))
+                if rows:
+                    cur.executemany(
+                        "INSERT INTO users (" + ", ".join(_ucols) + ") "
+                        "VALUES (" + ", ".join(["%s"] * len(_ucols)) + ") "
+                        "ON CONFLICT (id) DO NOTHING", rows)
                 max_uid = max(u["id"] for u in users)
                 cur.execute("SELECT setval('users_id_seq', %s)", (max_uid,))
 
@@ -2676,6 +2707,7 @@ def db_import_backup(data):
             "  المستخدمين: " + str(len(users)) + "\n"
             "  السلع: " + str(len(products)) + "\n"
             "  العمليات: " + str(len(transactions)))
+        summary += "\n  🛡 حماية v193: المستخدمون والجلسات دُمِجوا دون أي مساس — لا خروج قسري ولا فقدان دخول."
         if _pwa_auth_n > 0:
             summary += "\n  🔐 كلمات الدخول المستعادة: " + str(_pwa_auth_n)
         if _pwa_sess_n > 0:
@@ -13153,7 +13185,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "57"  # v181 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "70"  # v193 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -13508,6 +13540,24 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_broadcasts_created ON broadcasts (created_at DESC);
+
+-- v193: أسماء الدخول القديمة — كل اسم سابق للمستخدم يبقى مقبولاً للأبد
+CREATE TABLE IF NOT EXISTS pwa_user_aliases (
+  alias TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- v193: سجل الدخول الدائم — كل محاولة دخول تُحفظ ولا تُمس أبداً
+CREATE TABLE IF NOT EXISTS pwa_login_log (
+  id BIGSERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  success BOOLEAN NOT NULL DEFAULT TRUE,
+  via TEXT,
+  attempt TEXT,
+  ip TEXT,
+  at TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 _pwa_html_cache = {"mtime": None, "body": None}
@@ -15484,7 +15534,7 @@ try {
 })();'''
 
 
-_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
+_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v193: فتحة أمان — لا حبس في السبلاش أبداً */\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; try { clearTimeout(_hatch); } catch (_hce) {} });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) {\n      /* v193: إن كنا أصلاً على شاشة الدخول فلا تُعَد رسمها — كل 401 خلفي لا يمحو رسالة الخطأ ولا يفرغ كلمة المرور */\n      try { if (document.getElementById("login").style.display !== "none") return; } catch (eg0) {}\n      try { showLogin(false); } catch (e0) {}\n      return;\n    }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
 
 
 _PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات احترافية بأفاتار، وعمود الاسم مضمون العرض */\n.u96card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden}\n.u96card.off{opacity:.7}\n.u96top{display:flex;align-items:center;gap:11px;padding:12px 13px}\n.u96top .badge{flex:none}\n.u96avwrap{position:relative;flex:none;width:48px;height:48px}\n.u96avph{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;background:var(--u96t,#64748b);user-select:none}\n.u96avimg{position:absolute;inset:0;width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card)}\n.u96main{flex:1 1 170px;min-width:0}\n.u96nm{font-weight:800;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}\n.u96nm .conline{color:var(--ok);font-size:11px}\n.u96sub{font-size:11.5px;color:var(--mut);margin-top:3px;line-height:1.8;overflow-wrap:anywhere;word-break:break-word}\n.u96rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;margin-inline-end:6px;white-space:nowrap}\n.u96rk.rk-admin{background:rgba(240,178,50,.20);color:#8a5c00}\n.u96rk.rk-manager{background:rgba(88,101,242,.14);color:#4752c4}\n.u96rk.rk-stock{background:rgba(2,132,199,.13);color:#0369a1}\n.u96rk.rk-seller{background:rgba(35,165,90,.13);color:#1a8b4a}\n.u96rk.rk-external{background:rgba(235,69,158,.12);color:#c2257f}\n.u96rk.rk-customer{background:var(--chip);color:var(--mut)}\n.u96acts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px dashed var(--line);background:var(--bg)}\n.u96req{background:var(--card);border:1px solid var(--line);border-inline-start:3px solid var(--brand);border-radius:14px;padding:11px 13px;margin-bottom:8px;box-shadow:var(--shadow)}\n.u96req .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}\n.u96sech{margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)}\n'
@@ -21370,7 +21420,7 @@ _PWA_HTML_PATCHES = (
      '        <button class="fchip" id="movCorr" title="عرض حركات «تصحيح مخزون» والجرد المستبعدة من السجل">📝 التصحيح</button>\n'
      '      </div>'),
     ('function swCleanup() {',
-     '/* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───\n   نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار\n   خادم أحدث تجلب هذه الدالة الواجهة الحية من الخادم وتستبدل الصفحة نفسها بها.\n   الجلسة تنجو بلا تسجيل خروج: ceram_sess في localStorage تُرسل مع كل طلب عبر\n   ترويسة X-Session-Token (طبقة v125) — وسكربت الحقن أعلى الصفحة يعيد ضبط\n   CERAM_API_ROOT/CERAM_PAGES للنسخة الجلية. نسخة الخادم حية أصلاً فلا تدخل\n   هذا المسار أبداً (CERAM_PAGES غير معرفة عندها). */\nfunction pagesLiveSwap(v) {\n  try {\n    var root = window.CERAM_API_ROOT || "";\n    if (!root) { location.reload(); return true; }\n    try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}\n    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })\n      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })\n      .then(function (html) {\n        html = String(html);\n        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");\n        var cfg = "<script>window.CERAM_API_ROOT=" + JSON.stringify(root) + ";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</" + "script>";\n        if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + cfg; });\n        else html = cfg + html;\n        document.open(); document.write(html); document.close();\n      })\n      .catch(function () {\n        toast("تعذر التحديث التلقائي — سأكمل على النسخة الحالية، وجرّب «فحص التحديث» لاحقاً.", true);\n        setTimeout(function () { try { location.reload(); } catch (_re) {} }, 700);\n      });\n    return true;\n  } catch (_ple) { return false; }\n}\nfunction swCleanup() {'),
+     '/* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───\n   نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار\n   خادم أحدث تجلب هذه الدالة الواجهة الحية من الخادم وتستبدل الصفحة نفسها بها.\n   الجلسة تنجو بلا تسجيل خروج: ceram_sess في localStorage تُرسل مع كل طلب عبر\n   ترويسة X-Session-Token (طبقة v125) — وسكربت الحقن أعلى الصفحة يعيد ضبط\n   CERAM_API_ROOT/CERAM_PAGES للنسخة الجلية. نسخة الخادم حية أصلاً فلا تدخل\n   هذا المسار أبداً (CERAM_PAGES غير معرفة عندها). */\nfunction pagesLiveSwap(v) {\n  try {\n    var root = window.CERAM_API_ROOT || "";\n    if (!root) { return false; }   /* v193: لا إعادة تحميل عمياء — تخطٍّ صامت */\n    if ((parseFloat(v) || 0) <= (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) { return false; }   /* v193: لا هبوط للنسخة */\n    try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}\n    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })\n      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })\n      .then(function (html) {\n        html = String(html);\n        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");\n        var cfg = "<script>window.CERAM_API_ROOT=" + JSON.stringify(root) + ";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</" + "script>";\n        if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + cfg; });\n        else html = cfg + html;\n        try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v193: تنقّل حقيقي — نهاية المستندات الهجينة */\n      })\n      .catch(function () {\n        /* v193: تخطٍّ صامت */\n        \n      });\n    return false;   /* v193: الإقلاع يكمل دائماً على النسخة الحالية — لا شاشة ميتة */\n  } catch (_ple) { return false; }\n}\nfunction swCleanup() {'),
     ('  toast("جارٍ التحديث…");\n  swCleanup();',
      '  toast("جارٍ التحديث…");\n  if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }\n  swCleanup();'),
     ('    S.serverVersion = (d && d.version) || "";',
@@ -23143,6 +23193,141 @@ _PWA_EMOJI_RX = re.compile(
 def _pwa_norm_username(u):
     return re.sub(r"[\s@]+", "", _PWA_EMOJI_RX.sub("", str(u or ""))).lower()
 
+# ═══ v193: حساب المالك الثابت — بيانات لا تقبل العبث (طلب المالك صراحةً) ═══
+# الآلية نفسها المتحققة حياً في v184: scrypt النظام نفسه وجدولا users/pwa_auth
+# نفسهما ودالة pwa_set_password نفسها — بلا أي نظام جديد:
+#   • الإقلاع: يُضمن الحساب (إنشاء إن غاب، إصلاح كلمة المرور/الفئة/الإيقاف
+#     إن انحرفت) — يصلح نفسه حتى بعد استرجاع نسخة قديمة أو قاعدة جديدة.
+#   • كل محاولة دخول بهذا الاسم: ضمان فوري قبل الفحص فلا يُحبس المالك أبداً.
+#   • يلمس صف المالك وحده — لا يمس أي مستخدم آخر ولا أي بيانات منتجات/فواتير.
+_OWNER_LOGIN = "youssef_d1"
+_OWNER_PASSWORD = "Youssef199633"
+_OWNER_TG = 8055044828          # معرف تلغرام الحقيقي للمالك (من حسابه القائم)
+_OWNER_NAME = "يوسف — المالك"
+
+
+def _pwa_record_alias(old_username, user_id):
+    """v193: تسجيل اسم دخول قديم في pwa_user_aliases — الاسم القديم يفتح
+    الحساب نفسه للأبد (طلب المالك: الدخول بالاسم القديم أو الجديد)."""
+    _an = _pwa_norm_username(old_username)
+    if not _an or not user_id:
+        return
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS pwa_user_aliases ("
+                    "alias TEXT PRIMARY KEY, "
+                    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+                    "created_at TIMESTAMPTZ DEFAULT NOW())")
+                cur.execute(
+                    "INSERT INTO pwa_user_aliases (alias, user_id) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING", (_an, user_id))
+            conn.commit()
+        finally:
+            release_connection(conn)
+    except Exception as e:
+        logging.warning("[PWA][v193] تسجيل اسم قديم فشل: " + str(e))
+
+
+def _pwa_log_login(user_id, success, via, attempt, ip):
+    """v193: سجل الدخول الدائم — كل محاولة (ناجحة/فاشلة) تُحفظ ولا تُمس أبداً
+    (طلب المالك: عمليات الدخول ومعلوماتهم تُحفظ دائماً). الجدول بمرجع
+    users فيُصدَّر ديناميكياً مع كل نسخة احتياطية (آلية v57)."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO pwa_login_log (user_id, success, via, attempt, ip) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (user_id, bool(success), str(via or "")[:40],
+                     str(attempt or "")[:120], str(ip or "")[:80]))
+            conn.commit()
+        finally:
+            release_connection(conn)
+    except Exception as e:
+        # الجدول قد لا يكون مزروعاً بعد (أول تشغيل) — نزرعه ونعيد مرة واحدة
+        if "pwa_login_log" in str(e) and ("does not exist" in str(e) or "relation" in str(e)):
+            try:
+                conn = get_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "CREATE TABLE IF NOT EXISTS pwa_login_log ("
+                            "id BIGSERIAL PRIMARY KEY, "
+                            "user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, "
+                            "success BOOLEAN NOT NULL DEFAULT TRUE, "
+                            "via TEXT, attempt TEXT, ip TEXT, "
+                            "at TIMESTAMPTZ DEFAULT NOW())")
+                        cur.execute(
+                            "INSERT INTO pwa_login_log (user_id, success, via, attempt, ip) "
+                            "VALUES (%s, %s, %s, %s, %s)",
+                            (user_id, bool(success), str(via or "")[:40],
+                             str(attempt or "")[:120], str(ip or "")[:80]))
+                    conn.commit()
+                finally:
+                    release_connection(conn)
+                return
+            except Exception as e2:
+                logging.warning("[PWA][v193] سجل الدخول فشل بعد الزرع: " + str(e2))
+        else:
+            logging.warning("[PWA][v193] سجل الدخول فشل: " + str(e))
+
+
+def _pwa_ensure_owner():
+    """v193 (نقل v184 المتحقق حياً): ضمان حساب المالك الثابت — يعيد user_id
+    أو None عند تعذر القاعدة. ينفذ عند كل إقلاع وعند كل محاولة دخول باسم
+    المالك. إن وُجد الصف يُحدّث الفئة/التفعيل فقط، وكلمة المرور تُعاد فقط
+    إن انحرفت عن الثابتة."""
+    pw_ok = False
+    uid = None
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT a.user_id, a.pass_hash FROM pwa_auth a "
+                "WHERE lower(a.username) = %s LIMIT 1", (_OWNER_LOGIN.lower(),))
+            row = cur.fetchone()
+            if row:
+                uid = row[0]
+                pw_ok = _pwa_verify_password(_OWNER_PASSWORD, row[1])
+                cur.execute(
+                    "UPDATE users SET role = %s, active = TRUE, banned = FALSE "
+                    "WHERE id = %s", (ROLE_ADMIN, uid))
+            else:
+                cur.execute("SELECT id FROM users WHERE telegram_id = %s LIMIT 1",
+                            (_OWNER_TG,))
+                r2 = cur.fetchone()
+                if r2:
+                    uid = r2[0]
+                    cur.execute(
+                        "UPDATE users SET role = %s, active = TRUE, banned = FALSE "
+                        "WHERE id = %s", (ROLE_ADMIN, uid))
+                else:
+                    cur.execute(
+                        "INSERT INTO users (telegram_id, username, first_name, role, "
+                        "active, banned, identity_verified) "
+                        "VALUES (%s, %s, %s, %s, TRUE, FALSE, TRUE) RETURNING id",
+                        (_OWNER_TG, _OWNER_LOGIN, _OWNER_NAME, ROLE_ADMIN))
+                    uid = cur.fetchone()[0]
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        release_connection(conn)
+    if not pw_ok:
+        # نفس دالة النظام: تزرع كلمة المرور بـ scrypt وتلغي الجلسات القديمة —
+        # تُستدعى فقط عند الغياب/الانحراف فلا تُهدر جلسة سليمة أبداً
+        pwa_set_password(uid, _OWNER_LOGIN, _OWNER_PASSWORD)
+    logging.info("[PWA][v193] حساب المالك الثابت مضمون (user_id=%s)", uid)
+    return uid
+
 
 def _pwa_init_tables():
     """v108: زرع جداول PWA لا يرفع استثناءً أبداً — عبارةً-عبارة بعزل
@@ -23594,10 +23779,18 @@ def pwa_set_password(user_id, username, password):
     try:
         with conn.cursor() as cur:
             # تفرد اسم المستخدم: إن كان محجوزاً لغيره نلحقة بمعرّفه
-            cur.execute("SELECT user_id FROM pwa_auth WHERE username = %s", (username,))
+            cur.execute("SELECT user_id, username FROM pwa_auth WHERE username = %s", (username,))
             row = cur.fetchone()
             if row and row[0] != user_id:
                 username = username + "_" + str(user_id)
+            # v193: الاسم القديم للمستخدم نفسه يُسجَّل كاسم مقبول للأبد قبل تغييره
+            try:
+                cur.execute("SELECT username FROM pwa_auth WHERE user_id = %s", (user_id,))
+                _old_un = cur.fetchone()
+                if _old_un and _old_un[0] and _pwa_norm_username(_old_un[0]) != _pwa_norm_username(username):
+                    _pwa_record_alias(_old_un[0], user_id)
+            except Exception:
+                pass
             cur.execute(
                 "INSERT INTO pwa_auth (user_id, username, pass_hash, updated_at) "
                 "VALUES (%s, %s, %s, NOW()) "
@@ -23768,19 +23961,30 @@ def _pwa_api_login_email(email, password):
                 "WHERE lower(a.username) = %s LIMIT 1", (email,))
             row = cur.fetchone()
             if row is None:
-                # صاحب البريد موظف قائم بلا رقم سري محفوظ؟
-                cur.execute("SELECT 1 FROM users WHERE lower(email) = %s LIMIT 1", (email,))
-                if cur.fetchone():
-                    return False, None, ("لا يوجد رقم سري محفوظ لحسابك — "
-                                         "اطلب من الإدارة ضبط رقم سري (زر 🔑) أو ادخل بحساب Google.")
-                # طلب انضمام (Google) منتظر الموافقة؟
-                cur.execute("SELECT 1 FROM pwa_registrations "
-                            "WHERE lower(email) = %s AND status = 'waiting' LIMIT 1", (email,))
-                if cur.fetchone():
-                    return False, None, ("طلب تسجيلك في انتظار موافقة الإدارة — "
-                                         "ستدخل التطبيق فور موافقتها.")
-                return False, None, ("لا يوجد حساب بهذا البريد الإلكتروني — "
-                                     "أنشئ حساباً من «حساب جديد».")
+                # v193: البريد محفوظ على users لكن اسم الدخول المخزّن ليس بريداً —
+                # نحلّ الحساب من users.email مباشرة ونتحقق من رقمه السري نفسه.
+                # (طلب المالك: كل المستخدمين يدخلون بالبريد أو بالاسم القديم/الجديد
+                # ويصلون حسابهم الواحد نفسه بكل حركاته السابقة)
+                cur.execute(
+                    "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                    "u.role, u.active, u.identity_verified, u.banned, u.email, a.pass_hash "
+                    "FROM users u LEFT JOIN pwa_auth a ON a.user_id = u.id "
+                    "WHERE lower(u.email) = %s LIMIT 1", (email,))
+                _erow = cur.fetchone()
+                if _erow is not None:
+                    if not _erow["pass_hash"]:
+                        return False, None, ("لا يوجد رقم سري محفوظ لحسابك — "
+                                             "اطلب من الإدارة ضبط رقم سري (زر 🔑) أو ادخل بحساب Google.")
+                    row = _erow
+                else:
+                    # طلب انضمام (Google) منتظر الموافقة؟
+                    cur.execute("SELECT 1 FROM pwa_registrations "
+                                "WHERE lower(email) = %s AND status = 'waiting' LIMIT 1", (email,))
+                    if cur.fetchone():
+                        return False, None, ("طلب تسجيلك في انتظار موافقة الإدارة — "
+                                             "ستدخل التطبيق فور موافقتها.")
+                    return False, None, ("لا يوجد حساب بهذا البريد الإلكتروني — "
+                                         "أنشئ حساباً من «حساب جديد».")
     except Exception as e:
         conn.rollback()
         logging.error("[PWA] email login db error: " + str(e))
@@ -23834,6 +24038,34 @@ def _pwa_api_login(username, password):
         return False, None, "خطأ في الخادم، أعد المحاولة."
     finally:
         release_connection(conn)
+    # v193: الأسماء القديمة — إن لم يطابق الاسم المدخل أي حساب مباشرة
+    # نبحث عنه في pwa_user_aliases فيفتح الحساب نفسه بكل حركاته
+    _alias_row = None
+    _norm_hit = False
+    for _r0 in rows:
+        _au0 = str(_r0.get("auth_username") or "")
+        if _au0.lower() == username or _pwa_norm_username(_au0) == username:
+            _norm_hit = True
+            break
+    if not _norm_hit:
+        try:
+            _conn3 = get_connection()
+            try:
+                with _conn3.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as _cur3:
+                    _cur3.execute(
+                        "SELECT u.id, u.telegram_id, u.username AS tg_username, u.first_name, "
+                        "u.role, u.active, u.banned, u.email, a.username AS auth_username, a.pass_hash "
+                        "FROM pwa_user_aliases al JOIN pwa_auth a ON a.user_id = al.user_id "
+                        "JOIN users u ON u.id = a.user_id "
+                        "WHERE al.alias = %s LIMIT 1", (username,))
+                    _arow = _cur3.fetchone()
+                _conn3.commit()
+            finally:
+                release_connection(_conn3)
+            if _arow:
+                _alias_row = _arow
+        except Exception:
+            pass
     cands = []
     for r in rows:
         au = str(r.get("auth_username") or "")
@@ -23841,6 +24073,8 @@ def _pwa_api_login(username, password):
             cands.insert(0, r)  # تطابق مباشر باسم الدخول المخزّن — أولوية
         elif _pwa_norm_username(au) == username:
             cands.append(r)     # تطابق مطبّع (حساب قديم باسم فيه إيموجي)
+    if _alias_row is not None:
+        cands.append(_alias_row)   # v193: صف الاسم القديم يُتحقق بكلمة المرور نفسها
     row = None
     for r in cands:
         if _pwa_verify_password(password, r["pass_hash"]):
@@ -28270,9 +28504,9 @@ async def _pwa_auth_user(request):
 async def pwa_page_handler(request):
     if request.path == "/sw.js":
         return web.Response(text=_PWA_SW_JS.replace("__PWA_VER__", PWA_VERSION), content_type="application/javascript",
-                            charset="utf-8", headers={"Cache-Control": "no-cache"})
+                            charset="utf-8", headers={"Cache-Control": "no-store"})
     return web.Response(body=_pwa_read_html(), content_type="text/html", charset="utf-8",
-                        headers={"Cache-Control": "no-cache"})
+                        headers={"Cache-Control": "no-store"})
 
 
 async def pwa_manifest_handler(request):
@@ -28373,8 +28607,23 @@ async def pwa_login_handler(request):
         mins = max(1, int(lk.retry_after // 60) + 1)
         return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
                         + " دقيقة ثم أعد المحاولة.")
+    # v193: حساب المالك الثابت — ضمان فوري قبل الفحص حتى لا يُحبس المالك
+    # أبداً (تغيير عرضي لكلمة المرور، إيقاف، أو استرجاع نسخة قديمة يصلح نفسه هنا)
+    try:
+        if _pwa_norm_username(username_raw) == _OWNER_LOGIN:
+            await _pwa_run(_pwa_ensure_owner)
+    except Exception:
+        pass
     ok, result, err = await _pwa_run(_pwa_api_login,
                                      username_raw, str(body.get("password", "")))
+    # v193: سجل الدخول الدائم — كل محاولة تُحفظ (ناجحة/فاشلة) ولا تُمس أبداً
+    try:
+        _lg_uid = (result[1].get("id") if ok and result and result[1] else None)
+        await _pwa_run(_pwa_log_login, _lg_uid, bool(ok),
+                       ("email" if "@" in username_raw else "username"),
+                       username_raw, ip)
+    except Exception:
+        pass
     if not ok:
         alerted = await _pwa_run(_pwa_login_fail, key)
         await _pwa_run(_audit_log, "login_fail", None,
@@ -37333,6 +37582,11 @@ if __name__ == "__main__":
         async def on_startup(aio_app):
             global _startup_restore_notice, TG_APP, _backup_integrity_gaps
             _pwa_set_main_loop()  # v40: تثبيت الحلقة الرئيسية مبكراً للجدولة من الخيوط
+            try:
+                await _pwa_run(_pwa_ensure_owner)   # v193: حساب المالك الثابت عند كل إقلاع
+            except Exception as _own_e:
+                logging.warning("[PWA][v193] ضمان المالك تأخر (القاعدة غير جاهزة بعد): "
+                                + str(_own_e))
             await tg_app.initialize()
             TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
             await tg_app.start()

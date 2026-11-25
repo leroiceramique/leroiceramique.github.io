@@ -4445,7 +4445,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "55";
+const APP_VER = "70";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -4457,7 +4457,8 @@ S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""
 function pagesLiveSwap(v) {
   try {
     var root = window.CERAM_API_ROOT || "";
-    if (!root) { location.reload(); return true; }
+    if (!root) { return false; }   /* v193: لا إعادة تحميل عمياء */
+    if ((parseFloat(v) || 0) <= (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) { return false; }   /* v193: لا هبوط للنسخة */
     try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
     fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
@@ -4467,13 +4468,13 @@ function pagesLiveSwap(v) {
         var cfg = "<script>window.CERAM_API_ROOT=" + JSON.stringify(root) + ";window.CERAM_PAGES=1;window.CERAM_LIVE=1;</" + "script>";
         if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, function (m) { return m + cfg; });
         else html = cfg + html;
-        document.open(); document.write(html); document.close();
+        try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v193: تنقّل حقيقي */
       })
       .catch(function () {
-        toast("تعذر التحديث التلقائي — سأكمل على النسخة الحالية، وجرّب «فحص التحديث» لاحقاً.", true);
-        setTimeout(function () { try { location.reload(); } catch (_re) {} }, 700);
+        /* v193: تخطٍّ صامت */
+        
       });
-    return true;
+    return false;   /* v193: الإقلاع يكمل دائماً */
   } catch (_ple) { return false; }
 }
 function swCleanup() {
@@ -5286,6 +5287,7 @@ try {
     if (busy) return true;
     busy = true;
     show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");
+    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v193: فتحة أمان */
     var prevView = "", curEl = null;
     try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}
     rawRemember(r.t).then(function (out) {
@@ -5314,7 +5316,7 @@ try {
       return null;
     }).catch(function () {
       transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");
-    }).then(function () { busy = false; });
+    }).then(function () { busy = false; try { clearTimeout(_hatch); } catch (_hce) {} });
     return true;
   }
   /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */
@@ -5337,7 +5339,11 @@ try {
     if (busy) return;
     var r = null;
     try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}
-    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }
+    if (!r || !r.t) {
+      try { if (document.getElementById("login").style.display !== "none") return; } catch (eg0) {}
+      try { showLogin(false); } catch (e0) {}
+      return;
+    }
     if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */
     var now = Date.now();
     if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }
