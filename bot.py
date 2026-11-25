@@ -9,7 +9,6 @@ import contextvars
 import unicodedata
 import time
 import hashlib
-import gzip
 import base64
 import secrets
 import io
@@ -348,21 +347,7 @@ load_dotenv()
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
-# v184b: علم وضع التجريبية يُعرَّف مبكراً جداً — قبل حارسي BOT_TOKEN/ADMIN_IDS
-# أدناه، لأن خدمة التجريبية على Render تعمل عمداً بلا أيٍّ منهما (بلا تلغرام)
-STAGING_MODE = os.getenv("STAGING", "").strip().lower() in ("1", "true", "yes", "on")
 RENDER_EXTERNAL_URL: str = os.getenv("RENDER_EXTERNAL_URL", "")  # auto-set by Render
-
-# v187: إدارة إصدارات التطبيق — نقل متحكَّم من فرع Staging إلى main من لوحة المالك.
-# المرحلة الأولى قراءة فقط (عرض + مقارنة + سجل)؛ الدمج نفسه يأتي في حزمة لاحقة
-# بعد اختبار هذه الشاشة على التجريبية. التوكن من البيئة حصراً — لا يُكتب في الكود
-# ولا يُسجل في اللوجات ولا يُعاد للواجهة أبداً.
-GH_RELEASE_REPO = os.getenv("GH_RELEASE_REPO", "leroiceramique/leroiceramique.github.io").strip()
-GH_RELEASE_TOKEN = os.getenv("GH_RELEASE_TOKEN", "").strip()            # Fine-grained PAT — صلاحيات Contents+Pull requests على هذا المستودع فقط
-GH_BASE_BRANCH = os.getenv("GH_BASE_BRANCH", "main").strip()            # فرع الإنتاج
-GH_SOURCE_BRANCH = os.getenv("GH_SOURCE_BRANCH", "Staging").strip()     # فرع التجريبية — الاسم الحرفي حساس للحالة
-PROD_PUBLIC_URL = os.getenv("PROD_PUBLIC_URL", "https://produit-wi5o.onrender.com").strip()
-STAGING_PUBLIC_URL = os.getenv("STAGING_PUBLIC_URL", "https://leroiceramique-github-io.onrender.com").strip()
 
 # Email backup (optional — for daily auto-backup via email)
 SMTP_HOST = os.getenv("SMTP_HOST", "")         # e.g. smtp.gmail.com
@@ -406,11 +391,9 @@ ADMIN_IDS: list = [
     if uid.strip().isdigit()
 ]
 
-if not BOT_TOKEN and not STAGING_MODE:
-    # v184b: التجريبية بلا تلغرام أصلاً (v183 تتخطى بناء تطبيق تلغرام كلياً)
-    # فالغياب هنا طبيعي فيها — الإنتاج يبقى صارماً كما هو.
-    logging.warning("[STAGING] يعمل بلا BOT_TOKEN — تلغرام معطّل بالكامل (مقصود)")
-if not ADMIN_IDS and not STAGING_MODE:
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set.")
+if not ADMIN_IDS:
     raise RuntimeError("ADMIN_IDS is not set.")
 
 _raw_owner_ids = os.getenv("OWNER_IDS", "")
@@ -420,8 +403,7 @@ OWNER_IDS: list = [
     if uid.strip().isdigit()
 ]
 if not OWNER_IDS:
-    # v184c: في وضع التجريبية ADMIN_IDS فارغة أصلاً (بلا تلغرام) — لا فهرسة
-    OWNER_IDS = [ADMIN_IDS[0]] if ADMIN_IDS else []
+    OWNER_IDS = [ADMIN_IDS[0]]
 
 # v113: حُذف RESET_STOCK_PIN نهائياً بطلب يوسف («نعم احذفه») — كان معرّفاً
 # بلا أي استخدام في كل الكود منذ القاعدة الأصلية (مفتاح بلا باب) وتحذير
@@ -3739,17 +3721,6 @@ ROLE_LABELS = {
     "customer": "👤 عميل",
     "pending": "⏳ قيد المراجعة",
 }
-
-# ═══ v183: البيئة التجريبية (Staging) — بنية بديلة لا مشروع جديد ═══
-# نفس هذا الملف يعمل إنتاجاً وتجريبياً: خدمة Render ثانية مرتبطة بفرع staging
-# تُشغَّل بمتغير STAGING=1 وقاعدة بيانات منفصلة تماماً عبر DATABASE_URL الخاص
-# بخدمتها. بلا STAGING=1 هذا الملف إنتاجٌ حرفياً كما كان — لا أثر إطلاقاً.
-#   • المسموح دخوله في التجريبية: فئة admin فقط (حساب المدير) — بقية الفئات
-#     تُرفض من نقطة الدخول نفسها، وإنشاء الحسابات معطّل كلياً.
-#   • تلغرام معطّل كلياً في التجريبية: لا polling يتصادم مع الإنتاج ولا نسخ
-#     احتياطي تلغرامي، وإشعارات الويب تتجاهل TG_APP الفارغ بأمان (حرس موجود).
-# STAGING_MODE معرَّفة مبكراً أعلى الملف (v184b — قبل حارس BOT_TOKEN)
-_STAGING_ADMIN_ROLES = {ROLE_ADMIN}
 
 # الخيارات التي تُعرض على المستخدم الجديد عند طرق باب البوت لأول مرة
 ROLE_PICK_ORDER = (ROLE_SELLER, ROLE_STOCK, ROLE_MANAGER, ROLE_EXTERNAL)
@@ -7071,26 +7042,6 @@ def _protected_account(telegram_id):
     """حسابات محمية لا يجوز تعديل أدوارها من داخل البوت إطلاقاً
     (مدراء وفّاح البيئة + الملاك). التعديل يكون فقط عبر env/ADMIN_IDS."""
     return telegram_id in ADMIN_IDS or telegram_id in OWNER_IDS
-
-
-def _is_owner_user(user):
-    """v189: هل هذا المستخدم هو المالك؟ المحمي تلغرامياً (ADMIN_IDS/OWNER_IDS)
-    أو حساب المالك الثابت v184 — بمعرفه (_OWNER_TG) أو باسم دخوله (_OWNER_LOGIN).
-    التجريبية تقلاع بلا ADMIN_IDS/OWNER_IDS (v185) وبلا تلغرام كلياً (v183) فكانت
-    owner=false دائماً هناك ولوحة الإصدارات مستحيلة الظهور رغم أن التجريبية
-    ملك المالك وحده. يستدعى في /api/me ومعالجات الإصدار الأربعة فقط —
-    باقي مواضع _protected_account (حمايات v161) كما هي لم تُلمس."""
-    if not isinstance(user, dict):
-        return False
-    _tg = user.get("telegram_id")
-    if _protected_account(_tg):
-        return True
-    if _tg is not None and str(_tg) == str(_OWNER_TG):
-        return True
-    try:
-        return _pwa_norm_username(user.get("username") or user.get("web_username")) == _OWNER_LOGIN
-    except Exception:
-        return False
 
 
 KICK_NOTICE = "⛔ تم إيقاف حسابك من قبل الإدارة.\nللاستفسار تواصل مع إدارة البوت."
@@ -12870,7 +12821,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "68"  # v192 = سرعة الإقلاع والاستجابة + تنظيم الشاشة بطلب المالك بعد بلاغ مستخدم (بطء فتح التطبيق، قلة سرعة الاستجابة، وبعض الفوضى في الشاشة): (1) ضغط gzip لكل الردود النصية عبر وسيط جديد _pwa_gzip_middleware يُسجَّل قبل وسيط الأمان في تطبيقي الويب كليهما — الصفحة الكاملة تنزل ~3.8 أضعاف أصغر (182KB→~48KB) وردود الـJSON كذلك بلا أي تغيير محتوى أو سلوك؛ (2) ETag + 304 على الصفحة الرئيسية بدل Cache-Control: no-store — الفتح المتكرر يعيد استخدام كاش الـWebView بلا تنزيل (304 بلا محتوى) بينما أي تغيير فعلي للصفحة يعيد 200 بالمحتوى الجديد فيصير مسار التحديث الذاتي والتبديل الحي كما هما حرفياً؛ (3) إقلاع متوازٍ: /api/me يبدأ فوراً بالتوازي مع /api/status عبر رقعتَي وقت-خدمة جديدتين تُطبَّقان آخر القائمة (بعد رقعة v94 التي تعيد كتابة ذيل الإقلاع — بلا تحريك أي مرساة قديمة) + محاولة شبكية إضافية واحدة بعد 1.2 ثانية على أخطاء «لا يوجد اتصال» فقط قبل الاستسلام لشاشة الدخول؛ (4) تنظيم الشاشة بمعاينة متصفح 390px: شِبس فلترة المخزون صارت صفاً أفقياً واحداً قابلاً للسحب بدل الالتفاف لسطرين فوق شريط التقسيم، تلميح التثبيت يظهر مرة واحدة لكل جهاز بدل التزاحم في كل فتح، نصوص بطاقتَي الثيم والإصدارات في الإعدادات اختُصرت لسطر واضح بدل الفقرات الطويلة، واسم المستخدم في الرأس لا يعرض «undefined» عند غياب الفئة. لا أي تغيير في منطق الاعتماد ولا البوابات ولا القاعدة ولا الصلاحيات. السابق v191 = إصلاح عطل الاعتماد الحي — اكتُشف من سجل عمليات النقل على التجريبية الحية: كل ضغطات «اعتماد التحديث وإصداره للمخزون الأصلي» و«حذف إصدارات التجريبية غير المعتمدة» كانت تموت قبل الوصول إلى GitHub برسالة «رد غير متوقع من GitHub.» (سجل app_releases: approve_fail في 11:59:28 و12:00:21 بنفس النتيجة). الجذر: قارئ GitHub الموحد _release_gh_get (من v187) كان يرفض أي رد ليس معجماً dict، بينما مسار طلبات الدمج المفتوحة /repos/{repo}/pulls?state=open داخل _release_collect_gates (من v188) يعيد قائمة list — فارغة عادة لعدم وجود PR مفتوح — فيرمي RuntimeError حتمياً في كل جمع بوابات: البوابات لا تكتمل أبداً، والحاجب الثالث يمنع الاعتماد قبل الدمج دائماً، بينما كان المستدعي نفسه يتعامل مع القوائم صراحة (isinstance(pulls, list)) — ولوحة الإصدارات نفسها كانت تعمل لأن overview لا يمر بهذا المسار فظهرت الإصدارات والفروق والأزرار سليمة بينما كل عملية كتابة تفشل. الإصلاح ثلاثي: (1) القارئ يقبل dict أو list — المستدعيات الأخرى كلها على معاجم فلا أثر جانبي؛ (2) رسائل أخطاء الدمج والتصفير أصبحت تحمل جسم رد GitHub الفعلي («تفاصيل GitHub: …») في الأخطاء التشخيصية 403/429/422/404/غيرها — لأن الضغطة التالية ستنفّذ الدمج الفعلي لأول مرة وإن كان التوكن بلا صلاحية Contents = Read and write (يكفيها Pull requests وحدها في توكن v188) فالرسالة ستحدد ذلك بالحرف بدل رمز مجرد؛ (3) مهلة واجهة نداءَي الاعتماد والحذف صارت 150 ثانية بدل مهلة api() القصيرة (25 ثانية) — جمع البوابات fresh (4 نداءات GitHub + استطلاع الخدمتين) ثم الدمج قد يتجاوزها فيبدو قطع اتصال بينما الخادم يكمل العمل؛ (4) علة ثانية اكتشفها اختبار الإصلاح: التصفير كان يستقبل هاش رأس الإنتاج مقصوصاً إلى 8 خانات من جمع البوابات (baseSha) وGitHub يرفض الهاش الجزئي في PATCH المراجع — الآن يستكمل الهاش الكامل (40 خانة) من مرجع الإنتاج الحي قبل التصفير. لا تغيير في المنطق ولا البوابات ولا الصلاحيات ولا الخادم غير ذلك. السابق v190 = الاعتماد بنقرة واحدة بطلب المالك — «الاعتماد والدمج يكون فقط بزر واضح دون تفاصيل مزعجة، يحدد الإصدار الناجح ويصدر للمخزون الأصلي، وباقي الإصدارات التي لا تعجبه تُحذف من التجريبي فلا تُدمج بالخطأ»: (1) مسار جديد POST /api/release/approve — إعادة تقييم البوابات الحاجبة من جديد (توكن · بيئة التنفيذ بقاعدة التمهيد v188 · فرق فعلي بين الفرعين) ثم الدمج الفعلي Staging→main عبر POST /repos/{repo}/merges مباشرة بلا PR وسيط (طلبات v188 المفتوحة تُعلَّم مدمجة تلقائياً)، خريطة النتائج كاملة برسائل عربية قصيرة (201 نجاح بكوميت الدمج · 204 لا شيء للدمج · 409 تعارض · 401 توكن منتهٍ · 403/429 صلاحية أو حد معدل · 404 فرع) وتسجيل approve_merged/approve_refused/approve_fail/approve_noop في app_releases؛ (2) مسار جديد POST /api/release/discard — حذف الإصدارات التجريبية غير المعتمدة بتصفير فرع التجريبية على رأس الإنتاج عبر PATCH git/refs/heads/Staging بقوة (force=true)، يُرفض إن لم توجد كوميتات غير معتمدة (ahead<1)، يكتب على التجريبية وحدها ولا يلمس main إطلاقاً، وتسجيل discard_reset/discard_noop/discard_fail؛ (3) مساعدو كتابة جديدان _release_merge_branches و_release_reset_staging و_release_bust_cache (إبطال كبت GitHub بعد كل كتابة) بنفس عهد v187: التوكن من البيئة حصراً ولا يُسجل ولا يُعاد للواجهة؛ (4) الواجهة المبسطة في pwa.html: شاشة الإصدارات أعيدت بناءها — بطاقة «حالة الإصدارين» بسطرين وسطر حالة واحد، زر كبير واحد «✅ اعتماد التحديث وإصداره للمخزون الأصلي» وزر «🗑 حذف إصدارات التجريبية غير المعتمدة» يظهران فقط عند وجود تحديث غير معتمد، وكل التفاصيل التقنية (البوابات · الفرق · الكوميتات · السجل) داخل قسم «التفاصيل التقنية» مطوي، وبطاقة «طلب الدمج» وزر إنشاء الـPR حذفت من الواجهة (مسار pr/create v188 موجود للتوافق لا تعرضه الواجهة)؛ (5) نصوص البوابات حدّثت من لغة «طلب الدمج» إلى لغة «الاعتماد». خنق 15 ثانية لكل عملية خلف بوابة المالك v189 نفسها. بعد أول اعتماد يرتفع الإنتاج إلى إصدار هذه الحزمة وتُقفل عمليات النقل تلقائياً على خدمة الإنتاج وحدها (قاعدة التمهيد v188). السابق v189 = إصلاح جذري بطلب المالك — لوحة «إدارة إصدارات التطبيق» لم تكن تظهر على التجريبية أبداً منذ v187: علامة المالك في /api/me كانت _protected_account(telegram_id) أي عضوية ADMIN_IDS/OWNER_IDS، والتجريبية تقلاع بلا ADMIN_IDS (v185) وبلا تلغرام كلياً (v183) فكانت القائمتان فارغتين وowner=false دائماً — البطاقة مخفية في الإعدادات ومسارات الإصدار الأربعة (overview/history/gates/pr_create) ترد 403، رغم أن التجريبية ملك المالك وحده وهو يدخل بحسابه الثابت v184 (youssef_d1 بمعرف _OWNER_TG). الإصلاح خادمي بحت: مساعد جديد _is_owner_user — مالك = محمي تلغرامياً (كالسابق) أو حساب المالك الثابت بمعرفه أو باسم دخوله — ويستدعى في /api/me ومعالجات الإصدار الأربعة فقط؛ باقي مواضع _protected_account (حمايات الحظر/الأرشفة/التدقيق/الأدوار v161) كما هي حرفياً، ولا أي تغيير في pwa.html أو Pages أو المخطط أو الصلاحيات، والإنتاج لا يتأثر. حزمة الاعتماد الصريح والدمج الفعلي المعلقة منذ v188 تصير v190. السابق v188 = بوابات ما قبل الدمج + إنشاء طلب الدمج (المرحلة الثانية): شاشة الإصدارات تضيف بطاقة «🚦 بوابات ما قبل الدمج» تقيّم 8 بوابات حية مع كل فحص — حاجبة تمنع الإنشاء (توكن GitHub · بيئة التنفيذ مع قاعدة التمهيد: الإنشاء من التجريبية مسموح فقط ما دام الإنتاج لم يحمل نظام الإصدارات ثم يُقفل على خدمة الإنتاج تلقائياً · فرق فعلي بين الفرعين) وتحذيرية تعرض نصائح (اتساق الإنتاج مع التجريبية · ترقيم الإصدار · استجابة خدمة الإنتاج · نطاق الملفات المتغيرة · طلب دمج مفتوح) + بطاقة «🔀 طلب الدمج» وزر «📝 إنشاء طلب الدمج» يستدعي POST /api/release/pr/create بعد اجتياز الحواجب: ينشئ PR رسمياً على GitHub (Staging→main) بعنوان ونص عربيين يلخصان الكوميتات والملفات المتغيرة، idempotent (الموجود يُعرض ولا يتكرر، وسباق 422 «موجود مسبقاً» يُفكَّك برسائل عربية كما تعارضات الدمج) + GET /api/release/gates للقراءة، وكل محاولة تُسجَّل في app_releases (pr_created/pr_create_refused/pr_create_fail/pr_create_existing) فيبدأ سجل عمليات النقل فعلياً — خنق 6 ثوانٍ للقراءة و15 ثانية للإنشاء خلف بوابة المالك نفسها، التوكن من البيئة حصراً ولا يُسجل ولا يُعاد للواجهة، ولا دمج ولا اعتماد في هذه الحزمة إطلاقاً (الاعتماد الصريح والدمج ومتابعة النشر لكل هدف في v189). السابق v187 = إدارة إصدارات التطبيق (المرحلة الأولى — عرض وفحص فقط): بطاقة «إدارة إصدارات التطبيق» للمالك في الإعدادات تفتح الشاشة الجديدة v-rel — عرض حي لإصدار وحالة كل بيئة (استطلاع /api/status الحقيقي للخدمتين) وآخر نشر (آخر كوميت لكل فرع) + مقارنة GitHub API الرسمية بين main وStaging (الملفات المتغيرة + ملخص الكوميتات المعلّقة) + جدول سجل app_releases (إضافة تراكمية) + مساران قراءة فقط خلف بوابة المالك نفسها، التوكن GH_RELEASE_TOKEN من البيئة حصراً ولا يُسجل ولا يُعاد للواجهة، وكبت 60 ثانية وخنق 6 ثوانٍ لكل جلسة ضد الضغط المكرر — لا أي مسار كتابة على GitHub في هذه الحزمة والدمج يأتي في حزمة لاحقة. السابق v186 = ثيم «إزي باور أزرق ذهبي» بطلب المالك — هوية جديدة في الثيمات الشخصية على صورة متجر EzyPower المرجعي (لقطة المالك): أزرق حيوي #1477d2 للهوية والرؤوس والأزرار + ذهبي حقيقي #f0b429 في متغير التمييز --gold لأول مرة في النظام (كل الثيمات السابقة أحادية اللون تُشتق بالـ_orgDerive حيث gold:=brand) فتتوهج اللمسات الذهبية للـCTA والشارات فوق الأزرق مثل زر «اطلب الآن» في المرجع + طبقة CSS مُتحكَّمة html[data-org="ezy"]: بطاقات .card سماوية فاتحة (#f3f9fe) بحواف زرقاء ناعمة ورؤوس أقسام .sect بحقول زرقاء صريحة بنص أبيض (ونظير ليلي داكن #17293c/حقل هادئ) + عنوان عرض h2.vt بلون الهوية + سمة data-org على مستند تطبَّخ داخل applyOrgTheme تمهّد لطبقات ثيمات مستقبلية بلا لمس JS لكل ثيم + dot بتدرج أزرق→ذهبي في منتقي الثيمات + لون البراند في المانيفست. + إصلاح مصاحب مهم: /api/status كان يُرجع الثيم المؤسسي الافتراضي حتى مع جلسة مصادَقة فيعيد الاستطلاع الدوري في الواجهة (checkAppUpdate + إقلاع الصفحة) تطبيق الافتراضي ويمسح الثيم الشخصي المختار — خلل صامت منذ v120 كشفه اختبار الثيم الجديد حياً على قاعدة حقيقية؛ الآن الرد يعيد ثيم صاحب الجلسة إن وُجد وإلا الافتراضي لشاشة الدخول كما كان، فثيمات v178/v179 الشخصية صارت ثابتة لا تمحى. القوائم الخادمية PWA_ORG_THEMES و_ORG_THEME_BRAND_HEX محدثتان — التحقق والتخزين في /api/theme/set يعملان كما هما بلا أي تغيير آخر، والثيم شخصي لحساب المالك كما v178. السابق v185 = إصلاح جذري لعلة «جاري استعادة الجلستك… ولا يفتح» التي أرجعت المالك مرتين إلى v179 بطلب المالك: التبديل الحي (v168) كان يستبدل واجهة Pages بنسخة الخادم عبر document.write بعد اكتمال تحميل الصفحة — وهذا لا يستبدل المستند بشكل موثوق في متصفحات الويب الحديثة بل يُلَحِّق المحتوى، فتعيد سكربتات الصفحة الجديدة التصريح عن ثوابتها (const APP_VER…) فيموت السكربت الرئيسي وينشأ مستند هجين نصف ميت يُظهر سبلاش الاستعادة عالقاً — كل تغيير إصدار منذ v168 كان يكسر التطبيق على الجهاز والرجوع لنسخة مطابقة كان يخفي العلة فقط (أُثبت حياً بمحاكاة كاملة: الجلب سليم وWRITE-DONE ثم مستند هجين APP_VER قديم مع عناصر جديدة). الإصلاح في الواجهة: نهاية document.write نهائياً — التبديل يتحقق من حيوية الخادم وصفحة صالحة ثم ينقل حقيقياً (location.href) إلى الواجهة الحية على أصل الخادم نسخة نظيفة كاملة، مع حماية هبوط (لا تنقل لإصدار أقدم) وفشل يُكمل الإقلاع على النسخة الحالية (نداءات API متوافقة) فلا شاشة ميتة أبداً + فتحة أمان في سبلاش v94: استعادة معلقة فوق 25 ثاً تُخفي السبلاش وتُظهر تسجيل الدخول فلا يُحبس المستخدم أبداً + Cache-Control: no-store على الصفحة وسجل الخدمة ضد أي كاش WebView قديم. ولأول مرة تُسلَّم حزمة Pages محدثة (index.html بإصدار 61 + التبديل الجديد + جذر الخادم مثبت + اسم كاش sw.js يتجدد gp-v61) — الترتيب الحاسم للنشر: حزمة Pages أولاً ثم انتظار ≤15 دقيقة (تجديد كاش سجل الخدمة) ثم رفع bot.py، وعكس الترتيب يُشفى ذاتياً خلال ≤10 دقائق (انتهاء كاش Pages). السابق v184 = (1) حساب المالك الثابت بطلب المالك صراحةً: youssef_d1 بكلمة مروره الثابتة يُضمن عند كل إقلاع وعند كل محاولة دخول — إن غاب يُنشأ مديراً وإن انحرفت كلمة مروره/فئته أو أُوقف يُعاد فوراً بنفس دوال النظام (scrypt + pwa_set_password) بلا أي نظام جديد وبلمس صف المالك وحده؛ (2) حقيقة الإصدار: نصوص v74/v120 القديمة الجامدة (APP_VER وتذييل الدخول والإعدادات) تُستبدل وقت الخدمة برقم الإصدار الحي للخادم — كان يخدع المالك بأنه محدث بينما الإصلاحات لم تُرفع (الإنتاج كان على 57)؛ + إقلاع التجريبية بلا BOT_TOKEN/ADMIN_IDS (حارسا الاستيراد كانا يقتلان خدمة التجريبية — اكتشفه الإثبات الحي على قاعدة محلية قبل الوصول للمالك). السابق v183 = البيئة التجريبية (Staging) بأقل تغيير ممكن بطلب المالك: نفس الملف يخدم الإنتاج والتجريبية والفارق متغير STAGING=1 + DATABASE_URL منفصل على خدمة Render ثانية من فرع staging (بلا أي مشروع جديد ولا تكلفة): التجريبية بلا تلغرام كلياً (لا polling يتصادم مع الإنتاج ولا نسخ تلغرامي — الويب فقط) + بوابة دخول لفئة admin فقط برفض صريح 403 للبقية + تعطيل إنشاء الحسابات (تسجيل/بريد/Google) + مؤشر TEST VERSION (شريط شاشة الدخول + شارة ثابتة بلا اعتراض نقرات + بادئة العنوان + سطر الإصدار) + "staging" في /api/status للتحقق عن بعد. بلا STAGING=1 الإنتاج كما كان حرفياً (مُتحقق بمقارنة الناتج المقدم). السابق v182 = إصلاح عطل «لا يستجيب شيء» الجذري (التشخيص حي على الخادم الحي): (أ) واجهة الترحيل v177 كانت تظهر داخل التطبيق بعد مسح بيانات الجهاز لأن كشف APK يعتمد «; wv)» وحدها، وعنصر تحميل APK فيها يجاثم فوق زر «دخول» — انتهى الظهور التلقائي نهائياً + كشف أقوى (LeRoiStock/AndroidBridge)؛ (ب) كل 401 خلفي كان يستدعي showLogin فيمحو رسالة الخطأ ويفرغ كلمة المرور أثناء المحاولة — حارس شاشة الدخول في v94SessionLost + noKick لنداء الدخول فالأخطاء تظهر وتبقى والمدخلات تحترم. السابق v181 = إسكات مسار التحديث بالكامل بطلب المالك: بلا نافذة تحديث ولا toast ولا إعادة تحميل عمياء — عدم تطابق الإصدار يحدّث داخلياً مباشرة بمحاولة واحدة لكل إصدار في الجلسة (حارس ceram_supd_) ضد الحلقات + التبديل الحي بمهلة 6 ثوانٍ وحارسه يُكتب عند النجاح فقط + إصلاح حلقة reload اللانهائية عند root فارغ في صفحات Pages المجمّدة + سطر الإصدار بلا «جارٍ التحديث الآن…». الجذر: فشل التبديل الحي بعد النشر (خادم بارد) كان يفعل toast+reload من v168 وحارساً يُكتب قبل الجلب فيمنع النجاح — حلقة سبلاش/نافذة أخلطت الدخول. السابق v180 = نهاية إشعار «تحديث جديد v58» المزعج نهائياً بطلب المالك: حزم v57/v58 بُنيت ترقيعاً ثنائياً لم يرفع ثابت CURRENT_VERSION_CODE الداخلي في Update.kt (بقي أدنى من البيان) فبقي الغلاف يرى «نسخة أحدث» ويبلّغ عند كل فتح للأبد — الإصلاح من جهة الخادم بلا أي APK: تثبيت app_version.json على versionCode 55 (قيمة الإسكات المجرّبة منذ v172) فيصمت الإشعار على كل الجهازات المثبتة مع بقاء الحزمة الأخيرة متاحة يدوياً + تطبيق النمط الذي أعجب المالك (نمط «أهم مميزات المنتج» الهادئ المنظم): حوار «تحديث جديد» الداخلي صار بطاقات مميزات بأيقونة وعنوان ووصف مع «لاحقاً» تخفي نهائياً + قائمة الإشعارات الداخلية بطاقات أنظف (أيقونة في شارة + عنوان + وصف) مع الحفاظ الكامل على حذف التنبيهات v146. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "55"  # v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -13055,25 +13006,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip        VARCHAR(64)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts DESC);
-
--- ═══ v187: سجل عمليات نقل الإصدارات (Staging → main) — إضافة تراكمية IF NOT EXISTS ═══
-CREATE TABLE IF NOT EXISTS app_releases (
-    id          SERIAL PRIMARY KEY,
-    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    actor_id    INTEGER,
-    username    VARCHAR(200),
-    action      VARCHAR(40) NOT NULL,
-    from_branch VARCHAR(60),
-    to_branch   VARCHAR(60),
-    old_version VARCHAR(20),
-    new_version VARCHAR(20),
-    pr_number   INTEGER,
-    merge_sha   VARCHAR(40),
-    precheck    VARCHAR(500),
-    result      VARCHAR(500),
-    ip          VARCHAR(64)
-);
-CREATE INDEX IF NOT EXISTS idx_releases_ts ON app_releases (ts DESC);
 -- ═══ v169: فهارس عدّادات بطاقة التفاصيل/الحذف النهائي — كانت عمليات العد تسلسلية
 -- على جداول ضخمة (audit_log/transactions/invoices/…) فتجاوز مهلة العميل 25 ثانية
 -- فيظهر «لا يوجد اتصال بالخادم» خطأً. IF NOT EXISTS = بلا أثر بعد أول إقلاع.
@@ -14533,12 +14465,7 @@ _PWA_MIGRATE_JS = r"""/* ═══ v177: واجهة الترحيل المؤقت 
   function inApp() {
     try {
       var ua = navigator.userAgent || "";
-      /* v182: كشف أقوى للتطبيق الأصلي — كان فحص «; wv)» وحده قد يفشل حين يضبط
-         الغلاف وUA مخصصاً فيختفي الوسم، فتظهر واجهة الترحيل داخل التطبيق نفسه
-         فوق زر الدخول (سبب عطل «لا يستجيب شيء» بعد مسح بيانات الجهاز) */
-      if (/; wv\)/i.test(ua)) return true;
-      if (/LeRoiStock/i.test(ua)) return true;
-      if (window.AndroidBridge) return true;
+      if (/; wv\)/i.test(ua)) return true;           /* WebView التطبيق الأصلي */
       return false;
     } catch (e) { return false; }
   }
@@ -14621,11 +14548,15 @@ _PWA_MIGRATE_JS = r"""/* ═══ v177: واجهة الترحيل المؤقت 
     if (later) later.addEventListener("click", close);
   }
   function show() {
-    /* v182: نهاية الظهور التلقائي لواجهة الترحيل بطلب المالك — حملة الترحيل
-       انتهت والجميع على التطبيق الأصلي، والشاشة كانت تحجب زر الدخول فعلياً
-       بعد مسح بيانات الجهاز (العلامة leroi_app_migration_seen تُمسح مع البيانات
-       وعنصر تحميل APK فيها يجاثم فوق زر «دخول»). لا ظهور تلقائي إطلاقاً. */
-    return;
+    if (inApp() || seen()) return;
+    /* لا ننازع سبلاش استعادة الجلسة (v94) — ننتظر حتى يخفى بسقف 8 ثوانٍ */
+    var tries = 0;
+    (function wait() {
+      var v94 = document.getElementById("v94splash");
+      var busy = v94 && v94.style.display === "flex";
+      if (!busy || ++tries > 40) { try { build(); } catch (e0) {} return; }
+      setTimeout(wait, 200);
+    })();
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { setTimeout(show, 800); });
@@ -15221,7 +15152,7 @@ try {
 })();'''
 
 
-_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var _hatch = setTimeout(function () { try { if (splash && splash.style.display === "flex") { busy = false; hide(); if (typeof showLogin === "function" && (!window.S || !S.user)) showLogin(false); } } catch (_he) {} }, 25000);   /* v185: فتحة أمان — لا حبس في السبلاش أبداً */\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; try { clearTimeout(_hatch); } catch (_hce) {} });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) {\n      /* v182: إن كنا أصلاً على شاشة الدخول فلا تُعَد رسمها — كان كل 401 خلفي يمحو رسالة الخطأ ويفرغ كلمة المرور أثناء محاولة الدخول نفسها */\n      try { if (document.getElementById("login").style.display !== "none") return; } catch (eg0) {}\n      try { showLogin(false); } catch (e0) {}\n      return;\n    }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
+_PWA_V94_JS = '/* v94 session-guard: لا وميض لشاشة الدخول + استعادة صامتة + لا مسح للرمز على الأخطاء العابرة */\n(function () {\n  "use strict";\n  var busy = false, lastLoss = 0, splash = null, sMsg = null, sBtn = null, sSpin = null;\n  function build() {\n    if (splash) return;\n    splash = document.createElement("div"); splash.id = "v94splash";\n    splash.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:var(--bg,#f4f6fb)";\n    var card = document.createElement("div");\n    card.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:13px;padding:28px 34px;border-radius:20px;background:var(--card,#fff);box-shadow:0 10px 34px rgba(0,0,0,.12);max-width:86vw;text-align:center;font-family:inherit";\n    var logo = document.createElement("div"); logo.textContent = "📦"; logo.style.cssText = "font-size:36px;line-height:1";\n    sSpin = document.createElement("div");\n    sSpin.style.cssText = "width:26px;height:26px;border-radius:50%;border:3px solid rgba(120,120,120,.25);border-top-color:#e05d4b;animation:v94spin .8s linear infinite";\n    sMsg = document.createElement("div"); sMsg.style.cssText = "font-size:14px;font-weight:700;color:var(--tx,#2b2b2b)"; sMsg.textContent = "جاري استعادة جلستك…";\n    sBtn = document.createElement("button"); sBtn.type = "button"; sBtn.textContent = "إعادة المحاولة";\n    sBtn.style.cssText = "display:none;border:0;border-radius:12px;padding:10px 24px;font-size:14px;font-weight:800;color:#fff;background:#e05d4b;font-family:inherit;cursor:pointer";\n    sBtn.addEventListener("click", function () { sBtn.style.display = "none"; sSpin.style.display = ""; recovery({ boot: true }); });\n    card.appendChild(logo); card.appendChild(sSpin); card.appendChild(sMsg); card.appendChild(sBtn);\n    splash.appendChild(card);\n    var st = document.createElement("style"); st.id = "v94spin-css";\n    st.textContent = "@keyframes v94spin{to{transform:rotate(360deg)}}";\n    document.head.appendChild(st);\n    document.body.appendChild(splash);\n  }\n  function show(msg) { build(); sMsg.textContent = msg || "جاري استعادة جلستك…"; sBtn.style.display = "none"; sSpin.style.display = ""; splash.style.display = "flex"; }\n  function transient(msg) { build(); sMsg.textContent = msg || "تعذر الاتصال بالخادم."; sSpin.style.display = "none"; sBtn.style.display = ""; splash.style.display = "flex"; }\n  function hide() { if (splash) splash.style.display = "none"; }\n  function rawRemember(token) {\n    /* fetch خام: نرى كود الرفض القاطع الحقيقي بدل رسالة api() المجمعة */\n    var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;\n    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;\n    return fetch("/api/remember/login", { method: "POST", credentials: "same-origin",\n        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: token }),\n        signal: ctrl ? ctrl.signal : undefined })\n      .then(function (res) { return res.json().then(function (d) { return { status: res.status, d: d }; },\n        function () { return { status: res.status, d: null }; }); })\n      .finally(function () { if (timer) clearTimeout(timer); });\n  }\n  function recovery(opts) {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) { r = null; }\n    if (!r || !r.t) {\n      hide();\n      if (opts && opts.manual) { try { document.getElementById("passPane").style.display = ""; } catch (e0) {} }\n      return false;\n    }\n    if (busy) return true;\n    busy = true;\n    show((opts && opts.manual) ? "جارِ الدخول…" : "جاري استعادة جلستك…");\n    var prevView = "", curEl = null;\n    try { curEl = document.querySelector(".view.on"); prevView = (curEl && curEl.id) || ""; } catch (ec) {}\n    rawRemember(r.t).then(function (out) {\n      var d = out.d || {};\n      if (out.status === 200 && d.ok && d.user) {\n        try { remSave(d.remember || r.t, (d.user && d.user.name) || r.n); } catch (e1) {}\n        return api("/api/me", { noCache: true }).then(function (me) {\n          hide(); showApp(me);\n          if (prevView && prevView !== "v-home") { try { switchView(prevView); } catch (e5) {} }\n        }, function () { transient("تعذّر إكمال الدخول — تأكد من الشبكة ثم أعد المحاولة."); });\n      }\n      if (out.status === 401 && d.code === "remember_invalid") {\n        /* رفض قاطع فقط هنا: نمسح الثقة ونعيد نموذج الدخول برسالة واضحة */\n        try { remClear(); } catch (e2) {}\n        hide();\n        try {\n          document.getElementById("rememberCard").style.display = "none"; document.getElementById("passPane").style.display = "";\n          var errEl = document.getElementById("loginErr"); errEl.textContent = d.error || "انتهت صلاحية التذكّر — سجّل الدخول."; errEl.style.display = "block";\n        } catch (e3) {}\n        if (S.user) { try { showLogin(false); } catch (e4) {} }\n        return null;\n      }\n      /* خطأ عابر (شبكة/خادم/مهلة): الرمز يبقى — زر إعادة المحاولة على السبلاش */\n      transient((d && d.error) || "تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n      return null;\n    }).catch(function () {\n      transient("تعذر الاتصال بالخادم — تأكد من الشبكة ثم أعد المحاولة.");\n    }).then(function () { busy = false; });\n    return true;\n  }\n  /* وميض أولي: يظهر بمجرد تحميل السكربتات إن وُجد حساب موثوق — قبل أي انتظار شبكة */\n  window.v94SplashPrime = function () {\n    if (splash && splash.style.display === "flex") return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (r && r.t && !/[?&]google=/.test(location.search)) show("جاري استعادة جلستك…");\n  };\n  window.v94SplashHide = hide;\n  window.v94BootEnter = function () {\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { hide(); return false; }\n    recovery({ boot: true });\n    return true;\n  };\n  window.v94Recover = function (opts) { return recovery(opts || {}); };\n  window.v94SessionLost = function (msg) {\n    if (busy) return;\n    var r = null;\n    try { r = (typeof remGet === "function") ? remGet() : null; } catch (e) {}\n    if (!r || !r.t) { try { showLogin(false); } catch (e0) {} return; }\n    if (!S.user) return;   /* أثناء الإقلاع: v94BootEnter يتكفل */\n    var now = Date.now();\n    if (now - lastLoss < 8000) { try { showLogin(false); } catch (e1) {} return; }\n    lastLoss = now;\n    recovery({ fromApp: true });\n  };\n  /* فوري عند التحليل: يقتل وميض نموذج الدخول من أول بكسل */\n  try { window.v94SplashPrime(); } catch (e) {}\n})();'
 
 
 _PWA_V96_CSS = '\n/* v96: واجهة المستخدمين — بطاقات احترافية بأفاتار، وعمود الاسم مضمون العرض */\n.u96card{background:var(--card);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;box-shadow:var(--shadow);overflow:hidden}\n.u96card.off{opacity:.7}\n.u96top{display:flex;align-items:center;gap:11px;padding:12px 13px}\n.u96top .badge{flex:none}\n.u96avwrap{position:relative;flex:none;width:48px;height:48px}\n.u96avph{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;background:var(--u96t,#64748b);user-select:none}\n.u96avimg{position:absolute;inset:0;width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card)}\n.u96main{flex:1 1 170px;min-width:0}\n.u96nm{font-weight:800;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}\n.u96nm .conline{color:var(--ok);font-size:11px}\n.u96sub{font-size:11.5px;color:var(--mut);margin-top:3px;line-height:1.8;overflow-wrap:anywhere;word-break:break-word}\n.u96rk{display:inline-block;padding:2px 9px;border-radius:99px;font-size:10.5px;font-weight:800;margin-inline-end:6px;white-space:nowrap}\n.u96rk.rk-admin{background:rgba(240,178,50,.20);color:#8a5c00}\n.u96rk.rk-manager{background:rgba(88,101,242,.14);color:#4752c4}\n.u96rk.rk-stock{background:rgba(2,132,199,.13);color:#0369a1}\n.u96rk.rk-seller{background:rgba(35,165,90,.13);color:#1a8b4a}\n.u96rk.rk-external{background:rgba(235,69,158,.12);color:#c2257f}\n.u96rk.rk-customer{background:var(--chip);color:var(--mut)}\n.u96acts{display:flex;flex-wrap:wrap;gap:6px;padding:9px 13px;border-top:1px dashed var(--line);background:var(--bg)}\n.u96req{background:var(--card);border:1px solid var(--line);border-inline-start:3px solid var(--brand);border-radius:14px;padding:11px 13px;margin-bottom:8px;box-shadow:var(--shadow)}\n.u96req .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}\n.u96sech{margin:2px 0 8px;font-weight:800;font-size:13px;color:var(--brand)}\n'
@@ -20489,17 +20420,6 @@ _PWA_V174_JS = r'''/* ═══ v174: قسم «حساب Google» داخل صفح
 })();'''
 
 
-# ── v180: بطاقات «أهم مميزات النسخة الجديدة» — تُحقن في حوار التحديث الداخلي
-# (النمط الهادئ المنظم الذي أعجب المالك — تُحدَّث يدوياً مع كل إصدار)
-PWA_UPD_CARDS = [
-    {"ico": "🔕", "t": "نهاية إشعار «تحديث جديد» المزعج نهائياً",
-     "d": "الإشعار كان يتكرر عند كل فتح لأن رقم النسخة الداخلي في حزم الترقيع لم يُرفع — عولج من جهة الخادم بلا أي تثبيت جديد."},
-    {"ico": "🪄", "t": "تحديث بنمط بطاقات هادئة ومنظمة",
-     "d": "أهم مميزات كل نسخة تُعرض بطاقات مرتبة سهلة الفهم — و«لاحقاً» تخفيها نهائياً لنفس الإصدار."},
-    {"ico": "🔔", "t": "قائمة إشعارات داخلية أنظف",
-     "d": "كل إشعار الآن بطاقة بأيقونة في شارة وعنوان ووصف واضحين — قراءة أسرع بلا فوضى."},
-]
-
 _PWA_HTML_PATCHES = (
     # 1) إصدار الصفحة يُحقن من الخادم وقت كل طلب (ماركر __PWA_VER__) — لا انحراف أبداً
     ('const APP_VER = "v74";',
@@ -21153,197 +21073,6 @@ _PWA_HTML_PATCHES = (
     # 94) v174: قسم «حساب Google» داخل صفحة الإعدادات + فحص التحديث أسفله
     ('</script>\n</body>',
      '</script>\n<style id="v174css">' + _PWA_V174_CSS + '</style>\n<script id="v174js">\n' + _PWA_V174_JS + '\n</script>\n</body>'),
-    # 95) v180: حوار «تحديث جديد» بنمط البطاقات الهادئة المنظمة (طلب المالك:
-    #     نهاية النافذة الصارمة — «أهم المميزات» بطاقات بأيقونة وعنوان ووصف)
-    ('''<dialog id="dlgUpd">
-  <div class="dh">🔄 تحديث جديد</div>
-  <div class="db">
-    <p style="margin:0 0 12px;font-size:14px;color:var(--mut);text-align:center">
-      يوجد تحديث جديد للتطبيق.<br>يرجى الضغط على «نعم» للتحميل — التحديث داخلي ولا يحتاج إعادة تثبيت.</p>
-    <button class="btn" id="btnUpdYes">✅ نعم، حدّث الآن</button>
-    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً</button>
-  </div>
-</dialog>''',
-     '''<dialog id="dlgUpd">
-  <div class="dh">✨ تحديث جديد — أهم المميزات</div>
-  <div class="db">
-    <div id="updCards" class="ucards"></div>
-    <p style="margin:10px 0 12px;font-size:12.5px;color:var(--mut);text-align:center">
-      التحديث داخلي بنقرة واحدة — بلا إعادة تثبيت، وجلستك تبقى كما هي.</p>
-    <button class="btn" id="btnUpdYes">⬆️ تحديث الآن</button>
-    <button class="btn gray" id="btnUpdLater" style="margin-top:8px">لاحقاً — لا تُشعرني بهذه النسخة</button>
-  </div>
-</dialog>
-<script>window.PWA_UPD_CARDS=__PWA_UPD_CARDS__;</script>'''),
-    # 96) v180: CSS البطاقات — قائمة الإشعارات وحوار التحديث (متوافقة مع الثيمات
-    #     وغير مماسة لقاعدة حذف التنبيهات v146 التي تنتصر بالمعرّف)
-    ('''.nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
-.nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
-.nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
-.nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}''',
-     '''.nrow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
-.nrow .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
-.nrow .nb{font-size:13px;white-space:pre-line;margin-top:4px;line-height:1.6}
-.nrow .nm{font-size:11.5px;color:var(--mut);margin-top:6px}
-/* v180: بطاقات هادئة منظمة (نمط «أهم مميزات المنتج») — الإشعارات وحوار التحديث */
-.nrow.ncard{display:flex;align-items:flex-start;gap:10px;padding:11px 12px}
-.ncard .nico{font-size:18px;line-height:1.25;flex:none;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:var(--brandsoft);border-radius:10px}
-.ncard .nbody{min-width:0;flex:1}
-.ncard .nt{font-weight:800;font-size:14px;line-height:1.55;word-break:break-word}
-.ncard .nb{font-size:13px;white-space:pre-line;margin-top:3px;line-height:1.6}
-.ncard .nm{font-size:11.5px;color:var(--mut);margin-top:5px}
-.ucards{display:flex;flex-direction:column;gap:8px;margin-bottom:2px}
-.ucards .uc{display:flex;align-items:flex-start;gap:10px;background:var(--brandsoft);border:1px solid var(--edline);border-radius:14px;padding:10px 12px}
-.ucards .uc .uico{font-size:19px;line-height:1.3;flex:none}
-.ucards .uc .ut{font-weight:800;font-size:13.5px;color:var(--edink);line-height:1.5}
-.ucards .uc .ud{font-size:12.5px;color:var(--mut);line-height:1.6;margin-top:2px}'''),
-    # 97) v180: قائمة الإشعارات — بطاقة بأيقونة في شارة + عنوان + وصف
-    #     (الصف يبقى .nrow كما هو: حذف التنبيهات v146 وترتيبها يبقيان سليمين)
-    ('''  box.innerHTML = items.map((n) =>
-    '<div class="nrow"><div class="nt">' + (KIND_IC[n.kind] || "🔔") + " " + esc(n.title) + '</div>'
-    + (n.body ? '<div class="nb">' + esc(n.body) + '</div>' : "")
-    + '<div class="nm">' + esc(n.actor || "") + (n.actor ? " • " : "")
-    + (n.source === "web" ? "من التطبيق" : "من تلغرام")
-    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div>').join("");''',
-     '''  box.innerHTML = items.map((n) =>
-    '<div class="nrow ncard"><div class="nico">' + (KIND_IC[n.kind] || "🔔") + '</div>'
-    + '<div class="nbody"><div class="nt">' + esc(n.title) + '</div>'
-    + (n.body ? '<div class="nb">' + esc(n.body) + '</div>' : "")
-    + '<div class="nm">' + esc(n.actor || "") + (n.actor ? " • " : "")
-    + (n.source === "web" ? "من التطبيق" : "من تلغرام")
-    + " • " + esc(fmtAgo(n.ts) || n.created_at) + '</div></div></div>').join("");'''),
-    # 98) v180: تعبئة بطاقات التحديث من الخادم (PWA_UPD_CARDS) — بديل احتياطي
-    #     عام إن لم تُعرَّف البطاقات، فلا يعود الحوار فارغاً أبداً
-    ('''$("#btnUpdYes").addEventListener("click", () => {
-  try { $("#dlgUpd").close(); } catch (e) {}
-  doAppUpdate();
-});''',
-     '''function renderUpdCards() {   /* v180: بطاقات «أهم مميزات النسخة الجديدة» */
-  const box = $("#updCards");
-  if (!box) return;
-  const cards = (window.PWA_UPD_CARDS && window.PWA_UPD_CARDS.length)
-    ? window.PWA_UPD_CARDS
-    : [{ ico: "🆕", t: "نسخة محسّنة من التطبيق", d: "تحديث داخلي سريع يحفظ جلستك وبياناتك كما هي." }];
-  box.innerHTML = cards.map((c) =>
-    '<div class="uc"><div class="uico">' + esc(c.ico || "✨") + '</div><div>'
-    + '<div class="ut">' + esc(c.t || "") + '</div>'
-    + (c.d ? '<div class="ud">' + esc(c.d) + '</div>' : "")
-    + '</div></div>').join("");
-}
-try { renderUpdCards(); } catch (e) {}
-$("#btnUpdYes").addEventListener("click", () => {
-  try { $("#dlgUpd").close(); } catch (e) {}
-  doAppUpdate();
-});'''),
-
-    # 129) v181: doAppUpdate صامت — بلا toast، ومحاولة واحدة لكل إصدار في
-    #      الجلسة ضد أي حلقة إعادة تحميل (طلب المالك: تحديث مباشر بلا علامة)
-    ('''function doAppUpdate() {
-  try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}
-  toast("جارٍ التحديث…");
-  if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }
-  swCleanup();''',
-     '''function doAppUpdate() {
-  /* v181: تحديث داخلي صامت — بلا تنبيه ولا نافذة، ومحاولة واحدة لكل إصدار
-     ضد أي حلقة إعادة تحميل (طلب المالك: التحديث مباشر دون علامة تحديث) */
-  try {
-    var _uv = S.serverVersion || "upd";
-    if (sessionStorage.getItem("ceram_supd_" + _uv)) return;
-    sessionStorage.setItem("ceram_supd_" + _uv, "1");
-  } catch (e) {}
-  try { localStorage.setItem("pwa_upd_seen", S.serverVersion || ""); } catch (e) {}
-  if (window.CERAM_PAGES) { pagesLiveSwap(S.serverVersion || ""); return; }
-  swCleanup();'''),
-    # 130) v181: checkAppUpdate بلا أي نافذة — عدم تطابق الإصدار = تحديث صامت فوري
-    ('''    if (v && v !== APP_VER && v !== S.updDismissed
-        && v !== (function () { try { return localStorage.getItem("ceram_upd_dis") || ""; } catch (e) { return ""; } })()) {
-      const dlg = $("#dlgUpd");
-      if (dlg && !dlg.open) { try { dlg.showModal(); } catch (e) {} }
-      return true;
-    }''',
-     '''    if (v && v !== APP_VER && v !== S.updDismissed) {
-      /* v181: بلا أي نافذة أو علامة — التطبيق يحدّث نفسه داخلياً مباشرة */
-      doAppUpdate();
-      return true;
-    }'''),
-    # 131) v181: التبديل الحي بمهلة إحباط 6 ثوانٍ (خادم بارد لا يعلّق شيئاً)
-    #      والحارس يُكتب عند النجاح فقط — الفشل يعيد المحاولة تلقائياً لاحقاً
-    ('''    try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
-    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit" })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
-      .then(function (html) {
-        html = String(html);
-        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");''',
-     '''    var _ac = null; try { if (window.AbortController) _ac = new AbortController(); } catch (_ace) {}
-    var _to = _ac ? setTimeout(function () { try { _ac.abort(); } catch (_ate) {} }, 6000) : null;
-    fetch(root + "/?selfup=" + encodeURIComponent(v || ""), { credentials: "omit", signal: _ac ? _ac.signal : undefined })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
-      .then(function (html) {
-        try { if (_to) clearTimeout(_to); } catch (_cte) {}
-        /* v181: الحارس يُكتب عند النجاح فقط — الفشل يعيد المحاولة في الفحص التالي */
-        try { sessionStorage.setItem("ceram_swap_" + (v || ""), "1"); } catch (_cse) {}
-        html = String(html);
-        if (html.indexOf("APP_VER") < 0 || html.length < 50000) throw new Error("bad-html");'''),
-    # 132) v181: فشل التبديل = تخطٍّ صامت — كانت toast + إعادة تحميل بعد 700ms
-    #      وهي من مصدرَي حلقة «سبلاش → إعادة تحميل → سبلاش» التي أخلطت الدخول
-    ('''      .catch(function () {
-        toast("تعذر التحديث التلقائي — سأكمل على النسخة الحالية، وجرّب «فحص التحديث» لاحقاً.", true);
-        setTimeout(function () { try { location.reload(); } catch (_re) {} }, 700);
-      });''',
-     '''      .catch(function () {
-        /* v181: لا تنبيه ولا إعادة تحميل — تخطٍّ صامت وإعادة محاولة لاحقة */
-        try { if (_to) clearTimeout(_to); } catch (_cte2) {}
-      });'''),
-    # 133) v181: root فارغ لم يكن reload بلا حارس — حلقة لا نهائية لصفحات Pages
-    #      المجمّدة (CERAM_API_ROOT="") — الآن تخطٍّ صامت بلا أي إعادة تحميل
-    ('''    if (!root) { location.reload(); return true; }''',
-     '''    if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */'''),
-    # 148) v185: نهاية عصر document.write بطلب المالك — الكتابة بعد اكتمال تحميل الصفحة لا
-    #      تستبدل المستند بشكل موثوق في متصفحات الويب الحديثة: تُلَحَّق المحتويات فتعيد سكربتات
-    #      الصفحة الجديدة التصريح عن ثوابتها (const APP_VER…) فيموت السكربت الرئيسي وينشأ مستند
-    #      هجين نصف ميت يُظهر سبلاش «جاري استعادة الجلستك…» عالقاً — سبب «لا يستجيب شيء» عند كل
-    #      تغيير إصدار منذ v168 والرجوع لنسخة مطابقة كان يخفيه فقط (أُثبت حياً: WRITE-DONE ثم مستند هجين)
-    ('''document.open(); document.write(html); document.close();''',
-     '''try { location.href = root + "/"; } catch (_nve) { try { location.reload(); } catch (_nv2) {} }   /* v185: تنقّل حقيقي — نسخة كاملة نظيفة من أصل الخادم، نهاية المستندات الهجينة */'''),
-    # 149) v185: فشل التبديل يُكمل الإقلاع على النسخة الحالية (نداءات API متوافقة) — كان
-    #      return true يوقف الإقلاع مباشرة فيتحول أي فشل شبكة عابر إلى شاشة ميتة
-    ('''catch (_cte2) {}
-      });
-    return true;''',
-     '''catch (_cte2) {}
-      });
-    return false;   /* v185: الإقلاع يكمل دائماً على النسخة الحالية حتى يصلك التنقل — لا شاشة ميتة أبداً */'''),
-    # 150) v185: حماية هبوط — لا تنقّل لإصدار أقدم من الواجهة الحالية (حوار «تحديث» كان
-    #      يستطيع إجبار الجهاز على النزول لخادم أقدم بعد رجوع المالك للنسخ السابقة)
-    ('''if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */''',
-     '''if (!root) { return false; }   /* v181: لا إعادة تحميل عمياء — تخطٍّ صامت */
-    if ((parseFloat(v) || 0) <= (parseFloat(typeof APP_VER !== "undefined" ? APP_VER : "0") || 0)) { return false; }   /* v185: لا هبوط للنسخة */'''),
-
-    # 134) v181: سطر الإصدار في الإعدادات بلا عبارة «جارٍ التحديث الآن…»
-    #      (لا علامة تحديث — التحديث يجري صامتاً وينتهي وحده)
-    ('''    if (about) about.textContent = "الإصدار " + (v || APP_VER) + (v && v !== APP_VER ? " — جارٍ التحديث الآن…" : "");''',
-     '''    if (about) about.textContent = "الإصدار " + APP_VER + (v && v !== APP_VER ? " — الخادم " + v : "");'''),
-
-    # 135) v182: noKick لنداء الدخول — فشل الدخول المتوقع لا يشعل آفق الجلسة ولا يعيد رسم النموذج ويمحو المدخلات
-    ('''    const r = await api("/api/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
-    });''',
-     '''    /* v182: noKick — فشل الدخول (401 متوقع) لا يجب أن يشعل آفق الجلسة
-       (v94SessionLost) الذي كان يعيد رسم شاشة الدخول ويمحو ما كتبه المستخدم
-       فلا يظهر أي أثر للضغط على «دخول» */
-    const r = await api("/api/login", {
-      noKick: true,
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: $("#fUser").value, password: $("#fPass").value })
-    });'''),
-    # ── v192: إقلاع متوازٍ — /api/me يبدأ فوراً بالتوازي مع /api/status + محاولة شبكية واحدة.
-    #    تُطبَّقان آخر القائمة أي بعد رقعة v94 التي تعيد كتابة ذيل الإقلاع — مرساة الثانية
-    #    هي نص الذيل بعد رقعة v94 نفسها، وأي خلل ترتيب يظهر هنا فوراً في فحص التحقق.
-    ('  let setupMode = false;',
-     '  /* v192: سرعة الإقلاع — /api/me يبدأ بالتوازي مع /api/status (توفير رحلة شبكة كاملة في كل فتح)\n     + محاولة شبكية إضافية واحدة بعد 1.2 ثانية على أخطاء «لا يوجد اتصال» فقط قبل الاستسلام لشاشة الدخول */\n  const __meP192 = (async () => {\n    try { return await api("/api/me", { noCache: true }); }\n    catch (e1m) {\n      if (String((e1m && e1m.message) || "").indexOf("لا يوجد اتصال") < 0) throw e1m;\n      await new Promise(function (r1m) { setTimeout(r1m, 1200); });\n      return await api("/api/me", { noCache: true });\n    }\n  })();\n  let setupMode = false;'),
-    ('  try {\n    const me = await api("/api/me");\n    showApp(me);\n    try { if (window.v94SplashHide) window.v94SplashHide(); } catch (e94h) {}\n    return;\n  } catch (e0) {}',
-     '  try {\n    /* v192: نداء الإقلاع نفسه — مصدره النداء المتوازي المبدوء أعلى الدالة */\n    const me = await __meP192;\n    showApp(me);\n    try { if (window.v94SplashHide) window.v94SplashHide(); } catch (e94h) {}\n    return;\n  } catch (e0) {}'),
 )
 
 
@@ -22476,14 +22205,6 @@ _PWA_V167_CSS = r'''
 #p167Confirm{width:100%;margin-top:6px;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;box-sizing:border-box}
 '''
 
-# v183: CSS مؤشر النسخة التجريبية (يُحقن فقط حين STAGING=1 — الإنتاج نظيف حرفياً)
-_PWA_STAGING_TEST_CSS = (
-    '#login{position:relative}\n'
-    '#testRibbon{position:absolute;top:0;left:0;right:0;z-index:5;background:repeating-linear-gradient(45deg,#b3261e,#b3261e 14px,#8f1d17 14px,#8f1d17 28px);color:#fff;font-weight:900;font-size:12.5px;text-align:center;padding:8px 14px;letter-spacing:.3px;box-shadow:0 2px 10px rgba(0,0,0,.35)}\n'
-    '#testChip{position:fixed;top:8px;left:8px;z-index:2147480000;background:#b3261e;color:#fff;font-weight:900;font-size:11px;padding:4px 10px;border-radius:999px;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none;opacity:.95}\n'
-    '@media (max-width:640px){#testRibbon{font-size:11px;padding:7px 10px}}\n'
-)
-
 def _pwa_inject_floating_layers(out):
     """v141: حصن الحقن الذاتي — طبقات الواجهة العائمة (v132 زرا ＋/− السريعان،
     v135 الإحساس الذكي، v137+v138 البلاغات ومعالجتها، v141 شريط التذكير
@@ -22549,27 +22270,6 @@ def _pwa_inject_floating_layers(out):
         # من قائمة المستخدمين المحدّثة من الخادم (S.usrLast) فتعكس الحقيقة فوراً.
         if 'id="v160ui"' not in html:
             add += ('<script id="v160ui">\n' + _PWA_V160_JS + '\n</script>\n')
-        # v184: حقيقة الإصدار — نصوص v74/v120 القديمة الجامدة في pwa.html كانت
-        # تخدع المالك بأنه على إصدار حديث بينما الخادم على إصدار آخر — كلها
-        # تُستبدل وقت الخدمة برقم الإصدار الحي للخادم فلا لبس بعد اليوم.
-        html = html.replace('const APP_VER = "v74";',
-                            'const APP_VER = "' + PWA_VERSION + '";', 1)
-        html = html.replace('>الإصدار v74<', '>الإصدار ' + PWA_VERSION + '<', 1)
-        html = html.replace('textContent = "الإصدار v74"',
-                            'textContent = "الإصدار " + APP_VER', 1)
-        html = html.replace('الإصدار v120', 'الإصدار ' + PWA_VERSION, 1)
-        # v183: مؤشر النسخة التجريبية — شريط TEST VERSION أعلى شاشة الدخول
-        # (مطلق داخل #login فلا يزاحم تخطيطها) + شارة ثابتة صغيرة فوق الواجهة
-        # (pointer-events:none فلا تحجب أي زر) + بادئة عنوان الصفحة + سطر
-        # الإصدار في الإعدادات — لا يُقدَّم أي منه في الإنتاج حرفياً أبداً.
-        if STAGING_MODE and 'id="testRibbon"' not in html:
-            html = html.replace("<title>", "<title>🧪 [TEST] ", 1)
-            html = html.replace('about.textContent = "الإصدار " + APP_VER',
-                                'about.textContent = "🧪 TEST — الإصدار " + APP_VER', 1)
-            html = html.replace('<div id="login">',
-                                '<div id="login"><div id="testRibbon" dir="rtl">🧪 TEST VERSION — نسخة تجريبية للتجربة فقط — بيانات المحل الحقيقية منفصلة تماماً</div>', 1)
-            add += ('<style id="testRibbonCss">' + _PWA_STAGING_TEST_CSS + '</style>\n'
-                    '<div id="testChip" dir="rtl">🧪 TEST</div>\n')
         if not add:
             return out
         pos = html.rindex("</body>")
@@ -22604,10 +22304,7 @@ def _pwa_read_html():
         if _pwa_html_cache["mtime"] != mtime or _pwa_html_cache["body"] is None:
             with open(PWA_HTML_PATH, "rb") as f:
                 _pwa_html_cache = {"mtime": mtime, "body": _pwa_patch_html(f.read())}
-        return (_pwa_html_cache["body"]
-                .replace(b"__PWA_VER__", PWA_VERSION.encode("utf-8"))
-                .replace(b"__PWA_UPD_CARDS__",
-                         json.dumps(PWA_UPD_CARDS, ensure_ascii=False).encode("utf-8")))
+        return _pwa_html_cache["body"].replace(b"__PWA_VER__", PWA_VERSION.encode("utf-8"))
     except Exception as e:
         logging.warning("[PWA] pwa.html missing: " + str(e))
         return ("<!doctype html><html dir=rtl lang=ar><meta charset=utf-8>"
@@ -23113,72 +22810,6 @@ _PWA_EMOJI_RX = re.compile(
 
 def _pwa_norm_username(u):
     return re.sub(r"[\s@]+", "", _PWA_EMOJI_RX.sub("", str(u or ""))).lower()
-
-
-# ═══ v184: حساب المالك الثابت — بيانات لا تقبل العبث ═══
-# طلب المالك صراحةً: اسم الدخول وكلمة المرور الخاصة به ثابتان دائماً.
-# الآلية تعيد استخدام نظام المصادقة الموجود حرفياً (scrypt نفسه + جدولا
-# users/pwa_auth نفسهما + pwa_set_password نفسه) — بلا أي نظام جديد:
-#   • الإقلاع: يُضمن الحساب (إنشاء إن غاب، إصلاح كلمة المرور/الفئة/الإيقاف
-#     إن انحرفت) — فيصلح نفسه حتى بعد استرجاع نسخة قديمة أو قاعدة جديدة.
-#   • كل محاولة دخول بهذا الاسم: ضمان فوري قبل الفحص فلا يُحبس المالك أبداً.
-#   • يلمس صف المالك وحده — لا يمس أي مستخدم آخر ولا أي بيانات منتجات/فواتير.
-_OWNER_LOGIN = "youssef_d1"
-_OWNER_PASSWORD = "Youssef199633"
-_OWNER_TG = 8055044828          # معرف تلغرام الحقيقي للمالك (من حسابه القائم)
-_OWNER_NAME = "يوسف — المالك"
-
-
-def _pwa_ensure_owner():
-    """v184: ضمان حساب المالك الثابت — يعيد user_id أو None عند تعذر القاعدة.
-    ينفذ عند كل إقلاع وعند كل محاولة دخول باسم المالك. إن وُجد الصف يُحدّث
-    الفئة/التفعيل فقط، وكلمة المرور تُعاد فقط إن انحرفت عن الثابتة."""
-    pw_ok = False
-    uid = None
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT a.user_id, a.pass_hash FROM pwa_auth a "
-                "WHERE lower(a.username) = %s LIMIT 1", (_OWNER_LOGIN.lower(),))
-            row = cur.fetchone()
-            if row:
-                uid = row[0]
-                pw_ok = _pwa_verify_password(_OWNER_PASSWORD, row[1])
-                cur.execute(
-                    "UPDATE users SET role = %s, active = TRUE, banned = FALSE "
-                    "WHERE id = %s", (ROLE_ADMIN, uid))
-            else:
-                cur.execute("SELECT id FROM users WHERE telegram_id = %s LIMIT 1",
-                            (_OWNER_TG,))
-                r2 = cur.fetchone()
-                if r2:
-                    uid = r2[0]
-                    cur.execute(
-                        "UPDATE users SET role = %s, active = TRUE, banned = FALSE "
-                        "WHERE id = %s", (ROLE_ADMIN, uid))
-                else:
-                    cur.execute(
-                        "INSERT INTO users (telegram_id, username, first_name, role, "
-                        "active, banned, identity_verified) "
-                        "VALUES (%s, %s, %s, %s, TRUE, FALSE, TRUE) RETURNING id",
-                        (_OWNER_TG, _OWNER_LOGIN, _OWNER_NAME, ROLE_ADMIN))
-                    uid = cur.fetchone()[0]
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        release_connection(conn)
-    if not pw_ok:
-        # نفس دالة النظام: تزرع كلمة المرور بـ scrypt وتلغي الجلسات القديمة —
-        # تُستدعى فقط عند الغياب/الانحراف فلا تُهدر جلسة سليمة أبداً
-        pwa_set_password(uid, _OWNER_LOGIN, _OWNER_PASSWORD)
-    logging.info("[PWA][v184] حساب المالك الثابت مضمون (user_id=%s)", uid)
-    return uid
 
 
 def _pwa_init_tables():
@@ -24037,7 +23668,7 @@ def _pwa_api_me(user):
         "google_email": (user.get("email") or ""),   # v173: بريد Google المرتبط بهذا المستخدم وحده
         "pending": user.get("role") == ROLE_PENDING,  # v161: وضع الاطلاع فقط
     }, "perms": _pwa_perm_map(user),
-       "owner": _is_owner_user(user),   # v161+v189: المالك — الحظر/الأرشفة/التدقيق ولوحة الإصدارات (إصلاح التجريبية)
+       "owner": _protected_account(user.get("telegram_id")),   # v161: المالك — يظهر له الحظر/الأرشفة/التدقيق
        "notify": note,
        "theme": (user.get("theme") or ""),
        "theme_mode": (user.get("theme_mode") or "system")}   # v179: وضع العرض الشخصي — نهاري/ليلي/حسب النظام يتبع الحساب · v178: الثيم الشخصي يتبع الحساب وحده
@@ -24064,8 +23695,6 @@ PWA_ORG_THEMES = {
     "insta":    "إنستغرام وردي برتقالي",
     "telegram": "تلغرام سماوي",
     "spotify":  "سبوتيفاي أخضر ليلي",
-    # ═══ v186: هوية إزي باور — أزرق حيوي + ذهبي حقيقي للتمييز (مرجع EzyPower) ═══
-    "ezy":      "إزي باور أزرق ذهبي",
 }
 _ORG_THEME_KEY = "org_theme"
 _ORG_THEME_CACHE = {"name": "discord", "t": 0.0}
@@ -24079,7 +23708,6 @@ _ORG_THEME_BRAND_HEX = {
     "whatsapp": "#128c7e", "facebook": "#1877f2", "twitter": "#1d9bf0",
     "tiktok": "#fe2c55", "canva": "#8b3dff", "insta": "#e1306c",
     "telegram": "#229ed9", "spotify": "#1db954",
-    "ezy": "#1477d2",
 }
 
 
@@ -28310,18 +27938,9 @@ async def _pwa_auth_user(request):
 async def pwa_page_handler(request):
     if request.path == "/sw.js":
         return web.Response(text=_PWA_SW_JS.replace("__PWA_VER__", PWA_VERSION), content_type="application/javascript",
-                            charset="utf-8", headers={"Cache-Control": "no-store"})
-    # v192: ETag + 304 بدل no-store — الفتح المتكرر يرسل If-None-Match فيرد
-    # الخادم 304 بلا محتوى فيبدأ العرض فوراً من كاش الـWebView، بينما أي تغيير
-    # فعلي للصفحة (نسخة جديدة) يعيد 200 بالمحتوى الجديد — مسار التحديث الذاتي
-    # والتبديل الحي (v168/v185) كما هما حرفياً.
-    body = _pwa_read_html()
-    etag = '"' + hashlib.sha1(body).hexdigest() + '"'
-    inm = request.headers.get("If-None-Match", "")
-    if inm and etag in inm:
-        return web.Response(status=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
-    return web.Response(body=body, content_type="text/html", charset="utf-8",
-                        headers={"Cache-Control": "no-cache", "ETag": etag})
+                            charset="utf-8", headers={"Cache-Control": "no-cache"})
+    return web.Response(body=_pwa_read_html(), content_type="text/html", charset="utf-8",
+                        headers={"Cache-Control": "no-cache"})
 
 
 async def pwa_manifest_handler(request):
@@ -28422,13 +28041,6 @@ async def pwa_login_handler(request):
         mins = max(1, int(lk.retry_after // 60) + 1)
         return _pwa_err(429, "محاولات كثيرة خاطئة — انتظر نحو " + str(mins)
                         + " دقيقة ثم أعد المحاولة.")
-    # v184: حساب المالك الثابت — ضمان فوري قبل الفحص حتى لا يُحبس المالك
-    # أبداً (تغيير عرضي لكلمة المرور، إيقاف، أو استرجاع نسخة قديمة يصلح نفسه هنا)
-    try:
-        if _pwa_norm_username(username_raw) == _OWNER_LOGIN:
-            await _pwa_run(_pwa_ensure_owner)
-    except Exception:
-        pass
     ok, result, err = await _pwa_run(_pwa_api_login,
                                      username_raw, str(body.get("password", "")))
     if not ok:
@@ -28447,14 +28059,6 @@ async def pwa_login_handler(request):
         # v35: من لم يؤكد بريده بعد يُوجّه لشاشة الرمز (الكود يميّزه للواجهة) — أُلغي في v39
         return _pwa_err(401, err)
     token, user = result
-    # v183: بوابة النسخة التجريبية — فئة admin فقط تُنشئ جلسة؛ بقية الفئات
-    # تُرفض رفضاً صريحاً قبل إنشاء أي جلسة، بلا أي مساس بنظام الصلاحيات نفسه.
-    if STAGING_MODE and str(user.get("role", "")) not in _STAGING_ADMIN_ROLES:
-        try:
-            await _pwa_run(_audit_log, "staging_login_denied", user, ip=ip)
-        except Exception:
-            pass
-        return _pwa_err(403, "🧪 النسخة التجريبية متاحة لحساب المدير فقط — بيانات المحل الحقيقية خارج هذه النسخة تماماً.")
     await _pwa_run(_pwa_login_clear, key)
     await _pwa_run(_audit_log, "login", user, ip=ip)
     # v48: رمز «تذكّرني» — يولد مع كل دخول ناجح لدخول بضغطة لاحقاً
@@ -28501,8 +28105,6 @@ async def pwa_register_handler(request):
     """v39: طلب انضمام جديد بلا بريد — اسم كامل + اسم دخول + رقم سر قوي + فئة.
     الطلب يُحفظ «بانتظار موافقة الإدارة» ويُشعَر المدراء فوراً (تلغرام + جرس التطبيق).
     بلا SMTP وبلا رموز — إعداد صفري."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     try:
         body = await request.json()
     except Exception:
@@ -29511,8 +29113,6 @@ async def pwa_google_ot_handler(request):
 
 async def pwa_google_join_handler(request):
     """إرسال الفئة المختارة لطلب انضمام Google (عام — بمفتاح ot)."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     try:
         body = await request.json()
         ot = str(body.get("ot", "")).strip()
@@ -29603,8 +29203,6 @@ async def pwa_google_claim_handler(request):
     """v165: ربط بريد Google بحساب قائم (عام بمفتاح join-ot + إثبات ملكية
     باسم الدخول وكلمة المرور القديمة). عند النجاح: جلسة كاملة للحساب الأصلي
     نفسه — وفي المرات القادمة يكفي اختيار Gmail دون كلمة المرور."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     ip = request.remote or "؟"
     key = "gclaim|" + ip
     try:
@@ -30647,8 +30245,6 @@ def _pwa_api_audit_list(actor):
 
 async def pwa_register_email_handler(request):
     """POST /api/register/email — التسجيل بالبريد (عام + معدل محاولات)."""
-    if STAGING_MODE:
-        return _pwa_err(403, "🧪 النسخة التجريبية: إنشاء الحسابات معطّل — التجارب بحساب المدير فقط.")
     ip = request.remote or "؟"
     try:
         body = await request.json()
@@ -30803,818 +30399,6 @@ async def pwa_users_email_handler(request):
     if not ok:
         return _pwa_err(400, msg)
     return _pwa_jr({"ok": True, "message": msg})
-
-
-# ═══════════ v187: إدارة إصدارات التطبيق — قراءة فقط في هذه المرحلة ═══════════
-# المساران أدناه للمالك فقط (بوابة _protected_account نفسها المستخدمة في عارض
-# التدقيق والحظر والأرشفة). لا مسار كتابة على GitHub هنا إطلاقاً: إنشاء طلب
-# الدمج والاعتماد والتراجع يأتي في حزمة لاحقة بعد اختبار هذه الشاشة أولاً.
-# كبت 60 ثانية + خنق 6 ثوانٍ لكل جلسة = حماية أولى من الضغط المكرر.
-
-_RELEASE_GH_API = "https://api.github.com"
-_RELEASE_CACHE = {}            # كبت قصير — بدون توكن حد GitHub المجهول 60 طلباً/ساعة
-_RELEASE_CACHE_TTL = 60.0
-_RELEASE_LAST_CALL = {}        # خنق لكل جلسة
-_RELEASE_GAP = 6.0
-
-
-def _release_gh_headers():
-    """ترويسات GitHub API — التوكن من البيئة فقط ولا يدخل أي سجل أو رد أبداً."""
-    h = {"Accept": "application/vnd.github+json", "User-Agent": "leroi-release-manager"}
-    if GH_RELEASE_TOKEN:
-        h["Authorization"] = "Bearer " + GH_RELEASE_TOKEN
-    return h
-
-
-async def _release_gh_get(path, fresh=False):
-    """GET واحد على GitHub API بكبت قصير ورسائل عربية واضحة عند الفشل."""
-    now = time.monotonic()
-    if not fresh:
-        hit = _RELEASE_CACHE.get(path)
-        if hit and now - hit[0] < _RELEASE_CACHE_TTL:
-            return hit[1]
-    url = _RELEASE_GH_API + path
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as sess:
-            async with sess.get(url, headers=_release_gh_headers()) as resp:
-                if resp.status in (403, 429):
-                    raise RuntimeError(
-                        "معدل GitHub API مستنفد مؤقتاً — أضف GH_RELEASE_TOKEN (Fine-grained PAT "
-                        "بصلاحيات Contents وPull requests على هذا المستودع فقط) في متغيرات خدمة "
-                        "الإنتاج على Render لرفع الحد إلى 5000/ساعة، أو أعد الفحص بعد قليل.")
-                if resp.status == 404:
-                    raise RuntimeError("المستودع أو الفرع غير موجود على GitHub — تحقق من "
-                                       + GH_RELEASE_REPO + " وأسماء الفروع (Staging بحرف كبير).")
-                if resp.status != 200:
-                    raise RuntimeError("GitHub ردّ بحالة HTTP " + str(resp.status))
-                data = await resp.json(content_type=None)
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError("تعذر الاتصال بـ GitHub: " + str(e)[:120])
-    if not isinstance(data, (dict, list)):
-        raise RuntimeError("رد غير متوقع من GitHub.")
-    _RELEASE_CACHE[path] = (time.monotonic(), data)
-    return data
-
-
-async def _release_probe_service(base_url):
-    """استطلاع حي لخدمة عن بعد عبر /api/status — لا يرمي استثناء، يعيد حالة قابلة للعرض."""
-    out = {"url": base_url, "reachable": False, "version": "", "staging": None, "err": ""}
-    if not base_url:
-        out["err"] = "العنوان غير مضبوط"
-        return out
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as sess:
-            async with sess.get(base_url.rstrip("/") + "/api/status") as resp:
-                d = await resp.json(content_type=None)
-        if isinstance(d, dict) and d.get("ok"):
-            out["reachable"] = True
-            out["version"] = str(d.get("version") or "")
-            out["staging"] = bool(d.get("staging"))
-        else:
-            out["err"] = "رد غير مكتمل من الخدمة"
-    except Exception as e:
-        out["err"] = "لا يستجيب الآن (قد تكون الخدمة نائمة على Render): " + str(e)[:80]
-    return out
-
-
-def _release_throttled(sid, kind):
-    """خنق بسيط لكل جلسة: فحص جديد كل 6 ثوانٍ — حماية أولى من الضغط المكرر."""
-    now = time.monotonic()
-    key = (sid, kind)
-    if now - _RELEASE_LAST_CALL.get(key, 0.0) < _RELEASE_GAP:
-        return True
-    _RELEASE_LAST_CALL[key] = now
-    return False
-
-
-async def _release_collect_overview(fresh=False):
-    """جمع لوحة الإصدارات كاملة: الفرعان + الفرق الرسمي + الخدمتان الحيتان + ملخص الكوميتات."""
-    main_b = await _release_gh_get("/repos/%s/branches/%s" % (GH_RELEASE_REPO, GH_BASE_BRANCH), fresh)
-    stg_b = await _release_gh_get("/repos/%s/branches/%s" % (GH_RELEASE_REPO, GH_SOURCE_BRANCH), fresh)
-    cmp_d = await _release_gh_get("/repos/%s/compare/%s...%s"
-                                  % (GH_RELEASE_REPO, GH_BASE_BRANCH, GH_SOURCE_BRANCH), fresh)
-    prod_p, stg_p = await asyncio.gather(_release_probe_service(PROD_PUBLIC_URL),
-                                         _release_probe_service(STAGING_PUBLIC_URL))
-
-    def _branch_info(b):
-        c = (b or {}).get("commit") or {}
-        ci = c.get("commit") or {}
-        return {"sha": str(c.get("sha") or "")[:8],
-                "date": str((ci.get("committer") or {}).get("date") or "")}
-
-    files = [{"name": f.get("filename") or "", "status": f.get("status") or "",
-              "additions": int(f.get("additions") or 0), "deletions": int(f.get("deletions") or 0)}
-             for f in (cmp_d.get("files") or [])]
-    commits = []
-    for c in (cmp_d.get("commits") or []):
-        ci = c.get("commit") or {}
-        msg = str(ci.get("message") or "").splitlines()[0][:120] if ci.get("message") else ""
-        commits.append({"sha": str(c.get("sha") or "")[:8], "msg": msg,
-                        "date": str((ci.get("committer") or {}).get("date") or "")})
-    return {"ok": True,
-            "token_ok": bool(GH_RELEASE_TOKEN),
-            "stagingMode": bool(STAGING_MODE),
-            "repo": GH_RELEASE_REPO,
-            "baseBranch": GH_BASE_BRANCH, "sourceBranch": GH_SOURCE_BRANCH,
-            "branches": {GH_BASE_BRANCH: _branch_info(main_b),
-                         GH_SOURCE_BRANCH: _branch_info(stg_b)},
-            "services": {"production": prod_p, "staging": stg_p},
-            "diff": {"status": cmp_d.get("status") or "",
-                     "ahead": int(cmp_d.get("ahead_by") or 0),
-                     "behind": int(cmp_d.get("behind_by") or 0),
-                     "files": files},
-            "pendingCommits": commits}
-
-
-async def pwa_release_overview_handler(request):
-    """GET /api/release/overview — لوحة إدارة الإصدارات (الملك). قراءة فقط."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    if not _is_owner_user(user):
-        return _pwa_err(403, "إدارة الإصدارات للمالك فقط.")
-    if _release_throttled(str(user.get("id") or "0"), "overview"):
-        return _pwa_err(429, "فحص جديد كل 6 ثوانٍ — انتظر لحظة.")
-    fresh = request.query.get("fresh") == "1"
-    try:
-        data = await _release_collect_overview(fresh)
-    except RuntimeError as e:
-        return _pwa_err(502, str(e))
-    return _pwa_jr(data)
-
-
-def _pwa_api_release_history(actor):
-    """v187: سجل عمليات نقل الإصدارات — للمالك فقط. الجدول يُملأ من حزمة الدمج اللاحقة."""
-    if not _is_owner_user(actor):
-        return None
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT id, ts::text AS ts, username, action, from_branch, to_branch, "
-                        "old_version, new_version, pr_number, merge_sha, result "
-                        "FROM app_releases ORDER BY ts DESC LIMIT 30")
-            rows = cur.fetchall()
-        conn.commit()
-        return [{"id": r["id"], "ts": (r["ts"] or "")[:19], "who": r.get("username") or "",
-                 "action": r["action"], "from": r.get("from_branch") or "",
-                 "to": r.get("to_branch") or "", "oldV": r.get("old_version") or "",
-                 "newV": r.get("new_version") or "", "pr": r.get("pr_number") or "",
-                 "sha": r.get("merge_sha") or "", "result": r.get("result") or ""}
-                for r in rows]
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        logging.error("[v187] release history: " + str(e)[:200])
-        return None
-    finally:
-        release_connection(conn)
-
-
-async def pwa_release_history_handler(request):
-    """GET /api/release/history — سجل عمليات النقل (الملك). قراءة فقط."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    data = await _pwa_run(_pwa_api_release_history, user)
-    if data is None:
-        return _pwa_err(403, "سجل الإصدارات للمالك فقط.")
-    return _pwa_jr({"ok": True, "rows": data})
-
-
-# ═══════════ v188: بوابات ما قبل الدمج + إنشاء طلب الدمج (المرحلة الثانية) ═══════════
-# هذه الحزمة تُقيّم 8 بوابات حيّة قبل الدمج وتُنشئ طلب الدمج (PR) رسمياً على GitHub —
-# ولا تنفّذ الدمج نفسه إطلاقاً: الاعتماد الصريح والدمج الفعلي صار v190.
-# كل محاولة إنشاء تُقيَّم من جديد (fresh) وتُسجَّل في app_releases — التوكن من البيئة
-# حصراً ولا يُسجل ولا يُعاد للواجهة أبداً (نفس عهد v187).
-
-
-async def _release_gh_post(path, payload):
-    """POST واحد على GitHub API — يتطلب توكناً صريحاً، ورسائل عربية واضحة عند الفشل.
-    أخطاء 422 تُحمل بعلامة GH422: لتُفكَّك لاحقاً برسائل مفهومة (موجود مسبقاً/تعارضات)."""
-    if not GH_RELEASE_TOKEN:
-        raise RuntimeError("إنشاء طلب الدمج يتطلب توكن GitHub: أضف GH_RELEASE_TOKEN (Fine-grained PAT "
-                           "بصلاحيات Contents وPull requests على هذا المستودع فقط) في متغيرات الخدمة "
-                           "على Render ثم أعد النشر.")
-    url = _RELEASE_GH_API + path
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as sess:
-            async with sess.post(url, headers=_release_gh_headers(), json=payload) as resp:
-                data = None
-                try:
-                    data = await resp.json(content_type=None)
-                except Exception:
-                    pass
-                if resp.status in (403, 429):
-                    raise RuntimeError("رفض GitHub الطلب (403/429) — تحقق من صلاحيات التوكن "
-                                       "(Pull requests = Read and write) ومن حد المعدل ثم أعد المحاولة.")
-                if resp.status == 404:
-                    raise RuntimeError("الفرع أو المستودع غير موجود — تحقق من " + GH_RELEASE_REPO
-                                       + " وأسماء الفرعين (Staging بحرف كبير S).")
-                if resp.status == 422:
-                    msgs = []
-                    for e in ((data or {}).get("errors") or []):
-                        if isinstance(e, dict):
-                            msgs.append(str(e.get("message") or e))
-                        else:
-                            msgs.append(str(e))
-                    raise RuntimeError("GH422:" + (str((data or {}).get("message") or "")
-                                                   + " " + " ".join(msgs))[:400])
-                if resp.status != 201:
-                    raise RuntimeError("GitHub ردّ بحالة HTTP " + str(resp.status))
-                if not isinstance(data, dict):
-                    raise RuntimeError("رد غير متوقع من GitHub.")
-                return data
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError("تعذر الاتصال بـ GitHub: " + str(e)[:120])
-
-
-def _release_extract_gh422(e):
-    """تفكيك أخطاء 422 من GitHub إلى رسائل عربية مفهومة للمالك."""
-    m = str(e)
-    if not m.startswith("GH422:"):
-        return m
-    body = m[6:]
-    low = body.lower()
-    if "already exists" in low:
-        return "طلب الدمج موجود مسبقاً على GitHub — لا يُنشأ ثانٍ؛ حالته معروضة في بطاقة طلب الدمج."
-    if "no commits between" in low:
-        return "لا فروقات بين الفرعين الآن (لا كوميتات معلّقة) — لا معنى لطلب دمج فارغ."
-    if "conflict" in low:
-        return "GitHub يرصد تعارضات بين الفرعين — يجب حلّها أولاً (أعد رفع الملفات المتعارضة على Staging) ثم أعد الفحص."
-    return "رفض GitHub إنشاء الطلب: " + body[:220]
-
-
-def _release_evaluate_gates(d):
-    """v188: تقييم بوابات ما قبل الدمج من بيانات مجمّعة فقط — دالة نقية قابلة للاختبار المعزول.
-    حاجبة (fail تمنع الإنشاء): token · prod_mode · diff_ahead
-    تحذيرية (warn لا تمنع): behind · version_delta · services · scope · open_pr
-    قاعدة التمهيد: الإنشاء من خدمة التجريبية مسموح فقط ما دام الإنتاج لم يحمل نظام
-    الإصدارات بعد (إصدار الإنتاج الرقمي < PWA_VERSION الحالي) — وبعد أول دمج يتحول
-    الإنشاء تلقائياً إلى خدمة الإنتاج وحدها."""
-    gates = []
-
-    def add(gid, title, state, detail):
-        gates.append({"id": gid, "title": title, "state": state, "detail": detail})
-
-    # 1) التوكن — حاجبة
-    if d.get("token_ok"):
-        add("token", "🔐 توكن GitHub مضبوط", "pass",
-            "GH_RELEASE_TOKEN جاهز في متغيرات هذه الخدمة.")
-    else:
-        add("token", "🔐 توكن GitHub مضبوط", "fail",
-            "غياب التوكن يمنع الاعتماد والحذف: أضف GH_RELEASE_TOKEN في متغيرات الخدمة على Render "
-            "(Fine-grained PAT — Contents وPull requests على هذا المستودع فقط).")
-
-    # 2) بيئة التنفيذ — حاجبة (مع قاعدة التمهيد)
-    prod_raw = str(((d.get("services") or {}).get("production") or {}).get("version") or "")
-    prod_v = int(prod_raw) if prod_raw.isdigit() else None
-    try:
-        cur_v = int(PWA_VERSION)
-    except Exception:
-        cur_v = 999999
-    if not d.get("stagingMode"):
-        add("prod_mode", "🏭 بيئة التنفيذ الصحيحة", "pass",
-            "أنت على خدمة الإنتاج — هذا هو الموضع الرسمي لعمليات النقل.")
-    elif prod_v is not None and prod_v >= cur_v:
-        add("prod_mode", "🏭 بيئة التنفيذ الصحيحة", "fail",
-            "الإنتاج يحمل نظام الإصدارات (إصداره " + prod_raw + ") — اعتمد من خدمة الإنتاج "
-            "حتى تبقى عمليات النقل في جهة واحدة.")
-    else:
-        add("prod_mode", "🏭 بيئة التنفيذ الصحيحة", "pass",
-            "تمهيد أول نقل: الإنتاج (إصداره " + (prod_raw or "غير معروف") + ") لم يحمل لوحة الإصدارات "
-            "بعد، فالإنشاء من التجريبية مسموح مؤقتاً — وبعد أول دمج سيعمل النقل من خدمة الإنتاج.")
-
-    # 3) فرق فعلي بين الفرعين — حاجبة
-    diff = d.get("diff") or {}
-    ahead = int(diff.get("ahead") or 0)
-    behind = int(diff.get("behind") or 0)
-    files = diff.get("files") or []
-    if ahead >= 1:
-        add("diff_ahead", "📦 التجريبية تحمل تحديثاً فعلياً", "pass",
-            str(ahead) + " كوميت معلّق فوق الإنتاج · " + str(len(files)) + " ملف متغير.")
-    else:
-        add("diff_ahead", "📦 التجريبية تحمل تحديثاً فعلياً", "fail",
-            "الفرعان متطابقان الآن — لا شيء للنقل (أي رفع جديد على التجريبية سيظهر هنا تلقائياً).")
-
-    # 4) الإنتاج لا يحوي كوميتات خارج التجريبية — تحذيرية
-    if behind > 0:
-        add("behind", "⚖️ اتساق الإنتاج مع التجريبية", "warn",
-            "الإنتاج متقدم بـ " + str(behind) + " كوميتاً غير موجودة في التجريبية — إن كانت إصلاحات "
-            "فانقلها إلى التجريبية أولاً كي لا تضيع من النسخة التجريبية، ثم أعد الفحص.")
-    else:
-        add("behind", "⚖️ اتساق الإنتاج مع التجريبية", "pass",
-            "لا انحراف: كل ما في الإنتاج موجود في التجريبية.")
-
-    # 5) ترقيم الإصدار — تحذيرية
-    stg_raw = str(PWA_VERSION) if d.get("stagingMode") else str(
-        ((d.get("services") or {}).get("staging") or {}).get("version") or PWA_VERSION)
-    stg_v = int(stg_raw) if stg_raw.isdigit() else None
-    if stg_v is not None and prod_v is not None:
-        if stg_v > prod_v:
-            add("version_delta", "🔢 ترقيم الإصدار متسق", "pass",
-                "التجريبية " + stg_raw + " ← الإنتاج " + prod_raw + " — تحديث حقيقي بانتظار النقل.")
-        else:
-            add("version_delta", "🔢 ترقيم الإصدار متسق", "warn",
-                "الإصداران متساويان (" + stg_raw + ") رغم وجود كوميتات معلّقة — قد تكون تعديلات بلا "
-                "ترقيم؛ تأكد أنها مقصودة قبل النقل.")
-    else:
-        add("version_delta", "🔢 ترقيم الإصدار متسق", "warn",
-            "لم يُقرأ رقم إصدار الخدمتين حياً (التجريبية " + (stg_raw or "؟") + " ← الإنتاج "
-            + (prod_raw or "؟") + ") — قد تكون الخدمة نائمة على Render؛ لا يمنع الإنشاء لكن تحقق بعد النشر.")
-
-    # 6) استجابة خدمة الإنتاج — تحذيرية
-    prod_p = (d.get("services") or {}).get("production") or {}
-    if prod_p.get("reachable"):
-        add("services", "🟢 خدمة الإنتاج تستجيب", "pass",
-            "جاهزة لاستقبال التحديث بعد الاعتماد — النشر تلقائي فور الدمج.")
-    else:
-        add("services", "🟢 خدمة الإنتاج تستجيب", "warn",
-            "لا استجابة الآن: " + str(prod_p.get("err") or "غير معروف")[:120]
-            + " — غالباً الخدمة نائمة على Render وسيوقظها أول وصول بعد الدمج.")
-
-    # 7) نطاق الملفات المتغيرة — تحذيرية
-    expected = ("bot.py", "pwa.html", "CHANGELOG.md")
-    odd = [str(f.get("name") or "") for f in files if f.get("name") and f["name"] not in expected]
-    if odd:
-        add("scope", "🎯 نطاق التغيير ضمن المتوقع", "warn",
-            "ملفات متغيرة خارج نمط حزم الخادم المعتاد (bot.py / pwa.html / CHANGELOG.md): "
-            + "، ".join(odd[:6]) + " — تأكد أنها مقصودة قبل النقل.")
-    else:
-        add("scope", "🎯 نطاق التغيير ضمن المتوقع", "pass",
-            "كل الملفات المتغيرة ضمن النمط المعتاد لحزم الخادم.")
-
-    # 8) طلب دمج مفتوح — معلوماتية
-    pr = d.get("pr")
-    if pr:
-        add("open_pr", "🔀 طلب الدمج المفتوح", "warn",
-            "موجود مسبقاً: #" + str(pr.get("number") or "") + " — سيُعلَّم مدمجاً تلقائياً بعد الاعتماد؛ لا يؤثر عليه.")
-    else:
-        add("open_pr", "🔀 طلب الدمج المفتوح", "pass", "لا طلب دمج مفتوح — يمكن إنشاء واحد بعد اجتياز الحواجب.")
-
-    blocking = [g["id"] for g in gates if g["state"] == "fail"]
-    warns = [g["id"] for g in gates if g["state"] == "warn"]
-    return {"gates": gates, "blocking": blocking, "warnings": warns,
-            "canCreate": (not blocking) and (not pr)}
-
-
-async def _release_collect_gates(fresh=False):
-    """جمع بيانات البوابات: الفرعان + الفرق + الخدمتان الحيتان + طلب الدمج المفتوح إن وُجد."""
-    main_b = await _release_gh_get("/repos/%s/branches/%s" % (GH_RELEASE_REPO, GH_BASE_BRANCH), fresh)
-    stg_b = await _release_gh_get("/repos/%s/branches/%s" % (GH_RELEASE_REPO, GH_SOURCE_BRANCH), fresh)
-    cmp_d = await _release_gh_get("/repos/%s/compare/%s...%s"
-                                  % (GH_RELEASE_REPO, GH_BASE_BRANCH, GH_SOURCE_BRANCH), fresh)
-    prod_p, stg_p = await asyncio.gather(_release_probe_service(PROD_PUBLIC_URL),
-                                         _release_probe_service(STAGING_PUBLIC_URL))
-    pulls = await _release_gh_get("/repos/%s/pulls?state=open&head=%s:%s&base=%s&per_page=5"
-                                  % (GH_RELEASE_REPO, GH_RELEASE_REPO.split("/")[0],
-                                     GH_SOURCE_BRANCH, GH_BASE_BRANCH), fresh)
-    pr = None
-    if isinstance(pulls, list) and pulls:
-        try:
-            pr = await _release_gh_get("/repos/%s/pulls/%d"
-                                       % (GH_RELEASE_REPO, int(pulls[0].get("number") or 0)), fresh)
-        except Exception:
-            pr = pulls[0]
-    pr_info = None
-    if isinstance(pr, dict) and pr.get("number"):
-        pr_info = {"number": int(pr.get("number") or 0),
-                   "title": str(pr.get("title") or ""),
-                   "state": str(pr.get("state") or ""),
-                   "mergeable": pr.get("mergeable"),
-                   "mergeableState": str(pr.get("mergeable_state") or ""),
-                   "createdAt": str(pr.get("created_at") or ""),
-                   "url": str(pr.get("html_url") or ""),
-                   "headSha": str((pr.get("head") or {}).get("sha") or "")[:8]}
-    files = [{"name": f.get("filename") or "", "status": f.get("status") or "",
-              "additions": int(f.get("additions") or 0), "deletions": int(f.get("deletions") or 0)}
-             for f in (cmp_d.get("files") or [])]
-    commits = []
-    for c in (cmp_d.get("commits") or []):
-        ci = c.get("commit") or {}
-        msg = str(ci.get("message") or "").splitlines()[0][:120] if ci.get("message") else ""
-        commits.append({"sha": str(c.get("sha") or "")[:8], "msg": msg})
-    data = {"ok": True, "token_ok": bool(GH_RELEASE_TOKEN), "stagingMode": bool(STAGING_MODE),
-            "repo": GH_RELEASE_REPO, "baseBranch": GH_BASE_BRANCH, "sourceBranch": GH_SOURCE_BRANCH,
-            "services": {"production": prod_p, "staging": stg_p},
-            "diff": {"status": cmp_d.get("status") or "",
-                     "ahead": int(cmp_d.get("ahead_by") or 0),
-                     "behind": int(cmp_d.get("behind_by") or 0),
-                     "files": files, "commits": commits},
-            "pr": pr_info,
-            "headSha": str((stg_b.get("commit") or {}).get("sha") or "")[:8],
-            "baseSha": str((main_b.get("commit") or {}).get("sha") or "")[:8]}
-    data["gates_result"] = _release_evaluate_gates(data)
-    return data
-
-
-def _release_gate_line(g):
-    """سطر مختصر لبوابة — يظهر في رسائل الرفض وملخص precheck."""
-    return "«" + str(g.get("title") or "") + "»: " + str(g.get("detail") or "")[:140]
-
-
-def _release_build_pr_payload(d):
-    """بناء عنوان ونص طلب الدمج من بيانات مجمّعة — عربي واضح (دالة نقية قابلة للاختبار)."""
-    diff = d.get("diff") or {}
-    prod_raw = str(((d.get("services") or {}).get("production") or {}).get("version") or "؟")
-    stg_raw = str(PWA_VERSION) if d.get("stagingMode") else str(
-        ((d.get("services") or {}).get("staging") or {}).get("version") or PWA_VERSION)
-    title = "نقل التحديث إلى الإنتاج: التجريبية " + stg_raw + " ← الإنتاج " + prod_raw
-    lines = ["طلب دمج أنشئ تلقائياً من لوحة «إدارة إصدارات التطبيق» (v188) بموافقة المالك،",
-             "بعد اجتياز بوابات ما قبل الدمج الحاجبة.",
-             "",
-             "- المصدر: `" + str(d.get("sourceBranch") or "") + "` @ `" + str(d.get("headSha") or "—")
-             + "` — الإصدار " + stg_raw,
-             "- الهدف: `" + str(d.get("baseBranch") or "") + "` @ `" + str(d.get("baseSha") or "—")
-             + "` — الإصدار " + prod_raw,
-             "- الفرق: " + str(diff.get("ahead") or 0) + " كوميت · "
-             + str(len(diff.get("files") or [])) + " ملف متغير",
-             "", "## الكوميتات المعلّقة"]
-    cl = diff.get("commits") or []
-    for c in cl[:15]:
-        lines.append("- `" + str(c.get("sha") or "") + "` " + str(c.get("msg") or "(بلا رسالة)"))
-    if len(cl) > 15:
-        lines.append("- …و" + str(len(cl) - 15) + " كوميت آخر")
-    lines += ["", "## الملفات المتغيرة"]
-    for f in (diff.get("files") or [])[:20]:
-        lines.append("- `" + str(f.get("name") or "") + "` — " + str(f.get("status") or "")
-                     + " (+" + str(f.get("additions") or 0) + "/-" + str(f.get("deletions") or 0) + ")")
-    lines += ["", "> ⚠️ الدمج نفسه لا يتم من هنا ولا تلقائياً: يأتي بعدها من زر «الاعتماد الصريح» "
-              "في لوحة الإصدارات (v189) بعد إعادة فحص البوابات وتأكد إمكانية الدمج من حالة الطلب."]
-    return {"title": title[:200], "head": d.get("sourceBranch"), "base": d.get("baseBranch"),
-            "body": "\n".join(lines)[:60000]}
-
-
-def _release_log_action(action, actor, precheck="", result="", ip="", pr=None,
-                        old_version="", new_version=""):
-    """v188: كتابة سجل عمليات النقل (app_releases) — مقاومة للأعطال كأخوتها في audit_log."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO app_releases (actor_id, username, action, from_branch, to_branch, "
-                    "old_version, new_version, pr_number, precheck, result, ip) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    ((actor or {}).get("id"),
-                     str((actor or {}).get("name") or (actor or {}).get("web_username") or "")[:200],
-                     str(action)[:40], GH_SOURCE_BRANCH, GH_BASE_BRANCH,
-                     str(old_version or "")[:20], str(new_version or "")[:20],
-                     (int(pr) if pr else None), str(precheck or "")[:500],
-                     str(result or "")[:500], str(ip or "")[:64]))
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        finally:
-            release_connection(conn)
-    except Exception:
-        pass
-
-
-async def pwa_release_gates_handler(request):
-    """GET /api/release/gates — بوابات ما قبل الدمج + حالة طلب الدمج المفتوح (الملك). قراءة فقط."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    if not _is_owner_user(user):
-        return _pwa_err(403, "إدارة الإصدارات للمالك فقط.")
-    if _release_throttled(str(user.get("id") or "0"), "gates"):
-        return _pwa_err(429, "فحص جديد كل 6 ثوانٍ — انتظر لحظة.")
-    fresh = request.query.get("fresh") == "1"
-    try:
-        data = await _release_collect_gates(fresh)
-    except RuntimeError as e:
-        return _pwa_err(502, str(e))
-    return _pwa_jr(data)
-
-
-async def pwa_release_pr_create_handler(request):
-    """POST /api/release/pr/create — إنشاء طلب الدمج Staging→main بعد اجتياز البوابات الحاجبة.
-    لا دمج هنا إطلاقاً — الدمج نفسه يأتي في v190 من زر الاعتماد الصريح. كل محاولة تُسجَّل."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    if not _is_owner_user(user):
-        return _pwa_err(403, "إدارة الإصدارات للمالك فقط.")
-    _sid = str(user.get("id") or "0")
-    _now = time.monotonic()
-    if _now - _RELEASE_LAST_CALL.get((_sid, "pr_create"), 0.0) < 15.0:
-        return _pwa_err(429, "محاولة جديدة كل 15 ثانية — انتظر لحظة.")
-    _RELEASE_LAST_CALL[(_sid, "pr_create")] = _now
-    ip = request.remote or "؟"
-    try:
-        data = await _release_collect_gates(fresh=True)
-    except RuntimeError as e:
-        await _pwa_run(_release_log_action, "pr_create_fail", user, precheck="فشل جمع البيانات",
-                       result=str(e)[:180], ip=ip)
-        return _pwa_err(502, str(e))
-    gr = data.get("gates_result") or {}
-    prod_raw = str(((data.get("services") or {}).get("production") or {}).get("version") or "")
-    stg_raw = str(PWA_VERSION) if data.get("stagingMode") else str(
-        ((data.get("services") or {}).get("staging") or {}).get("version") or PWA_VERSION)
-    pre = ("حاجبة فاشلة: " + "، ".join(gr.get("blocking") or [])) if gr.get("blocking") \
-        else ("موجود مسبقاً #" + str((data.get("pr") or {}).get("number"))
-              if data.get("pr") else "البوابات الحاجبة سليمة")
-    # 1) البوابات الحاجبة أول ممانعة — الرفض مسجَّل
-    if gr.get("blocking"):
-        await _pwa_run(_release_log_action, "pr_create_refused", user, precheck=pre,
-                       result="رفض — بوابات حاجبة فاشلة", ip=ip,
-                       old_version=prod_raw, new_version=stg_raw)
-        return _pwa_err(422, "⛔ بوابات حاجبة فاشلة — لا يمكن إنشاء طلب الدمج: "
-                        + " · ".join(_release_gate_line(g) for g in gr.get("gates") or []
-                                     if g.get("state") == "fail"))
-    # 2) طلب موجود مسبقاً؟ يُعرض بدل التكرار (idempotent)
-    if data.get("pr"):
-        pr = data["pr"]
-        await _pwa_run(_release_log_action, "pr_create_existing", user, precheck=pre,
-                       result="موجود مسبقاً — لا يُنشأ ثانٍ", ip=ip, pr=pr.get("number"),
-                       old_version=prod_raw, new_version=stg_raw)
-        return _pwa_jr({"ok": True, "created": False,
-                        "message": "طلب الدمج موجود مسبقاً (#" + str(pr.get("number")) + ") — لا يُنشأ ثانٍ.",
-                        "pr": pr, "gates_result": gr})
-    # 3) الإنشاء الفعلي على GitHub
-    payload = _release_build_pr_payload(data)
-    try:
-        pr = await _release_gh_post("/repos/%s/pulls" % GH_RELEASE_REPO, payload)
-    except RuntimeError as e:
-        msg = _release_extract_gh422(e)
-        await _pwa_run(_release_log_action, "pr_create_fail", user, precheck=pre,
-                       result=msg[:180], ip=ip, old_version=prod_raw, new_version=stg_raw)
-        if "موجود مسبقاً" in msg:
-            # سباق محتمل (أنشئ من جهاز آخر لحظة الإنشاء) — أظهر الموجود بدل الفشل
-            try:
-                data2 = await _release_collect_gates(fresh=True)
-                if data2.get("pr"):
-                    return _pwa_jr({"ok": True, "created": False,
-                                    "message": "طلب الدمج موجود مسبقاً (#"
-                                    + str(data2["pr"].get("number")) + ") — لا يُنشأ ثانٍ.",
-                                    "pr": data2["pr"],
-                                    "gates_result": data2.get("gates_result") or gr})
-            except Exception:
-                pass
-        return _pwa_err(502, msg)
-    pr_info = {"number": int(pr.get("number") or 0), "title": str(pr.get("title") or ""),
-               "state": str(pr.get("state") or "open"), "mergeable": pr.get("mergeable"),
-               "mergeableState": str(pr.get("mergeable_state") or ""),
-               "createdAt": str(pr.get("created_at") or ""), "url": str(pr.get("html_url") or ""),
-               "headSha": str((pr.get("head") or {}).get("sha") or "")[:8]}
-    await _pwa_run(_release_log_action, "pr_created", user,
-                   precheck="البوابات الحاجبة سليمة" + ((" · تحذيرات: " + "، ".join(gr.get("warnings") or [])) if gr.get("warnings") else ""),
-                   result="تم إنشاء طلب الدمج #" + str(pr_info["number"]) + " — بانتظار الاعتماد الصريح (v189)",
-                   ip=ip, pr=pr_info["number"], old_version=prod_raw, new_version=stg_raw)
-    return _pwa_jr({"ok": True, "created": True,
-                    "message": "تم إنشاء طلب الدمج #" + str(pr_info["number"])
-                    + " على GitHub — الدمج نفسه لا يتم إلا من زر «الاعتماد الصريح» في المرحلة القادمة (v189).",
-                    "pr": pr_info, "gates_result": gr})
-
-
-# ═══════════ v190: الاعتماد بنقرة واحدة — الدمج الفعلي + حذف التجارب غير المعتمدة ═══════════
-# طلب المالك: «الاعتماد والدمج يكون فقط بزر واضح دون تفاصيل مزعجة، يحدد الإصدار الناجح ويصدر
-# للمخزون الأصلي، وباقي الإصدارات التي لا تعجبه تُحذف من التجريبي فلا تُدمج بالخطأ». التنفيذ:
-# زر الاعتماد ينفّذ الدمج الفعلي Staging→main مباشرة عبر POST /merges (بلا PR وسيط — ما يُنشأ
-# من طلبات v188 يُعلَّم مدمجاً تلقائياً)، وزر الحذف يصفّر التجريبية على رأس الإنتاج عبر PATCH
-# للمرجع — الحذف يكتب على فرع التجريبية وحده ولا يلمس main إطلاقاً. البوابات الحاجبة تُقيَّم
-# من جديد قبل كل عملية (fresh) وتمنعها، وكل محاولة تُسجَّل في app_releases، والتوكن من البيئة
-# حصراً ولا يُسجَّل ولا يُعاد للواجهة أبداً (نفس عهد v187/v188). خنق 15 ثانية لكل عملية.
-
-
-def _release_bust_cache():
-    """إبطال كبت GitHub بعد أي كتابة (دمج/تصفير) حتى لا تعرض القراءة التالية حالة قديمة."""
-    for p in list(_RELEASE_CACHE):
-        if ("/branches/" in p) or ("/compare/" in p) or ("/pulls" in p):
-            _RELEASE_CACHE.pop(p, None)
-
-
-async def _release_merge_branches():
-    """الدمج الفعلي Staging→main عبر POST /repos/{repo}/merges — رسالة عربية لكل نتيجة.
-    يعيد {"merged": True, "sha": ...} عند النجاح أو {"merged": False, "noop": True} إن لم
-    يكن هناك ما يُدمج، ويرمي RuntimeError برسالة عربية عند أي فشل (تعارض/توكن/اتصال)."""
-    if not GH_RELEASE_TOKEN:
-        raise RuntimeError("الاعتماد يتطلب توكن GitHub: أضف GH_RELEASE_TOKEN (Fine-grained PAT "
-                           "بصلاحية Contents = Read and write على هذا المستودع فقط) في متغيرات "
-                           "الخدمة على Render ثم أعد النشر.")
-    url = _RELEASE_GH_API + "/repos/%s/merges" % GH_RELEASE_REPO
-    payload = {"base": GH_BASE_BRANCH, "head": GH_SOURCE_BRANCH,
-               "commit_message": "اعتماد التحديث التجريبي وإصداره للمخزون الأصلي من لوحة "
-                                 "إدارة الإصدارات (v190) بموافقة المالك"}
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40)) as sess:
-            async with sess.post(url, headers=_release_gh_headers(), json=payload) as resp:
-                raw_txt = ""
-                try:
-                    raw_txt = await resp.text()
-                except Exception:
-                    raw_txt = ""
-                gd = (" — تفاصيل GitHub: " + raw_txt[:140].replace("\n", " ").strip()) if raw_txt.strip() else ""
-                data = None
-                if raw_txt:
-                    try:
-                        data = json.loads(raw_txt)
-                    except Exception:
-                        data = None
-                if resp.status == 201:
-                    return {"merged": True, "sha": str((data or {}).get("sha") or "")[:8]}
-                if resp.status == 204:
-                    return {"merged": False, "noop": True}
-                if resp.status == 409:
-                    raise RuntimeError("تعارض بين الفرعين يمنع الدمج الآلي — اضغط «حذف إصدارات "
-                                       "التجريبية غير المعتمدة» ثم أعد رفع تعديلك نظيفاً، أو حلّ "
-                                       "التعارض على GitHub يدوياً.")
-                if resp.status == 401:
-                    raise RuntimeError("التوكن غير صالح أو منتهي الصلاحية — جدّد GH_RELEASE_TOKEN "
-                                       "في متغيرات الخدمة على Render ثم أعد النشر.")
-                if resp.status in (403, 429):
-                    raise RuntimeError("رفض GitHub الاعتماد (403/429) — التوكن بلا صلاحية "
-                                       "Contents = Read and write أو حد المعدل مستنفد؛ صحّح وأعد." + gd)
-                if resp.status == 404:
-                    raise RuntimeError("الفرع أو المستودع غير موجود — تحقق من " + GH_RELEASE_REPO
-                                       + " وأسماء الفرعين (Staging بحرف كبير S)." + gd)
-                raise RuntimeError("GitHub ردّ بحالة HTTP " + str(resp.status) + " أثناء الدمج." + gd)
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError("تعذر الاتصال بـ GitHub أثناء الاعتماد: " + str(e)[:120])
-
-
-async def _release_reset_staging(main_sha):
-    """حذف الإصدارات التجريبية غير المعتمدة: تصفير فرع التجريبية على رأس الإنتاج عبر
-    PATCH /repos/{repo}/git/refs/heads/Staging بقوة — يكتب على التجريبية وحدها.
-    v191: جمع البوابات يقطع هاش رأس الإنتاج إلى 8 خانات وGitHub يرفض الهاش الجزئي
-    في PATCH المراجع — فيُستكمل الهاش الكامل من مرجع الإنتاج الحي قبل التصفير."""
-    if not GH_RELEASE_TOKEN:
-        raise RuntimeError("الحذف يتطلب توكن GitHub: أضف GH_RELEASE_TOKEN (Fine-grained PAT "
-                           "بصلاحية Contents = Read and write على هذا المستودع فقط) في متغيرات "
-                           "الخدمة على Render ثم أعد النشر.")
-    if not main_sha:
-        raise RuntimeError("لم يُقرأ رأس فرع الإنتاج — أعد «فحص التحديثات» ثم أعد المحاولة.")
-    if len(main_sha) < 40:
-        try:
-            ref = await _release_gh_get("/repos/%s/git/ref/heads/%s"
-                                        % (GH_RELEASE_REPO, GH_BASE_BRANCH), fresh=True)
-            main_sha = str(((ref or {}).get("object") or {}).get("sha") or "")
-        except RuntimeError as e:
-            raise RuntimeError("تعذر استكمال هاش رأس الإنتاج من GitHub: " + str(e)[:120])
-        if len(main_sha) < 40:
-            raise RuntimeError("لم يُستكمل هاش رأس الإنتاج — أعد «فحص التحديثات» ثم أعد المحاولة.")
-    url = _RELEASE_GH_API + "/repos/%s/git/refs/heads/%s" % (GH_RELEASE_REPO, GH_SOURCE_BRANCH)
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40)) as sess:
-            async with sess.patch(url, headers=_release_gh_headers(),
-                                  json={"sha": main_sha, "force": True}) as resp:
-                raw_txt = ""
-                try:
-                    raw_txt = await resp.text()
-                except Exception:
-                    raw_txt = ""
-                gd = (" — تفاصيل GitHub: " + raw_txt[:140].replace("\n", " ").strip()) if raw_txt.strip() else ""
-                data = None
-                if raw_txt:
-                    try:
-                        data = json.loads(raw_txt)
-                    except Exception:
-                        data = None
-                if resp.status == 200:
-                    return {"reset": True,
-                            "sha": str(((data or {}).get("object") or {}).get("sha") or "")[:8]}
-                if resp.status == 409:
-                    raise RuntimeError("رفض GitHub التصفير (409) — المرجع في حالة تغيّر؛ أعد "
-                                       "«فحص التحديثات» ثم أعد المحاولة.")
-                if resp.status == 401:
-                    raise RuntimeError("التوكن غير صالح أو منتهي الصلاحية — جدّد GH_RELEASE_TOKEN "
-                                       "في متغيرات الخدمة على Render ثم أعد النشر.")
-                if resp.status in (403, 429):
-                    raise RuntimeError("رفض GitHub الحذف (403/429) — التوكن بلا صلاحية "
-                                       "Contents = Read and write أو حد المعدل مستنفد؛ صحّح وأعد." + gd)
-                if resp.status == 404:
-                    raise RuntimeError("فرع التجريبية غير موجود — تحقق من " + GH_RELEASE_REPO
-                                       + " والفرع " + GH_SOURCE_BRANCH + " (Staging بحرف كبير S).")
-                if resp.status == 422:
-                    raise RuntimeError("رفض GitHub التصفير (422) — تأكد أن رأس الإنتاج صالح، "
-                                       "أعد «فحص التحديثات» ثم أعد المحاولة." + gd)
-                raise RuntimeError("GitHub ردّ بحالة HTTP " + str(resp.status) + " أثناء الحذف." + gd)
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError("تعذر الاتصال بـ GitHub أثناء الحذف: " + str(e)[:120])
-
-
-async def pwa_release_approve_handler(request):
-    """POST /api/release/approve — الاعتماد بنقرة واحدة: إعادة فحص الحواجب الحاجبة ثم
-    الدمج الفعلي Staging→main والنشر التلقائي بعده (الملك). كل محاولة تُسجَّل."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    if not _is_owner_user(user):
-        return _pwa_err(403, "إدارة الإصدارات للمالك فقط.")
-    _sid = str(user.get("id") or "0")
-    _now = time.monotonic()
-    if _now - _RELEASE_LAST_CALL.get((_sid, "approve"), 0.0) < 15.0:
-        return _pwa_err(429, "عملية جديدة كل 15 ثانية — انتظر لحظة.")
-    _RELEASE_LAST_CALL[(_sid, "approve")] = _now
-    ip = request.remote or "؟"
-    try:
-        data = await _release_collect_gates(fresh=True)
-    except RuntimeError as e:
-        await _pwa_run(_release_log_action, "approve_fail", user, precheck="فشل جمع البيانات",
-                       result=str(e)[:180], ip=ip)
-        return _pwa_err(502, str(e))
-    gr = data.get("gates_result") or {}
-    prod_raw = str(((data.get("services") or {}).get("production") or {}).get("version") or "")
-    stg_raw = str(PWA_VERSION) if data.get("stagingMode") else str(
-        ((data.get("services") or {}).get("staging") or {}).get("version") or PWA_VERSION)
-    pre = ("حاجبة فاشلة: " + "، ".join(gr.get("blocking") or [])) if gr.get("blocking") \
-        else "الحواجب سليمة"
-    # 1) الحواجب الحاجبة أول ممانعة — الرفض مسجَّل
-    if gr.get("blocking"):
-        await _pwa_run(_release_log_action, "approve_refused", user, precheck=pre,
-                       result="رفض — بوابات حاجبة فاشلة", ip=ip,
-                       old_version=prod_raw, new_version=stg_raw)
-        return _pwa_err(422, "⛔ لا يمكن الاعتماد الآن: "
-                        + " · ".join(_release_gate_line(g) for g in gr.get("gates") or []
-                                     if g.get("state") == "fail"))
-    # 2) الدمج الفعلي
-    try:
-        res = await _release_merge_branches()
-    except RuntimeError as e:
-        msg = str(e)
-        await _pwa_run(_release_log_action, "approve_fail", user, precheck=pre,
-                       result=msg[:180], ip=ip, old_version=prod_raw, new_version=stg_raw)
-        return _pwa_err(502, msg)
-    _release_bust_cache()
-    if res.get("noop"):
-        await _pwa_run(_release_log_action, "approve_noop", user, precheck=pre,
-                       result="لا شيء للدمج — التجريبية بلا تحديث فوق الإنتاج", ip=ip,
-                       old_version=prod_raw, new_version=stg_raw)
-        return _pwa_jr({"ok": True, "merged": False,
-                        "message": "لا تحديث جديد للدمج — النسخة التجريبية مطابقة للمخزون الأصلي حالياً.",
-                        "gates_result": gr})
-    await _pwa_run(_release_log_action, "approve_merged", user, precheck=pre,
-                   result="تم الدمج الفعلي " + GH_SOURCE_BRANCH + "→" + GH_BASE_BRANCH
-                   + " @ " + str(res.get("sha") or "?") + " — النشر التلقائي جارٍ على خدمة الإنتاج",
-                   ip=ip, old_version=prod_raw, new_version=stg_raw)
-    return _pwa_jr({"ok": True, "merged": True, "mergeSha": str(res.get("sha") or ""),
-                    "oldVersion": prod_raw, "newVersion": stg_raw,
-                    "message": "✅ تم الاعتماد والدمج: إصدار النسخة التجريبية (" + stg_raw
-                    + ") أصبح هو المخزون الأصلي — النشر التلقائي يجري خلال دقائق؛ حدّث "
-                    + "«فحص التحديثات» بعد قليل لرؤية الإصدار الجديد."})
-
-
-async def pwa_release_discard_handler(request):
-    """POST /api/release/discard — حذف الإصدارات التجريبية غير المعتمدة: تصفير التجريبية
-    على رأس الإنتاج فلا يمكن دمجها بالخطأ (الملك). لا يلمس main إطلاقاً. كل محاولة تُسجَّل."""
-    user, err = _pwa_guard(await _pwa_auth_user(request), None)
-    if err:
-        return err
-    if not _is_owner_user(user):
-        return _pwa_err(403, "إدارة الإصدارات للمالك فقط.")
-    _sid = str(user.get("id") or "0")
-    _now = time.monotonic()
-    if _now - _RELEASE_LAST_CALL.get((_sid, "discard"), 0.0) < 15.0:
-        return _pwa_err(429, "عملية جديدة كل 15 ثانية — انتظر لحظة.")
-    _RELEASE_LAST_CALL[(_sid, "discard")] = _now
-    ip = request.remote or "؟"
-    try:
-        data = await _release_collect_gates(fresh=True)
-    except RuntimeError as e:
-        await _pwa_run(_release_log_action, "discard_fail", user, precheck="فشل جمع البيانات",
-                       result=str(e)[:180], ip=ip)
-        return _pwa_err(502, str(e))
-    diff = data.get("diff") or {}
-    ahead = int(diff.get("ahead") or 0)
-    main_sha = str(data.get("baseSha") or "")
-    prod_raw = str(((data.get("services") or {}).get("production") or {}).get("version") or "")
-    stg_raw = str(PWA_VERSION) if data.get("stagingMode") else str(
-        ((data.get("services") or {}).get("staging") or {}).get("version") or PWA_VERSION)
-    if ahead < 1 or not main_sha:
-        await _pwa_run(_release_log_action, "discard_noop", user, precheck="لا كوميتات غير معتمدة",
-                       result="لا يوجد ما يُحذف", ip=ip, old_version=stg_raw, new_version=prod_raw)
-        return _pwa_jr({"ok": True, "reset": False,
-                        "message": "لا يوجد ما يُحذف — النسخة التجريبية لا تحمل أي تحديث غير معتمد حالياً."})
-    try:
-        res = await _release_reset_staging(main_sha)
-    except RuntimeError as e:
-        msg = str(e)
-        await _pwa_run(_release_log_action, "discard_fail", user,
-                       precheck="تصفير على رأس الإنتاج " + main_sha, result=msg[:180], ip=ip,
-                       old_version=stg_raw, new_version=prod_raw)
-        return _pwa_err(502, msg)
-    _release_bust_cache()
-    await _pwa_run(_release_log_action, "discard_reset", user,
-                   precheck="تصفير على رأس الإنتاج " + main_sha,
-                   result="حُذفت " + str(ahead) + " كوميتات غير معتمدة — عادت التجريبية "
-                   + "لمطابقة الإنتاج", ip=ip, old_version=stg_raw, new_version=prod_raw)
-    return _pwa_jr({"ok": True, "reset": True,
-                    "message": "🗑 تم الحذف: أُزيلت " + str(ahead) + " كوميتات غير معتمدة من "
-                    + "النسخة التجريبية وعادت لمطابقة المخزون الأصلي (إصدار " + prod_raw
-                    + ") — لن يمكن دمجها بالخطأ أبداً."})
 
 
 async def pwa_audit_handler(request):
@@ -36295,17 +35079,8 @@ async def pwa_status_handler(request):
         has = await _pwa_run(_pwa_has_accounts)
     except Exception:
         has = True  # عند خطأ القاعدة لا نُظهر شاشة الإعداد
-    # v186: الثيم الشخصي لصاحب الجلسة يفوق المؤسسي — كان الرد يعيد الافتراضي
-    # دائماً فالاستطلاع الدوري في الواجهة يمسح الثيم الشخصي المختار (خلل منذ
-    # v120 كشفه اختبار ثيم إزي باور حياً). بلا جلسة: الافتراضي لشاشة الدخول كما كان.
-    _st_user = None
-    try:
-        _st_user = await _pwa_auth_user(request)
-    except Exception:
-        _st_user = None
-    _st_theme = (_st_user or {}).get("theme") or ""
-    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION, "staging": STAGING_MODE,
-                    "theme": (_st_theme if _st_theme in PWA_ORG_THEMES else _org_theme_get()),
+    return _pwa_jr({"ok": True, "setup": not has, "version": PWA_VERSION,
+                    "theme": _org_theme_get(),   # v120: الثيم المؤسسي — يصل حتى شاشة الدخول
                     "storage": ("supabase" if _supabase_enabled() else "db"),  # v89: وضع التخزين
                     "self_register": _pwa_self_register_enabled(),
                     "smtp_ready": _pwa_otp_email_ready(),  # للنسخ الاحتياطي البريدي فقط — التسجيل بلا بريد (v39)
@@ -37092,43 +35867,6 @@ self.addEventListener("notificationclick", (e) => {
 
 
 @web.middleware
-async def _pwa_gzip_middleware(request, handler):
-    """v192: ضغط gzip لكل الردود النصية — الصفحة الكاملة تنزل ~3.8 أضعاف أصغر
-    (182KB → ~48KB) وردود الـJSON كذلك، فتنخفض مدة الإقلاع والاستجابة على
-    شبكات الهاتف وفق النسبة نفسها بلا أي تغيير في المحتوى أو السلوك.
-    الأول في قائمة الوسائط = الأقصى: يرى الرد بعد أن يضيف وسيط الأمان ترويساته."""
-    resp = await handler(request)
-    try:
-        if not isinstance(resp, web.Response) or resp.body is None or resp.status >= 400:
-            return resp
-        ae = (request.headers.get("Accept-Encoding") or "").lower()
-        if "gzip" not in ae or resp.headers.get("Content-Encoding"):
-            return resp
-        ct = (resp.content_type or "").split(";")[0].strip().lower()
-        if ct not in ("text/html", "application/javascript", "application/json",
-                      "text/plain", "text/css", "application/manifest+json", "image/svg+xml"):
-            return resp
-        body = resp.body
-        if isinstance(body, memoryview):
-            body = body.tobytes()
-        if isinstance(body, str):
-            body = body.encode("utf-8")
-        if len(body) < 512:
-            return resp
-        gz = gzip.compress(body, 6)
-        if len(gz) >= len(body):
-            return resp
-        headers = dict(resp.headers)
-        headers.pop("Content-Length", None)   # الطول يعاد حسابه على الجسم المضغوط
-        headers.pop("Content-Type", None)     # يبقى كما هو في ترويسات الرد الأصلية
-        headers["Content-Encoding"] = "gzip"
-        headers["Vary"] = (headers.get("Vary", "") + ", Accept-Encoding").lstrip(", ")
-        return web.Response(status=resp.status, body=gz, headers=headers)
-    except Exception:
-        return resp
-
-
-@web.middleware
 async def _pwa_sec_middleware(request, handler):
     """ترويسات أمنية على كل ردود الخادم (صفحة + API).
     v88.2: مسار PDF للفاتورة يُسمح بعرضه داخل إطار من نفس الأصل (SAMEORIGIN)
@@ -37612,12 +36350,6 @@ def register_pwa_routes(app):
     app.router.add_post("/api/users/archive", pwa_users_archive_handler)  # أرشفة آمنة / استعادة (الملك)
     app.router.add_post("/api/users/email", pwa_users_email_handler)      # إضافة/إزالة بريد (الملك)
     app.router.add_get("/api/audit", pwa_audit_handler)                   # عارض سجل التدقيق (الملك)
-    app.router.add_get("/api/release/overview", pwa_release_overview_handler)  # v187: لوحة الإصدارات (الملك — قراءة فقط)
-    app.router.add_get("/api/release/history", pwa_release_history_handler)    # v187: سجل عمليات النقل (الملك)
-    app.router.add_get("/api/release/gates", pwa_release_gates_handler)          # v188: بوابات ما قبل الدمج (الملك — قراءة فقط)
-    app.router.add_post("/api/release/pr/create", pwa_release_pr_create_handler)  # v188: إنشاء طلب الدمج (الملك — بلا دمج)
-    app.router.add_post("/api/release/approve", pwa_release_approve_handler)  # v190: الاعتماد بنقرة واحدة — الدمج الفعلي (الملك)
-    app.router.add_post("/api/release/discard", pwa_release_discard_handler)  # v190: حذف التجارب غير المعتمدة — تصفير التجريبية (الملك)
     app.router.add_get("/api/roles/perms", pwa_role_perms_handler)        # قوالب الفئات (الملك)
     app.router.add_post("/api/roles/perm", pwa_role_perm_set_handler)     # ضبط صلاحية فئة (الملك)
     app.router.add_post("/api/users/role", pwa_users_role_handler)
@@ -38122,7 +36854,6 @@ if __name__ == "__main__":
     # v88: بصمة إصدار صريحة في اللوج — تثبت أي نسخة كود تعمل فعلاً بعد الرفع
     # إن لم تظهر هذا السطر في لوج Render فالرفع لم يُطبّق (كود قديم ما زال يعمل)
     logging.info("[STARTUP] ===== BOT " + PWA_VERSION
-                 + (" [STAGING — TEST]" if STAGING_MODE else "")
                  + " (invoice-archive + safe-pdf-dl + desktop + pdf-overlay + ver-chip + supabase-storage"
                  + " + back-guard + swipe-anywhere + pull-refresh + haptic + confirm2 + users-hq + no-photos"
                  + " + neg-qty + activity-chart"
@@ -38241,14 +36972,14 @@ if __name__ == "__main__":
                             + " product(s)")
     except Exception as _sync_boot_err:
         logging.error("[STARTUP][v80] deficit sync failed: " + str(_sync_boot_err))
-    tg_app = None if STAGING_MODE else build_application()   # v183: التجريبية بلا تلغرام إطلاقاً
+    tg_app = build_application()
     render_port = int(os.getenv("PORT", 0))
     if WEBHOOK_URL:
         port = render_port or 10000
         webhook_path = "/webhook"
         url = WEBHOOK_URL + webhook_path
         print("[BOT] Webhook mode, port " + str(port) + ", url: " + url)
-        webhook_app = web.Application(middlewares=[_pwa_gzip_middleware, _pwa_sec_middleware],
+        webhook_app = web.Application(middlewares=[_pwa_sec_middleware],
                                       client_max_size=64 * 1024 * 1024)
         webhook_app.router.add_get("/health", _health_handler)
         register_pwa_routes(webhook_app)
@@ -38263,26 +36994,13 @@ if __name__ == "__main__":
             secret_token=secret_token,
             drop_pending_updates=True, webhook_app=webhook_app)
     elif render_port:
-        health_app = web.Application(middlewares=[_pwa_gzip_middleware, _pwa_sec_middleware],
+        health_app = web.Application(middlewares=[_pwa_sec_middleware],
                                      client_max_size=64 * 1024 * 1024)
         health_app.router.add_get("/health", _health_handler)
         register_pwa_routes(health_app)
         async def on_startup(aio_app):
             global _startup_restore_notice, TG_APP
             _pwa_set_main_loop()  # v40: تثبيت الحلقة الرئيسية مبكراً للجدولة من الخيوط
-            try:
-                await _pwa_run(_pwa_ensure_owner)   # v184: حساب المالك الثابت عند كل إقلاع
-            except Exception as _own_e:
-                logging.warning("[PWA][v184] ضمان المالك تأخر (القاعدة غير جاهزة بعد): "
-                                + str(_own_e))
-            if STAGING_MODE:
-                # v183: التجريبية — الويب فقط: لا توكن تلغرام أصلاً (بناء التطبيق
-                # كان سينهار)، لا polling يتصادم مع الإنتاج، لا نسخ احتياطي
-                # تلغرامي. TG_APP يبقى None وحرساته الموجودة في مسارات الإشعارات
-                # تتجاهله بأمان، والنسخ الاحتياطي يتم من داخل التطبيق (المتصفح).
-                print("[BOT] STAGING mode — web-only: Telegram polling + daily auto-backup disabled")
-                asyncio.create_task(_keep_alive(aio_app))
-                return
             await tg_app.initialize()
             TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
             await tg_app.start()
@@ -38304,8 +37022,6 @@ if __name__ == "__main__":
             print("[BOT] Daily auto-backup enabled (17:00 Algeria time, once per day)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
-            if STAGING_MODE:
-                return
             await tg_app.updater.stop()
             await tg_app.stop()
             await tg_app.shutdown()
