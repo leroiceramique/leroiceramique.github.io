@@ -2096,8 +2096,10 @@ def reject_user(telegram_id):
         release_connection(conn)
 
 
-def db_v180_backup_integrity_check():
-    """v180: فحص ذاتي هيكلي — يسأل المخطط نفسه لا ذاكرة المطور.
+def db_v180_backup_integrity_check(backup=None):
+    """v180 فحص ذاتي هيكلي، v57 يواكب التصدير الديناميكي — يسأل المخطط
+    نفسه لا ذاكرة المطور. مع نسخة فعلية يفحص الواقع (كل جدول مرتبط بـ
+    users داخل الملف؟) وبلا نسخة يكتفي بسلامة الاكتشاف الديناميكي.
 
     الحادثة التي مسحت كلمات المرور والجلسات كانت «انحراف مخطط»: جداول مصادقة
     أُضيفت لاحقاً ولم تدخل قائمة التصدير قط، وقيود CASCADE تعيش في المخطط
@@ -2124,13 +2126,135 @@ def db_v180_backup_integrity_check():
             return []
         finally:
             release_connection(conn)
-        _gaps = [t for t in _deps if t not in _exported]
+        _covered = set(_exported)
+        if isinstance(backup, dict):
+            # v57: النسخة الفعلية هي الحكم — الصريح والديناميكي معاً
+            _covered |= {k for k, v in backup.items() if isinstance(v, list)}
+            _ud = backup.get("user_deps")
+            if isinstance(_ud, dict):
+                _covered |= set(_ud.keys())
+        else:
+            # بلا نسخة (الإقلاع): التصدير الديناميكي سيبني تغطيته من المخطط
+            # نفسه فهو يغطي ما يراه هذا الاستعلام — لا إنذار كاذب بعد v57.
+            _covered |= set(_deps)
+        _gaps = [t for t in _deps if t not in _covered]
         if _gaps:
             logging.warning("[BACKUP][v180] جداول مرتبطة بـ users خارج النسخة الاحتياطية: " + ", ".join(_gaps))
         return _gaps
     except Exception as _e:
         logging.error("[BACKUP][v180] integrity check failed: " + str(_e))
         return []
+
+
+def _db_v180_user_dep_tables():
+    """v57: كل الجداول المرتبطة بـ users بمفتاح أجنبي — يسأل المخطط نفسه
+    عند كل تصدير بدل قائمة يدوية تنحرف كما انحرفت جداول المصادقة سابقاً."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as _cur:
+            _cur.execute(
+                "SELECT DISTINCT t.relname FROM pg_constraint c "
+                "JOIN pg_class t ON t.oid = c.conrelid "
+                "JOIN pg_class f ON f.oid = c.confrelid "
+                "WHERE c.contype = 'f' AND f.relname = 'users' AND t.relname <> 'users'")
+            _rows = _cur.fetchall()
+        conn.commit()
+        return sorted(set(r[0] for r in _rows))
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    finally:
+        release_connection(conn)
+
+
+def _db_v57_restore_user_deps(cur, data):
+    """v57: استعادة عامة لكل جداول FK→users الموجودة في النسخة
+    (التشات، المصروفات، الصلاحيات، OTP، تذكر الدخول...). حذف users أعلاه
+    مسحها بالـ CASCADE فتُعاد هنا بترتيب توبولوجي بينها (المجموعة قبل رسائلها)،
+    مع تقاطع الأعمدة مع المخطط الفعلي (لا يُسقط جدول أحدث/أقدم) وsavepoint
+    لكل جدول (سطر شاذ يُتخطى ولا يُسقط الاستيراد) وتصفير تسلسلات id.
+    يعيد عدد الصفوف المستعادة إجمالاً."""
+    deps = data.get("user_deps")
+    if not isinstance(deps, dict):
+        return 0
+    deps = {k: v for k, v in deps.items() if isinstance(v, list) and v}
+    if not deps:
+        return 0
+    # ترتيب توبولوجي من قيود المخطط: الطفل يُدرج بعد الأب الذي يشير إليه
+    _order = sorted(deps.keys())
+    try:
+        cur.execute("SELECT conrelid::regclass::text, confrelid::regclass::text "
+                    "FROM pg_constraint WHERE contype = 'f'")
+        _norm = lambda x: str(x).replace('"', '').split('.')[-1]
+        _pairs = [(_norm(a), _norm(b)) for a, b in cur.fetchall()
+                  if _norm(a) in deps and _norm(b) in deps and _norm(a) != _norm(b)]
+        if _pairs:
+            _indeg = {t: 0 for t in deps}
+            _adj = {t: [] for t in deps}
+            for _a, _b in _pairs:
+                _adj[_b].append(_a)
+                _indeg[_a] += 1
+            _q = sorted(t for t in deps if _indeg[t] == 0)
+            _order = []
+            while _q:
+                _t = _q.pop(0)
+                _order.append(_t)
+                for _n in _adj[_t]:
+                    _indeg[_n] -= 1
+                    if _indeg[_n] == 0:
+                        _q.append(_n)
+            _order += [t for t in sorted(deps) if t not in _order]
+    except Exception as _fk_err:
+        logging.warning("[BACKUP][v57] ترتيب توبولوجي فشل — أبجدي: " + str(_fk_err))
+    total = 0
+    for _t in _order:
+        rows = deps.get(_t) or []
+        _sv = "sv_dep_" + "".join(c if c.isalnum() else "_" for c in _t)[:40]
+        try:
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name=%s", (_t,))
+            _cols = {r[0] for r in cur.fetchall()}
+            if not _cols:
+                continue
+            _keys = [k for k in rows[0].keys() if k in _cols]
+            if not _keys:
+                continue
+            _colsql = ", ".join('"' + k + '"' for k in _keys)
+            _ph = ", ".join(["%s"] * len(_keys))
+            cur.execute("SAVEPOINT " + _sv)
+            try:
+                cur.execute('DELETE FROM "' + _t + '"')  # صفوف بمرجع NULL نجات من الـCASCADE — لا تكرار
+                cur.executemany('INSERT INTO "' + _t + '" (' + _colsql + ') VALUES (' + _ph + ')',
+                                [tuple(r.get(k) for k in _keys) for r in rows])
+                total += len(rows)
+            except Exception as _te:
+                cur.execute("ROLLBACK TO SAVEPOINT " + _sv)
+                logging.warning("[BACKUP][v57] جدول " + _t + ": تخطي " + str(len(rows)) + " صف — " + str(_te))
+            cur.execute("RELEASE SAVEPOINT " + _sv)
+            # ── v57: تصفير التسلسل داخل savepoint خاص — أي خطأ هنا (عمود id
+            # غائب كما جرى مع notification_reads) كان يجهض المعاملة كلها
+            # بصمت ويُسقط كل الجداول التالية، لأن except: pass يبتلع الخطأ
+            # دون تراجع عن حالة الإجهاد في PostgreSQL.
+            try:
+                cur.execute("SAVEPOINT " + _sv + "_seq")
+                try:
+                    cur.execute("SELECT pg_get_serial_sequence(%s, 'id')", (_t,))
+                    _seq = cur.fetchone()[0]
+                    if _seq and "id" in _cols:
+                        cur.execute('SELECT COALESCE(MAX(id), 0) FROM "' + _t + '"')
+                        _mx = cur.fetchone()[0] or 0
+                        cur.execute("SELECT setval(%s, %s, %s)", (_seq, _mx if _mx > 0 else 1, _mx > 0))
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT " + _sv + "_seq")
+                cur.execute("RELEASE SAVEPOINT " + _sv + "_seq")
+            except Exception:
+                pass
+        except Exception as _ce:
+            logging.warning("[BACKUP][v57] جدول " + _t + ": فشل تجهيز — " + str(_ce))
+    return total
 
 
 def db_export_backup():
@@ -2175,6 +2299,29 @@ def db_export_backup():
                 _pwa_sess = [dict(r) for r in cur.fetchall()]
             except Exception:
                 conn.rollback()
+        # ── v57: جداول المستخدمين الديناميكية — التشات والمصروفات والصلاحيات
+        # وOTP وتذكر الدخول وكل جدول مرتبط بـ users بمفتاح أجنبي، يُصدَّر
+        # ديناميكياً من المخطط نفسه فلا تنحرف قائمة يدوية مرة أخرى،
+        # والفحص الذاتي لن يرى فجوة مستقبلاً إلا إن فشل التصدير فعلاً.
+        _user_deps = {}
+        try:
+            _skip = {"products", "transactions", "users", "invoices", "invoice_items",
+                     "extraction_requests", "incoming_orders", "pending_deliveries",
+                     "pwa_auth", "pwa_registrations", "pwa_sessions"}
+            _cur2 = conn.cursor()
+            for _t in _db_v180_user_dep_tables():
+                if _t in _skip:
+                    continue
+                try:
+                    _cur2.execute('SELECT * FROM "' + _t + '" ORDER BY 1')
+                    _dc = [d[0] for d in _cur2.description]
+                    _user_deps[_t] = [dict(zip(_dc, r)) for r in _cur2.fetchall()]
+                except Exception:
+                    conn.rollback()
+                    _user_deps[_t] = []
+            _cur2.close()
+        except Exception:
+            conn.rollback()
         conn.commit()
         return {
             "version": 6,
@@ -2191,6 +2338,8 @@ def db_export_backup():
             "pwa_auth": _pwa_auth,
             "pwa_registrations": _pwa_regs,
             "pwa_sessions": _pwa_sess,
+            # v57: كل جداول users الديناميكية (تشات/مصروفات/صلاحيات/OTP...)
+            "user_deps": _user_deps,
         }
     except Exception:
         conn.rollback()
@@ -2273,6 +2422,27 @@ def db_import_backup(data):
             cur.execute("DELETE FROM pending_deliveries")
             cur.execute("DELETE FROM transactions")
             cur.execute("DELETE FROM products")
+            # ── v57: تفريغ وقائي لجداول المستخدمين قبل حذف users — حذف users
+            # يفترض CASCADE على كل ما يعتمد عليه؛ لو كان قيد جدول ما بلا
+            # CASCADE لفشل الحذف وأسقط الاستيراد كله (اكتشافه الاختبار
+            # الدائري). أحداث التوفير تجعل الحذف ناجحاً مهما كان المخطط،
+            # والاستعادة تعيد الصفوف من user_deps وجداول المصادقة لاحقاً.
+            try:
+                for _pdt in _db_v180_user_dep_tables():
+                    if _pdt in ("transactions", "invoices", "invoice_items",
+                                "extraction_requests", "incoming_orders",
+                                "pending_deliveries", "unshipped_sales",
+                                "products", "users"):
+                        continue  # تُفرَّغ صراحة في مكانها أعلاه
+                    _psv = "sv_pre_" + "".join(c if c.isalnum() else "_" for c in _pdt)[:40]
+                    cur.execute("SAVEPOINT " + _psv)
+                    try:
+                        cur.execute('DELETE FROM "' + _pdt + '"')
+                    except Exception:
+                        cur.execute("ROLLBACK TO SAVEPOINT " + _psv)
+                    cur.execute("RELEASE SAVEPOINT " + _psv)
+            except Exception as _pre_err:
+                logging.warning("[BACKUP][v57] تفريغ وقائي فشل: " + str(_pre_err))
             cur.execute("DELETE FROM users")
 
             # ── Users: dedup by telegram_id + بناء خريطة إعادة الربط ──
@@ -2484,6 +2654,7 @@ def db_import_backup(data):
         # ── v180: استعادة جداول المصادقة (كلمات المرور + الجلسات + التسجيلات) ──
         # القديم: DELETE FROM users كان يمسحها عبر CASCADE بلا رحمة ولا استعادة
         # فلا يستطيع أحد الدخول بعد أي استيراد إلا بإنشاء حساب جديد.
+        cur = conn.cursor()  # v57: المؤشر الأصلي أُغلق مع نهاية with-block — مؤشر جديد على نفس المعاملة، والدلالة والذرّية كما هما
         cur.execute("SELECT id FROM users")
         _restored_uids = set(_r[0] for _r in cur.fetchall())
         _pwa_auth_src = data.get("pwa_auth")
@@ -2497,6 +2668,7 @@ def db_import_backup(data):
         _pwa_auth_n = _v180_pwa_table_insert(cur, "pwa_auth", _pwa_auth_src, _restored_uids)
         _pwa_sess_n = _v180_pwa_table_insert(cur, "pwa_sessions", _pwa_sess_src, _restored_uids)
         _pwa_regs_n = _v180_pwa_table_insert(cur, "pwa_registrations", _pwa_regs_src, _restored_uids, null_link=True)
+        _deps_n = _db_v57_restore_user_deps(cur, data)  # v57: كل جداول users الديناميكية
 
         conn.commit()
 
@@ -2510,6 +2682,8 @@ def db_import_backup(data):
             summary += "\n  💻 الجلسات المستعادة: " + str(_pwa_sess_n)
         if _pwa_regs_n > 0:
             summary += "\n  🗂 التسجيلات المستعادة: " + str(_pwa_regs_n)
+        if _deps_n > 0:
+            summary += "\n  🔗 جداول مرتبطة بالمستخدمين المستعادة: " + str(_deps_n) + " صف"
         if len(invoices) > 0:
             summary += "\n  الفواتير: " + str(len(invoices))
         if len(invoice_items) > 0:
@@ -7699,14 +7873,14 @@ async def backup_command(update, context):
         from telegram import InputFile
         backup = await asyncio.to_thread(db_export_backup)  # v72: خارج حلقة الأحداث
         _last_backup_data = backup
-        _backup_integrity_gaps = await asyncio.to_thread(db_v180_backup_integrity_check)  # v180: فحص ذاتي مع كل نسخة
+        _backup_integrity_gaps = await asyncio.to_thread(db_v180_backup_integrity_check, backup)  # v57: فحص النسخة الفعلية نفسها
         # v75: بناء JSON في خيط منفصل وبلا indent — لا تجميد ولا ملف ضخم
         json_str = await asyncio.to_thread(
             lambda: json.dumps(backup, ensure_ascii=False, default=str)
         )
         file_bytes = json_str.encode("utf-8")
         del json_str
-        _gap_note = ("\n⚠️ فحص ذاتي [56]: جداول مرتبطة بالمستخدمين خارج النسخة: " + ", ".join(_backup_integrity_gaps)) if _backup_integrity_gaps else ""  # v180
+        _gap_note = ("\n⚠️ فحص ذاتي [" + PWA_VERSION + "]: جداول مرتبطة بالمستخدمين خارج النسخة: " + ", ".join(_backup_integrity_gaps)) if _backup_integrity_gaps else ""  # v180
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 استيراد هذه النسخة", callback_data="restore_last")],
@@ -7723,6 +7897,7 @@ async def backup_command(update, context):
                 + "\n📤 طلبات الاستخراج: " + str(len(backup.get("extraction_requests", [])))
                 + "\n🔐 كلمات الدخول: " + str(len(backup.get("pwa_auth", [])))
                 + "\n💻 الجلسات: " + str(len(backup.get("pwa_sessions", [])))
+                + "\n🔗 جداول المستخدمين: " + str(len(backup.get("user_deps", {}))) + " جدول"
                 + _gap_note
                 + "\n💡 حفظ الملف. لإستيراد البيانات أرسله للبوت."),
             reply_markup=keyboard,
@@ -12978,7 +13153,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "56"  # v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "57"  # v181 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -37016,7 +37191,7 @@ if __name__ == "__main__":
                  + " + neg-qty + activity-chart"
                  + " + session-guard + top-wording + users-ui + invoice-bridge + invoice-boxes + invoice-dl-fix + invoice-dl-browser + icon-fallback + invoice-swap + swap-general + app-mic + native-ui + schema-guard + exp-home + exp-vault"
                  + " + chips-free + mig-guard + exp-name-fix + exp-flip + pin-clean + add-wizard + prod-factory + anon-notify + prod-size + cat-sizes + pending-del + workers-sal + smart-search + purge-del + pages-domain + size-precision-search + desktop-sidebar + pages-boot-pro + truth-log + role-perms-ui + smart-resolve + perms-uid + reminder-bounds + broadcast-uid + nav-perms"
-                 + " + users-revert39 + google-merge40 + sso-bridge41 + google-claim42 + google-direct43 + self-update-v168) =====")
+                 + " + users-revert39 + google-merge40 + sso-bridge41 + google-claim42 + google-direct43 + self-update-v168 + backup-all-deps57) =====")
     logging.info("[SUPABASE] storage mode: "
                  + ("supabase bucket '" + SUPABASE_BUCKET + "'" if _supabase_enabled()
                     else "db (legacy BYTEA) — ضع SUPABASE_URL و SUPABASE_SERVICE_KEY للتفعيل"))
@@ -37178,7 +37353,7 @@ if __name__ == "__main__":
             try:
                 _backup_integrity_gaps = await asyncio.to_thread(db_v180_backup_integrity_check)
                 if _backup_integrity_gaps:
-                    _gap_msg = ("⚠️ فحص النسخ الاحتياطي الذاتي [56]: جداول مرتبطة بالمستخدمين غير مشمولة بالنسخة الاحتياطية:\n"
+                    _gap_msg = ("⚠️ فحص النسخ الاحتياطي الذاتي [" + PWA_VERSION + "]: جداول مرتبطة بالمستخدمين غير مشمولة بالنسخة الاحتياطية:\n"
                                 + ", ".join(_backup_integrity_gaps)
                                 + "\nأضفها إلى db_export_backup فوراً — هذه الرسالة تعني أن استيراداً مستقبلياً قد يمسحها.")
                     for _oid in list(OWNER_IDS)[:3]:
