@@ -382,6 +382,7 @@ BACKUP_CHANNEL_ID = os.getenv("BACKUP_CHANNEL_ID", "")  # Telegram channel ID fo
 
 _last_backup_data = None  # keeps latest backup dict in memory
 _startup_restore_notice = None  # رسالة استعادة تلقائية عند الإقلاع تُرسل للمدراء بعد تشغيل البوت
+_backup_integrity_gaps = []  # v180: نتائج الفحص الذاتي لشمول النسخة الاحتياطية (جداول مرتبطة بـ users)
 
 
 _raw_admin_ids = os.getenv("ADMIN_IDS", "")
@@ -2093,6 +2094,43 @@ def reject_user(telegram_id):
         raise
     finally:
         release_connection(conn)
+
+
+def db_v180_backup_integrity_check():
+    """v180: فحص ذاتي هيكلي — يسأل المخطط نفسه لا ذاكرة المطور.
+
+    الحادثة التي مسحت كلمات المرور والجلسات كانت «انحراف مخطط»: جداول مصادقة
+    أُضيفت لاحقاً ولم تدخل قائمة التصدير قط، وقيود CASCADE تعيش في المخطط
+    فلا تُرى من كود التصدير. هذا الفحص يجلب كل جدول مرتبط بـ users بمفتاح
+    أجنبي (pg_constraint) ويحذّر عن أي جدول خارج قائمة التصدير — فيصير
+    هذا النوع من الغياب إنذاراً آلياً عند الإقلاع ومع كل نسخة.
+    """
+    _exported = {"products", "transactions", "invoices", "invoice_items",
+                 "extraction_requests", "incoming_orders", "pending_deliveries",
+                 "pwa_auth", "pwa_registrations", "pwa_sessions"}
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT t.relname FROM pg_constraint c "
+                    "JOIN pg_class t ON t.oid = c.conrelid "
+                    "JOIN pg_class f ON f.oid = c.confrelid "
+                    "WHERE c.contype = 'f' AND f.relname = 'users' AND t.relname <> 'users'")
+                _deps = sorted(set(r[0] for r in cur.fetchall()))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            return []
+        finally:
+            release_connection(conn)
+        _gaps = [t for t in _deps if t not in _exported]
+        if _gaps:
+            logging.warning("[BACKUP][v180] جداول مرتبطة بـ users خارج النسخة الاحتياطية: " + ", ".join(_gaps))
+        return _gaps
+    except Exception as _e:
+        logging.error("[BACKUP][v180] integrity check failed: " + str(_e))
+        return []
 
 
 def db_export_backup():
@@ -7652,7 +7690,7 @@ async def callback_kick_handler(update, context):
 # ── Backup Command ─────────────────────────────────────
 
 async def backup_command(update, context):
-    global _last_backup_data
+    global _last_backup_data, _backup_integrity_gaps
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ للمديرين فقط.")
         return
@@ -7661,12 +7699,14 @@ async def backup_command(update, context):
         from telegram import InputFile
         backup = await asyncio.to_thread(db_export_backup)  # v72: خارج حلقة الأحداث
         _last_backup_data = backup
+        _backup_integrity_gaps = await asyncio.to_thread(db_v180_backup_integrity_check)  # v180: فحص ذاتي مع كل نسخة
         # v75: بناء JSON في خيط منفصل وبلا indent — لا تجميد ولا ملف ضخم
         json_str = await asyncio.to_thread(
             lambda: json.dumps(backup, ensure_ascii=False, default=str)
         )
         file_bytes = json_str.encode("utf-8")
         del json_str
+        _gap_note = ("\n⚠️ فحص ذاتي [56]: جداول مرتبطة بالمستخدمين خارج النسخة: " + ", ".join(_backup_integrity_gaps)) if _backup_integrity_gaps else ""  # v180
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 استيراد هذه النسخة", callback_data="restore_last")],
@@ -7681,6 +7721,9 @@ async def backup_command(update, context):
                 + "\n🧾 الفواتير: " + str(len(backup.get("invoices", [])))
                 + "\n🚚 طلبات التوريد: " + str(len(backup.get("incoming_orders", [])))
                 + "\n📤 طلبات الاستخراج: " + str(len(backup.get("extraction_requests", [])))
+                + "\n🔐 كلمات الدخول: " + str(len(backup.get("pwa_auth", [])))
+                + "\n💻 الجلسات: " + str(len(backup.get("pwa_sessions", [])))
+                + _gap_note
                 + "\n💡 حفظ الملف. لإستيراد البيانات أرسله للبوت."),
             reply_markup=keyboard,
         )
@@ -37113,7 +37156,7 @@ if __name__ == "__main__":
         health_app.router.add_get("/health", _health_handler)
         register_pwa_routes(health_app)
         async def on_startup(aio_app):
-            global _startup_restore_notice, TG_APP
+            global _startup_restore_notice, TG_APP, _backup_integrity_gaps
             _pwa_set_main_loop()  # v40: تثبيت الحلقة الرئيسية مبكراً للجدولة من الخيوط
             await tg_app.initialize()
             TG_APP = tg_app  # لإشعارات الويب من مسارات PWA
@@ -37130,6 +37173,21 @@ if __name__ == "__main__":
                     except Exception:
                         pass
                 _startup_restore_notice = None
+            # v180: فحص ذاتي هيكلي عند الإقلاع — انحراف المخطط (جدول مرتبط بـ
+            # users خارج قائمة التصدير) يصير إنذاراً آلياً للمالك فوراً.
+            try:
+                _backup_integrity_gaps = await asyncio.to_thread(db_v180_backup_integrity_check)
+                if _backup_integrity_gaps:
+                    _gap_msg = ("⚠️ فحص النسخ الاحتياطي الذاتي [56]: جداول مرتبطة بالمستخدمين غير مشمولة بالنسخة الاحتياطية:\n"
+                                + ", ".join(_backup_integrity_gaps)
+                                + "\nأضفها إلى db_export_backup فوراً — هذه الرسالة تعني أن استيراداً مستقبلياً قد يمسحها.")
+                    for _oid in list(OWNER_IDS)[:3]:
+                        try:
+                            await tg_app.bot.send_message(chat_id=_oid, text=_gap_msg)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
