@@ -903,6 +903,7 @@ img{-webkit-user-drag:none;user-select:none}</style>
 <!-- التطبيق -->
 <div id="app">
   <header>
+    <button id="btnDw" title="القائمة" aria-label="فتح القائمة">☰</button>
     <img src="/icon.jpg" alt="">
     <div class="t"><b>مخزون السيراميك</b><span id="hUser">—</span></div>
     <div class="gswrap"><span class="gsic">🔍</span><input id="gSearch" class="ginp" type="search" placeholder="ابحث عن سلعة أو مقاس… ثم Enter" autocomplete="off"></div>
@@ -4445,7 +4446,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "73";
+const APP_VER = "74";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -11185,6 +11186,150 @@ document.addEventListener("click", function (ev) {
   };
 })();
 
+</script>
+
+<!-- v197: درج التنقل الجانبي — نمط لوحة المدير: تجميع الشاشات الحقيقية + الملف والدور
+     + تحميل تطبيق أندرويد بأحدث إصدار (app_version.json عامة) + خروج.
+     بلا أي عنصر مالي أو وحدة أجنبية (قرار المالك) — الألوان من متغيرات الثيم حصراً
+     فترث الثيمات الـ16 والليلي تلقائياً، وبوابة الصلاحيات مرآة حية للتبويبات. -->
+<style id="dwStyle">
+#dwBack{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:60;opacity:0;pointer-events:none;transition:opacity .22s}
+#dwBack.on{opacity:1;pointer-events:auto}
+#drawer{position:fixed;top:0;bottom:0;right:0;width:min(80vw,320px);z-index:61;background:var(--card);
+  box-shadow:-14px 0 34px rgba(0,0,0,.28);transform:translateX(102%);transition:transform .25s ease;
+  display:flex;flex-direction:column;overscroll-behavior:contain}
+#drawer.on{transform:none}
+.dwHead{display:flex;align-items:center;gap:10px;padding:13px 14px;background:linear-gradient(135deg,var(--h1),var(--h2));color:#fff}
+html[data-theme="dark"] .dwHead{background:#111214;border-bottom:1px solid var(--goldline)}
+.dwHead img{width:36px;height:36px;border-radius:10px;object-fit:cover;border:1px solid rgba(255,255,255,.5)}
+.dwHead .tt{flex:1;min-width:0}
+.dwHead .tt b{display:block;font-size:14.5px}
+.dwHead .tt span{display:block;font-size:11.5px;opacity:.85}
+.dwHead button{background:rgba(255,255,255,.16);border:none;color:#fff;border-radius:10px;width:32px;height:32px;font-size:14px;cursor:pointer;flex:none}
+html[data-theme="dark"] .dwHead button{background:var(--chip)}
+.dwUser{display:flex;align-items:center;gap:11px;padding:12px 16px;border-bottom:1px solid var(--chip)}
+.dwAva{width:38px;height:38px;border-radius:50%;background:var(--brandsoft);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;flex:none}
+.dwUser b{display:block;font-size:14px;color:var(--ink)}
+.dwUser span{display:block;font-size:11.5px;color:var(--mut)}
+.dwBody{flex:1;overflow-y:auto;padding:4px 0 16px}
+.dwGrp{font-size:11px;font-weight:800;color:var(--mut);margin:12px 18px 4px}
+.dwIt{display:flex;align-items:center;gap:12px;margin:2px 10px;padding:11px 12px;border:none;background:none;
+  font:inherit;font-size:14.5px;font-weight:700;color:var(--ink);text-align:right;cursor:pointer;
+  border-radius:12px;width:calc(100% - 20px);text-decoration:none;box-sizing:border-box}
+.dwIt .ic{font-size:19px;line-height:1;flex:none}
+.dwIt:hover{background:var(--chip)}
+.dwIt.on{background:var(--brandsoft);color:var(--brand)}
+.dwIt small{display:block;font-size:10.5px;color:var(--mut);font-weight:600;margin-top:2px}
+.dwIt.dwOut{color:var(--bad)}
+body.dwLock{overflow:hidden}
+@media (prefers-reduced-motion:reduce){#drawer,#dwBack{transition:none}}
+</style>
+<div id="dwBack"></div>
+<aside id="drawer" role="navigation" aria-label="قائمة التنقل الجانبية">
+  <div class="dwHead">
+    <button id="dwClose" title="إغلاق" aria-label="إغلاق القائمة">✕</button>
+    <img src="/icon.jpg" alt="">
+    <div class="tt"><b>مخزون السيراميك</b><span>لوحة التحكم</span></div>
+  </div>
+  <div class="dwUser">
+    <span class="dwAva" id="dwAva">—</span>
+    <div><b id="dwName">—</b><span id="dwRole">—</span></div>
+  </div>
+  <div class="dwBody">
+    <div class="dwGrp">القائمة</div>
+    <button class="dwIt" data-v="v-home"><span class="ic">🏠</span>الرئيسية</button>
+    <button class="dwIt" data-v="v-inv"><span class="ic">📦</span>المخزون</button>
+    <button class="dwIt" data-v="v-mov"><span class="ic">📋</span>الحركة</button>
+    <button class="dwIt" data-v="v-ord"><span class="ic">🚚</span>الطلبات</button>
+    <button class="dwIt" data-v="v-oil"><span class="ic">🧾</span>فاتورة</button>
+    <button class="dwIt" data-v="v-users"><span class="ic">👥</span>المستخدمون</button>
+    <div class="dwGrp">أخرى</div>
+    <button class="dwIt" id="dwSet"><span class="ic">⚙️</span>الإعدادات والملف الشخصي</button>
+    <div class="dwGrp">التطبيق</div>
+    <a class="dwIt" id="dwApk" href="#" download="app-latest.apk"><span class="ic">🤖</span><span>تحميل تطبيق أندرويد<small id="dwApkV"></small></span></a>
+    <button class="dwIt dwOut" id="dwOut"><span class="ic">🚪</span>تسجيل الخروج</button>
+  </div>
+</aside>
+<script id="dwScript">
+(function(){
+  "use strict";
+  var dw=document.getElementById("drawer"),back=document.getElementById("dwBack");
+  if(!dw||!back||dw.getAttribute("data-dw-init"))return;
+  dw.setAttribute("data-dw-init","1");
+  function q(s){return document.querySelector(s)}
+  function rootUrl(){try{var r=(window.CERAM_API_ROOT||"").replace(/\/+$/,"");return r||location.origin}catch(e){return location.origin}}
+  function fillUser(){
+    var u={};try{u=(typeof S!=="undefined"&&S&&S.user)||{}}catch(e){}
+    var n=u.name||"—",r=u.role_label||u.role||"";
+    document.getElementById("dwName").textContent=n;
+    document.getElementById("dwRole").textContent=r;
+    document.getElementById("dwAva").textContent=(n&&n!=="—")?n.trim().charAt(0):"—";
+  }
+  var apkDone=false;
+  function fillApk(){
+    var a=document.getElementById("dwApk");if(!a)return;
+    a.href=rootUrl()+"/app_latest.apk";
+    if(apkDone)return;apkDone=true;
+    var b=document.getElementById("dwApkV");
+    try{fetch(rootUrl()+"/app_version.json",{cache:"no-store"})
+      .then(function(r){return r.ok?r.json():null})
+      .then(function(j){if(j&&(j.versionName||j.versionCode)){b.textContent="أحدث إصدار: "+(j.versionName||("v"+j.versionCode))}})
+      .catch(function(){})}catch(e){}
+  }
+  /* بوابة الصلاحيات: مرآة حية للتبويبات (applyPerms يضبط style.display للتبويب) */
+  function syncPerms(){
+    ["v-home","v-inv","v-mov","v-ord","v-oil","v-users"].forEach(function(v){
+      var tb=q('.tabs [data-v="'+v+'"]'),it=dw.querySelector('[data-v="'+v+'"]');
+      if(!tb||!it)return;
+      var hid=tb.hidden||tb.style.display==="none";
+      it.style.display=hid?"none":"";
+    });
+  }
+  function syncActive(v){
+    if(!v){var t=q('.tabs button.on');v=t?t.getAttribute("data-v"):null}
+    var items=dw.querySelectorAll(".dwIt");
+    for(var i=0;i<items.length;i++){
+      var x=items[i];
+      if(x.getAttribute("data-v"))x.classList.toggle("on",x.getAttribute("data-v")===v);
+    }
+  }
+  function open(){
+    syncPerms();syncActive(null);fillUser();fillApk();
+    document.body.classList.add("dwLock");
+    requestAnimationFrame(function(){dw.classList.add("on");back.classList.add("on")});
+    try{document.getElementById("dwClose").focus()}catch(e){}
+  }
+  function close(){
+    dw.classList.remove("on");back.classList.remove("on");
+    document.body.classList.remove("dwLock");
+  }
+  /* التنقل = نفس switchView العامة (يحمّل الشاشة ويضبط التبويب النشط) */
+  dw.addEventListener("click",function(e){
+    var it=e.target.closest?e.target.closest("[data-v]"):null;
+    if(!it||!dw.contains(it))return;
+    var v=it.getAttribute("data-v");
+    try{if(typeof switchView==="function")switchView(v)}catch(err){}
+    syncActive(v);close();
+  });
+  document.getElementById("dwSet").addEventListener("click",function(){
+    try{if(typeof switchView==="function")switchView("v-set")}catch(e){}
+    syncActive(null);close();
+  });
+  document.getElementById("dwOut").addEventListener("click",function(){
+    close();
+    setTimeout(function(){try{if(typeof doLogout==="function")doLogout()}catch(e){}},120);
+  });
+  var hb=document.getElementById("btnDw");
+  if(hb)hb.addEventListener("click",function(){dw.classList.contains("on")?close():open()});
+  document.getElementById("dwClose").addEventListener("click",close);
+  back.addEventListener("click",close);
+  document.addEventListener("keydown",function(e){if(e.key==="Escape"&&dw.classList.contains("on"))close()});
+  /* مزامنة العنصر النشط عندما يتنقل المستخدم من التبويبات السفلية */
+  document.addEventListener("click",function(e){
+    var b=e.target.closest?e.target.closest('.tabs [data-v]'):null;
+    if(b)syncActive(b.getAttribute("data-v"));
+  },true);
+})();
 </script>
 </body>
 </html>
