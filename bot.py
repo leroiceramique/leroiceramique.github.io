@@ -493,45 +493,24 @@ DB_CONNECT_KWARGS = {
     "keepalives_count": 3,
 }
 
-# ═══ v198: انتظار آمن عند ازدحام الاتصالات — بدل إعادة بناء الـPool ═══
-# المشكلة المُصلَحة: عند فشل الحصول على اتصال كان get_connection() يعيد بناء
-# الـPool كاملاً، وكان init_pool() يُغلق القديم بـ closeall() — وهذا يقتل
-# اتصالات عمليات أخرى ما تزال جارية في منتصف معاملاتها (مخزون/فواتير) فتتفشى
-# أخطاء «connection already closed» وقد تُفقد معاملات جارية.
-# الحل: انضغال الـPool → انتظار محدود على عودة اتصال (شرط يُبلّغ من
-# release_connection)، والاتصال الميت → يُرمى هو وحده، ولا إعادة بناء
-# في مسار الحصول على اتصال إطلاقاً، ولا إغلاق قسري لأي Pool حي.
-GETCONN_WAIT_STEP = 1.0        # خطوة كل استيقاظ من الانتظار (ثانية)
-GETCONN_TOTAL_WAIT = 30.0      # سقف الانتظار الكلي قبل إعلان فشل نظيف (ثانية)
-_conn_return_cv = threading.Condition()   # يُبلّغ عند عودة أي اتصال للـPool
-_conn_owner = {}               # id(اتصال) → (الاتصال، الـPool الذي أُخرج منه)
-_conn_owner_lock = threading.Lock()
-
-
-def _notify_conn_returned():
-    """v198: إيقاظ الناقلين المنتظرين على اتصال حر بعد عودة اتصال للـPool."""
-    try:
-        with _conn_return_cv:
-            _conn_return_cv.notify_all()
-    except Exception:
-        pass
-
 
 def init_pool(url=None):
     """Create connection pool for the given URL (or active DB).
-    Thread-safe: guarded by a dedicated lock.
+    Thread-safe: guarded by a dedicated lock, and any previous pool is fully
+    drained first so repeated calls never leak connections.
     v74: ThreadedConnectionPool إلزامي — توثيق psycopg2 يمنع مشاركة
     SimpleConnectionPool بين الخيوط (تزامن getconn/putconn يُتلف دفاتر
-    الـPool تدريجياً → فشل شامل حتى /start يتشافى فقط بإعادة تشغيل).
-    v198 إصلاح جوهري: لم يعد يُغلق الـPool القديم بـ closeall() — الإغلاق
-    كان يقتل اتصالات عمليات أخرى جارية في منتصف معاملاتها. الآن: استبدال
-    مرجعي فقط؛ الاتصالات المشغولة تكمل عملها وتعود عبر release_connection()
-    إلى Poolها الأصلي بخريطة الملكية، والخاملة تُغلقها آلية الحسابات (GC)
-    عند وصول الـPool القديم إلى صفر مراجع."""
+    الـPool تدريجياً → فشل شامل حتى /start يتشافى فقط بإعادة تشغيل)."""
     global _pool
     dsn = url or get_active_db_url()
     with _pool_creation_lock:
-        # v198: بلا closeall() — استبدال مرجعي آمن فقط، اتصالات الغير محمية
+        old = _pool
+        _pool = None
+        if old is not None:
+            try:
+                old.closeall()
+            except Exception:
+                pass
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1, maxconn=15, dsn=dsn, **DB_CONNECT_KWARGS   # v157: 5→15 — بوت + 116 مسار ويب متزامنة
         )
@@ -540,133 +519,79 @@ def init_pool(url=None):
 
 def get_connection():
     """v87: اتصال حي من الـ Pool للقاعدة الوحيدة — لا تبديل تلقائي إطلاقاً.
-    v198: عند انضغال الـPool (كل الاتصالات مشغولة) ينتظر بأمان حتى عودة
-    اتصال بدل إعادة بناء الـPool التي كانت تُسقط اتصالات المستخدمين الآخرين؛
-    وعند هبوط حقيقي للقاعدة: RuntimeError نظيف بعد السقف الزمني مع رفع
-    علم إشعار المالك (يُرسل مرة واحدة لكل حادثة).
-    - الاتصال الميت يُرمى هو وحده عبر putconn(close=True) — دفاتر الـPool
-      تبقى سليمة بلا تسريب ولا يمسّ بقية الاتصالات.
-    - لا إعادة بناء للـPool في مسار الحصول على اتصال نهائياً."""
-    global _pool
-    deadline = time.monotonic() + GETCONN_TOTAL_WAIT
+    عند الفشل المتكرر: إعادة بناء Pool مرة واحدة ثم RuntimeError مع رفع
+    علم إشعار المالك (يُرسل عبر keep-alive مرة واحدة لكل حادثة).
+
+    Fixes over the previous version:
+    - init_pool() failure at startup now triggers failover instead of crashing.
+    - Dead pooled connections are discarded via putconn(close=True) so the
+      pool's internal bookkeeping stays consistent (no more leaked slots).
+    - Brief backoff between attempts absorbs transient bursts/exhaustion."""
+    global _pool, _active_db_index
     last_err = None
-    _wait_logged = False
-    while True:
-        pool = _pool
-        # 1) تهيئة كسولة للـPool عند أول طلب
-        if pool is None:
-            try:
-                pool = init_pool()
-            except Exception as e:
-                last_err = e
-                if time.monotonic() >= deadline:
-                    _mark_db_down()
-                    raise RuntimeError(
-                        "No database connection available: " + str(last_err))
-                time.sleep(0.2)
-                continue
-        # 2) أخذ اتصال خام — الانضغال يُعالج بالانتظار لا بإعادة البناء
+    for attempt in range(3):
         try:
-            conn = pool.getconn()
-        except psycopg2.pool.PoolError as pool_err:
-            if pool.closed:
-                # Pool مغلق (تهيئة بديلة جارية) — أعد المحاولة بالمرجع الجديد
-                if time.monotonic() >= deadline:
-                    _mark_db_down()
-                    raise RuntimeError(
-                        "No database connection available: pool closed: "
-                        + str(pool_err))
-                time.sleep(0.05)
-                continue
-            # v198: انضغال الـPool → انتظار عودة اتصال من عملية أخرى،
-            # بدل إعادة البناء التي تُغلق اتصالات الغير الجارية
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                logging.error(
-                    "[DB] Pool busy " + str(GETCONN_TOTAL_WAIT) + "s — refusing to "
-                    "rebuild (protects in-flight operations); failing this request safely")
-                raise RuntimeError(
-                    "اتصالات قاعدة البيانات (" + str(pool.maxconn) + ") كلها مشغولة منذ "
-                    + str(GETCONN_TOTAL_WAIT) + " ثانية — تم الانتظار الآمن بدل إعادة "
-                    "بناء الـPool، أعد المحاولة بعد لحظات")
-            if not _wait_logged:
-                _wait_logged = True
-                logging.warning(
-                    "[DB] Pool exhausted (" + str(pool.maxconn) + " conns) — waiting "
-                    "for a release instead of rebuilding the pool")
-            with _conn_return_cv:
-                _conn_return_cv.wait(timeout=min(GETCONN_WAIT_STEP, remaining))
-            continue
-        except Exception as e:
-            # فشل فتح اتصال جديد (هبوط شبكة/قاعدة) — انتظار قصير وإعادة
-            last_err = e
-            if time.monotonic() >= deadline:
-                _mark_db_down()
-                raise RuntimeError(
-                    "No database connection available: " + str(last_err))
-            time.sleep(0.2)
-            continue
-        # 3) فحص صحة الاتصال وتعيين إعدادات الجلسة
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.execute("SET statement_timeout = 15000")  # v73
-                cur.execute("SET idle_in_transaction_session_timeout = 30000")
-                cur.execute("SET TIME ZONE 'Africa/Algiers'")
-            with _conn_owner_lock:
-                _conn_owner[id(conn)] = (conn, pool)
-            _mark_db_ok()
-            return conn
-        except Exception as e:
-            # اتصال ميت → نرميه هو وحده عبر واجهة الـPool (دفاتر سليمة
-            # بلا تسريب) ثم نعيد المحاولة باتصال آخر — بلا مسّ للبقية
+            if _pool is None:
+                init_pool()
+            conn = _pool.getconn()
             try:
-                pool.putconn(conn, close=True)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.execute("SET statement_timeout = 15000")  # v73
+                    cur.execute("SET idle_in_transaction_session_timeout = 30000")
+                    cur.execute("SET TIME ZONE 'Africa/Algiers'")
+                _mark_db_ok()
+                return conn
             except Exception:
+                # connection is dead → return it CLOSED through the pool API
                 try:
-                    conn.close()
+                    _pool.putconn(conn, close=True)
                 except Exception:
-                    pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                raise
+        except Exception as e:
             last_err = e
-            if time.monotonic() >= deadline:
-                _mark_db_down()
-                raise RuntimeError(
-                    "No healthy database connection available: " + str(last_err))
-            time.sleep(0.05)
-            continue
+            logging.warning(
+                "[DB] get_connection attempt " + str(attempt + 1) + "/3 failed: "
+                + str(e)[:150]
+            )
+            time.sleep(0.2 * (attempt + 1))
+    # Last resort: recreate current pool
+# Last resort: recreate current pool (single-DB or all multi-DBs failed)
+    logging.warning("[DB] Recreating pool for current DB...")
+    try:
+        init_pool()
+        conn = _pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.execute("SET statement_timeout = 15000")  # v73
+            cur.execute("SET idle_in_transaction_session_timeout = 30000")
+            cur.execute("SET TIME ZONE 'Africa/Algiers'")
+        _mark_db_ok()
+        return conn
+    except Exception as e:
+        _mark_db_down()
+        raise RuntimeError(
+            "No database connection available: " + str(last_err) + " / " + str(e)
+        )
 
 
 def release_connection(conn):
-    """v198: إعادة الاتصال إلى الـPool الذي أُخرج منه (وليس الـPool الحالي
-    بالضرورة) ثم إيقاظ أي ناقل منتظر على الانضغال. الاتصال المغلق يُمرّر
-    عبر putconn(close=True) ليتحرّر قيده من الـPool بدفاتر سليمة بدل تسريب
-    الخانة كما كان يحدث سابقاً."""
     if conn is None:
         return
-    with _conn_owner_lock:
-        entry = _conn_owner.pop(id(conn), None)
-    owner = entry[1] if (entry is not None and entry[0] is conn) else None
-    target = owner if owner is not None else _pool
-    if target is None:
+    if conn.closed:
+        return
+    if _pool:
         try:
-            conn.close()
-        except Exception:
-            pass
-    elif conn.closed:
-        # مغلق مسبقاً — استرجاعه بمفتاح الإتلاف لتحرير الخانة بدفاتر سليمة
-        try:
-            target.putconn(conn, close=True)
-        except Exception:
-            pass
-    else:
-        try:
-            target.putconn(conn)
+            _pool.putconn(conn)
         except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
-    _notify_conn_returned()
 
 # ═══════════════════════════════════════════════════════════
 #  OFFLINE MODE + SYNC SYSTEM
@@ -3468,7 +3393,7 @@ def delete_transaction(tx_id, admin_tid):
                 "SELECT t.*, u.telegram_id AS user_tid "
                 "FROM transactions t "
                 "LEFT JOIN users u ON u.id = t.user_id "
-                "WHERE t.id = %s FOR UPDATE", (tx_id,))
+                "WHERE t.id = %s", (tx_id,))
             tx = cur.fetchone()
             if not tx:
                 return False, "❌ العملية غير موجودة."
@@ -3508,31 +3433,6 @@ def delete_transaction(tx_id, admin_tid):
                             cur.execute("DELETE FROM pending_deliveries WHERE id = %s", (pd["id"],))
                         else:
                             cur.execute("UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s", (new_pending, pd["id"]))
-            # v198: أثر الحذف أولاً — مَن حذف ومتى ولماذا، داخل نفس المعاملة:
-            # أي فشل في كتابة السجل يُبطل الحذف نفسه (الحذف بلا أثر مستحيل)
-            cur.execute(
-                "SELECT id, COALESCE(username, '') AS uname, "
-                "COALESCE(first_name, '') AS fname "
-                "FROM users WHERE telegram_id = %s", (admin_tid,))
-            _del_u = cur.fetchone()
-            _del_uid = (_del_u or {}).get("id")
-            _del_uname = ((_del_u or {}).get("uname")
-                          or (_del_u or {}).get("fname")
-                          or ("telegram:" + str(admin_tid)))
-            cur.execute("SELECT name FROM products WHERE id = %s", (tx["product_id"],))
-            _del_p = cur.fetchone()
-            _del_pname = str((_del_p or {}).get("name")
-                             or ("#" + str(tx["product_id"])))
-            _del_why = ("حذف حركة #" + str(tx_id) + " (" + str(tx["type"])
-                        + " " + str(tx["quantity"]) + ") سلعة: " + _del_pname[:80]
-                        + " — عكس الكمية"
-                        + ((" " + _undo_note.replace("\n", " ").strip()) if _undo_note else "")
-                        + " — عبر البوت")
-            cur.execute(
-                "INSERT INTO audit_log (user_id, username, action, details, ip) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (_del_uid, _del_uname[:200], "movement_delete",
-                 _del_why[:500], "telegram"))
             # Delete the transaction
             cur.execute("DELETE FROM transactions WHERE id = %s", (tx_id,))
         conn.commit()
@@ -8012,8 +7912,6 @@ async def backup_command(update, context):
         )
         file_bytes = json_str.encode("utf-8")
         del json_str
-        # v199: نسخة /backup اليدوية تُؤرشف على القرص أيضاً (أرشيف مؤرخ)
-        await asyncio.to_thread(_save_backup_to_disk, file_bytes)
         _gap_note = ("\n⚠️ فحص ذاتي [" + PWA_VERSION + "]: جداول مرتبطة بالمستخدمين خارج النسخة: " + ", ".join(_backup_integrity_gaps)) if _backup_integrity_gaps else ""  # v180
         now_str = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1))).strftime("%Y-%m-%d_%H-%M")
         keyboard = InlineKeyboardMarkup([
@@ -8201,17 +8099,9 @@ async def callback_restore_from_channel_handler(update, context):
 async def callback_restore_last_handler(update, context):
     query = update.callback_query
     await query.answer()
-    global _last_backup_data
-    _from_disk = False
     if not _last_backup_data:
-        # v199: بعد إعادة تشغيل الخادم تعود النسخة من أرشيف القرص المؤرخ
-        # (أحدث نسخة سليمة) بدل رسالة «لا توجد نسخة» حتى نسخة قادمة جديدة
-        _disk = await asyncio.to_thread(_load_backup_from_disk_any)
-        if not _disk:
-            await _safe_edit(query, "❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
-            return
-        _last_backup_data = _disk
-        _from_disk = True
+        await _safe_edit(query, "❌ لا توجد نسخة احتياطية محفوضة.\nاستخدم /backup لإنشاء واحدة.")
+        return
     data = _last_backup_data
     prod_count = len(data.get("products", []))
     tx_count = len(data.get("transactions", []))
@@ -8220,8 +8110,7 @@ async def callback_restore_last_handler(update, context):
         [InlineKeyboardButton("⚠️ تأكيد استيراد", callback_data="last_restore_confirm"),
          InlineKeyboardButton("❌ إلغاء", callback_data="last_restore_cancel")],
     ])
-    _src_tag = " (من أرشيف القرص)" if _from_disk else ""
-    text = ("💾 استيراد آخر نسخة احتياطية" + _src_tag + ":\n\n" + "📅 التاريخ: " + backup_date + "\n" + "📦 السلع: " + str(prod_count) + "\n" + "📜 العمليات: " + str(tx_count) + "\n\n" + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!")
+    text = "💾 استيراد آخر نسخة احتياطية:\n\n" + "📅 التاريخ: " + backup_date + "\n" + "📦 السلع: " + str(prod_count) + "\n" + "📜 العمليات: " + str(tx_count) + "\n\n" + "🔴 تنبيه: سيتم حذف البيانات الحالية واستبدالها!"
     await _safe_edit(query, text, reply_markup=keyboard)
 
 
@@ -13033,110 +12922,28 @@ def _send_backup_email_with_retry(backup_bytes, filename, max_attempts=3, delay_
     return False
 
 
-# v199: أرشيف نسخ يومية مؤرخة على القرص — الاحتفاظ بعدة نسخ بدل آخر نسخة فقط
-# القناة والبريد يحتفظان أصلاً بكل نسخة يومية كنسخة مستقلة (لا حذف في
-# _send_backup_to_channel) — هنا يكتمل الأرشيف المحلي للقراءة الفورية:
-# انضغاط آخر ملف أو تلفه لم يعد يعني فقدان كل ما على القرص.
-_BACKUP_DISK_DIR = "/tmp/backups"  # أرشيف النسخ المؤرخة (منفصل عن backup_pre_import.json)
-_BACKUP_DISK_KEEP = 7              # الاحتفاظ بأحدث 7 نسخ مؤرخة — الأقدم يُقتطع تلقائياً
-
-
-def _backup_dict_valid(data):
-    """v199: تحقق بنيوي خفيف من ملف النسخة قبل الاعتماد عليه — قاموس يحمل
-    جوهر النسخة (سلع/عمليات/مستخدمون قوائم، موجودة في كل إصدارات النسخ
-    2/3 وما بعدها). يمنع اعتماد ملف تالف أو مبتور بدل نسخة سليمة أقدم."""
-    if not isinstance(data, dict):
-        return False
-    for _k in ("products", "transactions", "users"):
-        if not isinstance(data.get(_k), list):
-            return False
-    return True
-
-
 def _save_backup_to_disk(backup_bytes):
-    """Save backup to local disk as a fallback. Returns True on success.
-    v199: إلى جانب «آخر نسخة» (backup_last.json — نفس المسار التقليدي
-    الذي تعتمده مسارات الاستعادة القائمة بلا أي تغيير) تُكتب نسخة مؤرخة
-    في /tmp/backups ويُقتطع الأقدم فوق _BACKUP_DISK_KEEP نسخاً."""
-    ok = False
+    """Save backup to local disk as a fallback. Returns True on success."""
     try:
         with open(_BACKUP_DISK_PATH, "wb") as f:
             f.write(backup_bytes)
         logging.info("[BACKUP] Saved to disk: " + _BACKUP_DISK_PATH)
-        ok = True
+        return True
     except Exception as e:
         logging.warning("[BACKUP] Disk save failed: " + str(e))
-    # v199: نسخة مؤرخة في الأرشيف المحلي + اقتطاع فوق الحد — فشلها لا يُسقط
-    # نجاح حفظ النسخة الأساسية (نسخة القرص الأساسية هي المرجع الأول)
-    try:
-        os.makedirs(_BACKUP_DISK_DIR, exist_ok=True)
-        _dt_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
-        _dated_name = "backup_" + _dt_now.strftime("%Y-%m-%d_%H-%M") + ".json"
-        with open(os.path.join(_BACKUP_DISK_DIR, _dated_name), "wb") as f:
-            f.write(backup_bytes)
-        _kept = [f for f in os.listdir(_BACKUP_DISK_DIR)
-                 if f.startswith("backup_") and f.endswith(".json")]
-        _kept.sort(reverse=True)  # الصيغة المؤرخة ترتب زمنياً — الأحدث أولًا
-        for _old in _kept[_BACKUP_DISK_KEEP:]:
-            try:
-                os.remove(os.path.join(_BACKUP_DISK_DIR, _old))
-            except Exception:
-                pass
-        logging.info("[BACKUP] Dated copy archived: " + _dated_name
-                     + " (أرشيف القرص: "
-                     + str(min(len(_kept), _BACKUP_DISK_KEEP)) + " نسخ)")
-    except Exception as e:
-        logging.warning("[BACKUP] Dated archive save failed (النسخة الأساسية محفوظة): " + str(e))
-    return ok
+        return False
 
 
 def _load_backup_from_disk():
-    """Load last backup from disk into memory. Used at startup.
-    v199: ملف تالف أو مبتور يُرفض (None) بدل اعتماده — والمسار الاحتياطي
-    الأوسع عبر _load_backup_from_disk_any الذي يمسح الأرشيف المؤرخ."""
+    """Load last backup from disk into memory. Used at startup."""
     try:
         if os.path.exists(_BACKUP_DISK_PATH):
             with open(_BACKUP_DISK_PATH, "rb") as f:
                 data = json.loads(f.read().decode("utf-8"))
-            if not _backup_dict_valid(data):
-                logging.warning("[BACKUP] Last-disk copy invalid (تالف/مبتور) — يُبحث في الأرشيف المؤرخ")
-                return None
             logging.info("[BACKUP] Loaded backup from disk (" + str(data.get("date", "?")) + ")")
             return data
     except Exception as e:
         logging.warning("[BACKUP] Disk load failed: " + str(e))
-    return None
-
-
-def _load_backup_from_disk_any():
-    """v199: أحدث نسخة سليمة من أرشيف القرص — النسخ المؤرخة (الأحدث أولًا)
-    ثم «آخر نسخة» التقليدية. كل مرشح يُفك ويُتحقق بنيوياً قبل الاعتماد،
-    والتالف يُتخطى تلقائياً فلا يُعتمد ملف ضائع أبداً. قراءة قرص فقط —
-    بلا أي استعلام قاعدة بيانات وبلا أي مساس بالبيانات الحية."""
-    _candidates = []
-    try:
-        if os.path.isdir(_BACKUP_DISK_DIR):
-            _names = [f for f in os.listdir(_BACKUP_DISK_DIR)
-                      if f.startswith("backup_") and f.endswith(".json")]
-            _names.sort(reverse=True)
-            _candidates += [os.path.join(_BACKUP_DISK_DIR, f) for f in _names]
-    except Exception:
-        pass
-    _candidates.append(_BACKUP_DISK_PATH)
-    for _path in _candidates:
-        try:
-            if not os.path.exists(_path):
-                continue
-            with open(_path, "rb") as f:
-                data = json.loads(f.read().decode("utf-8"))
-            if _backup_dict_valid(data):
-                logging.info("[BACKUP] Valid copy loaded: " + os.path.basename(_path)
-                             + " (" + str(data.get("date", "?")) + ")")
-                return data
-            logging.warning("[BACKUP] Skip invalid copy: " + os.path.basename(_path))
-        except Exception as e:
-            logging.warning("[BACKUP] Skip unreadable copy "
-                            + os.path.basename(_path) + ": " + str(e))
     return None
 
 
@@ -13231,6 +13038,11 @@ async def _daily_backup(bot, label="auto"):
 #  DAILY AUTO-BACKUP SCHEDULE (نسخة واحدة يومياً)
 # ═══════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════
+#  DAILY AUTO-BACKUP SCHEDULE (نسخة واحدة يومياً)
+# ═══════════════════════════════════════════════════════════
+
 def _try_claim_auto_backup(slot_key):
     """احتكار فتحة النسخة التلقائية ذرياً عبر قاعدة البيانات.
 
@@ -13239,9 +13051,15 @@ def _try_claim_auto_backup(slot_key):
     هكذا لا تُرسل النسخة مرتين حتى لو أُعيد تشغيل البوت داخل الساعة نفسها
     أو تشغّل أكثر من نسخة على Render — لأن آخر موعد ناجح محفوظ في DB
     وليس في الذاكرة.
+
+    v194: الإصلاح الجذري لنزيف الـPool — كانت الاتصال يُقرض ولا يُعاد إلى
+    الـPool أبدًا (لا finally)، وكل استدعاء كان يسرق مقعدًا من أصل 15 حتى
+    نفادهم الكامل وانهيار الخدمة كلها. الآن التحرير مضمون في finally على
+    كل المسارات (نجاح/فشل/استثناء).
     """
-    conn = get_connection()
+    conn = None
     try:
+        conn = get_connection()
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO bot_settings (key, value) VALUES (%s, %s) "
@@ -13254,9 +13072,21 @@ def _try_claim_auto_backup(slot_key):
         conn.commit()
         return won
     except Exception as e:
-        conn.rollback()
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
         logging.error("[BACKUP] Claim slot failed: " + str(e), exc_info=True)
         return False  # آمن: لا ترسل إلا والمطالبة حاسمة
+    finally:
+        if conn is not None:
+            release_connection(conn)
+
+
+# v194: مطالبة واحدة لكل فتحة (يوم_ساعة) لكل عملية — كانت الدورة تحاول كل
+# دقيقة طوال ساعة النسخ (60 مطالبة) وكل مطالبة كانت تسرب اتصالًا قبل v194
+_claimed_backup_slots = set()
 
 
 async def _daily_backup_loop(bot):
@@ -13266,6 +13096,7 @@ async def _daily_backup_loop(bot):
     - النافذة كامل الساعة لمقاومة الانقطاعات القصيرة.
     - منع التكرار نهائي عبر _try_claim_auto_backup: العلامة محفوظة في
       قاعدة البيانات ("2026-08-27_17") فلا يعيد إعادة التشغيل إرسالها.
+    - v194: كل فتحة تُحاول مرة واحدة فقط لكل عملية — لا 60 محاولة.
     """
     try:
         backup_hour = int(os.getenv("AUTO_BACKUP_HOUR", "").strip() or 17)
@@ -13279,13 +13110,14 @@ async def _daily_backup_loop(bot):
             now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
             if now.hour == backup_hour:
                 slot_key = now.strftime("%Y-%m-%d") + "_%02d" % backup_hour
-                if _try_claim_auto_backup(slot_key):
-                    logging.info("[BACKUP] Starting scheduled daily backup (%02d:00)...", backup_hour)
-                    await _daily_backup(bot, label="daily")
+                if slot_key not in _claimed_backup_slots:
+                    _claimed_backup_slots.add(slot_key)
+                    if _try_claim_auto_backup(slot_key):
+                        logging.info("[BACKUP] Starting scheduled daily backup (%02d:00)...", backup_hour)
+                        await _daily_backup(bot, label="daily")
         except Exception as e:
             logging.error("[BACKUP] Loop error: " + str(e))
         await asyncio.sleep(60)
-
 
 async def _keep_alive(app):
     """v87: نبضة HTTP لخدمة Render فقط — صفر استعلامات للقاعدة (Scale-to-Zero يعود).
@@ -13378,71 +13210,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-
-
-# ═══ v201: حارس قِدَم حزمة GitHub Pages — نهاية بلاغ «نشرت ولم يتغير شيء» ═══
-# الواجهة التي يفتحها المستخدمون فعلياً تعيش على leroiceramique.github.io كملفات
-# ثابتة (index.html + sw.js) لا تتغير إلا بإعادة تصدير الحزمة من الخادم ورفعها
-# للمستودع. لو نُسِيت هذه الخطوة بعد تحديث bot.py ظلّ الجميع على صفحة قديمة بلا
-# أي إصلاح جديد (بلاغ المالك المتكرر: «الثيم يرجع للثابت والصورة لا تُعيَّن —
-# لم يتغير شيء» رغم أن الإصلاحات موجودة في الخادم).
-# الحارس: عند الإقلاع (بعد 90 ثانية لاستقرار الشبكة) يجلب sw.js المنشور على
-# Pages ويقارن إصدار كاشه (ceram-pwa-gp-vNN) مع PWA_VERSION الحالي — إن كان
-# أقدم يُنبَّه المالك فوراً برسالة تحوي الخطوات الحرفية. قراءة فقط: لا يمس
-# القاعدة ولا الجلسات ولا أي بيانات، وفشل الجلب يُتجاهل بهدوء (لا إنذار كاذب
-# عند انقطاع الشبكة أو حجب Render للطلبات الصادرة).
-async def _pages_staleness_guard(bot):
-    await asyncio.sleep(90)
-    try:
-        import urllib.request as _ur
-        _req = _ur.Request(
-            PWA_PAGES_URL.rstrip("/") + "/sw.js?nocache=" + str(int(time.time())),
-            headers={"User-Agent": "ceram-pages-guard", "Cache-Control": "no-cache"})
-        with _ur.urlopen(_req, timeout=20) as _resp:
-            _sw = (_resp.read() or b"").decode("utf-8", "ignore")
-        _m = re.search(r"ceram-pwa-gp-v(\d+)", _sw or "")
-        if not _m:
-            logging.info("[PWA][v201] sw.js على Pages ببنية غير معروفة — تخطي الفحص")
-            return
-        try:
-            _pages_ver = int(_m.group(1))
-            _cur_ver = int(PWA_VERSION)
-        except Exception:
-            return
-        if _pages_ver >= _cur_ver:
-            logging.info("[PWA][v201] حزمة Pages محدّثة (gp-v" + str(_pages_ver)
-                         + " ≥ الخادم v" + str(_cur_ver) + ")")
-            return
-        _srv_url = (os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
-        _msg = ("⚠️ واجهة GitHub Pages أقدم من الخادم — إصلاحاتك الأخيرة لا تصل للمستخدمين!\n"
-                "• النسخة المنشورة على Pages: v" + str(_pages_ver) + "\n"
-                "• نسخة الخادم الحالية: v" + str(_cur_ver) + "\n\n"
-                "الخطوات (دقيقة واحدة):\n"
-                "1) افتح التطبيق بحساب الإدارة ← الإعدادات ← «تصدير حزمة GitHub Pages»"
-                + (" أو الرابط المباشر: " + _srv_url + "/api/pages/export" if _srv_url else "")
-                + "\n2) ارفع ملفات الحزمة الأربعة (index.html و sw.js و manifest.webmanifest"
-                  " و icon.jpg) إلى مستودع leroiceramique.github.io في GitHub.\n"
-                "3) انتظر دقيقة ثم أعد فتح التطبيق — الإصلاحات تعمل للجميع فوراً."
-                "\n(ملاحظة: مع v201 ستصل الواجهة الجديدة تلقائياً حتى بلا رفع —"
-                " آلية الاستبدال الذاتي v168 تنطلق لأن الإصدار ارتفع أخيراً.)")
-        _sent = 0
-        for _oid in list(OWNER_IDS)[:3]:
-            try:
-                await bot.send_message(chat_id=_oid, text=_msg)
-                _sent += 1
-            except Exception:
-                pass
-        logging.warning("[PWA][v201] Pages قديمة (gp-v" + str(_pages_ver) + " < v"
-                        + str(_cur_ver) + ") — أُبلغ المالك (" + str(_sent) + " رسالة)")
-    except Exception as _e:
-        logging.info("[PWA][v201] حارس Pages تخطّى الفحص بهدوء: " + str(_e)[:160])
-
-
-PWA_VERSION = "72"  # v202 = إصلاح «الشاشة تهرب لوحدها بمجرد سحب» — حقولا الإخفاء عند ‎-9999px (رقعة v200) كانت تفتح تمريراً أفقياً بـ9999 بكسل تُفلت الصفحة جانبياً بسحبة واحدة (مؤكد بقياس headless: scrollWidth 10359 بدل 360) + قفل html{overflow-x:clip} وقائياً — كان عالقاً على «71» منذ v201
-# v193: كل التحديثات بعد ذلك كانت تُنشر على الخادم بينما sw.js المنشور يبقى متطابقاً
-# بالبايت فلا يتجدد كاش الأجهزة، وآلية الاستبدال الذاتي (v168) تشترط إصدار خادم
-# أحدث فلا تنطلق أبداً، ولا يظهر إشعار التحديث — بلاغ المالك «لم يتغير شيء».
-# السابق v193 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "71"  # v193 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -21712,57 +21480,6 @@ _PWA_HTML_PATCHES = (
     # 94) v174: قسم «حساب Google» داخل صفحة الإعدادات + فحص التحديث أسفله
     ('</script>\n</body>',
      '</script>\n<style id="v174css">' + _PWA_V174_CSS + '</style>\n<script id="v174js">\n' + _PWA_V174_JS + '\n</script>\n</body>'),
-    # ── v200: إصلاحا بلاغي المالك — الثيم يعود للثابت + صورة الحساب لا تُعين ──
-    # 95) أزرار وضع العرض (نهاري/ليلي/حسب النظام) كانت تحفظ محلياً فقط دون
-    #     الخادم، وقيمة الخادم القديمة كانت تعود وتعلو عليها عند كل فتح.
-    #     الآن: كل ضغطة تحفظ الوضع على الحساب فوراً بنفس مسار «الاعتماد».
-    ('$("#thLight").addEventListener("click", () => applyTheme("light", true));\n'
-     '$("#thDark").addEventListener("click", () => applyTheme("dark", true));\n'
-     '$("#thSys").addEventListener("click", () => applyTheme("system", true));',
-     '/* v200: أزرار وضع العرض تحفظ على الحساب فوراً — كانت محلية فقط فكانت\n'
-     '   قيمة الخادم القديمة تعود وتعلو عليها عند كل فتح (بلاغ المالك) */\n'
-     'function _themeModeSave(mode) {\n'
-     '  applyTheme(mode, true);\n'
-     '  try {\n'
-     '    api("/api/theme/set", { method: "POST", headers: { "Content-Type": "application/json" },\n'
-     '      body: JSON.stringify({ name: (typeof S !== "undefined" && S && S.orgTheme) || "discord", mode: mode }) })\n'
-     '      .catch(function (e) { toast("طُبّق محلياً ولم يثبت على الحساب: " + (e && e.message ? e.message : ""), true); });\n'
-     '  } catch (e) {}\n'
-     '}\n'
-     '$("#thLight").addEventListener("click", () => _themeModeSave("light"));\n'
-     '$("#thDark").addEventListener("click", () => _themeModeSave("dark"));\n'
-     '$("#thSys").addEventListener("click", () => _themeModeSave("system"));'),
-    # 96) الإقلاع: الثيم المؤسسي العام القديم (app_settings) كان يُفرض على شاشة
-    #     الدخول حتى لمن لديه اختيار شخصي محفوظ على الجهاز — v178 جعل الثيمات
-    #     شخصية؛ الفرض العام الآن للجهاز الجديد فقط الذي لم يختر بعد.
-    ('    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل */\n'
-     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);',
-     '    /* v120: الثيم المؤسسي من الخادم — يشمل شاشة الدخول قبل أي تسجيل\n'
-     '       v200: للجهاز الذي لم يختر مستخدمه ثيمه بعد فقط — لا فرض للثيم العام فوق الاختيار المحفوظ */\n'
-     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);'),
-    # 97) الفحص الدوري (~5 دقائق): كان يعيد الثيم العام القديم فوق الثيم الشخصي
-    #     المعتمد فيستأنف «الثابت» رغم تغييره — نفس بواب v200 للجهاز الجديد فقط.
-    ('    /* v120: التقاط الثيم المؤسسي دورياً — تغيير المدير يصل للجميع خلال ≤5 دقائق */\n'
-     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme) applyOrgTheme(d.theme);',
-     '    /* v120: التقاط الثيم المؤسسي دورياً — v200: بلا فرض فوق الاختيار الشخصي المحفوظ (الثيمات شخصية منذ v178) */\n'
-     '    if (d && d.theme && ORG_THEMES[d.theme] && d.theme !== S.orgTheme && (function () { try { return !localStorage.getItem("ceram_org_theme"); } catch (e) { return false; } })()) applyOrgTheme(d.theme);'),
-    # 98) صورة الحساب: حقل الملف display:none لا يفتح منتقي الملفات في بعض
-    #     WebViews (APK) — يُخفى بنمط آمن يبقى قابلاً للاستدعاء البرمجي.
-    #     v202: النمط الآمن صار داخل إطار العرض (position:fixed بالزاوية، 1px،
-    #     شفاف، خلف كل شيء) — نسخة ‎-9999px السابقة كانت تفتح تمريراً أفقياً
-    #     بـ9999 بكسل تُفلت الشاشة كلها جانبياً بالسحب (بلاغ المالك بالفيديو).
-    ('<input type="file" id="avatarFile" accept="image/*" style="display:none">',
-     '<input type="file" id="avatarFile" accept="image/*" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض بدل display:none الذي يمنع فتح المنتقي — وبدل ‎-9999px الذي كان يفتح تمريراً أفقياً يُفلت الشاشة -->'),
-    # 99) نفس الإصلاح لحقل إيصال التوريد (النمط نفسه، الوقاية نفسها)
-    ('<input type="file" id="receiptFile" accept="image/*" capture="environment" style="display:none">',
-     '<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — نسخة ‎-9999px كانت تفتح تمريراً أفقياً يُفلت الشاشة -->'),
-    # 100) v202: حقلا ‎-9999px (نمط v200 المطبق فعلاً في ملفات pwa.html الحالية
-    #      المنشورة) — تحويلهما للنمط الآمن داخل إطار العرض. المراسي تنكسر في
-    #      pwa.html الجديد فتتخطى بالعدّ x0 فلا تُكرَّر.
-    ('<input type="file" id="avatarFile" accept="image/*" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0">',
-     '<input type="file" id="avatarFile" accept="image/*" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — ‎-9999px كان يفتح تمريراً أفقياً بـ9999 بكسل يُفلت الشاشة بالسحب -->'),
-    ('<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0">',
-     '<input type="file" id="receiptFile" accept="image/*" capture="environment" style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;z-index:-1;border:0;padding:0;margin:0"><!-- v202: إخفاء داخل إطار العرض — ‎-9999px كان يفتح تمريراً أفقياً يُفلت الشاشة -->'),
 )
 
 
@@ -22960,13 +22677,6 @@ def _pwa_inject_floating_layers(out):
         # من قائمة المستخدمين المحدّثة من الخادم (S.usrLast) فتعكس الحقيقة فوراً.
         if 'id="v160ui"' not in html:
             add += ('<script id="v160ui">\n' + _PWA_V160_JS + '\n</script>\n')
-        # v202: حصن الحقن — قفل الانزلاق الأفقي للمستند (بلاغ «الشاشة تهرب لوحدها
-        # بمجرد سحب»). يُحقن فقط إن غاب الحارس عن الصفحة نفسها (pwa.html الجديد
-        # يحمله سطراً فيتخطى). clip لا ينشئ حاوية تمرير فلا يمسّ العمودي ولا sticky.
-        if 'overflow-x:clip' not in html:
-            add += ('<style id="v202guard">/* v202: قفل الانزلاق الأفقي — أي عنصر أبعد من '
-                    'الشاشة كان يفتح تمريراً أفقياً بآلاف البكسلات تُفلت الصفحة جانبياً بسحبة واحدة */\n'
-                    'html{overflow-x:clip}</style>\n')
         if not add:
             return out
         pos = html.rindex("</body>")
@@ -26726,11 +26436,7 @@ def _pwa_api_movement_delete(user, mid):
     إلغاء نظيف تام لحركة: حذفها من القاعدة وردّ الكمية كما كانت في معاملة
     واحدة — كأن العملية لم تُسجَّل قط: بلا قيد إلغاء وبلا أثر في سجل الحركة.
     الإلغاء لصاحب الحركة نفسه أو للإدارة (مدير/مدير عام).
-    v198 تعديل المطلب: يُسجّل أثر الإلغاء في audit_log (من/متى/لماذا) داخل
-    نفس المعاملة — أي فشل في كتابة السجل يُبطل الإلغاء نفسه (الإلغاء بلا
-    أثر مستحيل)، ويبقى سجل الحركة نفسه نظيفاً كما كان، والواجهة بلا تغيير.
-    كما عُكِس منطق الطلبات المعلقة من مسار البوت: العجز يُسجّل فوراً
-    وأحدث طلب معلق يُخفّض فوراً بدل انتظار التسوية الكسولة."""
+    (بطلب يوسف الصريح: لا سجل تدقيق هنا — الحركة تختفي بلا أثر إطلاقاً)."""
     try:
         mid = int(mid)
     except (TypeError, ValueError):
@@ -26755,48 +26461,8 @@ def _pwa_api_movement_delete(user, mid):
             pname = str((prow or {}).get("name") or "")
             # ردّ الكمية كما كانت قبل الحركة — حرفياً كأنها لم تحدث
             delta = -int(t["quantity"] or 0) if t["type"] == "add" else int(t["quantity"] or 0)
-            cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s RETURNING quantity",
+            cur.execute("UPDATE products SET quantity = quantity + %s WHERE id = %s",
                         (delta, t["product_id"]))
-            _new_qty = (cur.fetchone() or {}).get("quantity")
-            try:
-                _new_qty_i = int(_new_qty or 0)
-            except (TypeError, ValueError):
-                _new_qty_i = 0
-            # v198: موازاة منطق البوت — الطلبات المعلقة تُسوّى فوراً داخل نفس
-            # المعاملة بدل انتظار التسوية الكسولة عند أول زيادة كمية لاحقة
-            if t["type"] == "add" and _new_qty_i < 0:
-                # عكس الإضافة خلق عجزاً — سجّله كطلب معلق فوراً (كما في مسار البوت)
-                sync_product_pending_deficit(t["product_id"], cur,
-                                             owner_user_id=t.get("user_id"))
-            elif t["type"] == "remove":
-                # عكس الإخراج غطّى أحدث طلب معلق — خفّضه أو احذفه (كما في مسار البوت)
-                cur.execute(
-                    "SELECT id, pending_qty FROM pending_deliveries "
-                    "WHERE user_id = %s AND product_id = %s AND pending_qty > 0 "
-                    "AND NOT COALESCE(dismissed, FALSE) "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (t["user_id"], t["product_id"]),
-                )
-                _pd = cur.fetchone()
-                if _pd:
-                    _new_pending = _pd["pending_qty"] - int(t["quantity"] or 0)
-                    if _new_pending <= 0:
-                        cur.execute("DELETE FROM pending_deliveries WHERE id = %s", (_pd["id"],))
-                    else:
-                        cur.execute("UPDATE pending_deliveries SET pending_qty = %s WHERE id = %s",
-                                    (_new_pending, _pd["id"]))
-            # v198: أثر الإلغاء — من/متى/لماذا، داخل نفس المعاملة:
-            # أي فشل في كتابة السجل يُبطل الإلغاء نفسه (الإلغاء بلا أثر مستحيل)
-            cur.execute(
-                "INSERT INTO audit_log (user_id, username, action, details, ip) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (user.get("id"),
-                 str(user.get("name") or user.get("web_username") or "")[:200],
-                 "movement_delete",
-                 ("إلغاء حركة #" + str(mid) + " (" + str(t["type"]) + " "
-                  + str(t["quantity"]) + ") سلعة: " + pname[:80]
-                  + " — ردّ الكمية — عبر التطبيق")[:500],
-                 "pwa"))
             cur.execute("DELETE FROM transactions WHERE id = %s", (mid,))
         conn.commit()
         return True, ("أُلغيت الحركة ورُدّت الكمية — كأنها لم تُسجَّل ✓"
@@ -37867,9 +37533,7 @@ if __name__ == "__main__":
     # Restore last backup from disk into memory (if any) so /backup → restore_last works
     # immediately after a Render restart, even before the next scheduled backup runs.
     if _last_backup_data is None:
-        # v199: أحدث نسخة سليمة من أرشيف القرص المؤرخ (كانت آخر ملف فقط —
-        # وتلفه كان يُبطل استعادة الإقلاع وأساس /backup → استعادة آخر نسخة)
-        _loaded = _load_backup_from_disk_any()
+        _loaded = _load_backup_from_disk()
         if _loaded:
             _last_backup_data = _loaded
     # ── استعادة تلقائية عند الإقلاع: قاعدة فارغة + نسخة متاحة = ضياع حقيقي ──
@@ -37981,9 +37645,7 @@ if __name__ == "__main__":
             await tg_app.updater.start_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(_keep_alive(aio_app))
             asyncio.create_task(_daily_backup_loop(tg_app.bot))
-            asyncio.create_task(_pages_staleness_guard(tg_app.bot))   # v201: إنذار المالك إن كانت حزمة Pages قديمة
             print("[BOT] Daily auto-backup enabled (17:00 Algeria time, once per day)")
-            print("[BOT] Pages staleness guard enabled (v201)")
             print("[BOT] Polling + health + keep-alive on port " + str(render_port))
         async def on_cleanup(aio_app):
             await tg_app.updater.stop()
