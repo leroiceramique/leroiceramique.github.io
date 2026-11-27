@@ -179,20 +179,6 @@ def _theme_logo_load():
     return _THEME_LOGO_BYTES
 
 
-def _theme_logo_stream():
-    """Fresh BytesIO of the brand logo, or None (v88: تحميل كسول من القاعدة)."""
-    data = _theme_logo_load()
-    if not data:
-        return None
-    try:
-        return io.BytesIO(data)
-    except Exception:
-        return None
-
-
-def _can_caption(text):
-    """Telegram caption limit is 1024 chars — keep a safety margin."""
-    return bool(text) and len(text) <= 1000
 
 
 async def _send_themed(bot, chat_id, text, reply_markup=None, parse_mode=None):
@@ -858,16 +844,6 @@ def _invalidate_product_cache():
     global _PRODUCT_CACHE_TIME
     _PRODUCT_CACHE_TIME = 0
 
-
-def get_cached_products():
-    """Get products from cache if fresh, otherwise from DB."""
-    with _cache_lock:
-        if _PRODUCT_CACHE and (time.time() - _PRODUCT_CACHE_TIME) < _PRODUCT_CACHE_TTL:
-            return list(_PRODUCT_CACHE.values())
-    if _refresh_product_cache():
-        with _cache_lock:
-            return list(_PRODUCT_CACHE.values())
-    return []
 
 
 def get_offline_queue_count():
@@ -2908,14 +2884,6 @@ def _edit_distance(s1, s2):
     return prev[l2]
 
 
-def _dimension_variants(token):
-    """v124: انعكاس أبعاد القياس — 60x120 يطابق 120x60 والعكس.
-    v126: توحيد الأصفار البادئة قبل التوليد (08x60 ← 8x60 ← معكوسه 60x8)."""
-    m = re.fullmatch(r"(\d{1,4})x(\d{1,4})", (token or "").strip())
-    if m and m.group(1) != m.group(2):
-        return [_canon_num(m.group(2)) + "x" + _canon_num(m.group(1))]
-    return []
-
 
 # ═══════════════ v126: البحث الدقيق — القياس الرقمي يطابق قياساً فقط ═══════════════
 # شكوى يوسف: كتابة «08/60» كانت تُظهر 30/60 و80/60 و18/60 — لأن التسامح الإملائي
@@ -3278,29 +3246,6 @@ def _unshipped_table_exists(cur):
     )
     return cur.fetchone() is not None
 
-
-def db_delete_product(product_id):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            # Preserve business history: detach delivery records from this
-            # product BEFORE deleting it, so nothing is cascade-swept.
-            # (جدول unshipped_sales أُرشِف في v20 — يُفكّ ارتباطه فقط إن وُجد)
-            if _unshipped_table_exists(cur):
-                cur.execute("UPDATE unshipped_sales SET product_id = NULL WHERE product_id = %s", (product_id,))
-            cur.execute("UPDATE pending_deliveries SET product_id = NULL WHERE product_id = %s", (product_id,))
-            # v78: حركات السلعة تُحذف معها (الوعد في الواجهة: «حذف السلعة وجميع سجلاتها») —
-            # قيد transactions RESTRICT كان يمنع حذف أي سلعة لها حركات.
-            cur.execute("DELETE FROM transactions WHERE product_id = %s", (product_id,))
-            cur.execute("DELETE FROM products WHERE id = %s RETURNING id", (product_id,))
-            deleted = cur.fetchone() is not None
-        conn.commit()
-        return deleted
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
 
 
 def db_bulk_delete_products(id_list):
@@ -4362,14 +4307,6 @@ def _pwa_v154_migrate_perms():
 _USER_PERM_CACHE = {}
 _USER_PERM_TTL = 30.0
 
-
-def _load_user_perm_states(telegram_id):
-    """يقرأ تجاوزات مستخدم من القاعدة — None عند أي فشل (فيتبع الفئة).
-    v154: التخزين بمفتاح user_id (users.id) — تلغرام يُحلّ داخلياً."""
-    uid = _uid_from_tid(telegram_id)
-    if uid is None:
-        return {}
-    return _load_user_perm_states_by_uid(uid) or {}
 
 
 def _load_user_perm_states_by_uid(uid):
@@ -5559,14 +5496,6 @@ def _add_confirm_card(product_name, qty, is_motif=False, factory="", size=""):
     ])
     return text, keyboard
 
-
-async def confirm_add_product(update, context, product_name, qty, is_motif=False):
-    """Step 3: Show summary with inline confirm button."""
-    context.user_data["add_qty"] = qty
-    context.user_data["add_is_motif"] = is_motif
-    _set_state(context, "waiting_add_confirm")
-    text, keyboard = _add_confirm_card(product_name, qty, is_motif)
-    await update.message.reply_text(text, reply_markup=keyboard)
 
 
 async def callback_addtype_handler(update, context):
@@ -13242,7 +13171,7 @@ PWA_ALLOWED_ORIGINS = tuple(
     o.strip().rstrip("/") for o in os.getenv(
         "PWA_ALLOWED_ORIGINS", PWA_PAGES_URL).split(",") if o.strip())
 PWA_SESSION_HEADER = "X-Session-Token"
-PWA_VERSION = "77"  # v193 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
+PWA_VERSION = "78"  # v193 = التصدير الديناميكي الكامل: كل جدول مرتبط بـ users بمفتاح أجنبي (تشات، مصروفات، صلاحيات، OTP، تذكر الدخول...) يُصدَّر ويُستعاد ديناميكياً من المخطط نفسه بترتيب توبولوجي — الفحص الذاتي كشف أن الانحراف أوسع من جداول المصادقة وحدها فصار هذا النوع كله مستحيلاً بنيوياً. السابق v180 = النسخ الاحتياطي الكامل أخيراً: جداول المصادقة الثلاثة (كلمات مرور الدخول pwa_auth + الجلسات pwa_sessions + التسجيلات pwa_registrations) تُصدَّر في كل نسخة احتياطية وتُستعاد منها — نهاية الحادثة التي كان أي استيراد فيها يمسح كل كلمات المرور وكل الجلسات عبر ON DELETE CASCADE فيخرج الجميع ولا يدخل أحد إلا بحساب جديد — + لقطة أمان تلقائية قبل أي استيراد (قرص + قناة النسخ) تجعل التراجع ضغطة واحدة + حارس صاحب البوت على كل مسارات تنفيذ الاستيراد. السجل في CHANGELOG.md. السابق v179 = الثيم الحقيقي بطلب المالك — نهاية «مجرد الألوان»: وضع عرض كامل يقلب شكل التطبيق بالكامل (☀️ نهاري / 🌙 ليلي / 📱 حسب النظام) بمعاينات مصغّرة حية وتتبع حي لإعدادات الهاتف في وضع «حسب النظام»، ولون الهوية (16 هوية) فوق الوضع لا بديلاً عنه — والحفظ كامل الوضع+الهوية على حساب المستخدم وحده (عمود theme_mode) فيتبعه على كل الأجهزة ولا يظهر لغيره + تصحيح فادح في حذف الفاتورة: الفاتورة إثبات تسليم نهائي — سلعتها خرجت للمخزون لحظة إنشائها فحذفها تنظيف للسجل والشاشة فقط بلا أي إرجاع للمخزون، بنافذة تأكيد بنص صريح. السابق v178 = الثيمات الشخصية المنفردة: 16 هوية احترافية عالمية (واتساب، فيسبوك، تويتر إكس، تيكتوك، كانفا، إنستغرام، تلغرام، سبوتيفاي + الثمانية السابقة) — كل مستخدم يعتمد ثيمه على حسابه وحده (عمود users.theme) ولا يُطبَّق على بقية المستخدمين حتى ولو من المدير — نهاية «الثيم المؤسسي» الجماعي + الفواتير السابقة (أحدث + السجل) خلف زر واحد داخل قسم إنشاء الفاتورة فلا تملأ الشاشة + حذف فاتورة بتأكيد ضغطتين مع إرجاع محاسبي آمن للسلع للمخزون (نفس قواعد الاستبدال v102). السابق v177 = واجهة الترحيل المؤقت (مرة واحدة): التطبيق الأصلي بدل PWA بتحميل مباشر من gofile + طلب حذف النسخة القديمة + مميزات النسخة الجديدة — لا تظهر داخل التطبيق (WebView) ولا بعد أي ضغطة. السابق v176 = تحسين إنشاء الفاتورة بطلب المالك (قسم قليل الاستخدام لصعوبته): الحساب بالعلب للمنتجات m² (نموذج التفكير الطبيعي للبائع — يكتب 10 علب فتُحسب 14.4m² تلقائياً) + سلع يدوية خارج المخزون بالوحدات الثلاث (وسم [قطع]/plante في الخادم) + تعديل أي سطر في السلة بلمسته + مسودة محفوظة تبقى بعد إغلاق التطبيق + تحذير المخزون المتوفر قبل الإضافة + زبائن أخيرون بضغطة + تذكّر آخر عامل + تقريب القطع الكسرية في الخادم بدل قطعها. السجل في CHANGELOG.md. السابق v174 = تصحيح v173 بطلب المالك: زر الإعدادات ⚙️ بجانب التنبيهات وصفحة الإعدادات (v-set) بكامل وظائفها تبقى كما هي — وتُزال «الواجهة الانتقالية» (الشريط الأصلي الأفقي «النظام الكامل — واجهة انتقالية» وزرّاه) من التطبيق الأندرويدي عبر APK v57 (ترقيع ثنائي يحفظ كل كود v56 ومصادقة Google الحقيقية) — ومهام الشاشة الانتقالية تنتقل إلى صفحة الإعدادات: قسم «حساب Google» أسفل الثيمات مباشرة + «فحص وجود تحديث جديد» أسفل قسم Google — الحالة الحقيقية من قاعدة البيانات (google_linked_at) لكل مستخدم عبر /api/me، والربط عبر المسار الرسمي نفسه بلا أي نظام جديد، وإزالة كل إضافات v173 من الرئيسية واللوحة المنبثقة. السجل في CHANGELOG.md
 # (v172 = تصحيح بلاغا المالك: إلغاء تبويب «المعلقة» الثاني (كان زراً مكرراً لنفس الخدمة) — الاكتفاء ببطاقة «الطلبات المعلقة» الأصلية المثبتة منذ v170 ولا تختفي حتى بصفر طلبات + كبت دائم لحوار «تحديث جديد» عبر localStorage بدل الكبت الجلسي + إسكات إشعار «تحديث 56» المتكرر بضبط app_version.json إلى 55 (الحزمة متاحة يدوياً). السجل في CHANGELOG.md
 # (v171 = «تبويب «⏳ المعلقة» ثابت في صف التبويبات مثل الرئيسية/المخزون/الطلبات/المستخدمين (يفتح شاشة الطلبات على مقطع المعلقة مباشرة، وبصلاحية admin/pending/supply_order، وتمييز إضاءة مستقل عن تبويب الطلبات) + قياسات ومصانع إضافة السلعة متقابلة: شبكة 2-3 بالسطر على الهاتف و4-5 على السطح بدل القائمة العمودية الطويلة» — السجل في CHANGELOG.md
 # (v170 = «عودة تفاصيل السلعة من سجل الحركة + بطاقة الطلبات المعلقة ذاتية الشفاء (نهاية اختفائها دقائق ثم عودتها: مراقب DOM يعيدها فوراً وتثبيت أزرار الطلبات للمالك حتى مع خريطة صلاحيات ناقصة لحظياً) + قمع النقرة التي تلي الضغطة المطوّلة (الإلغاء يبقى للمطوّلة وحدها) + فحص إصدار الخادم عند كل عودة للتطبيق — التحديثات القادمة كلها مباشرة دون نسخة APK» — السجل في CHANGELOG.md
@@ -23651,9 +23580,38 @@ def _pwa_login_clear(key):
         _PWA_LOGIN_FAILS.pop(key, None)
 
 
+# ═══════════ v201: سقف لكل عنوان IP على نقاط الإرسال العامة ═══════════
+# الفجوة المحددة في التدقيق: البوابات القائمة (v29/v161) مفتاحها ip|المعرّف
+# أو البريد — متسلل يبدّل المعرّف يحصل على ميزانية جديدة كل مرة. هذا السقف
+# مستقل عن الهوية تماماً ويحمي موارد البريد/SMS وإشعارات المدراء من الإغراق
+# بتبديل الهوية، بنفس أسلوب النافذة المنزلقة وقفل المزامنة المعمول به.
+
+_PWA_IPB = {}                 # مفتاح → [ts,...] طوابع نافذة منزلقة
+_PWA_IPB_LOCK = threading.Lock()
+
+
+def _pwa_ip_budget(key, max_n, window_sec):
+    """يسجّل محاولة ويعيد True إن كانت ضمن السقف، أو False لرفض الطلب.
+    v201: نافذة منزلقة لكل مفتاح (مستقلة عن المعرّف) مع تنظيف خفيف للمفاتيح
+    الميتة — مكملة لبوابة الدخول ولا تُلغيها."""
+    now = time.time()
+    with _PWA_IPB_LOCK:
+        marks = [m for m in _PWA_IPB.get(key, []) if now - m < window_sec]
+        if len(marks) >= max_n:
+            _PWA_IPB[key] = marks
+            return False
+        marks.append(now)
+        _PWA_IPB[key] = marks
+        if len(_PWA_IPB) > 512:
+            for k in [k for k, v in _PWA_IPB.items() if not v or now - v[-1] > 3600]:
+                _PWA_IPB.pop(k, None)
+        return True
+
+
 AUDIT_LABELS = {
     "login": "✅ دخول ناجح", "login_fail": "❌ دخول فاشل",
     "lockout": "🔒 رفض (حساب مقفول)", "brute_force_lock": "🚨 قفل محاولات تخمين",
+    "rate_limited": "⏳ تجاوز سقف الإرسال (IP)",
     "setup": "🛠 إعداد أول مدير", "changepass": "🔑 تغيير كلمة مرور",
     "webpass_set": "🔑 ضبط كلمة موظف", "user_toggle": "🚫 تفعيل/طرد مستخدم",
     "qty_add": "➕ إضافة كمية", "qty_remove": "➖ إخراج كمية", "qty_reconcile": "⚖️ جرد",
@@ -24377,24 +24335,6 @@ def _pwa_user_theme_set(uid, name, mode):
         release_connection(conn)
 
 
-def _org_theme_set(name):
-    """حفظ اختيار المدير — يُصادَق على الاسم قبل الاستدعاء."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO app_settings (key, value, updated_at) VALUES (%s, %s, NOW()) "
-                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
-                (_ORG_THEME_KEY, name))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_connection(conn)
-    _ORG_THEME_CACHE["name"] = name
-    _ORG_THEME_CACHE["t"] = time.monotonic()
-
 
 async def pwa_theme_set_handler(request):
     """v179: الثيم الحقيقي — الهوية اللونية + وضع العرض (نهاري/ليلي/حسب
@@ -24584,28 +24524,6 @@ def _pwa_api_registrations_list(user):
         })
     return out
 
-
-def _pwa_api_registration_delete(user, reg_id):
-    """حذف طلب تسجيل منتظر (للمدير فقط)."""
-    try:
-        reg_id = int(reg_id)
-    except (TypeError, ValueError):
-        return False, "معرّف غير صالح."
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM pwa_registrations WHERE id = %s AND status = 'waiting'", (reg_id,))
-            n = cur.rowcount
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logging.error("[PWA] registration delete failed: " + str(e))
-        return False, "خطأ في الخادم."
-    finally:
-        release_connection(conn)
-    if not n:
-        return False, "الطلب غير موجود أو مؤكّد مسبقاً."
-    return True, "تم حذف الطلب."
 
 
 # ═══════════ v39: نسيت كلمة المرور — طلب الموظف + توليد رقم سر مؤقت بضغطة ═══════════
@@ -28802,6 +28720,10 @@ async def pwa_register_handler(request):
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
     ip = request.remote or "؟"
+    # v201: سقف لكل IP على طلبات الانضمام — حماية إشعارات المدراء وقاعدة الطلبات
+    if not await _pwa_run(_pwa_ip_budget, "ipb-reg|" + ip, 5, 3600):
+        await _pwa_run(_audit_log, "rate_limited", None, details="register", ip=ip)
+        return _pwa_err(429, "طلبات انضمام كثيرة من هذا الجهاز — تواصل مع الإدارة أو أعد المحاولة لاحقاً.")
     try:
         ok, result, err = await _pwa_run(_pwa_api_register,
                                          str(body.get("name", "")),
@@ -29092,6 +29014,10 @@ async def pwa_otp_request_handler(request):
         return _pwa_err(400, "طلب غير صالح.")
     identifier = str(body.get("identifier", "")).strip()
     ip = request.remote or "؟"
+    # v201: سقف لكل IP مستقل عن المعرّف — يغلق إغراق الرموز بتبديل الهوية
+    if not await _pwa_run(_pwa_ip_budget, "ipb-otp|" + ip, 10, 900):
+        await _pwa_run(_audit_log, "rate_limited", None, details="otp", ip=ip)
+        return _pwa_err(429, "طلبات رموز كثيرة من هذا الجهاز — انتظر نحو 15 دقيقة ثم أعد المحاولة.")
     key = ip + "|otp:" + identifier.lower()
     try:
         await _pwa_run(_pwa_login_gate, key)
@@ -30983,6 +30909,10 @@ async def pwa_register_resend_handler(request):
         body = await request.json()
     except Exception:
         return _pwa_err(400, "طلب غير صالح.")
+    # v201: سقف لكل IP — بوابة البريد القائمة (v161r) لكل بريد على حدة فقط
+    if not await _pwa_run(_pwa_ip_budget, "ipb-resend|" + ip, 6, 900):
+        await _pwa_run(_audit_log, "rate_limited", None, details="resend", ip=ip)
+        return _pwa_err(429, "طلبات كثيرة من هذا الجهاز — انتظر قليلاً ثم أعد المحاولة.")
     ok, payload, err = await _pwa_run(
         _pwa_api_register_resend, str(body.get("email") or ""), ip)
     if not ok:
@@ -32894,90 +32824,7 @@ def db_delete_cat_size(category, name=None, row_id=None, user_id=None):
         return None, _pg_err_hint(e)
 
 
-def db_list_sizes():
-    """قائمة القياسات مرتبة بالاسم — [] عند أي فشل (لا يرفع أبداً)."""
-    try:
-        _sizes_lazy_ready()
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, name FROM sizes ORDER BY name ASC LIMIT 200")
-                rows = cur.fetchall()
-            conn.commit()
-            return [{"id": int(r[0]), "name": str(r[1])} for r in rows]
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logging.warning("[DB][v117] قراءة القياسات فشلت: " + str(e)[:160])
-        return []
 
-
-def db_add_size(name, user_id=None):
-    """إضافة قياس — (size, existed, err). التكرار بأي حالة أحرف يعيد الموجود
-    مع existed=True فلا تكرار في القائمة أبداً. لا يرفع أبداً."""
-    sname = " ".join(str(name or "").split())
-    if len(sname) < 2:
-        return None, False, "القياس قصير جداً (حرفان على الأقل)."
-    if len(sname) > 60:
-        return None, False, "القياس طويل جداً (60 حرفاً كحد أقصى)."
-    try:
-        _sizes_lazy_ready()
-        conn = get_connection()
-        try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, name FROM sizes "
-                        "WHERE lower(btrim(name)) = lower(%s)", (sname,))
-                    row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                    cur.execute(
-                        "INSERT INTO sizes (name, created_by) VALUES (%s, %s) "
-                        "RETURNING id, name", (sname, user_id))
-                    row = cur.fetchone()
-                conn.commit()
-                logging.info("[SIZ][v117] قياس جديد أُضيف: " + sname)
-                return {"id": int(row[0]), "name": str(row[1])}, False, None
-            except Exception as ins_err:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                # سباق تكرار محتمل بين طلبين متزامنين — قراءة أخيرة
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT id, name FROM sizes "
-                            "WHERE lower(btrim(name)) = lower(%s)", (sname,))
-                        row = cur.fetchone()
-                    if row:
-                        conn.commit()
-                        return {"id": int(row[0]), "name": str(row[1])}, True, None
-                except Exception:
-                    pass
-                return None, False, _pg_err_hint(ins_err)
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        return None, False, _pg_err_hint(e)
-
-
-def _sizes_name_by_id(fid):
-    """قياس بالمعرف — "" عند الفشل (لالتقاط أزرار قائمة قديمة)."""
-    try:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM sizes WHERE id = %s", (int(fid),))
-                r = cur.fetchone()
-            conn.commit()
-            return str(r[0]) if r else ""
-        finally:
-            release_connection(conn)
-    except Exception:
-        return ""
 
 
 def _pg_err_hint(e):
@@ -35992,29 +35839,6 @@ def _push_subs_fetch_uids(uids):
     finally:
         release_connection(conn)
 
-
-def _push_subs_fetch(tids):
-    """v143: اشتراكات إشعارات الهاتف لمجموعة أعضاء — [(tid, endpoint, p256dh, auth, name)]"""
-    if not tids:
-        return []
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT telegram_id, endpoint, p256dh, auth, username "
-                "FROM push_subscriptions WHERE telegram_id = ANY(%s)",
-                (list(tids),))
-            rows = cur.fetchall()
-        conn.commit()
-        return rows
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return []
-    finally:
-        release_connection(conn)
 
 
 def _push_sub_delete(endpoint):
