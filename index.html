@@ -1792,8 +1792,8 @@ img{-webkit-user-drag:none;user-select:none}</style>
   function mark() { try { localStorage.setItem(KEY, "1"); } catch (e) {} }
   function apkServer() {
     try {
-      return ((window.CERAM_API_ROOT || "").replace(/\/+$/, "") || location.origin) + "/app_latest.apk";
-    } catch (e) { return "/app_latest.apk"; }
+      return ((window.CERAM_API_ROOT || "").replace(/\/+$/, "") || location.origin) + "/app/latest.apk";
+    } catch (e) { return "/app/latest.apk"; }   /* v200: المسار المسجل فعلاً — القديم كان 404 */
   }
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -4413,6 +4413,18 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
   try { const _ot = localStorage.getItem("ceram_org_theme"); if (_ot && ORG_THEMES[_ot]) applyOrgTheme(_ot); } catch (e) {}
   if ("serviceWorker" in navigator) {
     try { navigator.serviceWorker.register("/sw.js").catch(() => {}); } catch (e) {}
+    /* v200: عند صعود عامل جديد (controllerchange) إعادة تحميل مرة واحدة —
+       آخر واجهة تظهر فوراً بدل أن تعود الواجهة القديمة من كاش دقائق معدودة */
+    try {
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        try {
+          if (sessionStorage.getItem("ceram_cc_reloaded") !== "1") {
+            sessionStorage.setItem("ceram_cc_reloaded", "1");
+            setTimeout(() => location.reload(), 60);
+          }
+        } catch (e2) { setTimeout(() => location.reload(), 60); }
+      });
+    } catch (e1) {}
   }
   let setupMode = false;
   try {
@@ -4463,7 +4475,7 @@ window.showGoogleJoin = function (gName, gEmail, gOt) {
 })();
 
 /* ─── التحديث الداخلي v44: فحص دوري للإصدار + تحديث بنقرة «نعم» دون إعادة تثبيت ─── */
-const APP_VER = "76";
+const APP_VER = "77";
 S.updDismissed = (function(){try{return localStorage.getItem("pwa_upd_seen")||""}catch(e){return ""}})();
 /* ─── v168: التحديث الذاتي — الإصلاح الدائم لتعارض «الإصدار قديم/الخادم جديد» ───
    نسخة Pages ملفها ثابت لا يتغير إلا بإعادة النشر اليدوي؛ لذا عند اكتشاف إصدار
@@ -11282,10 +11294,10 @@ body.dwLock{overflow:hidden}
   var apkDone=false;
   function fillApk(){
     var a=document.getElementById("dwApk");if(!a)return;
-    a.href=rootUrl()+"/app_latest.apk";
+    a.href=rootUrl()+"/app/latest.apk";   /* v200: المسار المسجل فعلاً على الخادم — القديم كان 404 */
     if(apkDone)return;apkDone=true;
     var b=document.getElementById("dwApkV");
-    try{fetch(rootUrl()+"/app_version.json",{cache:"no-store"})
+    try{fetch(rootUrl()+"/app/version.json",{cache:"no-store"})   /* v200: المسار المسجل فعلاً */
       .then(function(r){return r.ok?r.json():null})
       .then(function(j){if(j&&(j.versionName||j.versionCode)){b.textContent="أحدث إصدار: "+(j.versionName||("v"+j.versionCode))}})
       .catch(function(){})}catch(e){}

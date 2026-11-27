@@ -1,6 +1,6 @@
 // Service Worker — نسخة GitHub Pages (leroiceramique.github.io)
 // نفس منطق نسخة الخادم: الصفحات شبكة أولاً + API مرور مباشر بلا تخزين.
-const CACHE = "ceram-pwa-gp-v76";  /* v168: يُستبدل بالإصدار وقت توليد الحزمة فيتجدد الكاش مع كل نشر Pages (كان مجمداً على gp-v26 منذ v154) */   /* v154: الصلاحيات الحية لكل مستخدم — تجديد الغلاف */
+const CACHE = "ceram-pwa-gp-v77";  /* v168: يُستبدل بالإصدار وقت توليد الحزمة فيتجدد الكاش مع كل نشر Pages (كان مجمداً على gp-v26 منذ v154) */   /* v154: الصلاحيات الحية لكل مستخدم — تجديد الغلاف */
 const SHELL = ["/", "icon.jpg", "/manifest.webmanifest"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -24,7 +24,9 @@ self.addEventListener("fetch", (e) => {
   // صفحات التطبيق: شبكة أولاً دائماً — التحديثات تظهر من أول تحديث، وعند الانقطاع آخر نسخة.
   if (e.request.mode === "navigate" || url.pathname === "/") {
     e.respondWith(
-      fetch(e.request).then((res) => {
+      /* v200: no-store — تنقل الصفحة بلا أي كاش HTTP فلا يعود كاش Pages
+         (max-age=600) يخدم واجهة قديمة لدقائق بعد كل نشر */
+      fetch(e.request, { cache: "no-store" }).then((res) => {
         if (res && res.status === 200 && url.origin === location.origin) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy));
