@@ -1,0 +1,28 @@
+name: engineering-checks
+on: [push]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: تثبيت متطلبات الخادم + أداة الاختبار
+        run: pip install -r requirements.txt pytest
+      - name: تجميع الخادم (py_compile)
+        run: python -m py_compile bot.py
+      - name: تشغيل الاختبارات الهندسية (27 اختباراً)
+        run: python -m pytest -q test_engineering.py
+      - name: توافق الأختام (الخادم / الواجهة / عامل الخدمة)
+        run: |
+          V=$(grep -oP 'PWA_VERSION = "\K[0-9]+' bot.py)
+          A=$(grep -oP 'APP_VER = "\K[0-9]+' index.html)
+          S=$(grep -oP 'ceram-pwa-gp-v\K[0-9]+' sw.js)
+          echo "الأختام: خادم=$V واجهة=$A عامل=$S"
+          if [ "$V" != "$A" ] || [ "$V" != "$S" ]; then
+            echo "❌ الأختام غير متطابقة — راجع أختام الإصدار قبل الرفع"
+            exit 1
+          fi
+          echo "✅ الأختام متطابقة"

@@ -1,12 +1,2 @@
-__pycache__/
-*.pyc
-.env
-.gitignore
-
-# Old multi-file structure (no longer needed)
-config.py
-database.py
-main.py
-models/
-handlers/
-utils/
+# Created by pytest automatically.
+*
