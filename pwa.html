@@ -1181,10 +1181,14 @@ function showLogin(setupMode) {
   $("#fPass").value = "";
 }
 /* v39: دخول باسم الدخول (أو البريد للحسابات القديمة) + الرقم السري — بلا بريد إطلاقاً */
-/* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي */
+/* v33: زر Google — في APK يعترضه MainActivity ويفتح المتصفح الخارجي
+   v209: كشف التطبيق حتى لو غاب AndroidBridge (UA الـWebView يحمل «; wv)») —
+   كان غياب الجسر يجعل الخادم يعامل الجهاز كمتصفح، فيفتح له رابط الويب
+   بعد الموافقة بدل الرابط العميق ceramicstock:// الراجع إلى التطبيق */
 $("#btnGoogle").addEventListener("click", () => {
-  const app = window.AndroidBridge ? "?app=1" : "";
-  location.href = "/api/auth/google/start" + app;
+  const isApk = !!(window.AndroidBridge || /;\s*wv\)/.test(navigator.userAgent || ""));
+  const app = isApk ? "?app=1" : (window.CERAM_PAGES ? "?pg=1" : "");
+  location.href = (window.CERAM_API_ROOT || "") + "/api/auth/google/start" + app;
 });
 let regRole = "seller";
 $("#rRoleChips").querySelectorAll(".rchip").forEach((b) => b.addEventListener("click", () => {
@@ -1304,6 +1308,9 @@ function handleGoogleReturn(q) {
     return true;
   }
   if (g === "wait") { showLogin(false); showGoogleWait(); return true; }
+  if (g === "disabled") { showLogin(false);
+    toast("🔐 دخول Google غير مفعّل لهذا الحساب — سجّل الدخول باسم الدخول ورقمك السري", true);
+    return true; }
   if (g === "expired") { toast("⏳ انتهت صلاحية جلسة Google — أعد المحاولة", true); }
   return false;
 }
